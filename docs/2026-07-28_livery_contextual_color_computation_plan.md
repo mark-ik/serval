@@ -237,6 +237,35 @@ Done when a directly specified system color follows the child's scheme while
 an inherited system color remains the parent's already-computed absolute
 value.
 
+### C2 receipt - 2026-08-08
+
+`color-scheme` is now an inherited generated property. `ColorSchemeList`
+retains `normal`, author order for the supported `light` and `dark` schemes,
+and the `only` flag. Its used scheme chooses the host preference when that
+scheme is supported, otherwise the first author-supported scheme. The host
+preference remains `Device::color_scheme`, which continues to own
+`prefers-color-scheme`; element selection never mutates it.
+
+`Device` also owns a configurable `SystemPalette`, keyed by used scheme and
+`SystemColor`. `ColorComputeContext` enters the Livery cascade through
+`genet-livery`'s retained style walk. Cascade now resolves the winning
+`color-scheme`, then foreground `color` against the inherited foreground, and
+then system-color leaves in other color-bearing values. A direct system value
+therefore becomes absolute before a child can inherit it, while a
+non-foreground `currentcolor` expression remains contextual for C3.
+
+The direct C2 receipt injects distinct light and dark `Canvas` and
+`CanvasText` values. A child with `color-scheme: only dark` receives the dark
+values despite a light host preference; a sibling that inherits the parent's
+light `Canvas` receives that already-computed light value. It also checks
+border, gradient, and shadow system leaves are absolute. The retained-style
+receipt proves the same distinction reaches `StylePlane` without changing the
+host preference.
+
+This stops before C3. Paint still lowers through its legacy compatibility
+context; CSSOM/palette invalidation, non-foreground `currentcolor` consumer
+resolution, animation endpoints, and headed paint remain C3 work.
+
 ## C3: observables and consumers
 
 Ownership:

@@ -59,6 +59,30 @@ pub enum SystemColor {
 }
 
 impl SystemColor {
+    pub const ALL: [Self; 19] = [
+        Self::CanvasText,
+        Self::Canvas,
+        Self::LinkText,
+        Self::VisitedText,
+        Self::ActiveText,
+        Self::ButtonFace,
+        Self::ButtonText,
+        Self::ButtonBorder,
+        Self::Field,
+        Self::FieldText,
+        Self::Highlight,
+        Self::HighlightText,
+        Self::Mark,
+        Self::MarkText,
+        Self::GrayText,
+        Self::AccentColor,
+        Self::AccentColorText,
+        Self::SelectedItem,
+        Self::SelectedItemText,
+    ];
+
+    pub const COUNT: usize = Self::ALL.len();
+
     const TABLE: &'static [(&'static str, Self)] = &[
         ("canvastext", Self::CanvasText),
         ("canvas", Self::Canvas),
@@ -114,7 +138,7 @@ impl SystemColor {
     }
 
     pub(crate) fn all() -> impl Iterator<Item = Self> {
-        Self::TABLE.iter().map(|(_, value)| *value)
+        Self::ALL.into_iter()
     }
 }
 

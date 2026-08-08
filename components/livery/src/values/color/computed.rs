@@ -12,6 +12,8 @@
 use std::{fmt, str::FromStr};
 
 use super::{Color, SpecifiedColor, SystemColor};
+use crate::media::SystemPalette;
+use crate::values::ColorScheme;
 use crate::values::ParseError;
 
 /// A color after the specified-to-computed boundary.
@@ -29,28 +31,33 @@ pub enum ComputedColor {
 
 /// The information a color consumer supplies at used-value time.
 ///
-/// C1 keeps the legacy palette only behind this explicit context so parsing
-/// and computed values perform no palette lookup. C2 replaces the legacy
-/// resolver with element scheme and host palette selection.
+/// C1 keeps system lookup out of parsing and value construction. C2 gives the
+/// lookup an explicit element scheme and host-owned palette.
 #[derive(Clone, Copy)]
 pub struct UsedColorContext {
     current_color: Color,
-    system_color: fn(SystemColor) -> Color,
+    palette: SystemPalette,
+    scheme: ColorScheme,
 }
 
 impl UsedColorContext {
-    pub fn new(current_color: Color, system_color: fn(SystemColor) -> Color) -> Self {
+    pub fn with_palette(current_color: Color, palette: SystemPalette, scheme: ColorScheme) -> Self {
         Self {
             current_color,
-            system_color,
+            palette,
+            scheme,
         }
     }
 
-    /// Compatibility context for consumers not yet migrated to C2's host
-    /// palette. It is a lowering policy, never a parser or computed-value
-    /// shortcut.
+    /// Compatibility context for consumers not yet migrated to the retained
+    /// element style context. It lowers through the host default light palette
+    /// and remains a C3 replacement target, never a parser shortcut.
     pub fn legacy(current_color: Color) -> Self {
-        Self::new(current_color, legacy_system_color)
+        Self::with_palette(current_color, SystemPalette::default(), ColorScheme::Light)
+    }
+
+    fn system_color(self, color: SystemColor) -> Color {
+        self.palette.get(self.scheme, color)
     }
 }
 
@@ -63,8 +70,30 @@ impl ComputedColor {
         match self {
             Self::Absolute(color) => *color,
             Self::CurrentColor => context.current_color,
-            Self::System(system) => (context.system_color)(*system),
+            Self::System(system) => context.system_color(*system),
             Self::Expression(expression) => resolve_expression(expression, context),
+        }
+    }
+
+    /// Resolve system-color leaves under this element's palette while keeping
+    /// non-foreground `currentcolor` leaves contextual for descendants.
+    pub fn resolve_system_colors(&self, context: UsedColorContext) -> Self {
+        match self {
+            Self::Absolute(_) | Self::CurrentColor => self.clone(),
+            Self::System(system) => Self::Absolute(context.system_color(*system)),
+            Self::Expression(expression) => {
+                let mut css = expression.to_string();
+                for system in SystemColor::all() {
+                    replace_keyword(
+                        &mut css,
+                        system.css_name(),
+                        &context.system_color(system).to_string(),
+                    );
+                }
+                css.parse::<Self>().expect(
+                    "a validated specified color stays valid after system colors become absolute",
+                )
+            },
         }
     }
 
@@ -154,7 +183,7 @@ fn resolve_expression(expression: &SpecifiedColor, context: UsedColorContext) ->
         replace_keyword(
             &mut css,
             system.css_name(),
-            &(context.system_color)(system).to_string(),
+            &context.system_color(system).to_string(),
         );
     }
     css.parse::<Color>()
@@ -189,25 +218,6 @@ fn replace_keyword(source: &mut String, keyword: &str, replacement: &str) {
 
 fn is_ident(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
-}
-
-fn legacy_system_color(system: SystemColor) -> Color {
-    let (red, green, blue) = match system {
-        SystemColor::Canvas | SystemColor::ButtonFace | SystemColor::Field => (255, 255, 255),
-        SystemColor::LinkText => (0, 0, 238),
-        SystemColor::VisitedText => (85, 26, 139),
-        SystemColor::ActiveText => (255, 0, 0),
-        SystemColor::GrayText => (102, 102, 102),
-        SystemColor::Highlight | SystemColor::SelectedItem | SystemColor::AccentColor => {
-            (33, 96, 205)
-        },
-        SystemColor::HighlightText
-        | SystemColor::SelectedItemText
-        | SystemColor::AccentColorText => (255, 255, 255),
-        SystemColor::Mark => (255, 255, 0),
-        _ => (0, 0, 0),
-    };
-    Color::srgb8(red, green, blue, 1.0)
 }
 
 #[cfg(test)]

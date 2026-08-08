@@ -136,6 +136,7 @@ fn value_type_path(value_type: &str) -> &'static str {
         "table-layout" => "crate::values::TableLayout",
         "table-border-spacing" => "crate::values::TableBorderSpacing",
         "clear" => "crate::values::Clear",
+        "color-scheme" => "crate::values::ColorSchemeList",
         "container-name" => "crate::values::ContainerName",
         "container-type" => "crate::values::ContainerType",
         "color" => "crate::values::ComputedColor",
@@ -192,6 +193,7 @@ fn value_type_is_copy(value_type: &str) -> bool {
         "animation-name"
             | "background-image"
             | "box-shadow"
+            | "color-scheme"
             | "color"
             | "container-name"
             | "font-family"
@@ -221,6 +223,7 @@ fn initial_expression(property: &Property) -> &'static str {
         ("table-layout", "auto") => "crate::values::TableLayout::Auto",
         ("table-border-spacing", "0") => "crate::values::TableBorderSpacing::ZERO",
         ("clear", "none") => "crate::values::Clear::None",
+        ("color-scheme", "normal") => "crate::values::ColorSchemeList::NORMAL",
         ("container-name", "none") => "crate::values::ContainerName::None",
         ("container-type", "normal") => "crate::values::ContainerType::Normal",
         ("color", "transparent") => "crate::values::ComputedColor::TRANSPARENT",

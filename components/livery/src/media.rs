@@ -2,16 +2,103 @@
 
 use std::{error::Error, fmt, str::FromStr};
 
+use crate::values::{Color, SystemColor};
+
+pub use crate::values::ColorScheme;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MediaType {
     Screen,
     Print,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ColorScheme {
-    Light,
-    Dark,
+/// Host-owned colors for every system color under each supported scheme.
+///
+/// The default preserves C1's light palette for compatibility and supplies a
+/// conventional dark baseline. Hosts may replace individual entries or the
+/// complete palette without conflating that choice with media preference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SystemPalette {
+    colors: [[Color; SystemColor::COUNT]; 2],
+}
+
+impl SystemPalette {
+    pub fn get(self, scheme: ColorScheme, color: SystemColor) -> Color {
+        self.colors[scheme_index(scheme)][system_color_index(color)]
+    }
+
+    pub fn set(&mut self, scheme: ColorScheme, color: SystemColor, value: Color) {
+        self.colors[scheme_index(scheme)][system_color_index(color)] = value;
+    }
+}
+
+impl Default for SystemPalette {
+    fn default() -> Self {
+        Self {
+            colors: [
+                std::array::from_fn(|index| {
+                    default_system_color(ColorScheme::Light, SystemColor::ALL[index])
+                }),
+                std::array::from_fn(|index| {
+                    default_system_color(ColorScheme::Dark, SystemColor::ALL[index])
+                }),
+            ],
+        }
+    }
+}
+
+fn scheme_index(scheme: ColorScheme) -> usize {
+    match scheme {
+        ColorScheme::Light => 0,
+        ColorScheme::Dark => 1,
+    }
+}
+
+fn system_color_index(color: SystemColor) -> usize {
+    SystemColor::ALL
+        .iter()
+        .position(|candidate| *candidate == color)
+        .expect("every SystemColor has a palette index")
+}
+
+fn default_system_color(scheme: ColorScheme, color: SystemColor) -> Color {
+    let (red, green, blue) = match scheme {
+        ColorScheme::Light => match color {
+            SystemColor::Canvas | SystemColor::ButtonFace | SystemColor::Field => (255, 255, 255),
+            SystemColor::LinkText => (0, 0, 238),
+            SystemColor::VisitedText => (85, 26, 139),
+            SystemColor::ActiveText => (255, 0, 0),
+            SystemColor::GrayText => (102, 102, 102),
+            SystemColor::Highlight | SystemColor::SelectedItem | SystemColor::AccentColor => {
+                (33, 96, 205)
+            },
+            SystemColor::HighlightText
+            | SystemColor::SelectedItemText
+            | SystemColor::AccentColorText => (255, 255, 255),
+            SystemColor::Mark => (255, 255, 0),
+            _ => (0, 0, 0),
+        },
+        ColorScheme::Dark => match color {
+            SystemColor::Canvas | SystemColor::ButtonFace | SystemColor::Field => (18, 18, 18),
+            SystemColor::CanvasText | SystemColor::ButtonText | SystemColor::FieldText => {
+                (245, 245, 245)
+            },
+            SystemColor::ButtonBorder => (140, 140, 140),
+            SystemColor::LinkText => (85, 171, 255),
+            SystemColor::VisitedText => (202, 137, 255),
+            SystemColor::ActiveText => (255, 112, 112),
+            SystemColor::GrayText => (169, 169, 169),
+            SystemColor::Highlight | SystemColor::SelectedItem | SystemColor::AccentColor => {
+                (80, 135, 230)
+            },
+            SystemColor::HighlightText
+            | SystemColor::SelectedItemText
+            | SystemColor::AccentColorText => (255, 255, 255),
+            SystemColor::Mark => (255, 225, 0),
+            SystemColor::MarkText => (0, 0, 0),
+        },
+    };
+    Color::srgb8(red, green, blue, 1.0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -168,7 +255,10 @@ pub struct Device {
     pub viewport_width: f32,
     pub viewport_height: f32,
     pub viewport_sizes: ViewportSizes,
+    /// Host preference for media queries. Element `color-scheme` chooses its
+    /// own used scheme from this preference and never mutates it.
     pub color_scheme: ColorScheme,
+    pub system_palette: SystemPalette,
     pub reduced_motion: ReducedMotion,
     pub contrast: ContrastPreference,
     pub reduced_transparency: ReducedTransparency,
@@ -190,6 +280,7 @@ impl Device {
             viewport_height,
             viewport_sizes: ViewportSizes::uniform(viewport_width, viewport_height),
             color_scheme: ColorScheme::Light,
+            system_palette: SystemPalette::default(),
             reduced_motion: ReducedMotion::NoPreference,
             contrast: ContrastPreference::NoPreference,
             reduced_transparency: ReducedTransparency::NoPreference,
@@ -217,6 +308,18 @@ impl Device {
         self.viewport_width = sizes.dynamic.width;
         self.viewport_height = sizes.dynamic.height;
         self.viewport_sizes = sizes;
+    }
+
+    pub fn preferred_color_scheme(&self) -> ColorScheme {
+        self.color_scheme
+    }
+
+    pub fn set_preferred_color_scheme(&mut self, scheme: ColorScheme) {
+        self.color_scheme = scheme;
+    }
+
+    pub fn set_system_palette(&mut self, palette: SystemPalette) {
+        self.system_palette = palette;
     }
 }
 

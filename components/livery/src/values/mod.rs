@@ -4,6 +4,7 @@ use std::{error::Error, fmt, str::FromStr};
 
 mod calc;
 mod color;
+mod color_scheme;
 mod length;
 mod property;
 mod transform_matrix;
@@ -12,6 +13,7 @@ pub use color::{
     Color, ColorSpace, ComputedColor, HueInterpolation, SpecifiedColor, SystemColor,
     UsedColorContext,
 };
+pub use color_scheme::{ColorScheme, ColorSchemeList};
 pub use length::{
     CalcLengthPercentage, ContainerAxisSize, Length, LengthPercentage, LengthUnit,
     MathLengthPercentage, RelativeLengthEnvironment, TreeCounts,
@@ -100,6 +102,7 @@ unchanged_viewport_resolution!(
     BoxSizing,
     CaptionSide,
     Clear,
+    ColorSchemeList,
     Contain,
     ContainerName,
     ContainerType,
@@ -350,6 +353,7 @@ discrete_interpolation!(
     BoxSizing,
     CaptionSide,
     Clear,
+    ColorSchemeList,
     Contain,
     ContainerName,
     ContainerType,

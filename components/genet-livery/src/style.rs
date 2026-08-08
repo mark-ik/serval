@@ -9,8 +9,9 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
     ComputedValues, PropertyId,
     cascade::{
-        CascadeLayer, DeclarationError, MatchedCustomDeclaration, MatchedDeclaration, Origin,
-        Specificity, cascade_with_custom, parse_declaration_block,
+        CascadeLayer, ColorComputeContext, DeclarationError, MatchedCustomDeclaration,
+        MatchedDeclaration, Origin, Specificity, cascade_with_custom_context,
+        parse_declaration_block,
     },
     custom::CustomProperties,
     media::Device,
@@ -572,8 +573,13 @@ where
             ));
         }
 
-        let (mut computed, custom) =
-            cascade_with_logical_inline_properties(parent, parent_custom, matched, matched_custom);
+        let (mut computed, custom) = cascade_with_logical_inline_properties(
+            parent,
+            parent_custom,
+            matched,
+            matched_custom,
+            ColorComputeContext::from_device(device),
+        );
         resolve_viewport_units(&mut computed, device, tree_counts);
         resolve_font_metrics(&mut computed, parent);
         let mut resolved = 1;
@@ -621,12 +627,14 @@ fn cascade_with_logical_inline_properties(
     parent_custom: Option<&CustomProperties>,
     matched: Vec<MatchedDeclaration>,
     matched_custom: Vec<MatchedCustomDeclaration>,
+    color_context: ColorComputeContext,
 ) -> (ComputedValues, CustomProperties) {
-    let (logical, _) = cascade_with_custom(
+    let (logical, _) = cascade_with_custom_context(
         parent,
         parent_custom,
         matched.clone(),
         matched_custom.clone(),
+        color_context,
     );
     let inline_size = logical.inline_size;
     let mapped = matched.into_iter().map(|mut declaration| {
@@ -636,7 +644,8 @@ fn cascade_with_logical_inline_properties(
         }
         declaration
     });
-    let (mut computed, custom) = cascade_with_custom(parent, parent_custom, mapped, matched_custom);
+    let (mut computed, custom) =
+        cascade_with_custom_context(parent, parent_custom, mapped, matched_custom, color_context);
     computed.inline_size = inline_size;
     (computed, custom)
 }
@@ -804,6 +813,7 @@ mod tests {
             None,
             vec![matched("inline-size: 25px", 0), matched("width: 50px", 1)],
             vec![],
+            ColorComputeContext::default(),
         );
         assert_eq!(horizontal.inline_size, "25px".parse().unwrap());
         assert_eq!(horizontal.width, "50px".parse().unwrap());
@@ -817,6 +827,7 @@ mod tests {
                 matched("inline-size: 25px", 2),
             ],
             vec![],
+            ColorComputeContext::default(),
         );
         assert_eq!(vertical.inline_size, "25px".parse().unwrap());
         assert_eq!(vertical.height, "25px".parse().unwrap());

@@ -5,12 +5,44 @@ use std::{cmp::Ordering, fmt};
 use crate::custom::{
     CustomDeclaration, CustomDeclaredValue, CustomProperties, contains_var, substitute,
 };
+use crate::media::{Device, SystemPalette};
 use crate::values::{
-    AnimationDelay, AnimationName, BorderStyle, BorderWidth, ComputedColor, Duration, FontFamily,
-    FontSize, FontStyle, FontWeight, LineHeight, Margin, Padding, Radius, TimingFunction,
-    TransitionProperty,
+    AnimationDelay, AnimationName, BackgroundImage, BorderStyle, BorderWidth, BoxShadow,
+    ColorScheme, ComputedColor, Duration, FontFamily, FontSize, FontStyle, FontWeight, LineHeight,
+    Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty, UsedColorContext,
 };
 use crate::{ComputedValues, PropertyId, PropertyValue, ShorthandId};
+
+/// The host facts needed while one element's color-bearing values become
+/// computed values. The media preference remains a host input; an element's
+/// `color-scheme` selects its own used scheme from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorComputeContext {
+    preferred_scheme: ColorScheme,
+    palette: SystemPalette,
+}
+
+impl ColorComputeContext {
+    pub fn from_device(device: &Device) -> Self {
+        Self {
+            preferred_scheme: device.preferred_color_scheme(),
+            palette: device.system_palette,
+        }
+    }
+
+    pub fn new(preferred_scheme: ColorScheme, palette: SystemPalette) -> Self {
+        Self {
+            preferred_scheme,
+            palette,
+        }
+    }
+}
+
+impl Default for ColorComputeContext {
+    fn default() -> Self {
+        Self::new(ColorScheme::Light, SystemPalette::default())
+    }
+}
 
 /// A declaration whose value contains `var()` and therefore cannot parse
 /// until the element's custom properties are known (harvest H1). A pending
@@ -1048,6 +1080,22 @@ pub fn cascade(
     cascade_with_custom(parent, None, declarations, std::iter::empty()).0
 }
 
+/// Cascade one element using an explicit host preference and system palette.
+pub fn cascade_with_color_context(
+    parent: Option<&ComputedValues>,
+    declarations: impl IntoIterator<Item = MatchedDeclaration>,
+    color_context: ColorComputeContext,
+) -> ComputedValues {
+    cascade_with_custom_context(
+        parent,
+        None,
+        declarations,
+        std::iter::empty(),
+        color_context,
+    )
+    .0
+}
+
 /// Resolve matched longhand and custom declarations into one concrete
 /// style plus the element's computed custom-property map. The map starts
 /// from the parent's (custom properties inherit wholesale), applies this
@@ -1060,6 +1108,24 @@ pub fn cascade_with_custom(
     parent_custom: Option<&CustomProperties>,
     declarations: impl IntoIterator<Item = MatchedDeclaration>,
     custom_declarations: impl IntoIterator<Item = MatchedCustomDeclaration>,
+) -> (ComputedValues, CustomProperties) {
+    cascade_with_custom_context(
+        parent,
+        parent_custom,
+        declarations,
+        custom_declarations,
+        ColorComputeContext::default(),
+    )
+}
+
+/// Cascade one element with the host color facts needed at computed-value
+/// time. Callers that recurse must pass their already-computed parent style.
+pub fn cascade_with_custom_context(
+    parent: Option<&ComputedValues>,
+    parent_custom: Option<&CustomProperties>,
+    declarations: impl IntoIterator<Item = MatchedDeclaration>,
+    custom_declarations: impl IntoIterator<Item = MatchedCustomDeclaration>,
+    color_context: ColorComputeContext,
 ) -> (ComputedValues, CustomProperties) {
     let mut custom_winners: std::collections::BTreeMap<String, (Priority, CustomDeclaredValue)> =
         std::collections::BTreeMap::new();
@@ -1135,7 +1201,63 @@ pub fn cascade_with_custom(
             DeclaredValue::Pending(_) => unreachable!("pending values resolve above"),
         }
     }
+    resolve_computed_colors(&mut result, parent, color_context);
     (result, custom)
+}
+
+fn resolve_computed_colors(
+    result: &mut ComputedValues,
+    parent: Option<&ComputedValues>,
+    color_context: ColorComputeContext,
+) {
+    let scheme = result
+        .color_scheme
+        .used_scheme(color_context.preferred_scheme);
+    let initial_foreground = color_context.palette.get(scheme, SystemColor::CanvasText);
+    let inherited_foreground = parent
+        .map(|style| {
+            style.color.resolve_used(UsedColorContext::with_palette(
+                initial_foreground,
+                color_context.palette,
+                scheme,
+            ))
+        })
+        .unwrap_or(initial_foreground);
+    let used = UsedColorContext::with_palette(inherited_foreground, color_context.palette, scheme);
+
+    // `color` is special: its `currentcolor` resolves against the inherited
+    // foreground before this new foreground becomes available to descendants.
+    result.color = ComputedColor::Absolute(result.color.resolve_used(used));
+
+    for &property in PropertyId::ALL {
+        if property == PropertyId::Color {
+            continue;
+        }
+        let value = resolve_property_system_colors(result.get(property), used);
+        result
+            .set(property, value)
+            .expect("generated property read and write types agree");
+    }
+}
+
+fn resolve_property_system_colors(
+    value: PropertyValue,
+    context: UsedColorContext,
+) -> PropertyValue {
+    match value {
+        PropertyValue::Color(color) => PropertyValue::Color(color.resolve_system_colors(context)),
+        PropertyValue::BackgroundImage(BackgroundImage::LinearGradient { from, to }) => {
+            PropertyValue::BackgroundImage(BackgroundImage::LinearGradient {
+                from: from.resolve_system_colors(context),
+                to: to.resolve_system_colors(context),
+            })
+        },
+        PropertyValue::BoxShadow(BoxShadow::Value(mut shadow)) => {
+            shadow.color = shadow.color.resolve_system_colors(context);
+            PropertyValue::BoxShadow(BoxShadow::Value(shadow))
+        },
+        value => value,
+    }
 }
 
 /// Substitute and parse one pending declaration. Any failure is invalid at

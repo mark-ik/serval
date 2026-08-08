@@ -469,6 +469,25 @@ colors at computed-value time under the correct element scheme.
 **Stop after B6.** Scheme/palette computation and downstream paint migration
 remain separately attributable.
 
+### B6a receipt (2026-08-08)
+
+Contextual-color C2 is complete as a separate color-model gate.
+`color-scheme` now carries the element's supported scheme order and `only`
+flag, while `Device` separately owns the media preference and configurable
+light/dark `SystemPalette`. The computed cascade selects the element's used
+scheme before resolving foreground `color` and system-color leaves.
+
+The direct receipt uses distinct injected light and dark palette values: a
+direct child system color follows `color-scheme: only dark`, whereas an
+inherited system color remains its light parent's already-absolute result.
+The retained-style receipt proves the same result reaches `StylePlane` while
+the host preference remains light. Gradients, shadows, borders, backgrounds,
+and foreground fields carry no direct system leaf after computation.
+
+C3 remains unstarted: paint still uses the legacy compatibility context and
+CSSOM, palette invalidation, animation, and headed color-output work are not
+claimed here.
+
 ## B7. Color observables and consumers
 
 Execute contextual-color C3. CSSOM, backgrounds, borders, decoration,
