@@ -166,7 +166,7 @@ fn structural_selector_restyles_its_parent_after_insert_and_remove() {
     assert!(inserted.restyled_elements < inserted.total_elements);
     assert_eq!(
         session.styles().computed_style(first, "color"),
-        Some("canvastext".to_string())
+        Some("rgb(0, 0, 0)".to_string())
     );
     assert_eq!(
         session.styles().computed_style(second, "color"),
