@@ -36,6 +36,18 @@ impl ColorComputeContext {
             palette,
         }
     }
+
+    /// The host preference remains distinct from every element's used scheme.
+    /// Consumers use this only to select that element's already-cascaded
+    /// `color-scheme` list.
+    pub fn preferred_scheme(self) -> ColorScheme {
+        self.preferred_scheme
+    }
+
+    /// The host-owned palette that contextual color consumers must use.
+    pub fn palette(self) -> SystemPalette {
+        self.palette
+    }
 }
 
 impl Default for ColorComputeContext {

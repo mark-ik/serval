@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr};
 
 use super::{
     ComputedColor, Length, LengthPercentage, MathLengthPercentage, Matrix2D, ParseError,
-    RelativeLengthEnvironment, format_number, keyword_value,
+    RelativeLengthEnvironment, UsedColorContext, format_number, keyword_value,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +31,39 @@ impl BackgroundImage {
             ) => Some(Self::LinearGradient {
                 from: from.interpolate(other_from, progress),
                 to: to.interpolate(other_to, progress),
+            }),
+            _ => None,
+        };
+        value.unwrap_or_else(|| {
+            if progress < 0.5 {
+                self.clone()
+            } else {
+                other.clone()
+            }
+        })
+    }
+
+    /// Interpolate gradient stops after resolving each endpoint under its
+    /// element context. URL and mixed image shapes remain discrete, as in the
+    /// ordinary bounded interpolation path.
+    pub fn interpolate_used(
+        &self,
+        other: &Self,
+        from_context: UsedColorContext,
+        to_context: UsedColorContext,
+        progress: f32,
+    ) -> Self {
+        let progress = progress.clamp(0.0, 1.0);
+        let value = match (self, other) {
+            (
+                Self::LinearGradient { from, to },
+                Self::LinearGradient {
+                    from: other_from,
+                    to: other_to,
+                },
+            ) => Some(Self::LinearGradient {
+                from: from.interpolate_used(other_from, from_context, to_context, progress),
+                to: to.interpolate_used(other_to, from_context, to_context, progress),
             }),
             _ => None,
         };
@@ -2312,6 +2345,36 @@ impl BoxShadow {
         let value = match (self, other) {
             (Self::Value(from), Self::Value(to)) if from.inset == to.inset => {
                 interpolate_box_shadow_value(from, to, progress).map(Self::Value)
+            },
+            _ => None,
+        };
+        value.unwrap_or_else(|| {
+            if progress < 0.5 {
+                self.clone()
+            } else {
+                other.clone()
+            }
+        })
+    }
+
+    /// Interpolate a matching shadow after resolving the two color endpoints
+    /// under their respective used-value contexts.
+    pub fn interpolate_used(
+        &self,
+        other: &Self,
+        from_context: UsedColorContext,
+        to_context: UsedColorContext,
+        progress: f32,
+    ) -> Self {
+        let progress = progress.clamp(0.0, 1.0);
+        let value = match (self, other) {
+            (Self::Value(from), Self::Value(to)) if from.inset == to.inset => {
+                interpolate_box_shadow_value(from, to, progress).map(|mut value| {
+                    value.color =
+                        from.color
+                            .interpolate_used(&to.color, from_context, to_context, progress);
+                    Self::Value(value)
+                })
             },
             _ => None,
         };

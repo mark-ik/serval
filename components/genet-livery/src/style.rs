@@ -7,7 +7,7 @@ use std::{
 use genet_document_resources::{ResolvedStylesheet, StylesheetOwner};
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
-    ComputedValues, PropertyId,
+    ComputedValues, PropertyId, PropertyValue,
     cascade::{
         CascadeLayer, ColorComputeContext, DeclarationError, MatchedCustomDeclaration,
         MatchedDeclaration, Origin, Specificity, cascade_with_custom_context,
@@ -20,8 +20,8 @@ use livery::{
         StylesheetDiagnostic,
     },
     values::{
-        BorderStyle, FontSize, Length, LengthPercentage, LengthUnit, LineHeight, Margin, Padding,
-        Size, TreeCounts,
+        BackgroundImage, BorderStyle, BoxShadow, ComputedColor, FontSize, Length, LengthPercentage,
+        LengthUnit, LineHeight, Margin, Padding, Size, SystemColor, TreeCounts, UsedColorContext,
     },
 };
 
@@ -235,6 +235,7 @@ pub struct StylePlane<Id> {
     values: HashMap<Id, ComputedValues>,
     custom: HashMap<Id, CustomProperties>,
     inline_diagnostics: HashMap<Id, Vec<DeclarationError>>,
+    color_context: ColorComputeContext,
 }
 
 impl<Id> PartialEq for StylePlane<Id>
@@ -245,6 +246,7 @@ where
         self.values == other.values
             && self.custom == other.custom
             && self.inline_diagnostics == other.inline_diagnostics
+            && self.color_context == other.color_context
     }
 }
 
@@ -254,6 +256,7 @@ impl<Id> Default for StylePlane<Id> {
             values: HashMap::new(),
             custom: HashMap::new(),
             inline_diagnostics: HashMap::new(),
+            color_context: ColorComputeContext::default(),
         }
     }
 }
@@ -264,6 +267,44 @@ where
 {
     pub fn get(&self, id: Id) -> Option<&ComputedValues> {
         self.values.get(&id)
+    }
+
+    /// Resolve contextual colors for one element using the exact palette and
+    /// used `color-scheme` that created this style plane.
+    pub(crate) fn used_color_context(&self, id: Id) -> Option<UsedColorContext> {
+        self.get(id)
+            .map(|values| self.used_color_context_for(values))
+    }
+
+    /// Turn all color-bearing fields into numeric leaves for a paint or
+    /// animation consumer. The retained plane itself stays contextual so
+    /// inheritance and CSSOM can still use the authored computed model.
+    pub(crate) fn with_used_colors(&self) -> Self
+    where
+        Id: Clone,
+    {
+        let mut used = self.clone();
+        for values in used.values.values_mut() {
+            let context = self.used_color_context_for(values);
+            for &property in PropertyId::ALL {
+                let value = resolve_property_used_colors(values.get(property), context);
+                values
+                    .set(property, value)
+                    .expect("generated property read and write types agree");
+            }
+        }
+        used
+    }
+
+    /// Resolve one tagged property for an animation endpoint. This is the
+    /// shared endpoint conversion used by transitions and keyframes before
+    /// their normal numeric interpolation dispatch.
+    pub(crate) fn resolve_used_color_value(&self, id: Id, value: PropertyValue) -> PropertyValue {
+        if let Some(context) = self.used_color_context(id) {
+            resolve_property_used_colors(value, context)
+        } else {
+            value
+        }
     }
 
     /// The element's computed custom-property map (harvest H1).
@@ -342,7 +383,10 @@ where
             let reference_box = definite_transform_reference_box(values, em);
             return Some(values.transform.to_computed_css(em, reference_box));
         }
-        Some(values.get(property).to_css_string())
+        Some(
+            resolve_property_used_colors(values.get(property), self.used_color_context_for(values))
+                .to_css_string(),
+        )
     }
 
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut ComputedValues> {
@@ -385,6 +429,46 @@ where
         self.custom.retain(|id, _| keep(*id));
         self.inline_diagnostics.retain(|id, _| keep(*id));
     }
+
+    fn with_color_context(color_context: ColorComputeContext) -> Self {
+        Self {
+            color_context,
+            ..Self::default()
+        }
+    }
+
+    fn used_color_context_for(&self, values: &ComputedValues) -> UsedColorContext {
+        let scheme = values
+            .color_scheme
+            .used_scheme(self.color_context.preferred_scheme());
+        let palette = self.color_context.palette();
+        let inherited_foreground = palette.get(scheme, SystemColor::CanvasText);
+        let foreground = values.color.resolve_used(UsedColorContext::with_palette(
+            inherited_foreground,
+            palette,
+            scheme,
+        ));
+        UsedColorContext::with_palette(foreground, palette, scheme)
+    }
+}
+
+fn resolve_property_used_colors(value: PropertyValue, context: UsedColorContext) -> PropertyValue {
+    match value {
+        PropertyValue::Color(color) => {
+            PropertyValue::Color(ComputedColor::Absolute(color.resolve_used(context)))
+        },
+        PropertyValue::BackgroundImage(BackgroundImage::LinearGradient { from, to }) => {
+            PropertyValue::BackgroundImage(BackgroundImage::LinearGradient {
+                from: ComputedColor::Absolute(from.resolve_used(context)),
+                to: ComputedColor::Absolute(to.resolve_used(context)),
+            })
+        },
+        PropertyValue::BoxShadow(BoxShadow::Value(mut shadow)) => {
+            shadow.color = ComputedColor::Absolute(shadow.color.resolve_used(context));
+            PropertyValue::BoxShadow(BoxShadow::Value(shadow))
+        },
+        value => value,
+    }
 }
 
 /// Resolve every element in a neutral Genet DOM through Livery.
@@ -399,7 +483,7 @@ where
     D::NodeId: Copy + Eq + Hash,
 {
     let selector_tree = SelectorTree::new(dom, states);
-    let mut plane = StylePlane::default();
+    let mut plane = StylePlane::with_color_context(ColorComputeContext::from_device(device));
     resolve_subtree(
         &selector_tree,
         style_set,
@@ -425,7 +509,7 @@ where
     D::NodeId: Copy + Eq + Hash,
 {
     let selector_tree = SelectorTree::new(dom, states);
-    let mut plane = StylePlane::default();
+    let mut plane = StylePlane::with_color_context(ColorComputeContext::from_device(device));
     resolve_subtree_with_containers(
         &selector_tree,
         style_set,

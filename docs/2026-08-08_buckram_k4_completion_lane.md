@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-08
 
-**Status:** B0 accepted. B1 is the next executable gate. The lane closes K4
-and stops before K5 implementation.
+**Status:** B0 through B7 are accepted. B8 is the next executable gate. The
+lane closes K4 and stops before K5 implementation.
 
 **Architectural authority:** [Buckram CSS layout engine
 plan](2026-07-26_buckram_css_layout_engine_plan.md)
@@ -484,9 +484,9 @@ The retained-style receipt proves the same result reaches `StylePlane` while
 the host preference remains light. Gradients, shadows, borders, backgrounds,
 and foreground fields carry no direct system leaf after computation.
 
-C3 remains unstarted: paint still uses the legacy compatibility context and
-CSSOM, palette invalidation, animation, and headed color-output work are not
-claimed here.
+C3 was deliberately left to the separate B7 receipt below; this B6 receipt
+does not claim its CSSOM, palette invalidation, animation, or headed
+color-output work.
 
 Verification: `livery` contextual-color passed 4 active / 4 intentionally
 ignored C3 receipts; the full `livery` wall and all `genet-livery` targets
@@ -502,6 +502,30 @@ fallback for a valid unresolved expression.
 **Receipt:** CSSOM and headed paint agree after inheritance, scheme changes,
 palette changes, and one animation sample. K4g may now accept headed color
 evidence.
+
+### B7a receipt (2026-08-08)
+
+C3 is complete as a separate used-color consumer gate. `StylePlane` retains
+the actual compute context and lowers a cloned view per element for CSSOM and
+paint. Backgrounds, gradient stops, borders, shadows, and text now reach
+paint as numeric colors; a valid color that misses this lowering is an
+invariant failure, not a black compatibility fallback. Generated
+`text-decoration-color` is used-resolved for CSSOM. The current paint list has
+no separate decoration primitive.
+
+Checked preferred-scheme and system-palette setters invalidate retained style,
+layout, and paint only when the value changes. Transition and keyframe
+endpoints are lowered with their own element contexts before numerical
+interpolation. The focused receipt proves inherited `currentcolor` CSSOM and
+paint consumers, contrast color, system-color direct versus inheritance,
+preference and palette mutation, and a midpoint contextual transition.
+
+Verification: `livery` contextual color passed 4 active tests with 4
+explicitly ignored cascade-only C3 receipts; the full `livery` wall passed;
+`genet-livery` contextual consumers passed 6 tests; and all
+`genet-livery` targets passed with no failures. The named selected WPT gates
+remain unmeasured. B7 is a retained-style and headed-paint receipt, not a
+WPT-conformance claim.
 
 ## B8. Collapsed-border geometry and paint
 

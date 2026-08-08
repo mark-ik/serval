@@ -1,7 +1,7 @@
 # Livery contextual color computation plan
 
 **Date:** 2026-07-28
-**Status:** corrective F0 subplan. C0 and C1 are complete; C2 is next.
+**Status:** corrective F0 subplan. C0 through C3 are complete.
 
 **Parent:** `2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md`
 
@@ -262,9 +262,9 @@ border, gradient, and shadow system leaves are absolute. The retained-style
 receipt proves the same distinction reaches `StylePlane` without changing the
 host preference.
 
-This stops before C3. Paint still lowers through its legacy compatibility
-context; CSSOM/palette invalidation, non-foreground `currentcolor` consumer
-resolution, animation endpoints, and headed paint remain C3 work.
+This C2 receipt stopped before C3. The separate C3 receipt below owns its
+CSSOM, invalidation, non-foreground `currentcolor`, animation, and paint
+consumer work.
 
 **Verification:**
 
@@ -339,3 +339,38 @@ Selected WPT gates:
 - Stop if paint retains a black fallback for a valid unresolved expression.
 - Do not call the seam complete while gradients, shadows, or animation
   silently retain the eager `Color` path.
+
+### C3 receipt - 2026-08-08
+
+`StylePlane` retains the actual `ColorComputeContext` and derives a
+per-element `UsedColorContext`. CSSOM serialization and a cloned paint view
+lower foreground-dependent colors, background images and gradient stops, box
+shadows, and borders through that context. Paint no longer has a legacy or
+black compatibility fallback: an unlowered valid color is an invariant
+failure. Generated `text-decoration-color` is lowered for CSSOM; the current
+paint list has no separate decoration primitive.
+
+`LiveryDocument` now exposes checked preferred-scheme and system-palette
+setters. A real change clears retained style/layout/paint state; a repeated
+value returns false without invalidation. Transition and keyframe endpoints
+are lowered in their respective old and new element contexts before numerical
+interpolation, so contextual colors do not take the generic discrete path.
+
+The retained-document receipt covers inherited `currentcolor` in CSSOM and
+paint backgrounds, gradients, all border sides, shadows, and text; CSSOM
+text-decoration color; `contrast-color(currentcolor)`; direct versus inherited
+system colors; preference and palette invalidation; and a midpoint contextual
+transition sample.
+
+**Verification:**
+
+- `cargo test -p livery --test contextual_color --offline -j 1`: 4 passed;
+  4 cascade-only C3 receipts remain explicitly ignored because they do not
+  construct a retained element context;
+- `cargo test -p livery --offline -j 1`: no failures;
+- `cargo test -p genet-livery --test contextual_consumers --offline -j 1`:
+  6 passed; and
+- `cargo test -p genet-livery --all-targets --offline -j 1`: no failures.
+
+The named selected WPT gates remain unmeasured. C3 is a retained-style and
+headed-paint receipt, not a WPT-conformance claim.

@@ -256,7 +256,7 @@ fn c2_system_colors_resolve_under_the_elements_used_scheme_before_inheritance() 
 }
 
 #[test]
-#[ignore = "C1: computed color-bearing properties still store the eager Color leaf"]
+#[ignore = "C3 verifies this at retained StylePlane CSSOM and paint consumers"]
 fn a_contextual_background_resolves_against_the_used_foreground() {
     for (family, value) in FOREGROUND_EQUIVALENT {
         let values = computed(
@@ -275,7 +275,7 @@ fn a_contextual_background_resolves_against_the_used_foreground() {
 /// expression must stay contextual across inheritance so it re-resolves on a
 /// descendant, rather than freezing to the parent's RGBA.
 #[test]
-#[ignore = "C1/C2: inherited contextual expressions do not survive as expressions"]
+#[ignore = "C3 verifies this at retained StylePlane CSSOM and paint consumers"]
 fn an_inherited_contextual_background_re_resolves_on_the_child() {
     for (family, value) in FOREGROUND_EQUIVALENT {
         let parent = computed(
@@ -310,7 +310,7 @@ fn a_foreground_contextual_color_resolves_against_the_inherited_foreground() {
 /// `contrast-color()` is tested by contrast rather than by a pinned value: its
 /// result must track the foreground it is given.
 #[test]
-#[ignore = "C1: contrast-color() cannot see the element's foreground"]
+#[ignore = "C3 verifies this at retained StylePlane CSSOM and paint consumers"]
 fn contrast_color_tracks_the_elements_foreground() {
     let on_dark = computed(
         None,
@@ -335,7 +335,7 @@ fn contrast_color_tracks_the_elements_foreground() {
 /// The plan's stop rule: a valid expression must never silently become black or
 /// the property's initial value.
 #[test]
-#[ignore = "C3: paint and cascade still fall back for unresolved valid colors"]
+#[ignore = "C3 verifies this at retained StylePlane CSSOM and paint consumers"]
 fn a_valid_contextual_declaration_never_falls_back_to_the_initial_value() {
     for (family, value) in FOREGROUND_EQUIVALENT {
         let values = computed(

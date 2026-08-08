@@ -127,6 +127,23 @@ impl ComputedColor {
             _ => other.clone(),
         }
     }
+
+    /// Interpolate two color endpoints after each has been resolved in the
+    /// used-value context that produced it. This is intentionally separate
+    /// from [`Self::interpolate`]: retaining a contextual expression is right
+    /// for generated values, while animation needs numeric endpoints.
+    pub fn interpolate_used(
+        &self,
+        other: &Self,
+        from_context: UsedColorContext,
+        to_context: UsedColorContext,
+        progress: f32,
+    ) -> Self {
+        Self::Absolute(
+            self.resolve_used(from_context)
+                .interpolate(other.resolve_used(to_context), progress),
+        )
+    }
 }
 
 impl From<Color> for ComputedColor {

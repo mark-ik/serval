@@ -4,13 +4,13 @@ use std::{collections::HashMap, hash::Hash};
 
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::cascade::DeclaredValue;
-use livery::media::Device;
+use livery::media::{Device, SystemPalette};
 use livery::{AnimationClass, PropertyId};
 use livery::{
     PropertyValue,
     selector::StatePseudoClass,
     stylesheet::Keyframes,
-    values::{AnimationName, Opacity, Overflow, TimingFunction, TransitionProperty},
+    values::{AnimationName, ColorScheme, Opacity, Overflow, TimingFunction, TransitionProperty},
 };
 use paint_list_api::DeviceIntSize;
 
@@ -158,6 +158,30 @@ where
         self.cached = None;
         self.layout = None;
         self.style_session.invalidate();
+    }
+
+    /// Set the host preference that media queries and an element's supported
+    /// `color-scheme` list consult. A real change invalidates style, layout,
+    /// and paint together; a repeated setting is intentionally a no-op.
+    pub fn set_preferred_color_scheme(&mut self, scheme: ColorScheme) -> bool {
+        if self.device.preferred_color_scheme() == scheme {
+            return false;
+        }
+        self.device.set_preferred_color_scheme(scheme);
+        self.invalidate();
+        true
+    }
+
+    /// Replace the host system palette. Palette values are consumed while
+    /// styles compute, so this has the same full retained invalidation as a
+    /// changed media preference.
+    pub fn set_system_palette(&mut self, palette: SystemPalette) -> bool {
+        if self.device.system_palette == palette {
+            return false;
+        }
+        self.device.set_system_palette(palette);
+        self.invalidate();
+        true
     }
 
     pub fn last_restyle_stats(&self) -> RestyleStats {
@@ -807,10 +831,13 @@ where
         let Some(base) = styles.get(animation.node).cloned() else {
             return;
         };
+        let Some(context) = styles.used_color_context(animation.node) else {
+            return;
+        };
         let updates = keyframe_properties(keyframes)
             .into_iter()
             .filter_map(|property| {
-                keyframe_value(keyframes, property, progress, base.get(property))
+                keyframe_value(keyframes, property, progress, base.get(property), context)
                     .map(|value| (property, value))
             })
             .collect::<Vec<_>>();
@@ -930,8 +957,8 @@ where
                     return Some(PropertyTransition {
                         node: id,
                         property,
-                        from,
-                        to,
+                        from: previous.resolve_used_color_value(id, from),
+                        to: styles.resolve_used_color_value(id, to),
                         start_ms: self.clock_ms,
                         duration_ms,
                         automatic: true,
@@ -1113,6 +1140,7 @@ fn keyframe_value(
     property: PropertyId,
     progress: f32,
     fallback: PropertyValue,
+    context: livery::values::UsedColorContext,
 ) -> Option<PropertyValue> {
     let samples = keyframes
         .frames()
@@ -1125,7 +1153,10 @@ fn keyframe_value(
                 .rev()
                 .find(|declaration| declaration.property == property)
                 .and_then(|declaration| match &declaration.value {
-                    DeclaredValue::Value(value) => Some((frame.offset(), value.clone())),
+                    DeclaredValue::Value(value) => Some((
+                        frame.offset(),
+                        resolve_keyframe_color_value(value.clone(), context),
+                    )),
                     _ => None,
                 })
         })
@@ -1133,10 +1164,13 @@ fn keyframe_value(
     let first_offset = samples.first().map(|(offset, _)| *offset)?;
     let mut samples = samples;
     if first_offset > 0.0 {
-        samples.insert(0, (0.0, fallback.clone()));
+        samples.insert(
+            0,
+            (0.0, resolve_keyframe_color_value(fallback.clone(), context)),
+        );
     }
     if samples.last().is_some_and(|(offset, _)| *offset < 1.0) {
-        samples.push((1.0, fallback));
+        samples.push((1.0, resolve_keyframe_color_value(fallback, context)));
     }
     if progress <= samples[0].0 {
         return Some(samples[0].1.clone());
@@ -1152,6 +1186,30 @@ fn keyframe_value(
         }
     }
     samples.last().map(|(_, value)| value.clone())
+}
+
+fn resolve_keyframe_color_value(
+    value: PropertyValue,
+    context: livery::values::UsedColorContext,
+) -> PropertyValue {
+    match value {
+        PropertyValue::Color(color) => PropertyValue::Color(
+            livery::values::ComputedColor::Absolute(color.resolve_used(context)),
+        ),
+        PropertyValue::BackgroundImage(livery::values::BackgroundImage::LinearGradient {
+            from,
+            to,
+        }) => PropertyValue::BackgroundImage(livery::values::BackgroundImage::LinearGradient {
+            from: livery::values::ComputedColor::Absolute(from.resolve_used(context)),
+            to: livery::values::ComputedColor::Absolute(to.resolve_used(context)),
+        }),
+        PropertyValue::BoxShadow(livery::values::BoxShadow::Value(mut shadow)) => {
+            shadow.color =
+                livery::values::ComputedColor::Absolute(shadow.color.resolve_used(context));
+            PropertyValue::BoxShadow(livery::values::BoxShadow::Value(shadow))
+        },
+        value => value,
+    }
 }
 
 fn find_id<D: LayoutDom>(dom: &D, id: D::NodeId, target: &str) -> Option<D::NodeId> {
