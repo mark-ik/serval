@@ -10,9 +10,9 @@ use livery::{
     ComputedValues,
     values::{
         BackgroundImage, BackgroundRepeat, BorderCollapse, BorderStyle as CssBorderStyle,
-        BoxShadow as CssBoxShadow, Color, ComputedColor, Display, FontSize, Length,
-        EmptyCells, LengthPercentage, LengthUnit, Matrix2D, Overflow as CssOverflow, Position,
-        Radius, Visibility, ZIndex,
+        BoxShadow as CssBoxShadow, Color, ComputedColor, Display, EmptyCells, FontSize, Length,
+        LengthPercentage, LengthUnit, Matrix2D, Overflow as CssOverflow, Position, Radius,
+        Visibility, ZIndex,
     },
 };
 use paint_list_api::{
@@ -532,8 +532,15 @@ where
             let replaced = dom.element_name(id).is_some_and(|name| {
                 matches!(
                     name.local.as_ref(),
-                    "audio" | "canvas" | "embed" | "iframe" | "img" | "input" | "object"
-                        | "svg" | "video"
+                    "audio"
+                        | "canvas"
+                        | "embed"
+                        | "iframe"
+                        | "img"
+                        | "input"
+                        | "object"
+                        | "svg"
+                        | "video"
                 )
             });
             if replaced || (!is_root && has_visible_box_decoration(style)) {

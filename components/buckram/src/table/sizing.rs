@@ -284,8 +284,8 @@ impl CaptionMinContribution {
     }
 }
 
-/// A future K4f visibility pass can mark tracks collapsed without dropping the
-/// constraints which established their pre-collapse measures.
+/// K4f visibility marks tracks collapsed without dropping the constraints
+/// which established their pre-collapse measures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TableTrackVisibilityState {
     Visible,
@@ -329,9 +329,8 @@ impl TableTrackVisibility {
 
     /// Whether any cell spans across a collapsed track boundary.
     ///
-    /// CSS Tables 3 does not merely narrow such a cell: it clips the cell's
-    /// content at the collapsed track's edge, which is a rendering rule rather
-    /// than a sizing one and has no seam yet. A cell wholly inside collapsed
+    /// CSS Tables 3 does not merely narrow such a cell: B5 clips its content
+    /// at the accepted collapsed-track edge. A cell wholly inside collapsed
     /// tracks, or wholly outside them, needs no clip - only one that straddles
     /// the boundary does.
     pub fn spans_a_collapsed_boundary(&self, grid: &TableGrid) -> bool {

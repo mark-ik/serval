@@ -424,6 +424,42 @@ scheme-dependent and system colors are not B5 evidence.
 DOM order, empty cells, spacing, and collapsed-track clipping. Generic block
 paint assumptions no longer decide table-internal paint order.
 
+### B5a receipt (2026-08-08)
+
+`TablePaintPlane` retains Buckram's emitted table subtree through both normal
+and inline-atomic layout. Separated tables now paint table, column-group,
+column, row-group, row, and cell backgrounds by that model's phase order;
+cells use the model's DOM order, not their resolved grid coordinates. The
+ordinary walk reuses emitted cell fragments, so an empty cell has a paint box
+without registering a second geometry box.
+
+`empty-cells: hide` now suppresses an actually blank separated cell's own
+background and border. `visibility: collapse` no longer restores every span's
+tracks: a cell crossing a collapsed row or column receives a descendant clip
+at its accepted post-collapse fragment edge. Table shadow remains on the grid;
+overflow stays on the caption-containing wrapper. This gate paints only plain
+authored colors and leaves collapsed-border color selection to B6/B7.
+
+Command receipts:
+
+- `cargo test -p genet-livery --lib --offline -j 1`: 78 passed;
+- `cargo test -p genet-livery --test paint --offline -j 1`: 62 passed,
+  including focused B5 phase, DOM-order, empty-cell, spacing, collapsed-span,
+  wrapper/grid, and atomic-inline receipts;
+- current-source `genet-wpt --release` build completed; and
+- generated non-Git image pairs under
+  `C:\Users\mark_\Code\testing\genet\buckram-b5-wpt`, run with
+  `--walk-discovery --renderer livery`, each passed 1/1:
+  `b5-empty-cells-hide.html`, `b5-border-spacing.html`, and
+  `b5-collapsed-colspan-clip.html`.
+
+The canonical `css/css-tables/border-collapse-empty-cell.html` image pair also
+passes 1/1 on the current renderer. By contrast,
+`visibility-collapse-colspan-003.html` remains a localized visual failure;
+that larger WPT case is recorded as follow-on conformance work, not claimed as
+B5 proof. Its failure does not erase the passing generated clip pair, whose
+two documents directly prove the B5 edge and image result.
+
 ## B6. Computed color context
 
 Execute contextual-color C2 as a separate gate. Add element `color-scheme`,

@@ -2117,11 +2117,7 @@ fn empty_cells_hide_suppresses_an_actual_blank_cells_ink() {
             .count()
     };
 
-    assert_eq!(
-        count(&shown),
-        2,
-        "both cell boxes paint when shown"
-    );
+    assert_eq!(count(&shown), 2, "both cell boxes paint when shown");
     assert_eq!(count(&hidden), 1, "only the non-empty cell remains");
     assert_eq!(borders(&shown), borders(&hidden) + 1);
 }
@@ -2153,9 +2149,18 @@ fn separated_table_background_fills_single_sized_border_spacing_gaps() {
     let two = rect(ColorF::new(0.0, 1.0, 0.0, 1.0));
 
     assert!((table.max.x - table.min.x - 100.0).abs() < 0.5, "{table:?}");
-    assert!((one.min.x - table.min.x - 10.0).abs() < 0.5, "{one:?} {table:?}");
-    assert!((two.min.x - one.max.x - 10.0).abs() < 0.5, "{one:?} {two:?}");
-    assert!((table.max.x - two.max.x - 10.0).abs() < 0.5, "{two:?} {table:?}");
+    assert!(
+        (one.min.x - table.min.x - 10.0).abs() < 0.5,
+        "{one:?} {table:?}"
+    );
+    assert!(
+        (two.min.x - one.max.x - 10.0).abs() < 0.5,
+        "{one:?} {two:?}"
+    );
+    assert!(
+        (table.max.x - two.max.x - 10.0).abs() < 0.5,
+        "{two:?} {table:?}"
+    );
 }
 
 /// B5: a cell crossing a collapsed column keeps its content inside the
@@ -2195,7 +2200,10 @@ fn a_cell_spanning_a_collapsed_column_gets_an_exact_content_clip() {
         .expect("collapsed-span clip closes after the child");
 
     assert!((clip.max.x - clip.min.x - 50.0).abs() < 0.5, "{clip:?}");
-    assert!(close < 3, "the clip must close with the cell, not the table");
+    assert!(
+        close < 3,
+        "the clip must close with the cell, not the table"
+    );
 }
 
 /// B5: the table grid owns its shadow, while `overflow` clips at the wrapper
@@ -2243,7 +2251,10 @@ fn table_shadow_uses_the_grid_while_overflow_clips_the_wrapper() {
         })
         .expect("table wrapper overflow clip");
 
-    assert!((shadow.max.y - shadow.min.y - 40.0).abs() < 0.5, "{shadow:?}");
+    assert!(
+        (shadow.max.y - shadow.min.y - 40.0).abs() < 0.5,
+        "{shadow:?}"
+    );
     assert!(
         shadow.min.y >= caption.max.y - 0.5,
         "the grid shadow must start below the caption: {shadow:?} {caption:?}"

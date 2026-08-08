@@ -3523,10 +3523,7 @@ impl TablePaintPlane {
     }
 }
 
-fn table_cell_spans_collapsed_track(
-    visibility: &TableTrackVisibility,
-    cell: &TableCell,
-) -> bool {
+fn table_cell_spans_collapsed_track(visibility: &TableTrackVisibility, cell: &TableCell) -> bool {
     let straddles = |collapsed: &dyn Fn(usize) -> bool, start: usize, span: usize| {
         let mut tracks = start..start.saturating_add(span);
         tracks.clone().any(collapsed) && tracks.any(|index| !collapsed(index))
