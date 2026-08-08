@@ -266,6 +266,14 @@ This stops before C3. Paint still lowers through its legacy compatibility
 context; CSSOM/palette invalidation, non-foreground `currentcolor` consumer
 resolution, animation endpoints, and headed paint remain C3 work.
 
+**Verification:**
+
+- `cargo test -p livery --test contextual_color --offline -j 1`: 4 passed,
+  4 C3 receipts remain intentionally ignored;
+- `cargo test -p livery --offline -j 1`: no failures; and
+- `cargo test -p genet-livery --all-targets --offline -j 1`: no failures,
+  including the retained-style, invalidation, and 62-test paint suites.
+
 ## C3: observables and consumers
 
 Ownership:

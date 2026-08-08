@@ -488,6 +488,10 @@ C3 remains unstarted: paint still uses the legacy compatibility context and
 CSSOM, palette invalidation, animation, and headed color-output work are not
 claimed here.
 
+Verification: `livery` contextual-color passed 4 active / 4 intentionally
+ignored C3 receipts; the full `livery` wall and all `genet-livery` targets
+passed with no failures, including style-context, invalidation, and paint.
+
 ## B7. Color observables and consumers
 
 Execute contextual-color C3. CSSOM, backgrounds, borders, decoration,
