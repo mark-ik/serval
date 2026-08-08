@@ -10,6 +10,7 @@ use crate::{BoxId, CssBoxTree, InternalTableRole};
 
 mod automatic;
 mod automatic_used;
+mod border_geometry;
 mod borders;
 mod fixed;
 mod fragments;
@@ -26,6 +27,10 @@ pub use automatic_used::{
     TableAutomaticInlineSizingIndefinite, TableAutomaticInlineSizingInput,
     TableAutomaticInlineSizingOutcome, cache_automatic_table_grid_intrinsic_sizes,
     size_automatic_table_inline,
+};
+pub use border_geometry::{
+    CollapsedBorderGeometry, CollapsedBorderGeometryError, CollapsedBorderPaintSegment,
+    TableGridLines, resolve_collapsed_border_geometry,
 };
 pub use borders::{
     CellCollapsedBorderMetrics, CollapsedBorderInteropDeferral, CollapsedBorderMetricError,

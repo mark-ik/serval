@@ -1326,6 +1326,88 @@ mod tests {
     }
 
     #[test]
+    fn final_geometry_uses_one_visible_winner_per_atomic_segment() {
+        let grid = table_2x2(&[]);
+        let mut scene = scene(&grid);
+        make_none(&mut scene);
+        scene.cells[0].sides.block_start = (TableBorderStyle::Solid, 5.0, 10);
+        scene.cells[1].sides.block_start = (TableBorderStyle::Outset, 3.0, 20);
+        let winners = scene.collect(&grid).resolve().expect("winners");
+        let geometry = crate::resolve_collapsed_border_geometry(
+            grid.grid,
+            &crate::TableGridLines {
+                inline: vec![0.0, 40.0, 100.0],
+                block: vec![0.0, 25.0, 75.0],
+            },
+            &winners,
+        )
+        .expect("final geometry");
+
+        assert_eq!(geometry.segments.len(), 2);
+        assert_eq!(
+            geometry.segments[0].edge,
+            TableGridEdge {
+                orientation: GridEdgeOrientation::InlineRunning,
+                line: 0,
+                segment: 0,
+            }
+        );
+        assert_eq!(geometry.segments[0].style, TableBorderStyle::Solid);
+        assert_eq!(geometry.segments[0].color, 10);
+        assert_eq!(
+            geometry.segments[0].rect,
+            crate::LogicalRect {
+                inline_start: 0.0,
+                block_start: -2.5,
+                inline_size: 40.0,
+                block_size: 5.0,
+            }
+        );
+        assert_eq!(
+            geometry.segments[1].edge,
+            TableGridEdge {
+                orientation: GridEdgeOrientation::InlineRunning,
+                line: 0,
+                segment: 1,
+            }
+        );
+        assert_eq!(geometry.segments[1].style, TableBorderStyle::Groove);
+        assert_eq!(geometry.segments[1].color, 20);
+        assert_eq!(
+            geometry.segments[1].rect,
+            crate::LogicalRect {
+                inline_start: 40.0,
+                block_start: -1.5,
+                inline_size: 60.0,
+                block_size: 3.0,
+            }
+        );
+    }
+
+    #[test]
+    fn final_geometry_omits_a_hidden_winner_without_reselecting_another() {
+        let grid = table_2x2(&[]);
+        let mut scene = scene(&grid);
+        make_none(&mut scene);
+        scene.cells[0].sides.block_start = (TableBorderStyle::Hidden, 0.0, 10);
+        scene.cells[1].sides.block_start = (TableBorderStyle::Solid, 3.0, 20);
+        let winners = scene.collect(&grid).resolve().expect("winners");
+        let geometry = crate::resolve_collapsed_border_geometry(
+            grid.grid,
+            &crate::TableGridLines {
+                inline: vec![0.0, 40.0, 100.0],
+                block: vec![0.0, 25.0, 75.0],
+            },
+            &winners,
+        )
+        .expect("final geometry");
+
+        assert_eq!(geometry.segments.len(), 1);
+        assert_eq!(geometry.segments[0].edge.segment, 1);
+        assert_eq!(geometry.segments[0].color, 20);
+    }
+
+    #[test]
     fn css2_comparator_checks_hidden_none_width_style_origin_and_order_in_order() {
         let grid = table_2x2(&[]);
         let cell = grid.cells[0].source;

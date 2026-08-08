@@ -8,14 +8,16 @@ use std::{
 use buckram::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmNodeId, AlgorithmSize, AlgorithmTree,
     Baselines, BlockBoxSizing, BlockDimensions, BlockPosition as BuckramBlockPosition,
-    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CssBox, DisplayInside, DisplayOutside,
-    FloatContextProvenance, FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto,
-    FormattingContextKind, Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree,
-    InternalTableRole, IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes,
-    LayoutResult, LogicalAxis, LogicalRect, PhysicalRect, PhysicalSide, PhysicalSides,
-    PhysicalSize, PositioningScheme, TableCell, TableCellInput, TableCellLayoutInput,
-    TableCellLayoutOutput, TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid,
-    TableGridInputs, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry, CssBox,
+    DisplayInside, DisplayOutside, FloatContextProvenance, FloatLineConstraints, FloatSide,
+    FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment,
+    FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
+    IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
+    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, TableCell,
+    TableCellInput, TableCellLayoutInput, TableCellLayoutOutput, TableCellLayoutPass,
+    TableFragmentRole, TableFragments, TableGrid, TableGridInputs, TableGridLines,
+    TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
@@ -24,7 +26,7 @@ use livery::{
     stylesheet::ContainerSnapshot,
     values::{
         Alignment as CssAlignment, AspectRatio, BorderCollapse, BorderStyle, BorderWidth,
-        BoxSizing as CssBoxSizing, CaptionSide, Clear as CssClear, ContainerType,
+        BoxSizing as CssBoxSizing, CaptionSide, Clear as CssClear, ComputedColor, ContainerType,
         Display as CssDisplay, FlexDirection as CssFlexDirection, FlexWrap as CssFlexWrap,
         Float as CssFloat, FontSize, Gap as CssGap, GridAutoFlow as CssGridAutoFlow,
         GridPlacement as CssGridPlacement, GridTemplate as CssGridTemplate,
@@ -226,6 +228,17 @@ where
             .iter()
             .copied()
             .any(|box_id| self.table_paint.manages(box_id))
+    }
+
+    /// A collapsed table's grid and cells retain their normal background
+    /// phase, but its generic border command must yield to K4g5's one-winner
+    /// segment model.
+    pub(crate) fn table_paint_uses_collapsed_borders(&self, node: Id) -> bool {
+        self.buckram
+            .boxes()
+            .principal_box(node)
+            .and_then(|grid| self.table_paint.table(grid))
+            .is_some_and(TablePaintModel::is_collapsed)
     }
 
     /// Whether the node's descendants must clip at the accepted edge of a
@@ -3468,6 +3481,7 @@ type TableFragmentPlane = HashMap<BoxId, TableFragments>;
 pub(crate) struct TablePaintModel {
     fragments: TableFragments,
     separated: bool,
+    collapsed_geometry: Option<CollapsedBorderGeometry<ComputedColor>>,
     clipped_cells: HashSet<BoxId>,
 }
 
@@ -3480,11 +3494,30 @@ impl TablePaintModel {
         self.separated
     }
 
+    pub(crate) fn is_collapsed(&self) -> bool {
+        self.collapsed_geometry.is_some()
+    }
+
+    pub(crate) fn collapsed_segments(
+        &self,
+    ) -> Option<&[buckram::CollapsedBorderPaintSegment<ComputedColor>]> {
+        self.collapsed_geometry
+            .as_ref()
+            .map(|geometry| geometry.segments.as_slice())
+    }
+
+    pub(crate) fn collapsed_table(&self) -> Option<BoxId> {
+        self.collapsed_geometry
+            .as_ref()
+            .map(|geometry| geometry.table)
+    }
+
     fn manages(&self, box_id: BoxId) -> bool {
-        self.separated
-            && self.fragments.fragments().iter().any(|fragment| {
-                fragment.box_id == Some(box_id) && fragment.role != TableFragmentRole::Grid
-            })
+        self.fragments.fragments().iter().any(|fragment| {
+            fragment.box_id == Some(box_id)
+                && (self.is_collapsed()
+                    || (self.separated && fragment.role != TableFragmentRole::Grid))
+        })
     }
 
     fn clips_cell(&self, box_id: BoxId) -> bool {
@@ -3563,11 +3596,28 @@ where
         let separated = styles
             .get(pending.node)
             .is_some_and(|style| style.border_collapse == BorderCollapse::Separate);
+        let collapsed = styles
+            .get(pending.node)
+            .is_some_and(|style| style.border_collapse == BorderCollapse::Collapse);
+        let collapsed_geometry = if !collapsed {
+            None
+        } else {
+            let winners = pending.collapsed_borders.as_ref().expect(
+                "a K4g4 collapsed table with emitted fragments retains its resolved winner grid",
+            );
+            let lines = TableGridLines::from_fragments(&block.fragments)
+                .expect("K4d6 table fragments provide finite final lines for K4g5");
+            Some(
+                resolve_collapsed_border_geometry(pending.table, &lines, winners)
+                    .expect("K4g2 winners lower once against K4g4 final table lines"),
+            )
+        };
         tables.insert(
             pending.table,
             TablePaintModel {
                 fragments: block.fragments.clone(),
                 separated,
+                collapsed_geometry,
                 clipped_cells,
             },
         );

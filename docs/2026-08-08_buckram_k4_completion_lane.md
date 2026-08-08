@@ -2,8 +2,10 @@
 
 **Date:** 2026-08-08
 
-**Status:** B0 through B7 are accepted. B8 is the next executable gate. The
-lane closes K4 and stops before K5 implementation.
+**Status:** B0 through B8 have implementation receipts. B8's command-model
+evidence is accepted; its headed image, device-scale, writing-mode, and WPT
+matrix remains unmeasured. B9 is not started. The lane closes K4 and stops
+before K5 implementation.
 
 **Architectural authority:** [Buckram CSS layout engine
 plan](2026-07-26_buckram_css_layout_engine_plan.md)
@@ -548,6 +550,43 @@ The Genet consumer commit follows it.
 **Receipt:** suppressed segments are absent, each winner is emitted once,
 every accepted style is represented, and generic per-cell border commands are
 suppressed in collapsed mode.
+
+### B8a implementation receipt (2026-08-08)
+
+`TableGridLines` derives logical row and column lines from K4g4's final
+`TableFragments`. Buckram lowers the already-resolved atomic winner grid once,
+keeps CSS-pixel widths and centered strips unsnapped, retains the winning
+`BoxId`, maps collapsed `inset` to `ridge` and `outset` to `groove`, and emits
+in deterministic `TableGridEdge` order. `hidden` and all-`none` answers are
+omitted before a paint consumer sees them.
+
+Livery carries this geometry in the K4f table paint model. It paints the grid
+background with the structural background phase, resolves the stored winning
+color against that winner's C3 used-color context, converts logical geometry
+through the final grid fragment's `FlowAxes` once, and retains that exact
+`FragmentId` with the winner in its internal final paint segment. Generic table
+and cell `DrawBorder` emission is suppressed in collapsed mode. Existing
+neutral `DrawRect` and `DrawStroke` commands suffice: solid, double, ridge,
+and groove lower to CSS-pixel fills; dashed lowers to a dashed butt-capped
+stroke and dotted to a round-capped dotted stroke. No `paint_list_api` or
+renderer provider change was made.
+
+Command receipts pass:
+
+- `cargo test -p buckram --lib --offline -j 1`: 190 passed, including exact
+  logical strip coordinates, relief-style mapping, deterministic winner order,
+  and hidden-winner omission;
+- `cargo test -p genet-livery --lib collapsed_border --offline -j 1`: 4
+  passed, including a real 2×2 collapsed table with 12 atomic winners, winner
+  `currentcolor`, generic-border suppression, and a hidden edge that emits no
+  replacement; and
+- the complete built `genet-livery` library test binary: 81 passed.
+
+This is a command-model receipt, not a conformance claim. Images at device
+scales 1 and 2, LTR/RTL and vertical/sideways writing-mode captures, the
+multi-way join allocation scan, and the named collapsed-border WPT selection
+remain unmeasured. Do not begin B9 until that evidence is either attached or
+explicitly re-scoped.
 
 ## B9. Dynamic collapsed-border closure
 

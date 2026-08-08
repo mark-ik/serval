@@ -41,8 +41,9 @@ pub use intrinsic::{
 };
 pub use table::{
     AffineLengthPercentage, CaptionMinContribution, CellBlockOffsets, CellCollapsedBorderMetrics,
-    CellInlineOffsets, CollapsedBorderInteropDeferral, CollapsedBorderMetricError,
-    CollapsedBorderMetrics, CollapsedBorderProjection, CollapsedBorderSegmentMetric,
+    CellInlineOffsets, CollapsedBorderGeometry, CollapsedBorderGeometryError,
+    CollapsedBorderInteropDeferral, CollapsedBorderMetricError, CollapsedBorderMetrics,
+    CollapsedBorderPaintSegment, CollapsedBorderProjection, CollapsedBorderSegmentMetric,
     CollapsedBorderSideMetrics, FragmentDraft, FragmentDraftTree, GridEdgeOrientation,
     InlineSizeConstraint, ResolvedTableBorder, ResolvedTableBorderGrid, TableAlignment,
     TableAutomaticColumnGroupInput, TableAutomaticColumnInput, TableAutomaticColumnMeasureInput,
@@ -59,8 +60,8 @@ pub use table::{
     TableColumnMeasure, TableDeferral, TableFixedColumnGroupInput, TableFixedColumnInput,
     TableFixedInlineSizingInput, TableFixedInlineSizingOutcome, TableFixedLayoutFallback,
     TableFragment, TableFragmentRole, TableFragments, TableGrid, TableGridEdge, TableGridError,
-    TableGridInputs, TableInlineBorderMetrics, TableInlineConstraints, TableInlineProperty,
-    TableInlineSizingError, TableInlineSizingInput, TableInlineSizingResult,
+    TableGridInputs, TableGridLines, TableInlineBorderMetrics, TableInlineConstraints,
+    TableInlineProperty, TableInlineSizingError, TableInlineSizingInput, TableInlineSizingResult,
     TableIntrinsicMeasureProvider, TablePercentagePass, TableRowBaseline, TableRowLayoutError,
     TableRowMeasure, TableRowSizing, TableRowSpan, TableSeparatedBlockMetrics,
     TableSeparatedBorderMetrics, TableSlot, TableSpanMeasureDistribution, TableTrack,
@@ -70,8 +71,9 @@ pub use table::{
     collect_table_cell_inline_measures, compare_table_border_candidates, emit_table_fragments,
     format_table_cells, layout_table_block, measure_automatic_columns, measure_single_span_rows,
     project_collapsed_border_metrics, query_table_cell_inline_sizes,
-    resolve_percentage_block_sizes, resolve_table_border_candidates, size_automatic_table_inline,
-    size_fixed_table_inline, size_table_rows, spanned_cell_content_inline_size,
+    resolve_collapsed_border_geometry, resolve_percentage_block_sizes,
+    resolve_table_border_candidates, size_automatic_table_inline, size_fixed_table_inline,
+    size_table_rows, spanned_cell_content_inline_size,
 };
 pub use taffy_adapter::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmLayout, AlgorithmNodeId, AlgorithmSize,

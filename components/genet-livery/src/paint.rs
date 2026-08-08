@@ -17,11 +17,12 @@ use livery::{
 };
 use paint_list_api::{
     AlphaType, BorderDetails, BorderItem, BorderRadius, BorderSide, BorderStyle, BoxShadowClipMode,
-    ClipKind, ClipSpec, ColorF, CommonPlacement, DeviceIntSize, EngineId, ExtendMode, FontResource,
-    GradientStop, IdNamespace, ImageItem, ImageKey, ImageRendering, ImageResource, LayerSpec,
-    LayoutPoint, LayoutRect, LayoutSideOffsets, LayoutSize, LayoutTransform, LayoutVector2D,
-    LinearGradientItem, LinearGradientPayload, NormalBorder, PaintCmd, PaintList, RectItem,
-    ShadowItem, TransformKind, TransformSpec,
+    ClipKind, ClipSpec, ColorF, CommonPlacement, DashPattern, DeviceIntSize, EngineId, ExtendMode,
+    FontResource, GradientStop, IdNamespace, ImageItem, ImageKey, ImageRendering, ImageResource,
+    LayerSpec, LayoutPoint, LayoutRect, LayoutSideOffsets, LayoutSize, LayoutTransform,
+    LayoutVector2D, LinearGradientItem, LinearGradientPayload, NormalBorder, PaintCmd, PaintList,
+    PathCommand, PathData, RectItem, ShadowItem, StrokeCap, StrokeItem, StrokeJoin, TransformKind,
+    TransformSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +31,9 @@ use crate::{
     layout::{Fragment, TablePaintModel, border_width_px},
     text::{TextFrame, TextSystem},
 };
-use buckram::TableFragmentRole;
+use buckram::{
+    BoxId, FragmentId, GridEdgeOrientation, PhysicalSize, TableBorderStyle, TableFragmentRole,
+};
 
 /// Genet paint output produced by the Livery CSS/layout path.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -326,11 +329,8 @@ fn emit_node<D>(
         list.commands
             .push(PaintCmd::PushTransform(transform.clone()));
     }
-    if let Some(table) = fragments
-        .table_paint_for_node(id)
-        .filter(|table| table.is_separated())
-    {
-        emit_separated_table_backgrounds(dom, styles, fragments, table, list);
+    if let Some(table) = fragments.table_paint_for_node(id) {
+        emit_table_paint_phase(dom, styles, fragments, table, list);
     }
     emit_children_in_stacking_order(
         dom,
@@ -381,7 +381,7 @@ where
                 .prepare_inline_children(text.frame, dom, styles, fragments, id, style);
             let background_propagated = scope.canvas_background_source == Some(id);
             if matches!(style.display, Display::Inline | Display::InlineBlock) {
-                if !background_propagated {
+                if !background_propagated && !fragments.table_paint_manages_node(id) {
                     emit_inline_element_decoration(text.frame, fragments, id, style, list);
                 }
                 emit_inline_replaced_image(dom, text.frame, fragments, id, list);
@@ -399,7 +399,9 @@ where
                         emit_background(list, style, fragment);
                     }
                     emit_replaced_image(dom, list, id, style, fragment);
-                    emit_border(list, style, fragment);
+                    if !fragments.table_paint_uses_collapsed_borders(id) {
+                        emit_border(list, style, fragment);
+                    }
                 }
             }
             // The overflow clip stays on the outer box: CSS Tables 3 section
@@ -447,11 +449,11 @@ where
     Some((inherited, clips_descendants))
 }
 
-/// Paint CSS 2.1's separated-table background layers from Buckram's emitted
-/// table fragments. DOM traversal cannot establish this order: columns may
-/// have no layout child, and a spanning cell's grid position is not its DOM
-/// position.
-fn emit_separated_table_backgrounds<D>(
+/// Paint one table's structural backgrounds, then its collapsed border phase
+/// when B8 supplied the final winner geometry. DOM traversal cannot establish
+/// this order: columns may have no layout child, and a spanning cell's grid
+/// position is not its DOM position.
+fn emit_table_paint_phase<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     fragments: &LiveryLayout<D::NodeId>,
@@ -461,14 +463,31 @@ fn emit_separated_table_backgrounds<D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    for phase in 0..5 {
+    emit_table_backgrounds(dom, styles, fragments, table, list);
+    if table.is_collapsed() {
+        emit_collapsed_table_borders(styles, fragments, table, list);
+    }
+}
+
+fn emit_table_backgrounds<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    fragments: &LiveryLayout<D::NodeId>,
+    table: &TablePaintModel,
+    list: &mut LiveryPaintList,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    for phase in 0..6 {
         for table_fragment in table.fragments() {
             let belongs_to_phase = match phase {
-                0 => matches!(table_fragment.role, TableFragmentRole::ColumnGroup),
-                1 => matches!(table_fragment.role, TableFragmentRole::Column),
-                2 => matches!(table_fragment.role, TableFragmentRole::RowGroup(_)),
-                3 => matches!(table_fragment.role, TableFragmentRole::Row),
-                4 => matches!(table_fragment.role, TableFragmentRole::Cell),
+                0 => table.is_collapsed() && matches!(table_fragment.role, TableFragmentRole::Grid),
+                1 => matches!(table_fragment.role, TableFragmentRole::ColumnGroup),
+                2 => matches!(table_fragment.role, TableFragmentRole::Column),
+                3 => matches!(table_fragment.role, TableFragmentRole::RowGroup(_)),
+                4 => matches!(table_fragment.role, TableFragmentRole::Row),
+                5 => matches!(table_fragment.role, TableFragmentRole::Cell),
                 _ => false,
             };
             if !belongs_to_phase {
@@ -499,15 +518,408 @@ fn emit_separated_table_backgrounds<D>(
             if empty_hidden {
                 continue;
             }
+            if matches!(table_fragment.role, TableFragmentRole::Grid) {
+                emit_shadow(list, style, fragment);
+            }
             emit_background(list, style, fragment);
             // In the separated model `empty-cells: hide` hides the complete
             // cell box. Structural tracks have background layers but no
             // independently painted borders; the table and cell boxes own
             // their borders.
-            if matches!(table_fragment.role, TableFragmentRole::Cell) {
+            if table.is_separated() && matches!(table_fragment.role, TableFragmentRole::Cell) {
                 emit_border(list, style, fragment);
             }
         }
+    }
+}
+
+/// Emit K4g5's already-resolved atomic border winners. Logical strip geometry
+/// reaches this boundary unchanged; `FlowAxes` performs the one physical
+/// conversion against the table fragment, and the paint list keeps fractional
+/// CSS pixels rather than device-rounding them.
+fn emit_collapsed_table_borders<Id>(
+    styles: &StylePlane<Id>,
+    fragments: &LiveryLayout<Id>,
+    table: &TablePaintModel,
+    list: &mut LiveryPaintList,
+) where
+    Id: Copy + Eq + Hash,
+{
+    let Some(segments) = table.collapsed_segments() else {
+        return;
+    };
+    let table_box = table
+        .collapsed_table()
+        .expect("a collapsed table paint model owns its grid box");
+    let grid_fragment = fragments
+        .fragments()
+        .fragments_for_box(table_box)
+        .next()
+        .expect("a painted collapsed table owns its grid fragment");
+    let table_fragment = grid_fragment.id();
+    let grid_rect = grid_fragment.physical_rect();
+    let flow = grid_fragment.flow();
+    let grid_size = PhysicalSize {
+        width: grid_rect.width,
+        height: grid_rect.height,
+    };
+
+    for segment in segments {
+        debug_assert_eq!(segment.table, table_box);
+        let source = fragments
+            .boxes()
+            .origin_node(segment.winner)
+            .or_else(|| fragments.boxes().origin_node(table_box))
+            .expect("a collapsed-border winner or its table originates at a source node");
+        let context = styles
+            .used_color_context(source)
+            .expect("a collapsed-border winner has a retained used color context");
+        let color = resolve_color(&ComputedColor::Absolute(
+            segment.color.resolve_used(context),
+        ));
+        let local = flow.physical_rect(segment.rect, grid_size);
+        let rect = LayoutRect::new(
+            LayoutPoint::new(grid_rect.x + local.x, grid_rect.y + local.y),
+            LayoutPoint::new(
+                grid_rect.x + local.x + local.width,
+                grid_rect.y + local.y + local.height,
+            ),
+        );
+        let segment = FinalCollapsedBorderPaintSegment {
+            winner: segment.winner,
+            table_fragment,
+            rect,
+            orientation: segment.edge.orientation,
+            style: segment.style,
+            color,
+        };
+        emit_collapsed_border_style(list, &segment);
+    }
+}
+
+/// One final paint-owned segment. Its `winner` and `table_fragment` make the
+/// command's source explicit without teaching the neutral command stream CSS
+/// table ownership.
+#[derive(Clone, Debug)]
+struct FinalCollapsedBorderPaintSegment {
+    winner: BoxId,
+    table_fragment: FragmentId,
+    rect: LayoutRect,
+    orientation: GridEdgeOrientation,
+    style: TableBorderStyle,
+    color: ColorF,
+}
+
+fn emit_collapsed_border_style(
+    list: &mut LiveryPaintList,
+    segment: &FinalCollapsedBorderPaintSegment,
+) {
+    // Retain the source pair through the exact lowerer that emits commands.
+    let _provenance = (segment.winner, segment.table_fragment);
+    emit_collapsed_border_style_at(
+        list,
+        segment.rect,
+        segment.orientation,
+        segment.style,
+        segment.color,
+    );
+}
+
+fn emit_collapsed_border_style_at(
+    list: &mut LiveryPaintList,
+    rect: LayoutRect,
+    orientation: GridEdgeOrientation,
+    style: TableBorderStyle,
+    color: ColorF,
+) {
+    match style {
+        TableBorderStyle::Solid => push_rect(list, rect, color),
+        TableBorderStyle::Double => {
+            let (first, second) = split_cross_axis(rect, orientation, 3.0);
+            push_rect(list, first, color);
+            push_rect(list, second, color);
+        },
+        TableBorderStyle::Dashed => {
+            push_stroke(
+                list,
+                rect,
+                orientation,
+                color,
+                StrokeCap::Butt,
+                Some(DashPattern {
+                    intervals: vec![
+                        cross_axis_width(rect, orientation) * 3.0,
+                        cross_axis_width(rect, orientation),
+                    ],
+                    offset: 0.0,
+                }),
+            );
+        },
+        TableBorderStyle::Dotted => {
+            let width = cross_axis_width(rect, orientation);
+            push_stroke(
+                list,
+                rect,
+                orientation,
+                color,
+                StrokeCap::Round,
+                Some(DashPattern {
+                    // A near-zero dash plus a round cap makes each dash a
+                    // circle without requiring a new neutral primitive.
+                    intervals: vec![f32::EPSILON, (width * 2.0).max(f32::EPSILON)],
+                    offset: 0.0,
+                }),
+            );
+        },
+        TableBorderStyle::Ridge => {
+            let (first, second) = split_cross_axis(rect, orientation, 2.0);
+            push_rect(list, first, lighten(color));
+            push_rect(list, second, darken(color));
+        },
+        TableBorderStyle::Groove => {
+            let (first, second) = split_cross_axis(rect, orientation, 2.0);
+            push_rect(list, first, darken(color));
+            push_rect(list, second, lighten(color));
+        },
+        TableBorderStyle::Hidden
+        | TableBorderStyle::None
+        | TableBorderStyle::Inset
+        | TableBorderStyle::Outset => {
+            unreachable!("K4g5 removes suppressed styles and maps inset/outset before paint")
+        },
+    }
+}
+
+fn split_cross_axis(
+    rect: LayoutRect,
+    orientation: GridEdgeOrientation,
+    parts: f32,
+) -> (LayoutRect, LayoutRect) {
+    match orientation {
+        GridEdgeOrientation::InlineRunning => {
+            let size = (rect.max.y - rect.min.y) / parts;
+            (
+                LayoutRect::new(rect.min, LayoutPoint::new(rect.max.x, rect.min.y + size)),
+                LayoutRect::new(LayoutPoint::new(rect.min.x, rect.max.y - size), rect.max),
+            )
+        },
+        GridEdgeOrientation::BlockRunning => {
+            let size = (rect.max.x - rect.min.x) / parts;
+            (
+                LayoutRect::new(rect.min, LayoutPoint::new(rect.min.x + size, rect.max.y)),
+                LayoutRect::new(LayoutPoint::new(rect.max.x - size, rect.min.y), rect.max),
+            )
+        },
+    }
+}
+
+fn push_stroke(
+    list: &mut LiveryPaintList,
+    rect: LayoutRect,
+    orientation: GridEdgeOrientation,
+    color: ColorF,
+    cap: StrokeCap,
+    dash: Option<DashPattern>,
+) {
+    let (start, end) = match orientation {
+        GridEdgeOrientation::InlineRunning => (
+            LayoutPoint::new(rect.min.x, (rect.min.y + rect.max.y) * 0.5),
+            LayoutPoint::new(rect.max.x, (rect.min.y + rect.max.y) * 0.5),
+        ),
+        GridEdgeOrientation::BlockRunning => (
+            LayoutPoint::new((rect.min.x + rect.max.x) * 0.5, rect.min.y),
+            LayoutPoint::new((rect.min.x + rect.max.x) * 0.5, rect.max.y),
+        ),
+    };
+    list.commands.push(PaintCmd::DrawStroke(StrokeItem {
+        placement: CommonPlacement::new(rect),
+        path: PathData {
+            commands: vec![PathCommand::MoveTo(start), PathCommand::LineTo(end)],
+        },
+        color,
+        width: cross_axis_width(rect, orientation),
+        cap,
+        join: StrokeJoin::Miter,
+        dash,
+    }));
+}
+
+fn cross_axis_width(rect: LayoutRect, orientation: GridEdgeOrientation) -> f32 {
+    match orientation {
+        GridEdgeOrientation::InlineRunning => rect.max.y - rect.min.y,
+        GridEdgeOrientation::BlockRunning => rect.max.x - rect.min.x,
+    }
+}
+
+fn push_rect(list: &mut LiveryPaintList, rect: LayoutRect, color: ColorF) {
+    list.commands.push(PaintCmd::DrawRect(RectItem {
+        placement: CommonPlacement::new(rect),
+        color,
+    }));
+}
+
+fn lighten(color: ColorF) -> ColorF {
+    ColorF::new(
+        (color.r + (1.0 - color.r) * 0.33).min(1.0),
+        (color.g + (1.0 - color.g) * 0.33).min(1.0),
+        (color.b + (1.0 - color.b) * 0.33).min(1.0),
+        color.a,
+    )
+}
+
+fn darken(color: ColorF) -> ColorF {
+    ColorF::new(color.r * 0.67, color.g * 0.67, color.b * 0.67, color.a)
+}
+
+#[cfg(test)]
+mod collapsed_border_style_tests {
+    use super::*;
+
+    fn rect() -> LayoutRect {
+        LayoutRect::new(LayoutPoint::new(10.0, 20.0), LayoutPoint::new(70.0, 26.0))
+    }
+
+    fn commands_for(style: TableBorderStyle) -> Vec<PaintCmd> {
+        let mut list = LiveryPaintList::new(DeviceIntSize::new(80, 40), 1);
+        emit_collapsed_border_style_at(
+            &mut list,
+            rect(),
+            GridEdgeOrientation::InlineRunning,
+            style,
+            ColorF::new(0.3, 0.4, 0.5, 1.0),
+        );
+        list.commands
+    }
+
+    #[test]
+    fn collapsed_border_styles_lower_to_rectangles_or_styled_strokes() {
+        assert!(matches!(
+            commands_for(TableBorderStyle::Solid).as_slice(),
+            [PaintCmd::DrawRect(_)]
+        ));
+        assert!(matches!(
+            commands_for(TableBorderStyle::Double).as_slice(),
+            [PaintCmd::DrawRect(_), PaintCmd::DrawRect(_)]
+        ));
+        assert!(matches!(
+            commands_for(TableBorderStyle::Ridge).as_slice(),
+            [PaintCmd::DrawRect(_), PaintCmd::DrawRect(_)]
+        ));
+        assert!(matches!(
+            commands_for(TableBorderStyle::Groove).as_slice(),
+            [PaintCmd::DrawRect(_), PaintCmd::DrawRect(_)]
+        ));
+
+        let dashed = commands_for(TableBorderStyle::Dashed);
+        let [PaintCmd::DrawStroke(dashed)] = dashed.as_slice() else {
+            panic!("dashed collapsed borders use the neutral stroke primitive");
+        };
+        assert_eq!(dashed.cap, StrokeCap::Butt);
+        assert_eq!(dashed.width, 6.0);
+        assert_eq!(
+            dashed.dash.as_ref().map(|dash| dash.intervals.as_slice()),
+            Some(&[18.0, 6.0][..])
+        );
+
+        let dotted = commands_for(TableBorderStyle::Dotted);
+        let [PaintCmd::DrawStroke(dotted)] = dotted.as_slice() else {
+            panic!("dotted collapsed borders use round-capped neutral strokes");
+        };
+        assert_eq!(dotted.cap, StrokeCap::Round);
+        assert_eq!(dotted.width, 6.0);
+        assert!(dotted.dash.is_some());
+    }
+}
+
+#[cfg(test)]
+mod collapsed_border_paint_tests {
+    use super::*;
+    use crate::{Device, InteractionStates, StyleSet, layout, resolve_styles};
+    use genet_static_dom::StaticDocument;
+
+    fn render(html: &str, css: &str) -> LiveryPaintList {
+        let document = StaticDocument::parse(html);
+        let styles = resolve_styles(
+            &document,
+            &StyleSet::cambium(&[css]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let fragments = layout(&document, &styles, 320.0, 240.0).expect("collapsed table layout");
+        emit_paint_list(
+            &document,
+            &styles,
+            &fragments,
+            DeviceIntSize::new(320, 240),
+            1,
+        )
+    }
+
+    /// The winning cell's `currentcolor` proves that paint resolves the
+    /// retained C3 context from the winner source, rather than table color.
+    #[test]
+    fn collapsed_table_paints_atomic_winners_once_without_generic_cell_borders() {
+        let list = render(
+            "<table><tr><td></td><td></td></tr><tr><td></td><td></td></tr></table>",
+            "table { display: table; table-layout: fixed; width: 100px; border-collapse: collapse; \
+                      color: #0000ff; } \
+             tr { display: table-row; height: 20px; } \
+             td { display: table-cell; padding: 0; border: 3px solid currentcolor; color: #ff0000; }",
+        );
+        let red = ColorF::new(1.0, 0.0, 0.0, 1.0);
+        let winner_rects = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                PaintCmd::DrawRect(rect) if rect.color == red => Some(rect.placement.bounds),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            winner_rects.len(),
+            12,
+            "two rows and columns have twelve atomic collapsed-border edges"
+        );
+        assert!(winner_rects.iter().all(|rect| {
+            ((rect.max.x - rect.min.x) - 3.0).abs() < 0.01
+                || ((rect.max.y - rect.min.y) - 3.0).abs() < 0.01
+        }));
+        assert!(
+            !list
+                .commands()
+                .iter()
+                .any(|command| matches!(command, PaintCmd::DrawBorder(_))),
+            "collapsed cells and the table must not fall through to generic borders"
+        );
+    }
+
+    #[test]
+    fn hidden_collapsed_winner_suppresses_its_atomic_edge() {
+        let list = render(
+            "<table><tr><td></td></tr></table>",
+            "table { display: table; table-layout: fixed; width: 100px; border-collapse: collapse; } \
+             tr { display: table-row; height: 20px; } \
+             td { display: table-cell; padding: 0; border: 3px solid #ff0000; border-top: hidden; }",
+        );
+        let red = ColorF::new(1.0, 0.0, 0.0, 1.0);
+        let winner_rects = list
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == red))
+            .count();
+
+        assert_eq!(
+            winner_rects, 3,
+            "the hidden top winner paints no replacement"
+        );
+        assert!(
+            !list
+                .commands()
+                .iter()
+                .any(|command| matches!(command, PaintCmd::DrawBorder(_))),
+            "the hidden winner does not reactivate generic cell border paint"
+        );
     }
 }
 
@@ -790,11 +1202,8 @@ fn emit_normal_node<'a, D>(
         list.commands
             .push(PaintCmd::PushTransform(transform.clone()));
     }
-    if let Some(table) = fragments
-        .table_paint_for_node(id)
-        .filter(|table| table.is_separated())
-    {
-        emit_separated_table_backgrounds(dom, styles, fragments, table, list);
+    if let Some(table) = fragments.table_paint_for_node(id) {
+        emit_table_paint_phase(dom, styles, fragments, table, list);
     }
     emit_normal_children(
         dom,

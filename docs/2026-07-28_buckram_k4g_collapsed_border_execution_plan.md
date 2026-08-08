@@ -2,10 +2,10 @@
 
 **Date:** 2026-07-28
 
-**Status:** in execution from accepted K4f commit `bad53b5cb2f`, corrected
-2026-08-08. K4g1 is accepted at `19b91b6ebef`; K4g2 is next after contextual
-color C1. K4g3's Chrome/Firefox spanning-side matrix is recorded research
-ahead of its gate and does not authorize skipping K4g2.
+**Status:** corrected 2026-08-08. K4g1 through K4g5 have implementation
+receipts in the serial completion lane. K4g5's command-model receipt is
+accepted, while its headed image, device-scale, writing-mode, and WPT matrix
+remains unmeasured. K4g6 is not started.
 
 **Parent plan:** [Buckram K4 CSS tables execution plan](2026-07-28_buckram_k4_css_tables_execution_plan.md)
 
@@ -762,6 +762,34 @@ and emit it once in table paint order.
 
 Delete generic collapsed table and cell border emission. The resolved border
 grid becomes the only source of collapsed border paint.
+
+### K4g5a implementation receipt (2026-08-08)
+
+The completion lane's B8 commit adds Buckram's final logical segment model.
+It derives final line positions from K4d6 `TableFragments`, lowers the
+existing K4g2 winner grid without rerunning precedence, centers unsnapped CSS
+pixel strips on every grid line, and emits one ordered record for each visible
+atomic winner. It omits `hidden` and all-`none`, maps collapsed `inset` and
+`outset`, and preserves table and winner identity for the consumer.
+
+Livery consumes that model in the K4f table phase after structural
+backgrounds. It maps the logical strips through the final grid flow once,
+resolves the winner's C3 used color using the winner source context, retains
+the resulting winner `BoxId` and grid `FragmentId` together in its internal
+paint segment, and removes generic collapsed table and cell border commands.
+Existing neutral filled rectangles and stroked paths cover the chosen solid,
+double, dashed, dotted, ridge, and groove representations, so no provider
+change is hidden here.
+
+The pure Buckram receipt covers exact CSS-pixel strips, relief mapping, and
+hidden suppression. The Livery command receipt covers a 2×2 table's twelve
+atomic outputs, winner-context `currentcolor`, generic-border suppression,
+and a hidden edge. `buckram` has 190 passing library tests; the focused
+Livery B8 command target has 4, and the complete Livery library binary has
+81. This is not the required visual conformance result: scale-1 and scale-2
+images, writing modes, multi-way join allocation, and the named WPT selection
+are still unmeasured. K4g6 must not begin until those are attached or the
+gate is explicitly re-scoped.
 
 ## K4g6. Dynamic integration, cleanup, and closure
 
