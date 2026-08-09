@@ -488,18 +488,21 @@ where
     /// pre-order. With nothing focused, `forward` focuses the first focusable and
     /// backward the last. Rebuilds after (focus may drive `:focus` styling
     /// later). No-op when there are no focusable elements.
+    /// Every focusable element, in document order.
+    pub(crate) fn focusables(&self) -> Vec<NodeId> {
+        let dom = self.dom.borrow();
+        let mut out = Vec::new();
+        collect_focusables(&dom, &self.ctx, dom.document(), &mut out);
+        out
+    }
+
     pub(crate) fn focus_traverse(
         &mut self,
         logic: &mut impl FnMut(&State) -> V,
         state: &mut State,
         forward: bool,
     ) {
-        let focusables: Vec<NodeId> = {
-            let dom = self.dom.borrow();
-            let mut out = Vec::new();
-            collect_focusables(&dom, &self.ctx, dom.document(), &mut out);
-            out
-        };
+        let focusables: Vec<NodeId> = self.focusables();
         if focusables.is_empty() {
             return;
         }
@@ -1078,6 +1081,18 @@ where
     pub fn focus_traverse(&mut self, forward: bool) {
         self.tree
             .focus_traverse(&mut self.logic, &mut self.state, forward);
+    }
+
+    /// Every focusable element, in document order — the set
+    /// [`focus_traverse`](Self::focus_traverse) walks.
+    ///
+    /// Public because document order is not the only order worth having.
+    /// A host with the laid-out geometry can move focus *spatially* (arrow keys
+    /// through a grid), which document order cannot express and which the view
+    /// layer cannot compute, having no layout. This is the half the runner
+    /// knows; the host supplies the other half.
+    pub fn focusables(&self) -> Vec<NodeId> {
+        self.tree.focusables()
     }
 
     /// Dispatch a native key event to the focused node, then apply the

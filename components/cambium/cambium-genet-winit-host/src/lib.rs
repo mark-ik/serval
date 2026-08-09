@@ -44,9 +44,11 @@ mod capture;
 mod frame;
 mod harness;
 mod input;
+mod spatial;
 
 pub use capture::{Frame, read_frame};
 pub use harness::{Harness, inert_hooks};
+pub use spatial::Direction;
 
 /// The bound every root view satisfies. A module rather than a trait alias so
 /// the host's signatures stay readable: `V: RootView<State>` means
@@ -90,6 +92,15 @@ pub struct HostOptions {
     /// again every time the platform takes it away and hands it back
     /// (suspend/resume), which must not silently fall back to defaults.
     pub netrender: Box<dyn Fn() -> NetrenderOptions>,
+    /// Hold Tab and steer focus with the arrow keys (see [`spatial`]).
+    ///
+    /// On by default: it is additive, costs nothing until Tab is *held*, and
+    /// tapping Tab behaves exactly as it always did. Turn it off for an
+    /// application whose arrow keys mean something while a control is focused
+    /// and which would rather not share them.
+    ///
+    /// [`spatial`]: crate::Direction
+    pub spatial_focus: bool,
 }
 
 impl Default for HostOptions {
@@ -104,6 +115,7 @@ impl Default for HostOptions {
                 enable_vello: true,
                 ..Default::default()
             }),
+            spatial_focus: true,
         }
     }
 }
@@ -334,6 +346,9 @@ where
     /// Pointer events an application hook asked the host to deliver to itself,
     /// drained through the real input path once the hook returns.
     pub(crate) pending_pointer: Vec<HostPointer>,
+    /// Tab is being held: the arrow keys steer focus instead of reaching the
+    /// focused element. Set by Tab's first key-repeat, cleared on its release.
+    pub(crate) tab_held: bool,
 }
 
 impl<State, Logic, V> HostState<State, Logic, V>
@@ -367,6 +382,7 @@ where
             pending_sheet: None,
             pending_capture: None,
             pending_pointer: Vec::new(),
+            tab_held: false,
         }
     }
 }
@@ -839,16 +855,24 @@ where
             } => self.release(),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::Ime(ime) => self.ime(&ime),
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    self.key(&KeyPress {
-                        key: event.logical_key,
-                        text: event.text.as_ref().map(|t| t.to_string()),
-                        modifiers: self.s.modifiers,
-                        repeat: event.repeat,
-                    });
+            WindowEvent::KeyboardInput { event, .. } => match event.state {
+                ElementState::Pressed => self.key(&KeyPress {
+                    key: event.logical_key,
+                    text: event.text.as_ref().map(|t| t.to_string()),
+                    modifiers: self.s.modifiers,
+                    repeat: event.repeat,
+                }),
+                // Releases matter for exactly one thing: letting go of Tab
+                // leaves spatial focus navigation.
+                ElementState::Released => {
+                    if matches!(
+                        event.logical_key,
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
+                    ) {
+                        self.s.tab_held = false;
+                    }
                 }
-            }
+            },
             WindowEvent::RedrawRequested => {
                 self.redraw();
                 // After the frame is laid out and presented, refresh the

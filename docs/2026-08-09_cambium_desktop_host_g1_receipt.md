@@ -200,6 +200,88 @@ This is outside G1 and is filed separately. Applications built on this host —
 `signalman-desktop` included — must give any control they intend to reach
 semantically a block-level display until it is fixed.
 
+## Two things the headed pass turned up afterwards
+
+### Injected text was dropped entirely
+
+The "live typing not confirmed" note above was resolved by tracing a headed run
+rather than guessing. The trace named it exactly:
+
+```text
+[cambium-host] key Named(Tab) ... focus=None
+[cambium-host]   dispatching Named(Tab)
+[cambium-host] key Unidentified(Windows(0x00E7)) ... focus=Some(NodeId(…))
+[cambium-host]   dropped: no Cambium key for it
+```
+
+`0x00E7` is `VK_PACKET` — what Windows delivers when text is injected through
+`SendInput` with `KEYEVENTF_UNICODE`. winit cannot name such a key, so the host
+dropped it.
+
+That is **not** only a test-automation artifact. On-screen keyboards, keyboard
+remappers, and several assistive input tools all type that way, so a person
+using one of them could not enter text into any Cambium application at all —
+an accessibility defect, found while collecting an accessibility receipt.
+
+`KeyPress` now carries winit's `text` beside the logical key, and an unnamed key
+that reports text is typed as that character. A Ctrl or Super chord is still
+dropped, because a shortcut must not become typed text. Two regression tests
+cover both halves.
+
+The `CAMBIUM_HOST_KEY_TRACE` diagnostic that found it stays. "Typing does not
+work" has three causes that are indistinguishable from outside — the window
+never got the event, winit could not name the key, or the tree dropped it — and
+one line per press tells them apart. It is env-gated and reads the environment
+once.
+
+**Live receipt** (woodshed, Windows, 2026-08-09), before and after:
+
+```text
+before: key Unidentified(Windows(0x00E7))                 -> dropped
+after:  key Unidentified(Windows(0x00E7)) text=Some("m")  -> Character("m")
+```
+
+and in `signalman-desktop`, "4.2" typed into the board-revision field by
+keyboard alone, no pointer involved.
+
+### Spatial focus navigation: hold Tab, steer with the arrows
+
+Tab traversal walks document order, which is the wrong shape for anything laid
+out in two dimensions. Woodshed's fretboard puts sixty focusable notes between
+you and the search field — reaching it by Tab is not something a person would
+do. A 5×5 grid takes 24 presses to cross diagonally.
+
+So **holding Tab turns the arrow keys into focus steering**, using the laid-out
+geometry: nearest control in that direction, preferring one that overlaps the
+current element's band, so "down" means down the column you are looking at.
+
+This belongs to the host and nowhere else: it needs the focusable set, which
+only the runner knows, and the geometry, which only the layout knows. No
+application has both, and the view layer has no layout at all. `cambium` gained
+`GenetAppRunner::focusables()` for the half it owns.
+
+Design notes:
+
+- "Held" means physically down, not held *long enough*. Pressing Tab and
+  arrowing immediately works, rather than waiting out the OS repeat delay.
+- The Tab press still traverses. A tap is byte-for-byte what it always was, and
+  the traversal is simply where the steering starts from.
+- Repeats while held are swallowed, so holding Tab does not walk document order
+  sixty times underneath the steering.
+- An edge holds rather than wrapping: spatial movement is not a ring.
+- `HostOptions::spatial_focus` (default on) turns it off for an application
+  whose arrow keys are already spoken for.
+
+`tests/spatial_focus.rs`, 5 cases over a 5×5 grid, plus 3 unit tests on the
+scoring. **Live receipt** (woodshed, Windows):
+
+```text
+[cambium-host]   Tab down: spatial focus armed
+[cambium-host]   dispatching Named(Tab)
+[cambium-host]   spatial Right moved=true   (×3)
+[cambium-host]   spatial Down  moved=true   (×2)
+```
+
 ## API notes for consumers
 
 Breaking against `246f0f1e7`:
@@ -215,8 +297,12 @@ Breaking against `246f0f1e7`:
   keyboard path took one could never be driven from a test — and a
   keyboard-order receipt that cannot run in `cargo test` is one nobody collects.
 - `cambium_winit_a11y::A11yHost::sync` returns `Vec<A11yRequest>`.
+- `Harness::hold_tab` takes a `forward: bool` and no longer releases; `tab`
+  is the tap (press *and* release). A test that holds Tab must release it, or
+  the arrows keep steering.
 
 New: `Harness`, `inert_hooks`, `KeyPress`, `HostPointer`, `IdlePolicy`,
-`Frame`, `read_frame`, `cambium_winit_a11y::{A11yAction, A11yRequest,
-project_tree}`, `IncrementalLayout::painted_rect`,
-`genet_lane::painted_origin`.
+`Direction`, `HostOptions::spatial_focus`, `Frame`, `read_frame`,
+`cambium_winit_a11y::{A11yAction, A11yRequest, project_tree}`,
+`IncrementalLayout::painted_rect`, `genet_lane::painted_origin`,
+`GenetAppRunner::focusables`.

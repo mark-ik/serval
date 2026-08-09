@@ -81,6 +81,16 @@ where
     /// `AppCtx::window` is `None` throughout, so a hook that asks for window
     /// chrome simply finds no window; nothing else differs from a real run.
     pub fn with_hooks(init: Init<State, Logic>, hooks: HostHooks<State, Logic, V>) -> Self {
+        Self::with_hooks_and_options(init, hooks, HostOptions::default())
+    }
+
+    /// [`with_hooks`](Self::with_hooks) with the host options spelled out — for
+    /// behaviour a test needs to configure, such as `spatial_focus`.
+    pub fn with_hooks_and_options(
+        init: Init<State, Logic>,
+        hooks: HostHooks<State, Logic, V>,
+        options: HostOptions,
+    ) -> Self {
         let Init {
             state,
             logic,
@@ -94,7 +104,7 @@ where
         s.runner = Some(Runner::new(dom, logic, state));
         Self {
             host: Host {
-                options: HostOptions::default(),
+                options,
                 init: None,
                 hooks,
                 s,
@@ -305,14 +315,32 @@ where
         self.key(WinitKey::Character(c.into()));
     }
 
-    /// Tab forward, or (with `Shift`) backward, exactly as the host does:
+    /// Tap Tab — press and release. Forward, or backward with `Shift`. Routed
     /// through `dispatch_key`, so a view that handles Tab still gets it first.
     pub fn tab(&mut self, forward: bool) {
+        self.hold_tab(forward);
+        self.release_tab();
+    }
+
+    /// Press Tab and keep it down: arrow keys now steer focus spatially, until
+    /// [`release_tab`](Self::release_tab). The press itself traverses once,
+    /// exactly as a tap does.
+    pub fn hold_tab(&mut self, forward: bool) {
         self.press_key(&KeyPress::named(NamedKey::Tab).with_modifiers(if forward {
             ModifiersState::empty()
         } else {
             ModifiersState::SHIFT
         }));
+    }
+
+    /// Let go of Tab, leaving spatial focus navigation.
+    pub fn release_tab(&mut self) {
+        self.host.s.tab_held = false;
+    }
+
+    /// Whether spatial focus navigation is currently engaged.
+    pub fn tab_held(&self) -> bool {
+        self.host.s.tab_held
     }
 
     /// Project this frame's layout into an AccessKit tree, exactly as the

@@ -16,15 +16,16 @@ use genet_document_resources::{
     ResolvedDocumentResources, ResourceDelta, ResourceFetcher, ResourceLimits,
 };
 use genet_livery::{
-    CssomRuleKind, Device, IncrementalStyle, InteractionStates, RestyleStats, RuleMutationError,
-    StyleSet, ViewportSizes, canonicalize_specified_value, content_box_size, layout,
-    resolve_container_query_styles, resolve_styles,
+    CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryPaintList,
+    RestyleStats, RuleMutationError, StyleSet, ViewportSizes, canonicalize_specified_value,
+    content_box_size, emit_paint_list, layout, resolve_container_query_styles, resolve_styles,
     used_value_context as layout_used_value_context,
 };
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{
-    AttributeView, LayoutDom, LocalName, Namespace, NodeKind, QualName, QuirksMode,
+    AttributeView, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName, QuirksMode,
 };
+use paint_list_api::DeviceIntSize;
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, Runtime,
@@ -39,6 +40,9 @@ struct LiveryState {
     interactions: InteractionStates<NodeId>,
     session: IncrementalStyle<NodeId>,
     mutation_cursor: u64,
+    render_cursor: u64,
+    render_generation: u64,
+    cached_frame: Option<((u32, u32), LiveryPaintList)>,
     live_sheets: Option<LiveStylesheetSource>,
 }
 
@@ -68,6 +72,12 @@ impl LiveryState {
     fn author_index_for_key(&self, key: &str) -> Option<usize> {
         self.styles.author_index_by_cssom_key(key)
     }
+
+    /// Anything that changes the retained cascade or device must retire the
+    /// last paint list. DOM batches are tracked separately by `render_cursor`.
+    fn invalidate_frame(&mut self) {
+        self.cached_frame = None;
+    }
 }
 
 fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
@@ -95,6 +105,8 @@ fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
     if resources != live.resources {
         state.styles.replace_author_sheets(&resources.stylesheets);
         state.document_sheets = state.styles.document_sheet_indexes();
+        state.session.invalidate();
+        state.invalidate_frame();
         live.resources = resources;
     }
     live.mutation_cursor = end;
@@ -126,6 +138,9 @@ impl LiveryCssom {
             interactions: InteractionStates::default(),
             session: IncrementalStyle::new(),
             mutation_cursor: 0,
+            render_cursor: 0,
+            render_generation: 0,
+            cached_frame: None,
             live_sheets: None,
         }));
         Self::install_state(runtime, state)
@@ -213,6 +228,9 @@ impl LiveryCssom {
             interactions: InteractionStates::default(),
             session: IncrementalStyle::new(),
             mutation_cursor,
+            render_cursor: mutation_cursor,
+            render_generation: 0,
+            cached_frame: None,
             live_sheets: Some(LiveStylesheetSource {
                 document_url,
                 fetcher,
@@ -246,11 +264,14 @@ impl LiveryCssom {
     pub fn set_viewport_size(&self, width: f32, height: f32) {
         let mut state = self.state.borrow_mut();
         state.device.set_viewport_size(width, height);
+        state.invalidate_frame();
     }
 
     /// Supply distinct small, large, and dynamic viewport sizes.
     pub fn set_viewport_sizes(&self, sizes: ViewportSizes) {
-        self.state.borrow_mut().device.set_viewport_sizes(sizes);
+        let mut state = self.state.borrow_mut();
+        state.device.set_viewport_sizes(sizes);
+        state.invalidate_frame();
     }
 
     /// The retained generation stamp for one author sheet.
@@ -277,6 +298,85 @@ impl LiveryCssom {
     /// Work performed by the latest scripted computed-style read.
     pub fn last_restyle_stats(&self) -> RestyleStats {
         self.state.borrow().session.last_stats()
+    }
+
+    /// Build one retained Livery paint frame from the runtime's live DOM.
+    ///
+    /// The scripted runtime remains the DOM owner. This method observes its
+    /// exact pending `DomMutation` suffix, brings the retained Livery style
+    /// session to that suffix, then lays out and paints before draining it.
+    /// Therefore a CSSOM read and the following paint frame cannot use
+    /// different collapsed-border winner generations. The current frame path
+    /// deliberately performs a complete layout when any batch is present.
+    pub fn frame<E: ScriptEngine>(
+        &self,
+        runtime: &mut Runtime<E>,
+        width: u32,
+        height: u32,
+    ) -> Result<LiveryPaintList, LayoutError> {
+        let viewport = (width.max(1), height.max(1));
+        let mut host = runtime.host().borrow_mut();
+        let (base, pending) = host.dom.pending_mutations();
+        let end = base.saturating_add(pending.len() as u64);
+        let mut state = self.state.borrow_mut();
+        synchronize_live_styles(&host, &mut state);
+
+        if (state.device.viewport_width, state.device.viewport_height)
+            != (viewport.0 as f32, viewport.1 as f32)
+        {
+            state
+                .device
+                .set_viewport_size(viewport.0 as f32, viewport.1 as f32);
+            state.invalidate_frame();
+        }
+        if state.mutation_cursor < base || state.mutation_cursor > end {
+            // Another selected layout consumer drained a batch first. Its
+            // exact records are no longer available, so restyle conservatively
+            // instead of retaining a paint list from the old DOM generation.
+            state.session.invalidate();
+            state.mutation_cursor = base;
+            state.invalidate_frame();
+        }
+        let start = state.mutation_cursor.saturating_sub(base) as usize;
+        state.session.update(
+            &host.dom,
+            &state.styles,
+            &state.device,
+            &state.interactions,
+            &pending[start..],
+        );
+        state.mutation_cursor = end;
+
+        if state.render_cursor == end
+            && let Some((cached_viewport, frame)) = &state.cached_frame
+            && *cached_viewport == viewport
+        {
+            return Ok(frame.clone());
+        }
+
+        let styles = resolve_container_query_styles(
+            &host.dom,
+            state.session.styles(),
+            &state.styles,
+            &state.device,
+            &state.interactions,
+        )?;
+        let fragments = layout(&host.dom, &styles, viewport.0 as f32, viewport.1 as f32)?;
+        state.render_generation = state.render_generation.saturating_add(1);
+        let frame = emit_paint_list(
+            &host.dom,
+            &styles,
+            &fragments,
+            DeviceIntSize::new(viewport.0 as i32, viewport.1 as i32),
+            state.render_generation,
+        );
+        state.render_cursor = end;
+        state.cached_frame = Some((viewport, frame.clone()));
+        drop(state);
+
+        let mut drained = Vec::new();
+        host.dom.drain_mutations(&mut drained);
+        Ok(frame)
     }
 }
 
@@ -600,11 +700,13 @@ impl StyleSheetHandler for LiveryStyleSheets {
         let sheet = self
             .author_index(sheet)
             .ok_or(StyleSheetMutationError::IndexSize)?;
-        self.state
-            .borrow_mut()
-            .styles
-            .insert_cssom_rule(sheet, rule, index)
-            .map_err(mutation_error)
+        let mut state = self.state.borrow_mut();
+        let result = state.styles.insert_cssom_rule(sheet, rule, index);
+        if result.is_ok() {
+            state.session.invalidate();
+            state.invalidate_frame();
+        }
+        result.map_err(mutation_error)
     }
 
     fn delete_rule(&self, sheet: usize, index: usize) -> Result<(), StyleSheetMutationError> {
@@ -612,11 +714,13 @@ impl StyleSheetHandler for LiveryStyleSheets {
         let sheet = self
             .author_index(sheet)
             .ok_or(StyleSheetMutationError::IndexSize)?;
-        self.state
-            .borrow_mut()
-            .styles
-            .delete_cssom_rule(sheet, index)
-            .map_err(mutation_error)
+        let mut state = self.state.borrow_mut();
+        let result = state.styles.delete_cssom_rule(sheet, index);
+        if result.is_ok() {
+            state.session.invalidate();
+            state.invalidate_frame();
+        }
+        result.map_err(mutation_error)
     }
 
     fn sheet_key(&self, sheet: usize) -> Option<String> {
@@ -640,11 +744,13 @@ impl StyleSheetHandler for LiveryStyleSheets {
         let sheet = self
             .author_index_by_key(key)
             .ok_or(StyleSheetMutationError::IndexSize)?;
-        self.state
-            .borrow_mut()
-            .styles
-            .insert_cssom_rule(sheet, rule, index)
-            .map_err(mutation_error)
+        let mut state = self.state.borrow_mut();
+        let result = state.styles.insert_cssom_rule(sheet, rule, index);
+        if result.is_ok() {
+            state.session.invalidate();
+            state.invalidate_frame();
+        }
+        result.map_err(mutation_error)
     }
 
     fn delete_rule_by_key(&self, key: &str, index: usize) -> Result<(), StyleSheetMutationError> {
@@ -652,11 +758,13 @@ impl StyleSheetHandler for LiveryStyleSheets {
         let sheet = self
             .author_index_by_key(key)
             .ok_or(StyleSheetMutationError::IndexSize)?;
-        self.state
-            .borrow_mut()
-            .styles
-            .delete_cssom_rule(sheet, index)
-            .map_err(mutation_error)
+        let mut state = self.state.borrow_mut();
+        let result = state.styles.delete_cssom_rule(sheet, index);
+        if result.is_ok() {
+            state.session.invalidate();
+            state.invalidate_frame();
+        }
+        result.map_err(mutation_error)
     }
 
     fn owner_node_by_key(&self, key: &str) -> Option<u64> {

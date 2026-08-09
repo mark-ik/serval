@@ -19,6 +19,7 @@ use genet_scripted_dom::{NodeId, ScriptedDom};
 use winit::keyboard::{Key as WinitKey, NamedKey as WinitNamedKey};
 
 use crate::meristem_bounds::RootView;
+use crate::spatial::Direction;
 use crate::{Host, KeyPress};
 
 pub(crate) fn to_visual_caret(caret: CaretPosition) -> VisualCaret {
@@ -331,6 +332,37 @@ where
                 press.modifiers,
                 self.s.runner.as_ref().and_then(|r| r.focus()),
             );
+        }
+        // Hold-Tab spatial navigation, before anything else can claim the keys.
+        //
+        // "Held" means physically down, not "down long enough": you press Tab
+        // and arrow immediately, the way a chord feels, rather than waiting out
+        // the OS repeat delay. The press itself still traverses — a tap is
+        // exactly what it always was — so the mode costs nothing until an arrow
+        // arrives, and the initial traversal is simply where the steering
+        // starts from.
+        if self.options.spatial_focus {
+            if let WinitKey::Named(WinitNamedKey::Tab) = press.key {
+                if press.repeat {
+                    // Already held: swallow the repeat rather than walking
+                    // document order sixty times while steering.
+                    return;
+                }
+                if trace {
+                    eprintln!("[cambium-host]   Tab down: spatial focus armed");
+                }
+                self.s.tab_held = true;
+                // Fall through: this press traverses as it always did.
+            } else if self.s.tab_held
+                && let WinitKey::Named(named) = &press.key
+                && let Some(dir) = Direction::from_named(named)
+            {
+                let moved = self.focus_spatial(dir);
+                if trace {
+                    eprintln!("[cambium-host]   spatial {dir:?} moved={moved}");
+                }
+                return;
+            }
         }
         // The application's own policy first (an Escape that closes a popover, a
         // global shortcut): it can consume the event before the tree sees it.

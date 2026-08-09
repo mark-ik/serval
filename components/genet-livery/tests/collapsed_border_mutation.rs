@@ -43,8 +43,13 @@ fn collapsed_metrics(document: &LiveryDocument<ScriptedDom>) -> usize {
         .collapsed_metrics
 }
 
-#[test]
-fn retained_document_rebuilds_collapsed_geometry_and_paint_from_one_mutation_batch() {
+fn assert_fresh_collapsed_frame(document: &mut LiveryDocument<ScriptedDom>, label: &str) {
+    let frame = document.frame(220, 100).expect(label);
+    assert_eq!(frame.generation_id(), document.generation(), "{label}");
+    assert!(collapsed_metrics(document) > 0, "{label}");
+}
+
+fn collapsed_document() -> LiveryDocument<ScriptedDom> {
     let mut dom = ScriptedDom::from_serialized_document(
         "<html><body><table id='table'><colgroup id='group'><col id='column'></colgroup>\
          <tbody id='body'><tr id='row'><td id='left'>left</td><td id='right'>right</td></tr></tbody>\
@@ -52,12 +57,19 @@ fn retained_document_rebuilds_collapsed_geometry_and_paint_from_one_mutation_bat
     );
     let mut initial_mutations = Vec::new();
     dom.drain_mutations(&mut initial_mutations);
+    LiveryDocument::new(
+        dom,
+        StyleSet::cambium(&[
+            "body { margin: 0; } table { border-collapse: collapse; color: black; } \
+             td { width: 60px; height: 30px; border: 4px solid currentcolor; }",
+        ]),
+        Device::screen(220.0, 100.0),
+    )
+}
 
-    let styles = StyleSet::cambium(&[
-        "body { margin: 0; } table { border-collapse: collapse; color: black; } \
-         td { width: 60px; height: 30px; border: 4px solid currentcolor; }",
-    ]);
-    let mut document = LiveryDocument::new(dom, styles, Device::screen(220.0, 100.0));
+#[test]
+fn retained_document_rebuilds_collapsed_geometry_and_paint_from_one_mutation_batch() {
+    let mut document = collapsed_document();
 
     let initial = document.frame(220, 100).expect("initial collapsed frame");
     let black = border_rectangles(&initial, ColorF::BLACK);
@@ -129,4 +141,72 @@ fn retained_document_rebuilds_collapsed_geometry_and_paint_from_one_mutation_bat
         "removed table groups cannot revive stale border paint"
     );
     assert_eq!(no_groups.generation_id(), document.generation());
+}
+
+#[test]
+fn retained_document_rebuilds_every_dynamic_collapsed_candidate_field() {
+    let mut document = collapsed_document();
+    assert_fresh_collapsed_frame(&mut document, "initial candidate frame");
+
+    document.mutate_dom(|dom| {
+        let table = by_id(dom, "table");
+        dom.set_attribute(table, attr("style"), "direction: rtl");
+    });
+    assert_fresh_collapsed_frame(&mut document, "direction mutation frame");
+
+    document.mutate_dom(|dom| {
+        let table = by_id(dom, "table");
+        dom.set_attribute(
+            table,
+            attr("style"),
+            "direction: rtl; writing-mode: vertical-rl",
+        );
+    });
+    assert_fresh_collapsed_frame(&mut document, "writing-mode mutation frame");
+
+    document.mutate_dom(|dom| {
+        let row = by_id(dom, "row");
+        dom.set_attribute(row, attr("style"), "border: 7px double green");
+        let group = by_id(dom, "group");
+        dom.set_attribute(group, attr("style"), "border: 8px solid blue");
+        let column = by_id(dom, "column");
+        dom.set_attribute(column, attr("style"), "border: 9px dashed red");
+    });
+    assert_fresh_collapsed_frame(&mut document, "origin-role mutation frame");
+
+    document.mutate_dom(|dom| {
+        let left = by_id(dom, "left");
+        dom.set_attribute(left, attr("colspan"), "2");
+        let right = by_id(dom, "right");
+        dom.set_attribute(right, attr("style"), "border: 12px hidden red");
+    });
+    assert_fresh_collapsed_frame(&mut document, "span and hidden-style mutation frame");
+
+    document.mutate_dom(|dom| {
+        let row = by_id(dom, "row");
+        let third = dom.create_element(QualName::new(
+            None,
+            Namespace::from(""),
+            LocalName::from("td"),
+        ));
+        dom.set_attribute(third, attr("id"), "third");
+        dom.set_attribute(third, attr("style"), "border: 10px solid purple");
+        let text = dom.create_text("third");
+        dom.append_child(third, text);
+        dom.append_child(row, third);
+    });
+    assert_fresh_collapsed_frame(&mut document, "cell insertion frame");
+
+    document.mutate_dom(|dom| {
+        let row = by_id(dom, "row");
+        let left = by_id(dom, "left");
+        dom.move_before(row, left, None);
+    });
+    assert_fresh_collapsed_frame(&mut document, "cell move frame");
+
+    document.mutate_dom(|dom| {
+        let column = by_id(dom, "column");
+        dom.set_attribute(column, attr("style"), "visibility: collapse");
+    });
+    assert_fresh_collapsed_frame(&mut document, "track-visibility mutation frame");
 }
