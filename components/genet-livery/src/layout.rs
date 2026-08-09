@@ -215,8 +215,9 @@ where
     pub(crate) fn table_paint_for_node(&self, node: Id) -> Option<&TablePaintModel> {
         self.buckram
             .boxes()
-            .principal_box(node)
-            .and_then(|grid| self.table_paint.table(grid))
+            .boxes_for_node(node)
+            .iter()
+            .find_map(|box_id| self.table_paint.table(*box_id))
     }
 
     /// Whether a node's own decoration is painted by the separated-table
@@ -234,10 +235,7 @@ where
     /// phase, but its generic border command must yield to K4g5's one-winner
     /// segment model.
     pub(crate) fn table_paint_uses_collapsed_borders(&self, node: Id) -> bool {
-        self.buckram
-            .boxes()
-            .principal_box(node)
-            .and_then(|grid| self.table_paint.table(grid))
+        self.table_paint_for_node(node)
             .is_some_and(TablePaintModel::is_collapsed)
     }
 
@@ -1913,7 +1911,18 @@ where
                     )
                 },
             );
-            self.tree.layout(cell_node).width
+            // A block child with a definite width contains its own sizing
+            // contribution even when one of its descendants overflows it.
+            // Taffy's intrinsic cell box expands to that overflow here, but
+            // CSS table sizing takes the cell's in-flow child boxes instead.
+            // Read the direct child border boxes so Buckram receives the
+            // cell's actual border-box contribution, not descendant ink.
+            self.tree
+                .children(cell_node)
+                .iter()
+                .map(|child| self.tree.layout(*child).width)
+                .reduce(f32::max)
+                .unwrap_or_else(|| self.tree.layout(cell_node).width)
         };
         let min = measure(AlgorithmAvailableSpace::MinContent);
         let max = measure(AlgorithmAvailableSpace::MaxContent);
@@ -2383,8 +2392,17 @@ where
         style.size.width = Dimension::auto();
         style.min_size.width = Dimension::auto();
         style.max_size.width = Dimension::auto();
-        let min = self.measure_intrinsic_width(cell_node, AlgorithmAvailableSpace::MinContent);
-        let max = self.measure_intrinsic_width(cell_node, AlgorithmAvailableSpace::MaxContent);
+        let direct_child_width = |tree: &AlgorithmTree<Style, TextMeasure, Option<BoxId>>| {
+            tree.children(cell_node)
+                .iter()
+                .map(|child| tree.layout(*child).width)
+                .reduce(f32::max)
+                .unwrap_or_else(|| tree.layout(cell_node).width)
+        };
+        self.measure_intrinsic_width(cell_node, AlgorithmAvailableSpace::MinContent);
+        let min = direct_child_width(&self.tree);
+        self.measure_intrinsic_width(cell_node, AlgorithmAvailableSpace::MaxContent);
+        let max = direct_child_width(&self.tree);
         let style = self.tree.style_mut(cell_node);
         (style.size.width, style.min_size.width, style.max_size.width) = saved;
         IntrinsicSizes::new(min, max.max(min))

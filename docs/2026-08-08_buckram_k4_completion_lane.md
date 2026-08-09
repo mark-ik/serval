@@ -2,10 +2,11 @@
 
 **Date:** 2026-08-08
 
-**Status:** B0 through B8 have implementation receipts. B8's command-model
-evidence is accepted; its headed image, device-scale, writing-mode, and WPT
-matrix remains unmeasured. B9 is not started. The lane closes K4 and stops
-before K5 implementation.
+**Status:** B0 through B8 have implementation receipts. B8b has repaired and
+measured its two named paint-phase regressions, with five selected reftests
+passing. Its headed image, scale-2, writing-mode, and complete WPT matrix
+remain unmeasured. B9 is not started. The lane closes K4 and stops before K5
+implementation.
 
 **Architectural authority:** [Buckram CSS layout engine
 plan](2026-07-26_buckram_css_layout_engine_plan.md)
@@ -587,6 +588,53 @@ scales 1 and 2, LTR/RTL and vertical/sideways writing-mode captures, the
 multi-way join allocation scan, and the named collapsed-border WPT selection
 remain unmeasured. Do not begin B9 until that evidence is either attached or
 explicitly re-scoped.
+
+### B8b focused paint-phase remediation (2026-08-09)
+
+The B8a command receipt exposed two real failures in its named upstream
+selection, so it was not promoted to visual conformance. Both reduce to an
+overflowing child beside an outer collapsed edge, but they need opposite paint
+relations: `collapsed-border-paint-phase-001` places the edge below an inline
+foreground, while `collapsed-border-paint-phase-002` places it above a block
+foreground.
+
+The repair has four boundaries. Intrinsic table-cell measurement now takes the
+cell's direct child border boxes rather than widening its track to an
+overflowing grandchild. Outer logical grid lines come from the final row and
+column fragments, not the grid's collapsed-metric spill. Retained table paint
+finds a table through every box owned by its DOM node, so an inline-atomic
+wrapper cannot hide the grid model. Finally, deferred collapsed edges treat
+retained row/cell boxes and formatting whitespace as structural phase work:
+they flush before the first genuine inline foreground, or after ordinary block
+foreground when no such inline work occurs.
+
+The regression tests use the retained `LiveryDocument` path and the exact WPT
+HTML shape, including the preceding paragraph that had hidden the table model:
+
+- `cargo test -p buckram --lib --release --offline -j 1`: 190 passed;
+- `cargo test -p genet-livery --lib collapsed_outer_edge --release --offline -j 1`:
+  2 passed; and
+- `cargo test -p genet-livery --lib --release --offline -j 1`: 83 passed.
+
+The rebuilt Livery WPT runner passes
+`collapsed-border-paint-phase-001`,
+`collapsed-border-paint-phase-002`,
+`subpixel-collapsed-borders-001`,
+`out-of-order-elements-collapsed-border`, and
+`border-collapse-rowspan-cell`. `border-collapse-double-border` remains a
+runner boundary: it reports `mismatch-eq`, while its dump reports `diff=0%`
+and `maxδ=255`, a sparse high-delta difference the mismatch classifier rounds
+to equality. It is neither credited as a pass nor attributed to B8 paint.
+
+Scale-1 visual probes were regenerated for solid, style-family, join,
+writing-mode, direction, and the paragraph-before-table phase case under
+`testing/genet/buckram-b8-wpt`. These are self-matched dump enablers and
+visual receipts, not independent reftest conformance. In particular, the
+direction probe renders both directions but does not prove a direction
+tiebreak. The WPT renderer still fixes its HiDPI scale at 1, so scale 2 needs
+a separate renderer scale-provider seam. No scale-2, headed, full
+writing-mode, multi-way-allocation, or complete-map claim is made here; B9
+remains unopened.
 
 ## B9. Dynamic collapsed-border closure
 

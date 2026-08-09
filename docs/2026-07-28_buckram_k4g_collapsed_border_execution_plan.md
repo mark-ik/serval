@@ -2,10 +2,11 @@
 
 **Date:** 2026-07-28
 
-**Status:** corrected 2026-08-08. K4g1 through K4g5 have implementation
-receipts in the serial completion lane. K4g5's command-model receipt is
-accepted, while its headed image, device-scale, writing-mode, and WPT matrix
-remains unmeasured. K4g6 is not started.
+**Status:** corrected 2026-08-09. K4g1 through K4g5 have implementation
+receipts in the serial completion lane. K4g5b repairs its two selected
+paint-phase regressions and records focused scale-1/WPT evidence; headed,
+scale-2, writing-mode, and complete WPT evidence remain unmeasured. K4g6 is
+not started.
 
 **Parent plan:** [Buckram K4 CSS tables execution plan](2026-07-28_buckram_k4_css_tables_execution_plan.md)
 
@@ -790,6 +791,44 @@ Livery B8 command target has 4, and the complete Livery library binary has
 images, writing modes, multi-way join allocation, and the named WPT selection
 are still unmeasured. K4g6 must not begin until those are attached or the
 gate is explicitly re-scoped.
+
+### K4g5b focused paint-phase receipt (2026-08-09)
+
+The named WPT pair then exposed two real failures, so the K4g5a command-model
+receipt did not close the image gate. The repair keeps winner selection and
+neutral paint primitives unchanged. It makes four consumer-side corrections:
+
+1. table-cell intrinsic contribution uses direct child border boxes rather
+   than a grandchild's overflow;
+2. outer grid lines use final row and column fragments rather than collapsed
+   spill on the grid fragment;
+3. retained paint finds the grid model across every box belonging to the
+   source DOM node, including an inline-atomic wrapper; and
+4. row/cell structural boxes and formatting whitespace cannot trigger the
+   deferred collapsed-border phase. The first genuine inline foreground does;
+   otherwise borders follow block foreground.
+
+The retained `LiveryDocument` regressions embed the exact upstream markup,
+including the leading paragraph: `collapsed_outer_edge_stays_inside_the_cell_foreground_coverage`
+and `collapsed_outer_edge_covers_block_foreground_in_the_later_table_phase`.
+The focused target passes 2 tests; the full `genet-livery` library passes 83;
+and Buckram passes 190.
+
+The rebuilt Livery WPT runner passes both
+`collapsed-border-paint-phase-*` tests plus subpixel, out-of-order, and
+rowspan selection cases. `border-collapse-double-border` reports
+`mismatch-eq` despite its dump's `diff=0%` and `maxδ=255`: the runner rounds a
+sparse high-delta mismatch to equality. This remains a runner issue, not a
+K4g5 pass or paint failure.
+
+Scale-1 self-matched visual probes cover solid, style family, joins, writing
+modes, direction, and the paragraph-before-table regression in
+`testing/genet/buckram-b8-wpt`. They are dump aids, not independent reftest
+proof; the direction image does not prove a direction tiebreak. The current
+WPT renderer fixes its HiDPI scale at 1, so scale-2 verification requires a
+separate renderer scale-provider seam. K4g6 remains unopened and this receipt
+does not claim headed, scale-2, complete writing-mode, multi-way allocation,
+or complete-map conformance.
 
 ## K4g6. Dynamic integration, cleanup, and closure
 

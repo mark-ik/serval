@@ -16,9 +16,9 @@ use super::{
 
 /// Final logical grid-line positions, relative to the table grid fragment.
 ///
-/// The first and last line are the grid fragment's own edges. Interior lines
-/// are taken from the final K4g4 row and column fragments, so the paint model
-/// cannot substitute a preliminary sizing vector.
+/// Every line, including the two outer lines, comes from the final K4g4 row
+/// and column track fragments. The grid fragment can include collapsed outer
+/// metric space and must not move a border away from its track edge.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableGridLines {
     pub inline: Vec<f32>,
@@ -44,24 +44,47 @@ impl TableGridLines {
             .filter(|fragment| fragment.role == TableFragmentRole::Column)
             .collect::<Vec<_>>();
 
-        let mut inline = Vec::with_capacity(columns.len().saturating_add(1));
-        inline.push(grid.rect.inline_start);
-        inline.extend(
-            columns
-                .iter()
-                .take(columns.len().saturating_sub(1))
-                .map(|column| column.rect.inline_start + column.rect.inline_size),
-        );
-        inline.push(grid.rect.inline_start + grid.rect.inline_size);
+        let inline = match (columns.first(), columns.last()) {
+            (Some(first), Some(last)) => {
+                let mut lines = Vec::with_capacity(columns.len().saturating_add(1));
+                lines.push(first.rect.inline_start);
+                lines.extend(
+                    columns
+                        .iter()
+                        .take(columns.len().saturating_sub(1))
+                        .map(|column| column.rect.inline_start + column.rect.inline_size),
+                );
+                lines.push(last.rect.inline_start + last.rect.inline_size);
+                lines
+            },
+            // Empty tracks have no atomic cell edge to paint. Preserve the
+            // grid endpoints so validation stays total for an empty table.
+            (None, None) => vec![
+                grid.rect.inline_start,
+                grid.rect.inline_start + grid.rect.inline_size,
+            ],
+            _ => unreachable!("first and last column presence agree"),
+        };
 
-        let mut block = Vec::with_capacity(rows.len().saturating_add(1));
-        block.push(grid.rect.block_start);
-        block.extend(
-            rows.iter()
-                .take(rows.len().saturating_sub(1))
-                .map(|row| row.rect.block_start + row.rect.block_size),
-        );
-        block.push(grid.rect.block_start + grid.rect.block_size);
+        let block = match (rows.first(), rows.last()) {
+            (Some(first), Some(last)) => {
+                let mut lines = Vec::with_capacity(rows.len().saturating_add(1));
+                lines.push(first.rect.block_start);
+                lines.extend(
+                    rows.iter()
+                        .take(rows.len().saturating_sub(1))
+                        .map(|row| row.rect.block_start + row.rect.block_size),
+                );
+                lines.push(last.rect.block_start + last.rect.block_size);
+                lines
+            },
+            // See the matching inline-axis empty-table case above.
+            (None, None) => vec![
+                grid.rect.block_start,
+                grid.rect.block_start + grid.rect.block_size,
+            ],
+            _ => unreachable!("first and last row presence agree"),
+        };
 
         let lines = Self { inline, block };
         lines.validate()?;

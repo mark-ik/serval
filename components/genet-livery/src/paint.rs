@@ -329,9 +329,13 @@ fn emit_node<D>(
         list.commands
             .push(PaintCmd::PushTransform(transform.clone()));
     }
-    if let Some(table) = fragments.table_paint_for_node(id) {
-        emit_table_paint_phase(dom, styles, fragments, table, list);
+    let table = fragments.table_paint_for_node(id);
+    if let Some(table) = table {
+        emit_table_backgrounds(dom, styles, fragments, table, list);
     }
+    let mut deferred_collapsed = table
+        .filter(|table| table.is_collapsed())
+        .map(DeferredCollapsedBorders::new);
     emit_children_in_stacking_order(
         dom,
         styles,
@@ -342,7 +346,11 @@ fn emit_node<D>(
         list,
         scroll_offsets,
         canvas_background_source,
+        deferred_collapsed.as_mut(),
     );
+    if let Some(deferred) = deferred_collapsed.as_mut() {
+        deferred.flush(styles, fragments, list);
+    }
     if scroll_transform.is_some() {
         list.commands.push(PaintCmd::PopTransform);
     }
@@ -447,26 +455,6 @@ where
         _ => scope.inherited,
     };
     Some((inherited, clips_descendants))
-}
-
-/// Paint one table's structural backgrounds, then its collapsed border phase
-/// when B8 supplied the final winner geometry. DOM traversal cannot establish
-/// this order: columns may have no layout child, and a spanning cell's grid
-/// position is not its DOM position.
-fn emit_table_paint_phase<D>(
-    dom: &D,
-    styles: &StylePlane<D::NodeId>,
-    fragments: &LiveryLayout<D::NodeId>,
-    table: &TablePaintModel,
-    list: &mut LiveryPaintList,
-) where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
-{
-    emit_table_backgrounds(dom, styles, fragments, table, list);
-    if table.is_collapsed() {
-        emit_collapsed_table_borders(styles, fragments, table, list);
-    }
 }
 
 fn emit_table_backgrounds<D>(
@@ -834,7 +822,7 @@ mod collapsed_border_style_tests {
 #[cfg(test)]
 mod collapsed_border_paint_tests {
     use super::*;
-    use crate::{Device, InteractionStates, StyleSet, layout, resolve_styles};
+    use crate::{Device, InteractionStates, LiveryDocument, StyleSet, layout, resolve_styles};
     use genet_static_dom::StaticDocument;
 
     fn render(html: &str, css: &str) -> LiveryPaintList {
@@ -853,6 +841,19 @@ mod collapsed_border_paint_tests {
             DeviceIntSize::new(320, 240),
             1,
         )
+    }
+
+    /// Reproduce the retained route used by the WPT renderer. The stateless
+    /// helper above is still useful for small paint units, but WPT documents
+    /// arrive as full HTML trees and shape their preceding text first.
+    fn render_wpt(html: &str) -> LiveryPaintList {
+        let document = StaticDocument::parse(html);
+        let mut session = LiveryDocument::new(
+            document,
+            StyleSet::cambium(&[]),
+            Device::screen(800.0, 600.0),
+        );
+        session.frame(800, 600).expect("collapsed table WPT layout")
     }
 
     /// The winning cell's `currentcolor` proves that paint resolves the
@@ -919,6 +920,114 @@ mod collapsed_border_paint_tests {
                 .iter()
                 .any(|command| matches!(command, PaintCmd::DrawBorder(_))),
             "the hidden winner does not reactivate generic cell border paint"
+        );
+    }
+
+    /// The inner foreground overflows its 50px parent in
+    /// `collapsed-border-paint-phase-001`. The right collapsed edge remains
+    /// beneath that foreground instead of escaping as a visible strip.
+    #[test]
+    fn collapsed_outer_edge_stays_inside_the_cell_foreground_coverage() {
+        let list = render_wpt(
+            r#"<!DOCTYPE html>
+<p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+<table style="border-collapse: collapse; border-spacing: 0;">
+  <td style="border-right: 50px solid red; padding: 0;">
+    <div style="width: 50px; line-height: 0;">
+      <div style="display: inline-block; width: 100px; height: 100px; background: green;"></div>
+    </div>
+  </td>
+</table>"#,
+        );
+        let red = ColorF::new(1.0, 0.0, 0.0, 1.0);
+        let green = ColorF::new(0.0, 128.0 / 255.0, 0.0, 1.0);
+        let mut red_rects = Vec::new();
+        let mut green_index = None;
+        let mut last_red_index = None;
+        for (index, command) in list.commands().iter().enumerate() {
+            let PaintCmd::DrawRect(rect) = command else {
+                continue;
+            };
+            if rect.color == red {
+                red_rects.push(rect.placement.bounds);
+                last_red_index = Some(index);
+            }
+            if rect.color == green {
+                green_index = Some(index);
+            }
+        }
+        let green_index = green_index.expect("the cell foreground paints");
+        let last_red_index = last_red_index.expect("the collapsed edge paints");
+        assert!(
+            last_red_index < green_index,
+            "collapsed borders stay in the table background phase: {last_red_index} >= {green_index}"
+        );
+        let green_rect = match &list.commands()[green_index] {
+            PaintCmd::DrawRect(rect) => rect.placement.bounds,
+            _ => unreachable!("green index names a rectangle"),
+        };
+        assert!(
+            red_rects.iter().all(|rect| {
+                rect.min.x >= green_rect.min.x
+                    && rect.max.x <= green_rect.max.x
+                    && rect.min.y >= green_rect.min.y
+                    && rect.max.y <= green_rect.max.y
+            }),
+            "the phase-001 foreground covers every collapsed outer strip: {red_rects:?} vs {green_rect:?}"
+        );
+    }
+
+    /// `collapsed-border-paint-phase-002` has block foreground content. Its
+    /// collapsed outer edge paints after that content, so the winning border
+    /// covers the whole overflowing red rectangle.
+    #[test]
+    fn collapsed_outer_edge_covers_block_foreground_in_the_later_table_phase() {
+        let list = render_wpt(
+            r#"<!DOCTYPE html>
+<p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+<table style="border-collapse: collapse; border-spacing: 0;">
+  <td style="border-right: solid 100px green; height: 100px; padding: 0;">
+    <div style="width: 0;">
+      <div style="width: 100px; height: 100px; background: red;"></div>
+    </div>
+  </td>
+</table>"#,
+        );
+        let red = ColorF::new(1.0, 0.0, 0.0, 1.0);
+        let green = ColorF::new(0.0, 128.0 / 255.0, 0.0, 1.0);
+        let mut red_index = None;
+        let mut green_rects = Vec::new();
+        let mut last_green_index = None;
+        for (index, command) in list.commands().iter().enumerate() {
+            let PaintCmd::DrawRect(rect) = command else {
+                continue;
+            };
+            if rect.color == red {
+                red_index = Some(index);
+            }
+            if rect.color == green {
+                green_rects.push(rect.placement.bounds);
+                last_green_index = Some(index);
+            }
+        }
+        let red_index = red_index.expect("the overflowing block foreground paints");
+        let last_green_index = last_green_index.expect("the collapsed edge paints");
+        assert!(
+            red_index < last_green_index,
+            "the phase-002 border follows block foreground content: {red_index} >= {last_green_index}"
+        );
+        let red_rect = match &list.commands()[red_index] {
+            PaintCmd::DrawRect(rect) => rect.placement.bounds,
+            _ => unreachable!("red index names a rectangle"),
+        };
+        assert!(
+            green_rects.iter().any(|rect| {
+                rect.min.x <= red_rect.min.x
+                    && rect.max.x >= red_rect.max.x
+                    && rect.min.y <= red_rect.min.y
+                    && rect.max.y >= red_rect.max.y
+            }),
+            "the phase-002 collapsed edge covers the foreground: {green_rects:?} vs {red_rect:?}"
         );
     }
 }
@@ -1003,6 +1112,38 @@ struct PaintScope<'a, Id> {
     canvas_background_source: Option<Id>,
 }
 
+/// A collapsed table's border phase sits between block descendant backgrounds
+/// and inline foreground. The structural table fragments have no DOM walk of
+/// their own, so the phase stays explicit instead of becoming an incidental
+/// child traversal order.
+struct DeferredCollapsedBorders<'a> {
+    table: &'a TablePaintModel,
+    emitted: bool,
+}
+
+impl<'a> DeferredCollapsedBorders<'a> {
+    fn new(table: &'a TablePaintModel) -> Self {
+        Self {
+            table,
+            emitted: false,
+        }
+    }
+
+    fn flush<Id>(
+        &mut self,
+        styles: &StylePlane<Id>,
+        fragments: &LiveryLayout<Id>,
+        list: &mut LiveryPaintList,
+    ) where
+        Id: Copy + Eq + Hash,
+    {
+        if !self.emitted {
+            emit_collapsed_table_borders(styles, fragments, self.table, list);
+            self.emitted = true;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_children_in_stacking_order<D>(
     dom: &D,
@@ -1014,6 +1155,7 @@ fn emit_children_in_stacking_order<D>(
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
     canvas_background_source: Option<D::NodeId>,
+    mut deferred_collapsed: Option<&mut DeferredCollapsedBorders<'_>>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
@@ -1031,6 +1173,11 @@ fn emit_children_in_stacking_order<D>(
     items.sort_by_key(|item| item.level);
     let roots = items.iter().map(|item| item.id).collect::<HashSet<_>>();
 
+    if !items.is_empty() {
+        if let Some(deferred) = deferred_collapsed.as_deref_mut() {
+            deferred.flush(styles, fragments, list);
+        }
+    }
     for item in items.iter().filter(|item| item.level < 0) {
         emit_stacking_item(
             dom,
@@ -1061,6 +1208,7 @@ fn emit_children_in_stacking_order<D>(
         text,
         list,
         scroll_offsets,
+        deferred_collapsed.as_deref_mut(),
     );
 
     for item in items.iter().filter(|item| item.level >= 0) {
@@ -1182,6 +1330,7 @@ fn emit_normal_node<'a, D>(
     text: &mut PaintText<'_, D::NodeId>,
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
+    mut deferred_collapsed: Option<&mut DeferredCollapsedBorders<'_>>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
@@ -1203,18 +1352,40 @@ fn emit_normal_node<'a, D>(
             .push(PaintCmd::PushTransform(transform.clone()));
     }
     if let Some(table) = fragments.table_paint_for_node(id) {
-        emit_table_paint_phase(dom, styles, fragments, table, list);
+        if let Some(deferred) = deferred_collapsed.as_deref_mut() {
+            deferred.flush(styles, fragments, list);
+        }
+        emit_table_backgrounds(dom, styles, fragments, table, list);
+        let mut nested_deferred = table
+            .is_collapsed()
+            .then(|| DeferredCollapsedBorders::new(table));
+        emit_normal_children(
+            dom,
+            styles,
+            fragments,
+            id,
+            PaintScope { inherited, ..scope },
+            text,
+            list,
+            scroll_offsets,
+            nested_deferred.as_mut(),
+        );
+        if let Some(deferred) = nested_deferred.as_mut() {
+            deferred.flush(styles, fragments, list);
+        }
+    } else {
+        emit_normal_children(
+            dom,
+            styles,
+            fragments,
+            id,
+            PaintScope { inherited, ..scope },
+            text,
+            list,
+            scroll_offsets,
+            deferred_collapsed.as_deref_mut(),
+        );
     }
-    emit_normal_children(
-        dom,
-        styles,
-        fragments,
-        id,
-        PaintScope { inherited, ..scope },
-        text,
-        list,
-        scroll_offsets,
-    );
     if scroll_transform.is_some() {
         list.commands.push(PaintCmd::PopTransform);
     }
@@ -1233,6 +1404,7 @@ fn emit_normal_children<'a, D>(
     text: &mut PaintText<'_, D::NodeId>,
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
+    mut deferred_collapsed: Option<&mut DeferredCollapsedBorders<'_>>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
@@ -1260,6 +1432,7 @@ fn emit_normal_children<'a, D>(
             text,
             list,
             scroll_offsets,
+            deferred_collapsed.as_deref_mut(),
         );
         inline_group.clear();
         if positioned_inline_overlay_is_covered(dom, styles, fragments, &child_ids, index, child) {
@@ -1274,6 +1447,7 @@ fn emit_normal_children<'a, D>(
             text,
             list,
             scroll_offsets,
+            deferred_collapsed.as_deref_mut(),
         );
     }
     emit_inline_group(
@@ -1285,6 +1459,7 @@ fn emit_normal_children<'a, D>(
         text,
         list,
         scroll_offsets,
+        deferred_collapsed.as_deref_mut(),
     );
 }
 
@@ -1464,12 +1639,18 @@ fn emit_inline_group<'a, D>(
     text: &mut PaintText<'_, D::NodeId>,
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
+    mut deferred_collapsed: Option<&mut DeferredCollapsedBorders<'_>>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
     if roots.is_empty() {
         return;
+    }
+    if inline_group_enters_foreground(dom, fragments, roots)
+        && let Some(deferred) = deferred_collapsed.as_deref_mut()
+    {
+        deferred.flush(styles, fragments, list);
     }
     if let Some(first_line) = roots
         .iter()
@@ -1499,8 +1680,35 @@ fn emit_inline_group<'a, D>(
             text,
             list,
             scroll_offsets,
+            deferred_collapsed.as_deref_mut(),
         );
     }
+}
+
+/// Table fixup retains row and cell boxes in the structural paint model, even
+/// where the DOM-side cascade has not supplied their table display keyword.
+/// They can therefore arrive in an inline group. Those structural nodes and
+/// their formatting whitespace must not advance the collapsed-border phase;
+/// the first real inline foreground descendant does.
+fn inline_group_enters_foreground<D>(
+    dom: &D,
+    fragments: &LiveryLayout<D::NodeId>,
+    roots: &[D::NodeId],
+) -> bool
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    roots.iter().copied().any(|root| {
+        if fragments.table_paint_manages_node(root) {
+            return false;
+        }
+        match dom.kind(root) {
+            NodeKind::Text => dom.text(root).is_some_and(|text| !text.trim().is_empty()),
+            NodeKind::Element => true,
+            _ => false,
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
