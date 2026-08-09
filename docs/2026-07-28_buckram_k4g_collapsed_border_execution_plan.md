@@ -7,9 +7,11 @@ receipts in the serial completion lane. K4g5c adds a WPT renderer device-scale
 provider, with five selected scale-2 reftests passing and the known double
 border mismatch classifier still uncredited. K4g5 is explicitly scoped to its
 static and focused scale-provider receipt; headed, complete writing-mode,
-multi-way allocation, and full WPT maps remain K4g6 acceptance inputs. K4g6a
-has a retained mutation-to-frame receipt for color, winning-width, and
-table-part changes. The broader K4g6 closure is open.
+multi-way allocation, and full WPT maps remain K4g6 acceptance inputs. K4g6
+now has its retained mutation transaction, selectable scripted Livery frame,
+and accepted collapsed-metrics deferral removal receipts. The broader K4g6
+acceptance closure remains open until fresh complete maps and headed evidence
+exist.
 
 **Parent plan:** [Buckram K4 CSS tables execution plan](2026-07-28_buckram_k4_css_tables_execution_plan.md)
 
@@ -948,10 +950,47 @@ paint list's generation equals the retained document's generation and its
 table ledger belongs to that frame.
 
 `cargo test -p genet-livery --test collapsed_border_mutation --offline -j 1`
-passes. This opens, but does not close, K4g6: the full candidate-field matrix,
-external scripted-surface integration, source/removal audit, and complete WPT
-maps remain required. K4h still owns bridge deletion and the `table-layout`
-marker.
+passes. K4g6b and K4g6c attach the remaining focused dynamic and removal
+receipts. K4h still owns bridge deletion and the `table-layout` marker.
+
+### K4g6b scripted Livery frame receipt (2026-08-09)
+
+`LiveryCssom::frame` makes Livery an explicit scripted renderer provider. It
+reconciles live sheets and applies the exact undrained DOM mutation slice
+before layout and paint; it drains only after the matching `LiveryPaintList`
+exists. A CSSOM computed-style read therefore cannot leave paint on an older
+winner generation. Stylesheet, resource, and viewport changes clear the same
+frame cache.
+
+The Boa fixture observes a `currentcolor` mutation, then renders its red
+winner without geometry movement; it then changes a winning width and removes
+a cell, each producing fresh geometry. `cargo test -p genet-scripted
+--no-default-features --features livery --lib --offline -j 1` passes 19 tests.
+This is a host-selectable Livery surface, not a claimed replacement of the
+incumbent scripted layout route.
+
+### K4g6c removal and candidate-field matrix receipt (2026-08-09)
+
+The generic `CollapsedPendingK4g`, `CollapsedBorderMetricsPendingK4g`, and
+`CollapsedBlockBorderMetricsPendingK4g` states are deleted. Live winner
+lowering records `TableShadowSkip::CollapsedBorder` before the sizing entry,
+which returns no assignment rather than falling back to separated metrics.
+`DeferredCollapsedBorders` remains because it is the authoritative final
+table-paint phase, not a compatibility path.
+
+The retained mutation matrix exercises direction, vertical writing mode,
+row/column/group origins, span, `visibility: collapse`, append, reorder, and
+removal. It checks each frame's generation, collapsed metrics, and paint
+geometry. The command and source audits have one CSS2 comparator, one resolved
+winner grid, one metrics projection, and one collapsed paint lowering:
+`cargo test -p buckram --lib --offline -j 1` passes 186;
+`cargo test -p genet-livery --test collapsed_border_mutation --offline -j 1`
+passes 2; and `cargo test -p genet-livery --lib --offline -j 1` passes 83.
+
+The code and focused receipts are complete. Fresh complete table,
+writing-mode, all-nine maps and headed behavior remain unmeasured K4g6
+acceptance inputs, so the plan does not claim complete conformance. K4h/B10
+remains the next implementation gate.
 
 ## Cross-gate dependency map
 

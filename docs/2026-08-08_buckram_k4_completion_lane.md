@@ -6,11 +6,11 @@
 WPT renderer's device-scale provider seam and has measured five selected
 reftests at scale 2; the known `border-collapse-double-border` mismatch
 classifier boundary remains uncredited. B8 is explicitly scoped to its static
-command, paint-phase, and focused scale-provider receipt. B9a closes the
-retained mutation-to-frame transaction for collapsed tables, with ScriptedDom
-fixtures for color, winning-width, and table-part mutations. Headed, complete
-writing-mode, multi-way-allocation, and complete WPT maps remain unmeasured;
-the broader B9 cleanup and closure work remains open. The lane closes K4 and
+command, paint-phase, and focused scale-provider receipt. B9 now has the
+retained mutation transaction, a selectable scripted Livery frame surface,
+and removal of the accepted collapsed-metrics deferral path. Headed,
+complete writing-mode, multi-way-allocation, and complete WPT maps remain
+unmeasured, so K4g6 acceptance closure remains open. The lane closes K4 and
 stops before K5 implementation.
 
 **Architectural authority:** [Buckram CSS layout engine
@@ -684,8 +684,9 @@ or writing mode change. A color-only change preserves geometry; a winning
 width change reruns K4c and K4d.
 
 Delete collapsed-as-separated sizing and paint paths, duplicate winner logic,
-and accepted K4g deferral variants. Remove the `table-layout` partial marker
-only after the collapsed K4c/K4d receipt passes.
+and accepted K4g deferral variants. B10 retains the `table-layout` marker and
+compatibility-bridge deletion, even after B9 removes the obsolete
+collapsed-metrics deferral.
 
 **Receipt:** source and command audits find one candidate grid, one winner
 selector, one metrics path, and one paint lowering. Mutation fixtures cannot
@@ -714,11 +715,52 @@ every completed frame, the paint-list generation equals the retained document
 generation and the current table ledger comes from that frame.
 
 `cargo test -p genet-livery --test collapsed_border_mutation --offline -j 1`
-passes this fixture. This is a retained core receipt using the real ScriptedDom
-mutation stream, not yet a browser-surface, headed, complete WPT, or cleanup
-receipt. B9 remains open for the remaining candidate-field matrix, external
-script host integration, and the named source/removal audits; B10 still owns
-bridge deletion and the `table-layout` marker.
+passes this fixture. This is the retained core receipt. B9b and B9c attach the
+external scripted surface and source removal receipt; B10 still owns bridge
+deletion and the `table-layout` marker.
+
+### B9b scripted Livery frame surface (2026-08-09)
+
+`LiveryCssom::frame` is the explicit renderer-provider surface for a scripted
+document using Livery. Before layout, it reconciles live styles and forwards
+the exact undrained DOM mutation slice to Livery's `IncrementalStyle`; only
+after it emits the matching paint list does it drain the host batch.
+`getComputedStyle` can observe the change but cannot consume that slice.
+Stylesheet, resource, viewport, and DOM changes invalidate the cached frame.
+
+The Boa fixture changes `currentcolor`, then a winning border width, then
+removes a cell. It proves the CSSOM read and following Livery frame use the
+same batch; color repaints without changing border rectangles, while width and
+removal produce new geometry. `cargo test -p genet-scripted --no-default-
+features --features livery --lib --offline -j 1` passes 19 tests.
+
+This is a selectable Livery surface, not a wholesale replacement of the
+incumbent scripted layout route. A host chooses `LiveryCssom::frame` when it
+needs that renderer; B9 does not claim a Fullweb cutover.
+
+### B9c accepted deferral removal and dynamic matrix (2026-08-09)
+
+`CollapsedPendingK4g`, `CollapsedBorderMetricsPendingK4g`, and
+`CollapsedBlockBorderMetricsPendingK4g` are removed from the Buckram sizing,
+row, fragment, and pipeline contracts. A live collapsed winner-lowering error
+is recorded as `TableShadowSkip::CollapsedBorder` before sizing, and the table
+does not re-enter as separated. `DeferredCollapsedBorders` remains: it is the
+real final table-paint phase, not a fallback.
+
+The retained matrix covers direction, vertical writing mode, row/column/group
+role origins, spans, `visibility: collapse`, append, reorder, and removal.
+It checks each completed frame carries that generation's table ledger and
+collapsed geometry. The source audit retains one conflict comparator
+(`compare_table_border_candidates`), one resolved grid, one metrics projection,
+and one collapsed paint lowering. `cargo test -p buckram --lib --offline -j 1`
+passes 186 tests; `cargo test -p genet-livery --test collapsed_border_mutation
+--offline -j 1` passes 2; and `cargo test -p genet-livery --lib --offline -j
+1` passes 83.
+
+This completes B9's code and focused receipts. Headed behavior and the fresh
+complete WPT and all-nine maps are still unmeasured K4g6 acceptance inputs;
+they cannot be represented as closure. B10 remains the next implementation
+gate.
 
 ## B10. K4h bridge deletion and closure
 

@@ -5045,10 +5045,9 @@ mod tests {
         let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
         let ledger = layout.table_shadow_ledger();
         assert_eq!(ledger.collapsed_metrics, 1, "{ledger:?}");
-        assert_eq!(
-            ledger.deferral_count(buckram::TableDeferral::CollapsedBorderMetricsPendingK4g),
-            0,
-            "K4g4 must consume B2's projected metrics rather than deferring: {ledger:?}"
+        assert!(
+            ledger.skipped.is_empty(),
+            "K4g4 must consume B2's projected metrics without a fallback: {ledger:?}"
         );
         assert_eq!(ledger.assigned, 1, "{ledger:?}");
         assert_eq!(ledger.honored, 1, "{ledger:?}");

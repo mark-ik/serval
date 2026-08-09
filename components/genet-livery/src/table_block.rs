@@ -162,41 +162,41 @@ where
     };
 
     let border_metrics = match computed.border_collapse {
-        BorderCollapse::Collapse => match collapsed_border_metrics {
-            None => TableBlockBorderMetrics::CollapsedPendingK4g,
-            Some(metrics) => {
-                let table_style = match table_cell_block_style(computed, axes, font_size, root) {
-                    Ok(style) => style,
-                    Err(error) => {
-                        ledger.skip(table, TableBlockSkip::DeferredInLowering(error));
-                        return None;
-                    },
-                };
-                let values = [
-                    table_style.offsets.padding_start,
-                    table_style.offsets.padding_end,
-                    metrics.table_outer.block_start,
-                    metrics.table_outer.block_end,
-                ];
-                if !values
-                    .iter()
-                    .all(|value| value.is_finite() && *value >= 0.0)
-                {
-                    ledger.skip(
-                        table,
-                        TableBlockSkip::Error(TableRowLayoutError::InvalidCellOutput {
-                            box_id: table,
-                        }),
-                    );
+        BorderCollapse::Collapse => {
+            // The inline lowering rejects and records a collapsed table whose
+            // winner grid failed before it can obtain an assignment. A block
+            // input therefore never has a separated or generic fallback.
+            let metrics = collapsed_border_metrics
+                .expect("an assigned collapsed table retains its winner-derived metrics");
+            let table_style = match table_cell_block_style(computed, axes, font_size, root) {
+                Ok(style) => style,
+                Err(error) => {
+                    ledger.skip(table, TableBlockSkip::DeferredInLowering(error));
                     return None;
-                }
-                TableBlockBorderMetrics::Collapsed(TableCollapsedBlockMetrics {
-                    table_padding_start: table_style.offsets.padding_start,
-                    table_padding_end: table_style.offsets.padding_end,
-                    outer_start: metrics.overflow.block_start,
-                    outer_end: metrics.overflow.block_end,
-                })
-            },
+                },
+            };
+            let values = [
+                table_style.offsets.padding_start,
+                table_style.offsets.padding_end,
+                metrics.table_outer.block_start,
+                metrics.table_outer.block_end,
+            ];
+            if !values
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0)
+            {
+                ledger.skip(
+                    table,
+                    TableBlockSkip::Error(TableRowLayoutError::InvalidCellOutput { box_id: table }),
+                );
+                return None;
+            }
+            TableBlockBorderMetrics::Collapsed(TableCollapsedBlockMetrics {
+                table_padding_start: table_style.offsets.padding_start,
+                table_padding_end: table_style.offsets.padding_end,
+                outer_start: metrics.overflow.block_start,
+                outer_end: metrics.overflow.block_end,
+            })
         },
         BorderCollapse::Separate => {
             // The table's own block-axis padding and border, lowered through

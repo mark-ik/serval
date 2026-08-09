@@ -75,7 +75,7 @@ pub enum TableShadowSkip {
     /// Buckram declined a used size for an explicitly named missing basis.
     AutomaticIndefinite(TableAutomaticInlineSizingIndefinite),
     /// K4g2 could not retain a collapsed-border winner grid. This is distinct
-    /// from K4g4's normal missing-metrics deferral and is never silent.
+    /// from a normal sizing deferral and is never silent.
     CollapsedBorder(CollapsedBorderLoweringError),
     Error(TableInlineSizingError),
 }
@@ -213,6 +213,13 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    // K4g produces the winner grid before either Buckram algorithm runs. A
+    // lowering failure is already recorded as `CollapsedBorder` by the caller;
+    // never reinterpret that table as `border-collapse: separate` here.
+    if computed.border_collapse == BorderCollapse::Collapse && collapsed_border_metrics.is_none() {
+        return None;
+    }
+
     if computed.table_layout == CssTableLayout::Fixed {
         let input = match fixed_input(
             dom,
@@ -499,9 +506,8 @@ where
     let root_font_size = LIVE_ROOT_FONT_SIZE;
     let border_metrics = match computed.border_collapse {
         BorderCollapse::Collapse => {
-            let metrics = collapsed_border_metrics.ok_or(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g,
-            ))?;
+            let metrics = collapsed_border_metrics
+                .expect("the caller rejects a collapsed table whose winner lowering failed");
             TableInlineBorderMetrics::Collapsed(collapsed_table_inline_metrics(
                 computed,
                 axes,

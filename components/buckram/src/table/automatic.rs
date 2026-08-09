@@ -1137,20 +1137,6 @@ mod tests {
         assert_eq!(measures_for(&ltr).columns, measures_for(&rtl).columns);
     }
 
-    #[test]
-    fn a_collapsed_border_remains_an_explicit_deferral() {
-        let grid = grid(vec![node(4, InternalTableRole::Cell, vec![])], &[]);
-        let mut automatic = input(&grid, vec![measure(grid.cells[0].source, 1.0, 1.0)]);
-        automatic.sizing.border_metrics =
-            super::super::TableInlineBorderMetrics::CollapsedPendingK4g;
-        assert_eq!(
-            measure_automatic_columns(&automatic),
-            Err(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g
-            ))
-        );
-    }
-
     /// K4f: a collapsed column still measures.
     ///
     /// K4f's stop rule is that `visibility: collapse` must not delete sizing

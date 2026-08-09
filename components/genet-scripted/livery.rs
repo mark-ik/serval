@@ -81,35 +81,45 @@ impl LiveryState {
 }
 
 fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
-    let Some(live) = state.live_sheets.as_mut() else {
+    if state.live_sheets.is_none() {
         return;
-    };
+    }
     let (base, pending) = host.dom.pending_mutations();
     let end = base.saturating_add(pending.len() as u64);
-    if live.mutation_cursor >= base && live.mutation_cursor == end {
-        return;
-    }
-    let resources = ResolvedDocumentResources::resolve_with_limits(
-        &host.dom,
-        Some(&live.document_url),
-        live.fetcher.as_ref(),
-        live.limits,
-    );
-    let resource_delta = resources.resource_delta_from(&live.resources);
-    if !resource_delta.is_empty()
-        && let Some(sink) = &live.resource_sink
-    {
-        sink.borrow_mut()
-            .replace_resources(&resources, &resource_delta);
-    }
-    if resources != live.resources {
+    let (resources, changed) = {
+        let live = state
+            .live_sheets
+            .as_mut()
+            .expect("checked live stylesheet source");
+        if live.mutation_cursor >= base && live.mutation_cursor == end {
+            return;
+        }
+        let resources = ResolvedDocumentResources::resolve_with_limits(
+            &host.dom,
+            Some(&live.document_url),
+            live.fetcher.as_ref(),
+            live.limits,
+        );
+        let changed = resources != live.resources;
+        if changed {
+            let resource_delta = resources.resource_delta_from(&live.resources);
+            if !resource_delta.is_empty()
+                && let Some(sink) = &live.resource_sink
+            {
+                sink.borrow_mut()
+                    .replace_resources(&resources, &resource_delta);
+            }
+            live.resources = resources.clone();
+        }
+        live.mutation_cursor = end;
+        (resources, changed)
+    };
+    if changed {
         state.styles.replace_author_sheets(&resources.stylesheets);
         state.document_sheets = state.styles.document_sheet_indexes();
         state.session.invalidate();
         state.invalidate_frame();
-        live.resources = resources;
     }
-    live.mutation_cursor = end;
 }
 
 /// A retained Livery stylesheet session installed on one scripted runtime.
@@ -338,13 +348,16 @@ impl LiveryCssom {
             state.invalidate_frame();
         }
         let start = state.mutation_cursor.saturating_sub(base) as usize;
-        state.session.update(
-            &host.dom,
-            &state.styles,
-            &state.device,
-            &state.interactions,
-            &pending[start..],
-        );
+        {
+            let LiveryState {
+                styles,
+                device,
+                interactions,
+                session,
+                ..
+            } = &mut *state;
+            session.update(&host.dom, styles, device, interactions, &pending[start..]);
+        }
         state.mutation_cursor = end;
 
         if state.render_cursor == end
@@ -354,13 +367,22 @@ impl LiveryCssom {
             return Ok(frame.clone());
         }
 
-        let styles = resolve_container_query_styles(
-            &host.dom,
-            state.session.styles(),
-            &state.styles,
-            &state.device,
-            &state.interactions,
-        )?;
+        let styles = {
+            let LiveryState {
+                styles,
+                device,
+                interactions,
+                session,
+                ..
+            } = &mut *state;
+            resolve_container_query_styles(
+                &host.dom,
+                session.styles(),
+                styles,
+                device,
+                interactions,
+            )?
+        };
         let fragments = layout(&host.dom, &styles, viewport.0 as f32, viewport.1 as f32)?;
         state.render_generation = state.render_generation.saturating_add(1);
         let frame = emit_paint_list(
@@ -847,6 +869,7 @@ mod tests {
     use genet_livery::ViewportSize;
     use genet_static_dom::StaticDocument;
     use layout_dom_api::LayoutDomMut;
+    use paint_list_api::{ColorF, PaintCmd, PaintList};
     use script_engine_boa::BoaEngine;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -894,6 +917,98 @@ mod tests {
         ) {
             self.0.borrow_mut().push(delta.clone());
         }
+    }
+
+    fn border_rectangles(frame: &LiveryPaintList, color: ColorF) -> Vec<[f32; 4]> {
+        frame
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                PaintCmd::DrawRect(rect) if rect.color == color => Some([
+                    rect.placement.bounds.min.x,
+                    rect.placement.bounds.min.y,
+                    rect.placement.bounds.max.x,
+                    rect.placement.bounds.max.y,
+                ]),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn boa_livery_frame_consumes_the_same_collapsed_border_batch_as_cssom() {
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse(
+            "<html><body><table id='table'><tbody><tr id='row'>\
+             <td id='left'>left</td><td id='right'>right</td>\
+             </tr></tbody></table></body></html>",
+        ));
+        let cssom = LiveryCssom::install(
+            &mut runtime,
+            &[
+                "body { margin: 0; } table { border-collapse: collapse; color: black; } \
+                 td { width: 60px; height: 30px; border: 4px solid currentcolor; }",
+            ],
+            Device::screen(220.0, 100.0),
+        );
+
+        let initial = cssom
+            .frame(&mut runtime, 220, 100)
+            .expect("initial collapsed frame");
+        let black = border_rectangles(&initial, ColorF::BLACK);
+        assert!(!black.is_empty(), "initial frame paints collapsed borders");
+        assert!(
+            runtime.host().borrow().dom.pending_mutations().1.is_empty(),
+            "the completed frame drains its initial DOM batch"
+        );
+        let cached = cssom.frame(&mut runtime, 220, 100).expect("cached frame");
+        assert_eq!(cached.generation_id(), initial.generation_id());
+
+        runtime
+            .eval(
+                "var table = document.getElementById('table'); \
+                 table.style.color = 'red'; \
+                 console.log(getComputedStyle(table).color);",
+            )
+            .expect("scripted color mutation and CSSOM read");
+        assert!(
+            !runtime.host().borrow().dom.pending_mutations().1.is_empty(),
+            "CSSOM observes the batch without stealing it from the frame"
+        );
+        let recolored = cssom
+            .frame(&mut runtime, 220, 100)
+            .expect("recolored collapsed frame");
+        let red = border_rectangles(&recolored, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(red, black, "color-only mutation preserves geometry");
+        assert!(
+            runtime.host().borrow().dom.pending_mutations().1.is_empty(),
+            "the same batch is drained only after its paint frame"
+        );
+
+        runtime
+            .eval("document.getElementById('left').style.border = '12px solid red';")
+            .expect("scripted winner-width mutation");
+        let wider = cssom
+            .frame(&mut runtime, 220, 100)
+            .expect("wider collapsed frame");
+        let wider_red = border_rectangles(&wider, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        assert_ne!(wider_red, red, "winner-width mutation rebuilds geometry");
+
+        runtime
+            .eval(
+                "document.getElementById('row')\
+                    .removeChild(document.getElementById('right'));",
+            )
+            .expect("scripted cell removal");
+        let one_cell = cssom
+            .frame(&mut runtime, 220, 100)
+            .expect("cell removal frame");
+        assert_ne!(
+            border_rectangles(&one_cell, ColorF::new(1.0, 0.0, 0.0, 1.0)),
+            wider_red,
+            "removed cells cannot retain prior winner geometry"
+        );
+        assert_eq!(runtime.host().borrow().console, vec!["rgb(255, 0, 0)"]);
     }
 
     #[test]

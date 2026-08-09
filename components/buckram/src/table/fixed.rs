@@ -8,9 +8,9 @@
 use crate::BoxId;
 
 use super::{
-    InlineSizeConstraint, TableBoxSizing, TableCellInlineMeasure, TableDeferral,
-    TableInlineBorderMetrics, TableInlineConstraints, TableInlineProperty, TableInlineSizingError,
-    TableInlineSizingInput, TableInlineSizingResult,
+    InlineSizeConstraint, TableBoxSizing, TableCellInlineMeasure, TableInlineBorderMetrics,
+    TableInlineConstraints, TableInlineProperty, TableInlineSizingError, TableInlineSizingInput,
+    TableInlineSizingResult,
 };
 
 /// CSS constraints for one normalized K4b column track.
@@ -347,11 +347,6 @@ fn border_metrics(
                 .ok_or(TableInlineSizingError::InvalidBorderMetrics)?,
             metrics.outer_start + metrics.outer_end,
         ),
-        TableInlineBorderMetrics::CollapsedPendingK4g => {
-            return Err(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g,
-            ));
-        },
     };
     let undistributable = sizing.undistributable_inline_size()?;
     if !border_spacing.is_finite() || border_spacing < 0.0 {
@@ -820,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_width_falls_back_without_fixed_arithmetic_and_collapsed_metrics_defer() {
+    fn auto_width_falls_back_without_fixed_arithmetic() {
         let grid = grid(false);
         let mut automatic = input(&grid, 300.0);
         automatic.sizing.table_constraints.preferred = InlineSizeConstraint::Auto;
@@ -828,15 +823,6 @@ mod tests {
             size_fixed_table_inline(&automatic),
             Ok(TableFixedInlineSizingOutcome::Automatic(
                 TableFixedLayoutFallback::TableWidthAuto
-            ))
-        );
-
-        let mut collapsed = input(&grid, 300.0);
-        collapsed.sizing.border_metrics = TableInlineBorderMetrics::CollapsedPendingK4g;
-        assert_eq!(
-            size_fixed_table_inline(&collapsed),
-            Err(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g
             ))
         );
     }

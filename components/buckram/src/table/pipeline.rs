@@ -585,35 +585,4 @@ mod tests {
             "a border-box height already contains the padding"
         );
     }
-
-    /// Collapsed borders defer before any phase runs, so a deferral can never
-    /// be read as a laid-out table.
-    #[test]
-    fn collapsed_metrics_defer_the_whole_pipeline() {
-        let case = Case::new(&[&[3]], vec![100.0]);
-        let mut input = case.input(TableBlockConstraint::Auto);
-        input.border_metrics = TableBlockBorderMetrics::CollapsedPendingK4g;
-        let mut formatter = ScriptedFormatter {
-            cells: vec![(10.0, None)],
-            second_pass: 0.0,
-            requests: Vec::new(),
-        };
-        let error = layout_table_block(
-            &input,
-            &[TableCellBlockStyle::default()],
-            &[TableBlockConstraint::Auto],
-            0.0,
-            |_, _| 0.0,
-            &mut formatter,
-        )
-        .expect_err("collapsed metrics must defer");
-        assert!(
-            matches!(error, TableRowLayoutError::Deferral(_)),
-            "{error:?}"
-        );
-        assert!(
-            formatter.requests.is_empty(),
-            "no cell may be formatted behind a deferral"
-        );
-    }
 }

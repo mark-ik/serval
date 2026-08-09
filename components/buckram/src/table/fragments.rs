@@ -13,8 +13,8 @@
 use crate::{BoxId, LogicalRect};
 
 use super::{
-    TableAlignment, TableBlockBorderMetrics, TableBlockDeferral, TableBlockSizingInput,
-    TableCellLayoutOutput, TableRowLayoutError, TableRowSizing, TableTrackGroupKind,
+    TableAlignment, TableBlockBorderMetrics, TableBlockSizingInput, TableCellLayoutOutput,
+    TableRowLayoutError, TableRowSizing, TableTrackGroupKind,
 };
 
 /// The role a table-internal fragment plays in the table model.
@@ -124,15 +124,6 @@ pub fn emit_table_fragments(
             actual: alignment.cells.len().min(cell_outputs.len()),
         });
     }
-    if matches!(
-        input.border_metrics,
-        TableBlockBorderMetrics::CollapsedPendingK4g
-    ) {
-        return Err(TableRowLayoutError::Deferral(
-            TableBlockDeferral::CollapsedBlockBorderMetricsPendingK4g,
-        ));
-    }
-
     let grid_rect = LogicalRect {
         inline_start: 0.0,
         block_start: 0.0,
@@ -141,9 +132,7 @@ pub fn emit_table_fragments(
     };
     let (overflow_block_start, overflow_block_end) = match input.border_metrics {
         TableBlockBorderMetrics::Collapsed(metrics) => (metrics.outer_start, metrics.outer_end),
-        TableBlockBorderMetrics::Separated(_) | TableBlockBorderMetrics::CollapsedPendingK4g => {
-            (0.0, 0.0)
-        },
+        TableBlockBorderMetrics::Separated(_) => (0.0, 0.0),
     };
     let grid_overflow = LogicalRect {
         inline_start: -input.inline.overflow_inline_start,
@@ -619,82 +608,6 @@ mod tests {
         assert!(
             (fragment.rect.block_size - expected).abs() < 0.05,
             "one fragment must cover the whole span: {fragment:?}"
-        );
-    }
-
-    #[test]
-    fn collapsed_block_metrics_defer_before_any_fragment_is_emitted() {
-        let grid = grid();
-        let inline = {
-            let sizing = TableInlineSizingInput {
-                grid: &grid,
-                available_inline_size: Some(100.0),
-                table_constraints: super::super::TableInlineConstraints::default(),
-                border_metrics: super::super::TableInlineBorderMetrics::Separated(
-                    super::super::TableSeparatedBorderMetrics::default(),
-                ),
-                caption_min: super::super::CaptionMinContribution::NoCaption,
-                track_visibility: TableTrackVisibility::all_visible(&grid),
-            };
-            TableInlineSizingResult::new(
-                &sizing,
-                IntrinsicSizes::new(100.0, 100.0).expect("intrinsic pair"),
-                100.0,
-                100.0,
-                vec![60.0, 40.0],
-            )
-            .expect("inline result")
-        };
-        let input = TableBlockSizingInput {
-            grid: &grid,
-            inline: &inline,
-            table_constraint: TableBlockConstraint::Auto,
-            table_box_sizing: crate::TableBoxSizing::BorderBox,
-            row_group_constraints: &[],
-            border_metrics: TableBlockBorderMetrics::CollapsedPendingK4g,
-            available_block_size: None,
-            track_visibility: TableTrackVisibility::all_visible(&grid),
-        };
-        let sizing = TableRowSizing {
-            used_table_block_size: 0.0,
-            row_offsets: vec![0.0; grid.rows.len()],
-            row_sizes: vec![0.0; grid.rows.len()],
-        };
-        // Well-formed inputs, so the collapsed-border deferral is what the
-        // emitter actually reaches rather than a length check.
-        let alignment = TableAlignment {
-            cells: grid
-                .cells
-                .iter()
-                .map(|cell| super::super::TableCellPlacement {
-                    box_id: cell.source,
-                    row_start: cell.row,
-                    row_span: cell.row_span,
-                    column_start: cell.column,
-                    column_span: cell.column_span,
-                    rect: LogicalRect::default(),
-                    content_block_offset: 0.0,
-                })
-                .collect(),
-            rows: vec![
-                super::super::TableRowBaseline {
-                    baseline: 0.0,
-                    from_aligned_cell: false,
-                };
-                grid.rows.len()
-            ],
-            baselines: Baselines::synthesized_from_block_end(0.0),
-        };
-        let outputs = grid
-            .cells
-            .iter()
-            .map(|cell| (cell.source, output(0.0, LogicalRect::default())))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            emit_table_fragments(&input, &sizing, &alignment, &outputs, 0.0),
-            Err(TableRowLayoutError::Deferral(
-                TableBlockDeferral::CollapsedBlockBorderMetricsPendingK4g
-            ))
         );
     }
 }

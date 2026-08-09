@@ -117,7 +117,6 @@ impl TableSeparatedBlockMetrics {
 pub enum TableBlockBorderMetrics {
     Separated(TableSeparatedBlockMetrics),
     Collapsed(TableCollapsedBlockMetrics),
-    CollapsedPendingK4g,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -143,11 +142,6 @@ fn resolved_block_metrics(
             block_spacing: 0.0,
             undistributable: 0.0,
         },
-        TableBlockBorderMetrics::CollapsedPendingK4g => {
-            return Err(TableRowLayoutError::Deferral(
-                TableBlockDeferral::CollapsedBlockBorderMetricsPendingK4g,
-            ));
-        },
     };
     let undistributable = match metrics {
         TableBlockBorderMetrics::Separated(metrics) => {
@@ -156,7 +150,6 @@ fn resolved_block_metrics(
         TableBlockBorderMetrics::Collapsed(metrics) => {
             metrics.undistributable_block_size(row_count)
         },
-        TableBlockBorderMetrics::CollapsedPendingK4g => unreachable!(),
     };
     let Some(undistributable) = undistributable else {
         return Err(TableRowLayoutError::InvalidCellOutput { box_id: table });
@@ -174,7 +167,6 @@ pub enum TableBlockDeferral {
     PercentageBlockBasisIndefinite,
     PercentageBlockCycle,
     FragmentationDependentRowspan,
-    CollapsedBlockBorderMetricsPendingK4g,
 }
 
 /// Errors and deferrals from the row-layout boundary.
@@ -1523,29 +1515,8 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_metrics_and_bad_spans_are_explicit() {
+    fn bad_spans_are_explicit() {
         let grid = grid();
-        let inline = inline_result(&grid, vec![100.0, 80.0, 60.0, 40.0]);
-        let mut formatter = RecordingFormatter {
-            requests: Vec::new(),
-        };
-        let collapsed = TableBlockSizingInput {
-            grid: &grid,
-            inline: &inline,
-            table_constraint: TableBlockConstraint::Auto,
-            table_box_sizing: TableBoxSizing::BorderBox,
-            row_group_constraints: &[],
-            border_metrics: TableBlockBorderMetrics::CollapsedPendingK4g,
-            available_block_size: None,
-            track_visibility: TableTrackVisibility::all_visible(&grid),
-        };
-        assert_eq!(
-            format_table_cells(&collapsed, 0.0, |_, _| 0.0, &mut formatter),
-            Err(TableRowLayoutError::Deferral(
-                TableBlockDeferral::CollapsedBlockBorderMetricsPendingK4g
-            ))
-        );
-
         // A span beyond K4c's columns is an error, never a clamp.
         let short = inline_result(&grid, vec![100.0, 80.0, 60.0, 40.0]);
         assert!(matches!(
@@ -2244,40 +2215,6 @@ mod tests {
             }
             previous = sizing.row_sizes;
         }
-    }
-
-    #[test]
-    fn collapsed_block_metrics_defer_before_any_row_sizing() {
-        let grid = multi_row_grid(&[&[3]], &[]);
-        let inline = inline_result(&grid, vec![10.0]);
-        let input = TableBlockSizingInput {
-            grid: &grid,
-            inline: &inline,
-            table_constraint: TableBlockConstraint::Auto,
-            table_box_sizing: TableBoxSizing::BorderBox,
-            row_group_constraints: &[],
-            border_metrics: TableBlockBorderMetrics::CollapsedPendingK4g,
-            available_block_size: None,
-            track_visibility: TableTrackVisibility::all_visible(&grid),
-        };
-        let measures = vec![TableRowMeasure {
-            row: grid.rows[0].source,
-            min_block_size: 10.0,
-            preferred: TableBlockConstraint::Auto,
-            constrained: false,
-        }];
-        let paired = vec![(grid.cells[0].source, output(10.0, 0.0))];
-        assert_eq!(
-            size_table_rows(
-                &input,
-                &measures,
-                &[TableCellBlockStyle::default()],
-                &paired
-            ),
-            Err(TableRowLayoutError::Deferral(
-                TableBlockDeferral::CollapsedBlockBorderMetricsPendingK4g
-            ))
-        );
     }
 
     /// A formatter that resolves a percentage child against whatever basis

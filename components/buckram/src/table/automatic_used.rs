@@ -8,9 +8,8 @@
 use crate::{IntrinsicSizeCache, IntrinsicSizes, LogicalAxis};
 
 use super::{
-    InlineSizeConstraint, TableAutomaticColumnMeasures, TableBoxSizing, TableDeferral,
-    TableInlineBorderMetrics, TableInlineProperty, TableInlineSizingError, TableInlineSizingInput,
-    TableInlineSizingResult,
+    InlineSizeConstraint, TableAutomaticColumnMeasures, TableBoxSizing, TableInlineBorderMetrics,
+    TableInlineProperty, TableInlineSizingError, TableInlineSizingInput, TableInlineSizingResult,
 };
 
 /// Complete K4c4 input. K4c3's measures retain the K4b logical column order
@@ -186,11 +185,6 @@ fn border_metrics(
     let table_offsets = match sizing.border_metrics {
         TableInlineBorderMetrics::Separated(metrics) => metrics.table_offsets,
         TableInlineBorderMetrics::Collapsed(metrics) => metrics.table_padding,
-        TableInlineBorderMetrics::CollapsedPendingK4g => {
-            return Err(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g,
-            ));
-        },
     };
     let table_offsets = table_offsets
         .total(sizing.table_padding_basis()?)
@@ -454,8 +448,8 @@ mod tests {
     use crate::{
         AffineLengthPercentage, BoxGeneration, BoxOrigin, BoxTreeInput, CssBoxTree, Direction,
         DisplayInside, DisplayOutside, DisplayRole, FlowAxes, InternalTableRole, IntrinsicSizeKind,
-        IntrinsicSizeQuery, PositioningScheme, TableCollapsedBorderMetrics, TableGrid,
-        TableGridInputs, TableSeparatedBorderMetrics, TableTrackVisibility, WritingMode,
+        IntrinsicSizeQuery, PositioningScheme, TableCollapsedBorderMetrics, TableDeferral,
+        TableGrid, TableGridInputs, TableSeparatedBorderMetrics, TableTrackVisibility, WritingMode,
         generate_box_tree,
     };
 

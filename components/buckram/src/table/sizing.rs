@@ -259,7 +259,6 @@ impl TableSeparatedBorderMetrics {
 pub enum TableInlineBorderMetrics {
     Separated(TableSeparatedBorderMetrics),
     Collapsed(TableCollapsedBorderMetrics),
-    CollapsedPendingK4g,
 }
 
 /// Caption minimum information deliberately held apart from table-grid
@@ -384,7 +383,6 @@ pub fn collapse_columns(
 pub enum TableDeferral {
     CaptionMinPendingK4e,
     TrackVisibilityPendingK4f,
-    CollapsedBorderMetricsPendingK4g,
     /// A padding percentage whose containing-block basis is not yet available.
     /// Automatic sizing measures cells before the table width exists, so the
     /// dependency is genuinely circular there and stays explicit.
@@ -408,8 +406,7 @@ impl<'a> TableInlineSizingInput<'a> {
             TableInlineBorderMetrics::Collapsed(metrics) => {
                 (metrics.outer_start, metrics.outer_end)
             },
-            TableInlineBorderMetrics::Separated(_)
-            | TableInlineBorderMetrics::CollapsedPendingK4g => (0.0, 0.0),
+            TableInlineBorderMetrics::Separated(_) => (0.0, 0.0),
         }
     }
 
@@ -419,11 +416,6 @@ impl<'a> TableInlineSizingInput<'a> {
         let offsets = match self.border_metrics {
             TableInlineBorderMetrics::Separated(metrics) => metrics.table_offsets,
             TableInlineBorderMetrics::Collapsed(metrics) => metrics.table_padding,
-            TableInlineBorderMetrics::CollapsedPendingK4g => {
-                return Err(TableInlineSizingError::Deferral(
-                    TableDeferral::CollapsedBorderMetricsPendingK4g,
-                ));
-            },
         };
         match self.available_inline_size {
             Some(basis) => Ok(basis),
@@ -448,9 +440,6 @@ impl<'a> TableInlineSizingInput<'a> {
             TableInlineBorderMetrics::Collapsed(metrics) => metrics
                 .undistributable_inline_size(basis)
                 .ok_or(TableInlineSizingError::InvalidBorderMetrics),
-            TableInlineBorderMetrics::CollapsedPendingK4g => Err(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g,
-            )),
         }
     }
 }
@@ -997,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn separated_spacing_uses_k4b_column_count_and_collapsed_metrics_defer() {
+    fn separated_spacing_uses_k4b_column_count() {
         let (grid, _) = sample_grid();
         let mut input = input(&grid);
         input.border_metrics = TableInlineBorderMetrics::Separated(TableSeparatedBorderMetrics {
@@ -1010,14 +999,6 @@ mod tests {
             inline_spacing: 5.0,
         });
         assert_eq!(input.undistributable_inline_size(), Ok(20.0));
-
-        input.border_metrics = TableInlineBorderMetrics::CollapsedPendingK4g;
-        assert_eq!(
-            input.undistributable_inline_size(),
-            Err(TableInlineSizingError::Deferral(
-                TableDeferral::CollapsedBorderMetricsPendingK4g
-            ))
-        );
     }
 
     #[derive(Default)]
