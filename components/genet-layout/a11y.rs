@@ -180,6 +180,46 @@ where
     }
 }
 
+/// The text a `<label>` contributes as a name: everything under it, **except**
+/// the text inside the control it wraps.
+///
+/// Direct text alone is not enough — a caption is routinely wrapped for
+/// styling, as `<label><div>Board revision</div><input></label>`, and the label
+/// would then contribute nothing. Excluding embedded controls is what keeps the
+/// name stable: a `TextInput` renders its buffer as the `<input>`'s text, so
+/// folding that in would rename the field to whatever had been typed into it.
+fn label_text<D>(dom: &D, node: D::NodeId) -> String
+where
+    D: LayoutDom,
+{
+    fn collect<D: LayoutDom>(dom: &D, node: D::NodeId, out: &mut String) {
+        for child in dom.dom_children(node) {
+            match dom.kind(child) {
+                NodeKind::Text => {
+                    if let Some(text) = dom.text(child) {
+                        out.push_str(text);
+                    }
+                }
+                NodeKind::Element => {
+                    let is_control = dom.element_name(child).is_some_and(|q| {
+                        matches!(
+                            q.local.as_ref(),
+                            "input" | "textarea" | "select" | "button"
+                        )
+                    });
+                    if !is_control {
+                        collect(dom, child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = String::new();
+    collect(dom, node, &mut out);
+    out.trim().to_string()
+}
+
 fn direct_text<D>(dom: &D, node: D::NodeId) -> String
 where
     D: LayoutDom,
@@ -333,7 +373,7 @@ where
     let is_label = dom
         .element_name(node)
         .is_some_and(|q| q.local.as_ref() == "label");
-    let own_text = if is_label { direct_text(dom, node) } else { String::new() };
+    let own_text = if is_label { label_text(dom, node) } else { String::new() };
     let child_label: Option<&str> = if is_label && !own_text.is_empty() {
         Some(own_text.as_str())
     } else {
