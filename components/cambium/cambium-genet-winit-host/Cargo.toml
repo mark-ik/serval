@@ -1,0 +1,29 @@
+[package]
+name = "cambium-genet-winit-host"
+version = "0.1.0"
+description = "The single-root Cambium desktop host: winit lifecycle, genet layout/paint/present, input routing, and AccessKit sync over one GenetAppRunner"
+edition.workspace = true
+rust-version = "1.92"
+license = "MPL-2.0"
+repository = "https://github.com/merely-made/genet"
+# Rides genet-layout / genet-winit-host, which inherit genet's publish = false,
+# so this host can never publish either — the same posture as
+# cambium-winit-a11y, and the reason cambium-winit stays a separate thin
+# published crate. Consumers take this from genet.git by branch.
+publish = false
+
+[dependencies]
+meristem = { version = "0.1.0", path = "../meristem" }
+cambium = { version = "0.3.3", path = "../cambium" }
+cambium-winit = { version = "0.3.0", path = "../cambium-winit" }
+cambium-winit-a11y = { version = "0.3.0", path = "../cambium-winit-a11y" }
+sprigging = { version = "0.2.1", path = "../sprigging" }
+genet-layout = { path = "../../genet-layout" }
+genet-scripted-dom = { path = "../../genet-scripted-dom" }
+genet-winit-host = { path = "../../genet-winit-host" }
+layout_dom_api = { package = "layout-dom-api", path = "../../shared/layout-dom" }
+netrender = { workspace = true }
+paint_list_api = { workspace = true }
+paint_list_render = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }

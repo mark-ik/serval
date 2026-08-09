@@ -29,27 +29,27 @@ Verified on 2026-07-22:
 | --- | --- | --- | --- |
 | `meristem` | 0.1.1 | 0.1.1 | current |
 | `sprigging` | 0.2.1 | 0.2.1 | current |
-| `cambium` | 0.3.2 | 0.3.2 | current |
+| `cambium` | 0.3.3 | 0.3.3 | current (published 2026-08-09; 0.3.2 lacked the IME composition surface) |
 | `cambium-nematic` | 0.3.1 | 0.3.1 | current |
-| `cambium-winit` | 0.3.0 | 0.1.0 installable; 0.2.0 **yanked** | publishable, unpublished |
+| `cambium-winit` | 0.3.0 | 0.3.0 | current (published 2026-08-09; 0.2.0 remains yanked) |
 | `cambium-winit-a11y` | 0.3.0 | never published | `publish = false` by design |
 
-`cambium-winit` 0.3.0 became publishable on 2026-07-26, when the
-accessibility host moved out to `cambium-winit-a11y` exactly because
-`genet-layout` and `genet-winit-host` inherit Genet's `publish = false`.
-This document's earlier guidance ("keep its published line at 0.2.0 until
-that dependency closes") is superseded: the dependency closed with that
-split, and 0.2.0 is yanked on crates.io, so the installable registry line is
-0.1.0 until 0.3.0 ships. `cambium-winit-a11y` can never publish, and that is
-the reason it exists: holding the genet-coupled half keeps `cambium-winit`
-down to `cambium` + `winit`.
+The registry graph resolves as of 2026-08-09. The history, kept because it
+explains the yank and the split: `cambium-winit` 0.3.0 became publishable on
+2026-07-26, when the accessibility host moved out to `cambium-winit-a11y`
+exactly because `genet-layout` and `genet-winit-host` inherit Genet's
+`publish = false`. Publishing it then surfaced a second defect: the local
+`cambium` had grown the IME composition surface after 0.3.2 shipped, so
+package verification failed against the registry; `cambium` 0.3.3 publishes
+that state under its own number and `cambium-winit` 0.3.0 requires it.
+`cambium-winit-a11y` can never publish, and that is the reason it exists:
+holding the genet-coupled half keeps `cambium-winit` down to `cambium` +
+`winit`.
 
-Until `cambium-winit` 0.3.0 is published, the registry graph does not
-resolve into a usable input-mapped host stack. Consumers ride the git-first
-rule regardless (every sibling takes the family from genet.git by branch,
-per the 2026-07-26 ruling); the registry serves external consumers only.
-Cambium Nematic's release boundary is Cambium plus the protocol AST package,
-without Genet's layout or rendering engine.
+Consumers still ride the git-first rule (every sibling takes the family from
+genet.git by branch, per the 2026-07-26 ruling); the registry serves
+external consumers. Cambium Nematic's release boundary is Cambium plus the
+protocol AST package, without Genet's layout or rendering engine.
 
 ## Custom-leaf protocol
 
