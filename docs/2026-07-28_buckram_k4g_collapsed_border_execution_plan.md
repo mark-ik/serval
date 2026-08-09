@@ -7,8 +7,9 @@ receipts in the serial completion lane. K4g5c adds a WPT renderer device-scale
 provider, with five selected scale-2 reftests passing and the known double
 border mismatch classifier still uncredited. K4g5 is explicitly scoped to its
 static and focused scale-provider receipt; headed, complete writing-mode,
-multi-way allocation, and full WPT maps remain K4g6 acceptance inputs. K4g6
-is not started.
+multi-way allocation, and full WPT maps remain K4g6 acceptance inputs. K4g6a
+has a retained mutation-to-frame receipt for color, winning-width, and
+table-part changes. The broader K4g6 closure is open.
 
 **Parent plan:** [Buckram K4 CSS tables execution plan](2026-07-28_buckram_k4_css_tables_execution_plan.md)
 
@@ -827,10 +828,9 @@ Scale-1 self-matched visual probes cover solid, style family, joins, writing
 modes, direction, and the paragraph-before-table regression in
 `testing/genet/buckram-b8-wpt`. They are dump aids, not independent reftest
 proof; the direction image does not prove a direction tiebreak. The current
-WPT renderer fixes its HiDPI scale at 1, so scale-2 verification requires a
-separate renderer scale-provider seam. K4g6 remains unopened and this receipt
-does not claim headed, scale-2, complete writing-mode, multi-way allocation,
-or complete-map conformance.
+WPT renderer at this receipt's close fixed its HiDPI scale at 1; K4g5c below
+supplies the separate scale-provider seam. This receipt does not claim headed,
+complete writing-mode, multi-way allocation, or complete-map conformance.
 
 ### K4g5c renderer scale-provider receipt (2026-08-09)
 
@@ -924,6 +924,34 @@ The accepted K4g6 tree contains:
 
 Only named K4h positioning and K6 fragmentation cases remain outside the
 accepted unfragmented collapsed-border model.
+
+### K4g6a retained mutation transaction receipt (2026-08-09)
+
+**Implementation checkpoint:** `4c1474f9e32` includes the B9a source beside
+unrelated Cambium host input work; it is not presented as an isolated K4g6
+commit.
+
+`LiveryDocument` now owns an exact mutation transaction for any `LayoutDomMut`
+document. `mutate_dom` performs the DOM operation, drains its `DomMutation`
+batch, and forwards it to `apply_dom_mutations`. The latter clears retained
+layout and paint, updates the style plane, and makes the following `frame`
+rebuild Buckram candidates, winners, metrics, geometry, and paint together.
+The implementation is deliberately a full-layout correctness path, not an
+incremental table-layout claim.
+
+The ScriptedDom receipt exercises a real collapsed two-cell table. A
+`currentcolor` mutation repaints each border while preserving the exact border
+rectangle geometry. A winning-width mutation produces new geometry. Cell,
+column, row, and group removal each run as their own transaction; once the row
+and group are removed, the old red collapsed-border rectangles are gone. Each
+paint list's generation equals the retained document's generation and its
+table ledger belongs to that frame.
+
+`cargo test -p genet-livery --test collapsed_border_mutation --offline -j 1`
+passes. This opens, but does not close, K4g6: the full candidate-field matrix,
+external scripted-surface integration, source/removal audit, and complete WPT
+maps remain required. K4h still owns bridge deletion and the `table-layout`
+marker.
 
 ## Cross-gate dependency map
 

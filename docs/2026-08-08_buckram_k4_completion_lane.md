@@ -6,10 +6,12 @@
 WPT renderer's device-scale provider seam and has measured five selected
 reftests at scale 2; the known `border-collapse-double-border` mismatch
 classifier boundary remains uncredited. B8 is explicitly scoped to its static
-command, paint-phase, and focused scale-provider receipt. Headed, complete
-writing-mode, multi-way-allocation, and complete WPT maps are still
-unmeasured B9 inputs. B9 is not started. The lane closes K4 and stops before
-K5 implementation.
+command, paint-phase, and focused scale-provider receipt. B9a closes the
+retained mutation-to-frame transaction for collapsed tables, with ScriptedDom
+fixtures for color, winning-width, and table-part mutations. Headed, complete
+writing-mode, multi-way-allocation, and complete WPT maps remain unmeasured;
+the broader B9 cleanup and closure work remains open. The lane closes K4 and
+stops before K5 implementation.
 
 **Architectural authority:** [Buckram CSS layout engine
 plan](2026-07-26_buckram_css_layout_engine_plan.md)
@@ -634,10 +636,9 @@ writing-mode, direction, and the paragraph-before-table phase case under
 `testing/genet/buckram-b8-wpt`. These are self-matched dump enablers and
 visual receipts, not independent reftest conformance. In particular, the
 direction probe renders both directions but does not prove a direction
-tiebreak. The WPT renderer still fixes its HiDPI scale at 1, so scale 2 needs
-a separate renderer scale-provider seam. No scale-2, headed, full
-writing-mode, multi-way-allocation, or complete-map claim is made here; B9
-remains unopened.
+tiebreak. At this receipt's close the WPT renderer fixed its HiDPI scale at 1;
+B8c below supplies the separate scale-provider seam. No headed, full
+writing-mode, multi-way-allocation, or complete-map claim is made here.
 
 ### B8c renderer scale-provider receipt (2026-08-09)
 
@@ -689,6 +690,35 @@ only after the collapsed K4c/K4d receipt passes.
 **Receipt:** source and command audits find one candidate grid, one winner
 selector, one metrics path, and one paint lowering. Mutation fixtures cannot
 leave layout and paint on different winner generations.
+
+### B9a retained mutation transaction (2026-08-09)
+
+**Implementation checkpoint:** `4c1474f9e32` also contains unrelated Cambium
+host input work, so it records the B9a source without pretending to be an
+isolated gate commit.
+
+`LiveryDocument::mutate_dom` is the retained owner for a mutation batch. It
+runs a caller's `LayoutDomMut` operation, drains its exact `DomMutation`
+records, clears cached layout and paint, updates `IncrementalStyle`, and leaves
+the next `frame` to rebuild Buckram candidates, winners, metrics, geometry,
+and paint together. `apply_dom_mutations` is also public for a host that has
+already drained its batch. The current safe path intentionally rebuilds the
+whole layout; it does not claim incremental table geometry.
+
+The ScriptedDom fixture starts with a collapsed two-cell table. It proves that
+a `currentcolor` change changes border paint while preserving all border
+rectangle geometry, then proves a winning-width change produces fresh
+geometry. It removes a cell, column, row, and group in separate transactions;
+after row and group removal the previous red border rectangles are absent. On
+every completed frame, the paint-list generation equals the retained document
+generation and the current table ledger comes from that frame.
+
+`cargo test -p genet-livery --test collapsed_border_mutation --offline -j 1`
+passes this fixture. This is a retained core receipt using the real ScriptedDom
+mutation stream, not yet a browser-surface, headed, complete WPT, or cleanup
+receipt. B9 remains open for the remaining candidate-field matrix, external
+script host integration, and the named source/removal audits; B10 still owns
+bridge deletion and the `table-layout` marker.
 
 ## B10. K4h bridge deletion and closure
 
