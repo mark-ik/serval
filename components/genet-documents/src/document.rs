@@ -11,6 +11,10 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "netfetch")]
+use std::sync::Arc;
+use std::time::Duration;
+
 use genet_document_resources::{ResolvedDocumentResources, ResolvedStylesheet, ResourceKind};
 use genet_host_api::{ResourceFetcher, ResourceResponse};
 use genet_layout::{
@@ -31,20 +35,102 @@ use netrender::Scene;
 /// failed read and a clean `None` (V1 is local-first by default).
 pub struct LocalFetcher;
 
+/// The host-owned policy shared by one remote document-resource client.
+///
+/// It applies equally to a document, a linked stylesheet, and the image/font
+/// dependencies that stylesheet discovers. The resolver remains serial while
+/// it builds a graph; concurrent document sessions share the transport bound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceFetchPolicy {
+    /// Maximum redirects followed for one request. `0` accepts only the
+    /// original response and rejects any redirect.
+    pub max_redirects: u32,
+    /// Maximum in-flight HTTP resource requests for this client. A zero value
+    /// is normalized to one when the client is built.
+    pub max_concurrent_fetches: usize,
+    /// Maximum decoded body size retained at the synchronous resource seam.
+    pub max_response_bytes: usize,
+    /// End-to-end request and body-collection deadline.
+    pub timeout: Duration,
+}
+
+impl Default for ResourceFetchPolicy {
+    fn default() -> Self {
+        Self {
+            max_redirects: 20,
+            max_concurrent_fetches: 6,
+            max_response_bytes: 8 * 1024 * 1024,
+            timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+/// A `LocalFetcher` with a distinct shared HTTP cache, redirect cap, and
+/// concurrency budget. The unit `LocalFetcher` uses the process-local default
+/// policy so existing hosts stay source-compatible.
+#[derive(Clone)]
+pub struct ConfiguredLocalFetcher {
+    #[cfg(feature = "netfetch")]
+    http: Arc<crate::net_fetch::HttpResourceHost>,
+}
+
+impl LocalFetcher {
+    /// Build an isolated resource client for a document session or persona.
+    /// Reusing the returned value shares cache revalidation and its one
+    /// concurrency policy across every fetch through that client.
+    pub fn with_resource_policy(policy: ResourceFetchPolicy) -> ConfiguredLocalFetcher {
+        ConfiguredLocalFetcher {
+            #[cfg(feature = "netfetch")]
+            http: Arc::new(crate::net_fetch::HttpResourceHost::new(policy)),
+        }
+    }
+}
+
+impl ResourceFetcher for ConfiguredLocalFetcher {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.fetch_response(url).map(|response| response.bytes)
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        #[cfg(feature = "netfetch")]
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return self.http.fetch_response(url);
+        }
+        fetch_local_response(url)
+    }
+}
+
 impl ResourceFetcher for LocalFetcher {
     fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.fetch_response(url).map(|response| response.bytes)
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        #[cfg(feature = "netfetch")]
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return crate::net_fetch::default_http_resource_host().fetch_response(url);
+        }
+        fetch_local_response(url)
+    }
+}
+
+fn fetch_local_response(url: &str) -> Option<ResourceResponse> {
+    let bytes = {
         if url.starts_with("data:") {
             // The spec `data:` parser (the same one `genet-layout` decodes inline
             // `<img>` payloads with): handles percent-encoded *and* `;base64` bodies,
             // the charset / mime header, and the optional fragment.
             let parsed = data_url::DataUrl::process(url).ok()?;
-            return parsed.decode_to_vec().ok().map(|(bytes, _fragment)| bytes);
+            return parsed
+                .decode_to_vec()
+                .ok()
+                .map(|(bytes, _fragment)| ResourceResponse::new(url, bytes));
         }
         // http(s) over the netfetcher engine (the `netfetch` feature). Without it, a
         // remote URL is not a filesystem path either, so fall through to `None`.
         #[cfg(feature = "netfetch")]
         if url.starts_with("http://") || url.starts_with("https://") {
-            return crate::net_fetch::http_get_bytes(url);
+            return crate::net_fetch::default_http_resource_host().fetch_response(url);
         }
         // Smolweb schemes over the errand transport (the `smolweb` feature). Routed by
         // scheme so a `gemini://` URL is not misread as a filesystem path by the
@@ -55,26 +141,21 @@ impl ResourceFetcher for LocalFetcher {
             .and_then(|(scheme, _)| errand::Scheme::parse(scheme))
             .is_some()
         {
-            return crate::net_fetch::smolweb_get_bytes(url);
+            return crate::net_fetch::smolweb_get_bytes(url)
+                .map(|bytes| ResourceResponse::new(url, bytes));
         }
         if let Some(rest) = url.strip_prefix("file://") {
-            return std::fs::read(file_url_to_path(rest)).ok();
+            return std::fs::read(file_url_to_path(rest))
+                .ok()
+                .map(|bytes| ResourceResponse::new(url, bytes));
         }
         // Anything else is treated as a filesystem path: the bare-path CLI case
         // (`pelt --engine static doc.html`) and a Windows drive path (`C:\x`) a
         // scheme check would misread. A remote URL with no `netfetch` lands here and
         // fails to `None`.
-        std::fs::read(url).ok()
-    }
-
-    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
-        #[cfg(feature = "netfetch")]
-        if url.starts_with("http://") || url.starts_with("https://") {
-            return crate::net_fetch::http_get_response(url);
-        }
-        self.fetch(url)
-            .map(|bytes| ResourceResponse::new(url, bytes))
-    }
+        std::fs::read(url).ok()?
+    };
+    Some(ResourceResponse::new(url, bytes))
 }
 
 /// Map the part after `file://` to a filesystem path: drop an empty / `localhost`

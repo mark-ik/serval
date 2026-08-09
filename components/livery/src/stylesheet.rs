@@ -33,6 +33,117 @@ pub enum CssRule {
     Keyframes(Keyframes),
 }
 
+/// The rule kinds Livery can project through a CSSOM consumer. Import rules
+/// are added by the document-resource graph above this parser, because their
+/// child ownership and loading are not stylesheet-parser concerns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CssomRuleKind {
+    Style,
+    Import,
+    Media,
+    Container,
+    Keyframes,
+    Keyframe,
+}
+
+impl CssomRule {
+    /// Construct the resource-graph-owned import entry which precedes parsed
+    /// rules in a document stylesheet's CSSOM list.
+    pub fn import(href: &str, media: Option<&str>) -> Self {
+        let escaped_href = href.replace('"', "\\\"");
+        let media = media.filter(|media| !media.trim().is_empty());
+        Self {
+            kind: CssomRuleKind::Import,
+            css_text: format!(
+                "@import url(\"{escaped_href}\"){};",
+                media.map_or_else(String::new, |media| format!(" {media}"))
+            ),
+            selector_text: None,
+            style_text: None,
+            condition_text: media.map(str::to_owned),
+            name: None,
+            key_text: None,
+            children: Vec::new(),
+        }
+    }
+}
+
+/// A serializable CSSOM-facing view of one parsed Livery rule. It carries
+/// authored source slices for the supported rule types, while the parsed rule
+/// objects remain the cascade authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CssomRule {
+    pub kind: CssomRuleKind,
+    pub css_text: String,
+    pub selector_text: Option<String>,
+    pub style_text: Option<String>,
+    pub condition_text: Option<String>,
+    pub name: Option<String>,
+    pub key_text: Option<String>,
+    pub children: Vec<CssomRule>,
+}
+
+impl CssRule {
+    pub fn cssom_rule(&self) -> CssomRule {
+        match self {
+            Self::Style(rule) => rule.cssom_rule(),
+            Self::Media(rule) => {
+                let children = rule
+                    .rules
+                    .iter()
+                    .map(StyleRule::cssom_rule)
+                    .collect::<Vec<_>>();
+                let css_text = format!(
+                    "@media {} {{ {} }}",
+                    rule.condition,
+                    children
+                        .iter()
+                        .map(|child| child.css_text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                CssomRule {
+                    kind: CssomRuleKind::Media,
+                    css_text,
+                    selector_text: None,
+                    style_text: None,
+                    condition_text: Some(rule.condition.clone()),
+                    name: None,
+                    key_text: None,
+                    children,
+                }
+            },
+            Self::Container(rule) => {
+                let children = rule
+                    .rules
+                    .iter()
+                    .map(StyleRule::cssom_rule)
+                    .collect::<Vec<_>>();
+                let css_text = format!(
+                    "@container {} {{ {} }}",
+                    rule.query.css_text(),
+                    children
+                        .iter()
+                        .map(|child| child.css_text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                CssomRule {
+                    kind: CssomRuleKind::Container,
+                    css_text,
+                    selector_text: None,
+                    style_text: None,
+                    condition_text: Some(rule.query.css_text().to_owned()),
+                    name: rule.query.name.clone(),
+                    key_text: None,
+                    children,
+                }
+            },
+            Self::Keyframes(rule) => rule.cssom_rule(),
+        }
+    }
+}
+
 /// A top-level `@media` group holding its nested style rules. Each nested
 /// rule also carries the condition itself, so the flattened cascade view
 /// stays self-contained.
@@ -107,11 +218,17 @@ enum ContainerCondition {
 pub struct ContainerQuery {
     name: Option<String>,
     condition: ContainerCondition,
+    css_text: String,
 }
 
 impl ContainerQuery {
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    /// The accepted `@container` prelude, retained for CSSOM projection.
+    pub fn css_text(&self) -> &str {
+        &self.css_text
     }
 
     pub fn matches(&self, containers: &[ContainerSnapshot], device: &Device) -> bool {
@@ -453,6 +570,32 @@ impl Keyframes {
     pub fn frames(&self) -> &[Keyframe] {
         &self.frames
     }
+
+    fn cssom_rule(&self) -> CssomRule {
+        let children = self
+            .frames
+            .iter()
+            .map(Keyframe::cssom_rule)
+            .collect::<Vec<_>>();
+        CssomRule {
+            kind: CssomRuleKind::Keyframes,
+            css_text: format!(
+                "@keyframes {} {{ {} }}",
+                self.name,
+                children
+                    .iter()
+                    .map(|child| child.css_text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            selector_text: None,
+            style_text: None,
+            condition_text: None,
+            name: Some(self.name.to_string()),
+            key_text: None,
+            children,
+        }
+    }
 }
 
 /// A keyframe declaration block at a normalized offset in the animation.
@@ -460,6 +603,8 @@ impl Keyframes {
 pub struct Keyframe {
     offset: f32,
     declarations: DeclarationBlock,
+    key_text: String,
+    declaration_text: String,
 }
 
 impl Keyframe {
@@ -469,6 +614,19 @@ impl Keyframe {
 
     pub fn declarations(&self) -> &DeclarationBlock {
         &self.declarations
+    }
+
+    fn cssom_rule(&self) -> CssomRule {
+        CssomRule {
+            kind: CssomRuleKind::Keyframe,
+            css_text: format!("{} {{ {} }}", self.key_text, self.declaration_text),
+            selector_text: None,
+            style_text: Some(self.declaration_text.clone()),
+            condition_text: None,
+            name: None,
+            key_text: Some(self.key_text.clone()),
+            children: Vec::new(),
+        }
     }
 }
 
@@ -495,6 +653,8 @@ impl Error for StyleRuleError {}
 pub struct StyleRule {
     selectors: SelectorList,
     declarations: DeclarationBlock,
+    selector_text: String,
+    declaration_text: String,
     media: Option<MediaQueryList>,
     /// A media condition carried by the owning HTML stylesheet link rather
     /// than synthesized into that sheet's source text.
@@ -526,6 +686,8 @@ impl StyleRule {
         Ok(Self {
             selectors: SelectorList::parse(selectors).map_err(StyleRuleError::Selector)?,
             declarations: parse_declaration_block(declarations),
+            selector_text: selectors.trim().to_owned(),
+            declaration_text: declarations.trim().to_owned(),
             tree_counting: declares_tree_counting(declarations),
             media: media
                 .map(str::parse)
@@ -541,6 +703,27 @@ impl StyleRule {
 
     pub fn declaration_block(&self) -> &DeclarationBlock {
         &self.declarations
+    }
+
+    pub fn selector_text(&self) -> &str {
+        &self.selector_text
+    }
+
+    pub fn declaration_text(&self) -> &str {
+        &self.declaration_text
+    }
+
+    fn cssom_rule(&self) -> CssomRule {
+        CssomRule {
+            kind: CssomRuleKind::Style,
+            css_text: format!("{} {{ {} }}", self.selector_text, self.declaration_text),
+            selector_text: Some(self.selector_text.clone()),
+            style_text: Some(self.declaration_text.clone()),
+            condition_text: None,
+            name: None,
+            key_text: None,
+            children: Vec::new(),
+        }
     }
 
     /// Whether changing this rule's candidate element can affect a following
@@ -856,6 +1039,8 @@ fn parse_keyframes(name: &str, input: &str, sheet: &mut Stylesheet) -> Option<Ke
                 frames.push(Keyframe {
                     offset,
                     declarations: declarations.clone(),
+                    key_text: prelude.to_owned(),
+                    declaration_text: body.trim().to_owned(),
                 });
             }
         }
@@ -918,6 +1103,7 @@ fn parse_container_query(source: &str) -> Result<ContainerQuery, String> {
     Ok(ContainerQuery {
         name,
         condition: parse_container_condition(condition)?,
+        css_text: source.to_owned(),
     })
 }
 

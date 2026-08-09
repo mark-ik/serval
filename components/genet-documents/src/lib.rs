@@ -35,7 +35,9 @@ pub use genet_scripted::{
 
 pub mod engines;
 
-pub use document::{ClickOutcome, LoadedDocument, LocalFetcher};
+pub use document::{
+    ClickOutcome, ConfiguredLocalFetcher, LoadedDocument, LocalFetcher, ResourceFetchPolicy,
+};
 #[cfg(feature = "livery")]
 pub use engines::{LiveryDocumentSession, LiverySessionEngine};
 #[cfg(feature = "scripted")]

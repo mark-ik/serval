@@ -24,6 +24,7 @@ fn caching_cx() -> FetchContext {
         hsts: Box::new(crate::InMemoryHsts::new()),
         preflight: Box::new(crate::InMemoryPreflightCache::new()),
         alt_svc: Box::new(crate::InMemoryAltSvc::new()),
+        redirect_limit: FetchContext::DEFAULT_REDIRECT_LIMIT,
     }
 }
 
@@ -149,6 +150,7 @@ async fn records_set_cookie_through_the_jar() {
         hsts: Box::new(crate::InMemoryHsts::new()),
         preflight: Box::new(crate::InMemoryPreflightCache::new()),
         alt_svc: Box::new(crate::InMemoryAltSvc::new()),
+        redirect_limit: FetchContext::DEFAULT_REDIRECT_LIMIT,
     };
     let res = fetch(
         Request::get(format!("{}/c", server.url()).parse().unwrap()),
@@ -470,6 +472,7 @@ async fn records_alt_svc_h3_advertisement() {
         hsts: Box::new(crate::InMemoryHsts::new()),
         preflight: Box::new(crate::InMemoryPreflightCache::new()),
         alt_svc: Box::new(spy.clone()),
+        redirect_limit: FetchContext::DEFAULT_REDIRECT_LIMIT,
     };
     let _ = fetch(Request::get(server.url().parse().unwrap()), &cx)
         .await

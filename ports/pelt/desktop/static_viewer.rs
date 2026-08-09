@@ -293,6 +293,11 @@ mod livery_route_tests {
             .expect("collapsed caption paints its wrapped text");
         let cell_first_baseline = collapsed_cell_runs
             .iter()
+            // `CSS` in the preceding separate-border table is also a three
+            // glyph brown cell run. The collapsed table is the first such
+            // cell after its own caption, which is the relationship this
+            // receipt is checking.
+            .filter(|(_, baseline)| *baseline > caption_last_baseline)
             .map(|(_, baseline)| *baseline)
             .min_by(f32::total_cmp)
             .expect("collapsed table paints its cells");

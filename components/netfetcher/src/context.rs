@@ -35,10 +35,18 @@ pub struct FetchContext {
     pub hsts: Box<dyn HstsStore>,
     pub preflight: Box<dyn PreflightCache>,
     pub alt_svc: Box<dyn AltSvcStore>,
-    // request origin (for CORS) travels on the Request; redirect-cap override … later.
+    /// Host-selected maximum number of redirects followed by one request.
+    /// Keeping this on the caller-owned context lets every document and
+    /// subresource fetch share one explicit boundary instead of each consumer
+    /// inheriting a transport-private constant.
+    pub redirect_limit: u32,
 }
 
 impl FetchContext {
+    /// WHATWG Fetch's default redirect cap. Hosts may lower it for a document
+    /// session, but should make an intentional choice before raising it.
+    pub const DEFAULT_REDIRECT_LIMIT: u32 = 20;
+
     /// A dev/default context: in-memory cookie jar, no cache, permissive CSP,
     /// in-memory HSTS / preflight / Alt-Svc stores. Real deployments supply
     /// durable, host-backed impls (plan §4).
@@ -50,7 +58,14 @@ impl FetchContext {
             hsts: Box::new(InMemoryHsts::new()),
             preflight: Box::new(InMemoryPreflightCache::new()),
             alt_svc: Box::new(InMemoryAltSvc::new()),
+            redirect_limit: Self::DEFAULT_REDIRECT_LIMIT,
         }
+    }
+
+    /// Set the maximum number of followed redirects for this shared context.
+    pub fn with_redirect_limit(mut self, redirect_limit: u32) -> Self {
+        self.redirect_limit = redirect_limit;
+        self
     }
 }
 

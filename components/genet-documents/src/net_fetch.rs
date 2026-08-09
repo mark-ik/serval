@@ -15,77 +15,136 @@
 //! a one-shot at open time, not a per-frame cost. The same wiring genet-wpt's
 //! `fetch()` uses.
 
-use std::sync::OnceLock;
-#[cfg(feature = "netfetch")]
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
+#[cfg(feature = "netfetch")]
+use bytes::BytesMut;
 use tokio::runtime::Runtime;
 
 #[cfg(feature = "netfetch")]
 use genet_host_api::ResourceResponse;
 
+#[cfg(feature = "netfetch")]
+use crate::document::ResourceFetchPolicy;
+
 /// The shared tokio runtime the blocking bridge drives. Built once on first use: a
-/// current-thread runtime is enough (a one-shot GET; `block_on` drives the hyper
-/// connection task spawned inside `fetch`). `enable_all` lights the IO + time drivers
-/// netfetcher's transport needs (its own tokio feature set enables them in the
-/// unified build).
+/// multithread runtime lets the host policy admit several independent document
+/// sessions without creating a private runtime per resource. `enable_all`
+/// lights the IO + time drivers netfetcher's transport needs.
 fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("pelt netfetch tokio runtime")
     })
 }
 
-/// Blocking http(s) GET of `url`, returning the response body bytes, or `None` on a
-/// parse / network error or a non-2xx status. The remote branch of
-/// [`LocalFetcher::fetch`](crate::document::LocalFetcher); mirrors genet-wpt's
-/// `do_get`, returning raw bytes (the document parser owns charset handling) rather
-/// than a lossy string.
+/// One shared remote-fetch host. Its context owns HTTP cache revalidation and
+/// redirect policy; its permit pool bounds all simultaneous resource fetches.
+/// It intentionally lives at the port boundary, not in a style engine.
 #[cfg(feature = "netfetch")]
-pub(crate) fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
-    http_get_response(url).map(|response| response.bytes)
+pub(crate) struct HttpResourceHost {
+    context: netfetcher::FetchContext,
+    policy: ResourceFetchPolicy,
+    available: Mutex<usize>,
+    changed: Condvar,
 }
 
-/// Blocking HTTP GET retaining the final redirect identity and `Content-Type`
-/// for resource consumers. The byte-only helper stays for older callers.
 #[cfg(feature = "netfetch")]
-pub(crate) fn http_get_response(url: &str) -> Option<ResourceResponse> {
-    runtime().block_on(async move {
+impl HttpResourceHost {
+    pub(crate) fn new(policy: ResourceFetchPolicy) -> Self {
+        let mut context =
+            netfetcher::FetchContext::permissive().with_redirect_limit(policy.max_redirects);
+        context.cache = Arc::new(netfetcher::InMemoryHttpCache::new());
+        Self {
+            context,
+            policy,
+            available: Mutex::new(policy.max_concurrent_fetches.max(1)),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> HttpFetchPermit<'_> {
+        let mut available = self.available.lock().expect("HTTP fetch permit lock");
+        while *available == 0 {
+            available = self
+                .changed
+                .wait(available)
+                .expect("HTTP fetch permit wait");
+        }
+        *available -= 1;
+        HttpFetchPermit { host: self }
+    }
+
+    pub(crate) fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        let _permit = self.acquire();
         let parsed = url::Url::parse(url).ok()?;
-        // The current shell loads synchronously before it opens a window. Bound
-        // the entire request, including body consumption, so an unresponsive
-        // origin cannot strand a headed capture or a normal launch forever.
-        tokio::time::timeout(Duration::from_secs(15), async move {
-            let request = netfetcher::Request::get(parsed);
-            let cx = netfetcher::FetchContext::permissive();
-            let response = netfetcher::fetch(request, &cx).await;
-            if response.is_network_error() || response.status < 200 || response.status >= 300 {
-                return None;
-            }
-            let final_url = response
-                .url_list
-                .last()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| url.to_owned());
-            let content_type = response
-                .headers
-                .iter()
-                .rev()
-                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-                .map(|(_, value)| value.clone());
-            response.bytes().await.ok().map(|bytes| ResourceResponse {
-                final_url,
-                content_type,
-                bytes: bytes.to_vec(),
+        let policy = self.policy;
+        runtime().block_on(async move {
+            tokio::time::timeout(policy.timeout, async move {
+                let request = netfetcher::Request::get(parsed);
+                let response = netfetcher::fetch(request, &self.context).await;
+                if response.is_network_error() || response.status < 200 || response.status >= 300 {
+                    return None;
+                }
+                let final_url = response
+                    .url_list
+                    .last()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| url.to_owned());
+                let content_type = response
+                    .headers
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, value)| value.clone());
+                let mut body = response.body;
+                let mut bytes = BytesMut::new();
+                while let Some(chunk) = body.next_chunk().await {
+                    let chunk = chunk.ok()?;
+                    if bytes.len().saturating_add(chunk.len()) > policy.max_response_bytes {
+                        return None;
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Some(ResourceResponse {
+                    final_url,
+                    content_type,
+                    bytes: bytes.to_vec(),
+                })
             })
+            .await
+            .ok()
+            .flatten()
         })
-        .await
-        .ok()
-        .flatten()
-    })
+    }
+}
+
+#[cfg(feature = "netfetch")]
+struct HttpFetchPermit<'a> {
+    host: &'a HttpResourceHost,
+}
+
+#[cfg(feature = "netfetch")]
+impl Drop for HttpFetchPermit<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut available) = self.host.available.lock() {
+            *available += 1;
+            self.host.changed.notify_one();
+        }
+    }
+}
+
+/// The source-compatible unit `LocalFetcher` uses this one process-local
+/// client, so document loads and all shared-resource resolver passes reuse
+/// the same cache, redirect cap, and concurrency budget.
+#[cfg(feature = "netfetch")]
+pub(crate) fn default_http_resource_host() -> &'static HttpResourceHost {
+    static HOST: OnceLock<HttpResourceHost> = OnceLock::new();
+    HOST.get_or_init(|| HttpResourceHost::new(ResourceFetchPolicy::default()))
 }
 
 /// Blocking smolweb GET of `url` over the errand transport, returning the response
@@ -125,7 +184,7 @@ fn install_tofu() {
 mod tests {
     use genet_host_api::ResourceFetcher;
 
-    use crate::document::LocalFetcher;
+    use crate::document::{LocalFetcher, ResourceFetchPolicy};
 
     /// http(s) loading flows through the netfetcher engine end to end: an offline
     /// mock server serves a body, and `LocalFetcher` (with the `netfetch` branch)
@@ -169,6 +228,67 @@ mod tests {
             "a 404 is a failed load, not a document"
         );
         mock.assert();
+    }
+
+    #[test]
+    fn configured_fetcher_revalidates_a_shared_cached_response() {
+        let mut server = mockito::Server::new();
+        let initial = server
+            .mock("GET", "/revision.css")
+            .match_header("if-none-match", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("cache-control", "max-age=0")
+            .with_header("etag", "\"v1\"")
+            .with_body("body { color: red; }")
+            .expect(1)
+            .create();
+        let revalidated = server
+            .mock("GET", "/revision.css")
+            .match_header("if-none-match", "\"v1\"")
+            .with_status(304)
+            .expect(1)
+            .create();
+        let fetcher = LocalFetcher::with_resource_policy(ResourceFetchPolicy::default());
+        let url = format!("{}/revision.css", server.url());
+        let first = fetcher.fetch_response(&url).expect("initial response");
+        let second = fetcher.fetch_response(&url).expect("revalidated response");
+        assert_eq!(first.bytes, second.bytes);
+        initial.assert();
+        revalidated.assert();
+    }
+
+    #[test]
+    fn configured_fetcher_enforces_redirect_and_body_limits() {
+        let mut server = mockito::Server::new();
+        let redirect = server
+            .mock("GET", "/redirect")
+            .with_status(302)
+            .with_header("location", "/target")
+            .expect(1)
+            .create();
+        let oversized = server
+            .mock("GET", "/oversized")
+            .with_status(200)
+            .with_body("four")
+            .expect(1)
+            .create();
+        let fetcher = LocalFetcher::with_resource_policy(ResourceFetchPolicy {
+            max_redirects: 0,
+            max_response_bytes: 3,
+            ..ResourceFetchPolicy::default()
+        });
+        assert!(
+            fetcher
+                .fetch(&format!("{}/redirect", server.url()))
+                .is_none()
+        );
+        assert!(
+            fetcher
+                .fetch(&format!("{}/oversized", server.url()))
+                .is_none()
+        );
+        redirect.assert();
+        oversized.assert();
     }
 }
 

@@ -12,10 +12,12 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use genet_document_resources::{ResolvedDocumentResources, ResourceFetcher, ResourceLimits};
+use genet_document_resources::{
+    ResolvedDocumentResources, ResourceDelta, ResourceFetcher, ResourceLimits,
+};
 use genet_livery::{
-    Device, IncrementalStyle, InteractionStates, RestyleStats, RuleMutationError, StyleSet,
-    ViewportSizes, canonicalize_specified_value, content_box_size, layout,
+    CssomRuleKind, Device, IncrementalStyle, InteractionStates, RestyleStats, RuleMutationError,
+    StyleSet, ViewportSizes, canonicalize_specified_value, content_box_size, layout,
     resolve_container_query_styles, resolve_styles,
     used_value_context as layout_used_value_context,
 };
@@ -27,6 +29,7 @@ use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, Runtime,
     StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule, StyleSheetMutationError,
+    StyleSheetRule, StyleSheetRuleKind,
 };
 
 struct LiveryState {
@@ -45,6 +48,15 @@ struct LiveStylesheetSource {
     limits: ResourceLimits,
     resources: ResolvedDocumentResources,
     mutation_cursor: u64,
+    resource_sink: Option<Rc<RefCell<dyn LiveResourceSink>>>,
+}
+
+/// Host callback for resource bytes that change while a scripted document is
+/// live. The callback receives the complete next ledger plus an explicit delta,
+/// so it can remove stale images and rebuild font registration without CSSOM
+/// fetching behind the host boundary.
+pub trait LiveResourceSink {
+    fn replace_resources(&mut self, resources: &ResolvedDocumentResources, delta: &ResourceDelta);
 }
 
 impl LiveryState {
@@ -73,6 +85,13 @@ fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
         live.fetcher.as_ref(),
         live.limits,
     );
+    let resource_delta = resources.resource_delta_from(&live.resources);
+    if !resource_delta.is_empty()
+        && let Some(sink) = &live.resource_sink
+    {
+        sink.borrow_mut()
+            .replace_resources(&resources, &resource_delta);
+    }
     if resources != live.resources {
         state.styles.replace_author_sheets(&resources.stylesheets);
         state.document_sheets = state.styles.document_sheet_indexes();
@@ -127,6 +146,46 @@ impl LiveryCssom {
         E: ScriptEngine,
         Fetch: ResourceFetcher + 'static,
     {
+        Self::install_live_with_optional_sink(runtime, fetcher, document_url, limits, device, None)
+    }
+
+    /// Install a live resource-backed stylesheet set and deliver initial and
+    /// later image/font ledger changes to one host-owned consumer.
+    pub fn install_live_with_resource_sink<E, Fetch, Sink>(
+        runtime: &mut Runtime<E>,
+        fetcher: Fetch,
+        document_url: impl Into<String>,
+        limits: ResourceLimits,
+        device: Device,
+        sink: Sink,
+    ) -> Self
+    where
+        E: ScriptEngine,
+        Fetch: ResourceFetcher + 'static,
+        Sink: LiveResourceSink + 'static,
+    {
+        Self::install_live_with_optional_sink(
+            runtime,
+            fetcher,
+            document_url,
+            limits,
+            device,
+            Some(Rc::new(RefCell::new(sink))),
+        )
+    }
+
+    fn install_live_with_optional_sink<E, Fetch>(
+        runtime: &mut Runtime<E>,
+        fetcher: Fetch,
+        document_url: impl Into<String>,
+        limits: ResourceLimits,
+        device: Device,
+        resource_sink: Option<Rc<RefCell<dyn LiveResourceSink>>>,
+    ) -> Self
+    where
+        E: ScriptEngine,
+        Fetch: ResourceFetcher + 'static,
+    {
         let document_url = document_url.into();
         let fetcher: Rc<dyn ResourceFetcher> = Rc::new(fetcher);
         let (resources, mutation_cursor) = {
@@ -141,6 +200,12 @@ impl LiveryCssom {
             (resources, base.saturating_add(pending.len() as u64))
         };
         let styles = StyleSet::cambium_resources(&resources.stylesheets);
+        if let Some(sink) = &resource_sink {
+            let initial = resources.resource_delta_from(&ResolvedDocumentResources::default());
+            if !initial.is_empty() {
+                sink.borrow_mut().replace_resources(&resources, &initial);
+            }
+        }
         let state = Rc::new(RefCell::new(LiveryState {
             document_sheets: styles.document_sheet_indexes(),
             styles,
@@ -154,6 +219,7 @@ impl LiveryCssom {
                 limits,
                 resources,
                 mutation_cursor,
+                resource_sink,
             }),
         }));
         Self::install_state(runtime, state)
@@ -634,6 +700,30 @@ impl StyleSheetHandler for LiveryStyleSheets {
                 import_index: owner.import_index,
             })
     }
+
+    fn rule_by_key(&self, key: &str, path: &[usize]) -> Option<StyleSheetRule> {
+        self.synchronize();
+        let sheet = self.author_index_by_key(key)?;
+        let rule = self.state.borrow().styles.cssom_rule(sheet, path)?;
+        let kind = match rule.kind {
+            CssomRuleKind::Style => StyleSheetRuleKind::Style,
+            CssomRuleKind::Import => StyleSheetRuleKind::Import,
+            CssomRuleKind::Media => StyleSheetRuleKind::Media,
+            CssomRuleKind::Container => StyleSheetRuleKind::Container,
+            CssomRuleKind::Keyframes => StyleSheetRuleKind::Keyframes,
+            CssomRuleKind::Keyframe => StyleSheetRuleKind::Keyframe,
+        };
+        Some(StyleSheetRule {
+            kind,
+            css_text: rule.css_text,
+            selector_text: rule.selector_text,
+            style_text: rule.style_text,
+            condition_text: rule.condition_text,
+            name: rule.name,
+            key_text: rule.key_text,
+            child_count: rule.children.len(),
+        })
+    }
 }
 
 fn mutation_error(error: RuleMutationError) -> StyleSheetMutationError {
@@ -650,6 +740,8 @@ mod tests {
     use genet_static_dom::StaticDocument;
     use layout_dom_api::LayoutDomMut;
     use script_engine_boa::BoaEngine;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     struct LiveSheetFetch;
 
@@ -667,6 +759,102 @@ mod tests {
                 _ => None,
             }
         }
+    }
+
+    struct LiveAssetFetch {
+        image: Rc<RefCell<Vec<u8>>>,
+        font: Rc<RefCell<Vec<u8>>>,
+    }
+
+    impl ResourceFetcher for LiveAssetFetch {
+        fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+            match url {
+                "https://example.test/docs/poster.png" => Some(self.image.borrow().clone()),
+                "https://example.test/docs/reading.woff2" => Some(self.font.borrow().clone()),
+                _ => None,
+            }
+        }
+    }
+
+    struct RecordingResourceSink(Rc<RefCell<Vec<ResourceDelta>>>);
+
+    impl LiveResourceSink for RecordingResourceSink {
+        fn replace_resources(
+            &mut self,
+            _resources: &ResolvedDocumentResources,
+            delta: &ResourceDelta,
+        ) {
+            self.0.borrow_mut().push(delta.clone());
+        }
+    }
+
+    #[test]
+    fn live_cssom_replaces_image_and_font_resources_after_a_dom_reconciliation() {
+        let image = Rc::new(RefCell::new(vec![1]));
+        let font = Rc::new(RefCell::new(vec![2]));
+        let deltas = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse(
+            "<html><head><style>.card { background-image: url(reading.woff2); }</style></head>\
+             <body><img src='poster.png'><div class='card'></div></body></html>",
+        ));
+        let cssom = LiveryCssom::install_live_with_resource_sink(
+            &mut runtime,
+            LiveAssetFetch {
+                image: image.clone(),
+                font: font.clone(),
+            },
+            "https://example.test/docs/index.html",
+            ResourceLimits::default(),
+            Device::screen(800.0, 600.0),
+            RecordingResourceSink(deltas.clone()),
+        );
+        assert_eq!(deltas.borrow().len(), 1, "initial ledger is delivered");
+        assert_eq!(deltas.borrow()[0].added.len(), 2);
+
+        *image.borrow_mut() = vec![3];
+        *font.borrow_mut() = vec![4];
+        runtime
+            .eval("document.body.setAttribute('data-resource-revision', '2'); document.styleSheets.length;")
+            .expect("trigger live resource reconciliation");
+
+        {
+            let observed = deltas.borrow();
+            assert_eq!(observed.len(), 2);
+            assert_eq!(observed[1].updated.len(), 2);
+            assert!(observed[1].removed.is_empty());
+        }
+        let resources = cssom.resource_set().expect("updated resource ledger");
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|resource| resource.bytes == vec![3])
+        );
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|resource| resource.bytes == vec![4])
+        );
+
+        runtime
+            .eval(
+                "document.body.removeChild(document.querySelector('img'));\
+                 document.head.removeChild(document.querySelector('style'));\
+                 document.styleSheets.length;",
+            )
+            .expect("trigger live resource removal");
+        let observed = deltas.borrow();
+        assert_eq!(observed.len(), 3);
+        assert_eq!(observed[2].removed.len(), 2);
+        assert!(
+            cssom
+                .resource_set()
+                .expect("resource removal ledger")
+                .resources
+                .is_empty()
+        );
     }
 
     #[test]
@@ -769,6 +957,41 @@ mod tests {
                 "1|theme|2|true",
                 "child.css|screen|true|true|true|1|rgb(0, 0, 255)",
                 "1|rgb(0, 128, 0)",
+            ],
+        );
+    }
+
+    #[test]
+    fn boa_cssom_projects_every_livery_rule_object() {
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse("<html><body></body></html>"));
+        LiveryCssom::install(
+            &mut runtime,
+            &[".root { color:red; }\
+               @media screen { .media { color:blue; } }\
+               @container (width > 10px) { .container { color:green; } }\
+               @keyframes pulse { from { opacity:0; } to { opacity:1; } }"],
+            Device::screen(800.0, 600.0),
+        );
+
+        runtime
+            .eval(
+                "var rules = document.styleSheets[0].cssRules;\
+                 var style = rules[0], media = rules[1], container = rules[2], frames = rules[3];\
+                 console.log(rules.length + '|' + String(style instanceof CSSStyleRule) + '|' + style.type + '|' + style.selectorText + '|' + style.style.color + '|' + style.cssText);\
+                 console.log(String(media instanceof CSSMediaRule) + '|' + media.media.mediaText + '|' + media.cssRules.length + '|' + String(media.cssRules[0].parentRule === media) + '|' + media.cssRules[0].selectorText);\
+                 console.log(String(container instanceof CSSContainerRule) + '|' + container.conditionText + '|' + container.cssRules.length + '|' + container.cssRules[0].style.color);\
+                 console.log(String(frames instanceof CSSKeyframesRule) + '|' + frames.name + '|' + frames.cssRules.length + '|' + String(frames.cssRules[0] instanceof CSSKeyframeRule) + '|' + frames.cssRules[0].keyText + '|' + frames.cssRules[0].style.opacity);",
+            )
+            .expect("full Livery rule-object script");
+
+        assert_eq!(
+            runtime.host().borrow().console,
+            vec![
+                "4|true|1|.root|red|.root { color:red; }",
+                "true|screen|1|true|.media",
+                "true|(width > 10px)|1|green",
+                "true|pulse|2|true|from|0",
             ],
         );
     }

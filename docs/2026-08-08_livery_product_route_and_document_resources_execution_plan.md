@@ -2,14 +2,16 @@
 
 **Date:** 2026-08-08
 
-**Status:** R0-R4 and R5a-R5c landed 2026-08-08. R5a carries redirect-final
+**Status:** R0-R4 and R5a-R5d landed 2026-08-09. R5a carries redirect-final
 stylesheet identity, response type, and bounded `@import` expansion through
 the opt-in Livery route. R5b carries direct stylesheet ownership and live
 insert/remove, media, and URL reconciliation through the scripted Livery
-consumer. R5c projects loaded import parent-child ownership through CSSOM.
+consumer. R5c projects loaded import parent-child ownership through CSSOM;
+R5d adds the shared host fetch policy, live asset replacement, and complete
+Livery-supported rule-object projection.
 The collapsed-border case remains a named K4g deferral; its caption wrapping
-is covered by the product scene and headed receipt. R5 remains a cutover
-prerequisite for cache policy and host fetch policy. This plan stops with an
+is covered by the product scene and headed receipt. The resource-graph R5
+items are now closed or explicitly knocked out. This plan stops with an
 explicit Pelt Livery route; it does not flip the static or fullweb default.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md)
@@ -333,12 +335,38 @@ null `ownerNode`. Opaque sheet keys remain strings end to end, avoiding loss
 of DOM identities in JavaScript. Imported children never enter
 `document.styleSheets`.
 
-This is an ownership projection, not a full CSS rule-object implementation.
-`CSSRuleList.item()` still returns only import rules, and mutation of an
-import rule itself reports `SyntaxError`; ordinary rules in a loaded imported
-sheet continue to accept `insertRule` and `deleteRule`. Cache revalidation,
-shared redirect/concurrency policy, dynamic image/font replacement, and a
-scripted product-route session remain named R5/F4 work.
+This is an ownership projection. R5d completes the rule-object surface for
+every rule Livery currently parses, while preserving the resource graph as
+owner of import replacement.
+
+#### R5d. Shared fetch policy, live assets, and rule objects
+
+`LocalFetcher` now uses one process-local remote client by default. A host can
+create `LocalFetcher::with_resource_policy` for an isolated persona/session;
+that client shares one `netfetcher` context and its in-memory RFC 9111 cache,
+redirect cap, decoded body cap, timeout, and concurrent-fetch permit pool
+across the document and every discovered dependency. The host keeps all of
+those choices at the fetch boundary. A stale ETag response is revalidated and
+the cached 200 body is retained on a 304.
+
+Live CSSOM resolution compares resource ledgers by consumer use, emits an
+explicit added/updated/removed delta, and delivers it to a host-owned sink.
+`LiveryDocument` can replace its complete image and font ledgers. Image removal
+invalidates retained layout/paint; font replacement reconstructs the document
+font context from the surviving bytes, avoiding duplicate stale registrations.
+
+`CSSRuleList.item()` now projects `CSSStyleRule`, `CSSImportRule`,
+`CSSMediaRule`, `CSSContainerRule`, `CSSKeyframesRule`, and
+`CSSKeyframeRule`, including `cssText`, rule-specific reads, parent links, and
+nested `cssRules`. Direct root-sheet `insertRule`/`deleteRule` remains the
+supported mutation seam. Group-rule declaration edits are intentionally
+read-only until they can participate in one parser and resource-graph
+transaction.
+
+`@import layer(...)` and `@import supports(...)` remain explicit knockouts:
+the selected Livery cascade has no safe semantics for them. A scripted Pelt
+product route remains an F4 integration task, distinct from this resource and
+CSSOM boundary.
 
 ## Verification ladder
 

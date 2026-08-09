@@ -40,9 +40,6 @@ use redirect::{RedirectStep, process_redirect};
 use request_headers::assemble_request_headers;
 use transport::send_request;
 
-/// WHATWG Fetch's redirect cap.
-const MAX_REDIRECTS: u32 = 20;
-
 /// Default `User-Agent` sent when the request carries none.
 pub(super) const USER_AGENT: &str = "Mozilla/5.0 (compatible; serval netfetcher)";
 
@@ -104,7 +101,7 @@ async fn fetch_inner(request: Request, cx: &FetchContext) -> Response {
     let mut body = request.body.clone();
     let mut base_headers = request.headers.clone();
     let mut url_list = vec![current_url.clone()];
-    let mut redirects_remaining = MAX_REDIRECTS;
+    let mut redirects_remaining = cx.redirect_limit;
     // Once a cross-origin redirect leaves an already-foreign URL, the request's
     // origin becomes opaque, so the `Origin` header flips to "null".
     let mut origin_tainted = false;

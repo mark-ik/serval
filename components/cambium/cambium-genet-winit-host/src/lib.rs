@@ -40,8 +40,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
+mod capture;
 mod frame;
+mod harness;
 mod input;
+
+pub use capture::{Frame, read_frame};
+pub use harness::{Harness, inert_hooks};
 
 /// The bound every root view satisfies. A module rather than a trait alias so
 /// the host's signatures stay readable: `V: RootView<State>` means
@@ -80,10 +85,11 @@ pub struct HostOptions {
     /// Environment variable names overriding the logical width and height,
     /// for reproducible scenario receipts (`WOODSHED_WIDTH`-shaped).
     pub size_env: Option<(String, String)>,
-    /// Renderer options handed to [`SurfaceHost::boot`]. `Option` because
-    /// `NetrenderOptions` is not `Clone`; the host takes it at window
-    /// creation.
-    pub netrender: Option<NetrenderOptions>,
+    /// Renderer options for [`SurfaceHost::boot`]. A factory rather than a
+    /// value: `NetrenderOptions` is not `Clone`, and the surface is booted
+    /// again every time the platform takes it away and hands it back
+    /// (suspend/resume), which must not silently fall back to defaults.
+    pub netrender: Box<dyn Fn() -> NetrenderOptions>,
 }
 
 impl Default for HostOptions {
@@ -93,7 +99,7 @@ impl Default for HostOptions {
             decorations: true,
             initial_logical_size: (1_100.0, 664.0),
             size_env: None,
-            netrender: Some(NetrenderOptions {
+            netrender: Box::new(|| NetrenderOptions {
                 tile_cache_size: Some(1024),
                 enable_vello: true,
                 ..Default::default()
@@ -115,6 +121,65 @@ pub struct FocusedTextSlot<State> {
     pub get_mut: Box<dyn Fn(&mut State) -> &mut TextInput>,
 }
 
+/// A key press as the host routes it: winit's logical key, plus the modifier
+/// state at the time.
+///
+/// Small on purpose. `winit::event::KeyEvent` cannot be constructed outside
+/// winit, so a host whose keyboard path took one could never be driven from a
+/// test — and a keyboard-order receipt that cannot run in `cargo test` is a
+/// receipt nobody collects. This carries exactly what routing reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyPress {
+    /// The logical key, after the layout and modifiers the OS applied.
+    pub key: winit::keyboard::Key,
+    /// Modifiers held at the time of the press.
+    pub modifiers: ModifiersState,
+    /// Whether this is an auto-repeat rather than a fresh press.
+    pub repeat: bool,
+}
+
+impl KeyPress {
+    /// A press with no modifiers held.
+    pub fn new(key: winit::keyboard::Key) -> Self {
+        Self {
+            key,
+            modifiers: ModifiersState::empty(),
+            repeat: false,
+        }
+    }
+
+    /// A named-key press (Tab, Enter, ArrowLeft, …).
+    pub fn named(named: winit::keyboard::NamedKey) -> Self {
+        Self::new(winit::keyboard::Key::Named(named))
+    }
+
+    /// Hold these modifiers for the press.
+    #[must_use]
+    pub fn with_modifiers(mut self, modifiers: ModifiersState) -> Self {
+        self.modifiers = modifiers;
+        self
+    }
+}
+
+/// A pointer event an application asks the host to deliver to itself, in
+/// logical window coordinates.
+///
+/// The host owns hit testing, capture, and the dispatch order, so an
+/// application that drives itself — a `genet-probe` scenario clicking a
+/// resolved element, a demo replaying a gesture — must not re-roll that
+/// routing. It queues one of these instead and the host runs it through the
+/// same path a real mouse takes, so a self-driven receipt exercises the
+/// production code rather than a parallel one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HostPointer {
+    /// Move the cursor (hover restyle, Enter/Leave, drag tracking).
+    Moved(f32, f32),
+    /// Press the left button at this point.
+    Press(f32, f32),
+    /// Release the left button at this point.
+    Release(f32, f32),
+}
+
 /// What the application sees inside a hook. One shape for every hook so the
 /// application-side plumbing stays boring.
 pub struct AppCtx<'a, State: 'static, Logic, V>
@@ -124,8 +189,14 @@ where
 {
     /// The runner: state access, updates, and dispatch.
     pub runner: &'a mut Runner<State, Logic, V>,
-    /// The native window (chrome requests, redraws, cursor, IME area).
-    pub window: &'a Window,
+    /// The native window (chrome requests, redraws, cursor, IME area), when
+    /// there is one. `None` under [`Harness`], the windowless test host — an
+    /// application that asks for window chrome must tolerate its absence
+    /// rather than assume a window exists.
+    pub window: Option<&'a Window>,
+    /// The logical (DPI-independent) size of the surface being laid out — the
+    /// coordinate space the layout, the cursor, and [`HostPointer`] all use.
+    pub logical_size: (f32, f32),
     /// The custom-paint leaf registry the paint pass renders from.
     pub leaves: &'a mut sprigging::LeafRegistry<u64>,
     /// Set to swap the stylesheet; the host relayouts under the new sheet.
@@ -134,6 +205,9 @@ where
     pub close: &'a mut bool,
     /// Arm a capture of the next presented frame.
     pub capture: &'a mut Option<CaptureFn>,
+    /// Pointer events for the host to deliver to itself once this hook
+    /// returns, in order. See [`HostPointer`].
+    pub pointer: &'a mut Vec<HostPointer>,
 }
 
 /// A per-frame hook: return `true` to keep frames coming.
@@ -146,7 +220,7 @@ pub type FocusedTextHook<State, Logic, V> =
     Box<dyn Fn(&Runner<State, Logic, V>) -> Option<FocusedTextSlot<State>>>;
 /// A pre-dispatch keyboard intercept: return `true` to consume the event.
 pub type KeyInterceptHook<State, Logic, V> =
-    Box<dyn FnMut(&mut Runner<State, Logic, V>, &winit::event::KeyEvent) -> bool>;
+    Box<dyn FnMut(&mut Runner<State, Logic, V>, &KeyPress) -> bool>;
 
 /// The application's hooks. Plain closures, owned state lives in their
 /// captured environment (an `Rc<RefCell<...>>` for anything shared).
@@ -225,39 +299,19 @@ where
     pub(crate) close_requested: bool,
     pub(crate) pending_sheet: Option<String>,
     pub(crate) pending_capture: Option<CaptureFn>,
+    /// Pointer events an application hook asked the host to deliver to itself,
+    /// drained through the real input path once the hook returns.
+    pub(crate) pending_pointer: Vec<HostPointer>,
 }
 
-/// The host: options, hooks, and everything the donor's `App` owned that was
-/// not application policy.
-pub struct Host<State: 'static, Logic, V>
+impl<State, Logic, V> HostState<State, Logic, V>
 where
+    State: 'static,
     Logic: FnMut(&State) -> V,
     V: RootView<State>,
 {
-    options: HostOptions,
-    init: Option<InitFn<State, Logic>>,
-    pub(crate) hooks: HostHooks<State, Logic, V>,
-    pub(crate) s: HostState<State, Logic, V>,
-}
-
-/// Run a single-root Cambium application to completion.
-pub fn run<State, Logic, V>(
-    options: HostOptions,
-    init: impl FnOnce(&Window) -> Init<State, Logic> + 'static,
-    hooks: HostHooks<State, Logic, V>,
-) -> Result<(), winit::error::EventLoopError>
-where
-    State: 'static,
-    Logic: FnMut(&State) -> V + 'static,
-    V: RootView<State>,
-{
-    let event_loop = EventLoop::new().expect("event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut host = Host {
-        options,
-        init: Some(Box::new(init)),
-        hooks,
-        s: HostState {
+    pub(crate) fn new() -> Self {
+        Self {
             window: None,
             surface: None,
             runner: None,
@@ -280,7 +334,55 @@ where
             close_requested: false,
             pending_sheet: None,
             pending_capture: None,
-        },
+            pending_pointer: Vec::new(),
+        }
+    }
+}
+
+/// The host: options, hooks, and everything the donor's `App` owned that was
+/// not application policy.
+pub struct Host<State: 'static, Logic, V>
+where
+    Logic: FnMut(&State) -> V,
+    V: RootView<State>,
+{
+    pub(crate) options: HostOptions,
+    pub(crate) init: Option<InitFn<State, Logic>>,
+    pub(crate) hooks: HostHooks<State, Logic, V>,
+    pub(crate) s: HostState<State, Logic, V>,
+}
+
+/// What the event loop should do on an idle turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdlePolicy {
+    /// Nothing is pending; sleep until the next event.
+    Wait,
+    /// Something time-based is live (an overlay scrollbar mid-fade): repaint
+    /// and come back after this long.
+    Animate(std::time::Duration),
+    /// A screen reader acted while the app was idle: repaint so the queued
+    /// accessibility action is drained.
+    A11yWake,
+}
+
+/// Run a single-root Cambium application to completion.
+pub fn run<State, Logic, V>(
+    options: HostOptions,
+    init: impl FnOnce(&Window) -> Init<State, Logic> + 'static,
+    hooks: HostHooks<State, Logic, V>,
+) -> Result<(), winit::error::EventLoopError>
+where
+    State: 'static,
+    Logic: FnMut(&State) -> V + 'static,
+    V: RootView<State>,
+{
+    let event_loop = EventLoop::new().expect("event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let mut host = Host {
+        options,
+        init: Some(Box::new(init)),
+        hooks,
+        s: HostState::new(),
     };
     event_loop.run_app(&mut host)
 }
@@ -295,31 +397,87 @@ where
         self.s.window.as_ref().map_or(1.0, |w| w.scale_factor())
     }
 
+    /// The logical size being laid out: the window's, or — windowless, under
+    /// [`Harness`] — the size the retained layout was last built at.
+    pub(crate) fn logical_size(&self) -> (f32, f32) {
+        match self.s.window.as_ref() {
+            Some(window) => {
+                let size = window.inner_size();
+                let scale = window.scale_factor() as f32;
+                (
+                    size.width.max(1) as f32 / scale,
+                    size.height.max(1) as f32 / scale,
+                )
+            }
+            None => self.s.layout_size,
+        }
+    }
+
     /// Run one application hook with the standard context, then apply any
-    /// host-owned requests it made (sheet swap → relayout).
+    /// host-owned requests it made (sheet swap → relayout, queued pointer
+    /// events → the real input path).
     pub(crate) fn with_ctx(&mut self, which: Hook) {
-        let (Some(window), Some(runner)) =
-            (self.s.window.as_ref(), self.s.runner.as_mut())
-        else {
-            return;
-        };
-        let mut ctx = AppCtx {
-            runner,
-            window,
-            leaves: &mut self.s.leaves,
-            set_sheet: &mut self.s.pending_sheet,
-            close: &mut self.s.close_requested,
-            capture: &mut self.s.pending_capture,
-        };
-        match which {
-            Hook::AfterDispatch => (self.hooks.after_dispatch)(&mut ctx),
-            Hook::AfterFrame => (self.hooks.after_frame)(&mut ctx),
+        {
+            let logical_size = self.logical_size();
+            let window = self.s.window.as_deref();
+            let Some(runner) = self.s.runner.as_mut() else {
+                return;
+            };
+            let mut ctx = AppCtx {
+                runner,
+                window,
+                logical_size,
+                leaves: &mut self.s.leaves,
+                set_sheet: &mut self.s.pending_sheet,
+                close: &mut self.s.close_requested,
+                capture: &mut self.s.pending_capture,
+                pointer: &mut self.s.pending_pointer,
+            };
+            match which {
+                Hook::AfterDispatch => (self.hooks.after_dispatch)(&mut ctx),
+                Hook::AfterFrame => (self.hooks.after_frame)(&mut ctx),
+            }
         }
         if let Some(sheet) = self.s.pending_sheet.take() {
             self.s.sheet = sheet;
             // Force a full relayout under the new sheet.
             self.s.layout = None;
             self.s.layout_size = (0.0, 0.0);
+        }
+        self.drain_pointer();
+    }
+
+    /// Deliver the pointer events an application queued, in order, through the
+    /// same routing a real mouse takes. Drained outside the hook's borrow of
+    /// the runner, so the delivery can hit-test, capture, and dispatch exactly
+    /// as `window_event` does.
+    ///
+    /// `after_dispatch` is *not* re-entered from here for the hook that queued
+    /// the events — each delivery runs its own, and the queue is taken whole so
+    /// an event queued by that dispatch lands on the next drain rather than
+    /// looping.
+    pub(crate) fn drain_pointer(&mut self) {
+        if self.s.pending_pointer.is_empty() {
+            return;
+        }
+        for event in std::mem::take(&mut self.s.pending_pointer) {
+            match event {
+                HostPointer::Moved(x, y) => {
+                    self.s.cursor = (x, y);
+                    self.hover();
+                    self.hover_dispatch();
+                    self.pointer_move();
+                    self.drag_text_selection();
+                }
+                HostPointer::Press(x, y) => {
+                    self.s.cursor = (x, y);
+                    self.click();
+                }
+                HostPointer::Release(x, y) => {
+                    self.s.cursor = (x, y);
+                    self.release();
+                }
+            }
         }
     }
 
@@ -343,6 +501,39 @@ where
 pub(crate) enum Hook {
     AfterDispatch,
     AfterFrame,
+}
+
+impl<State, Logic, V> Host<State, Logic, V>
+where
+    State: 'static,
+    Logic: FnMut(&State) -> V + 'static,
+    V: RootView<State>,
+{
+    /// The callback handed to the AccessKit adapter. It fires on the adapter's
+    /// own thread when a screen reader acts on an otherwise idle application,
+    /// and its only job is to raise the flag [`idle_policy`](Self::idle_policy)
+    /// reads — the wake path a test can prove end to end without an OS
+    /// adapter to stand in for the screen reader.
+    pub(crate) fn a11y_waker(&self) -> impl Fn() + Send + Sync + 'static {
+        let wake = self.s.a11y_wake.clone();
+        move || wake.store(true, Ordering::Relaxed)
+    }
+
+    /// Decide what the event loop does on an idle turn, consuming the
+    /// accessibility wake flag if one is set. Factored out of `about_to_wait`
+    /// so the wake path is assertable: `Wait` really means nothing is pending,
+    /// and a raised wake really becomes a repaint rather than being swallowed.
+    pub(crate) fn idle_policy(&mut self, now: std::time::Instant) -> IdlePolicy {
+        if self.s.a11y_wake.swap(false, Ordering::Relaxed) {
+            return IdlePolicy::A11yWake;
+        }
+        // Overlay scrollbars mid-hold/mid-fade keep frames coming until
+        // hidden; `Wait` never wakes without an event, so ask for a timed wake.
+        if self.s.scrollbar_fade.any_visible(now) {
+            return IdlePolicy::Animate(std::time::Duration::from_millis(33));
+        }
+        IdlePolicy::Wait
+    }
 }
 
 /// Which resize edge a point near the window border maps to, in logical
@@ -441,7 +632,30 @@ where
     V: RootView<State>,
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.s.window.is_some() {
+        // Resume after a suspend. The window, the runner, the retained layout,
+        // and every scrap of application state survived; only the drawing
+        // surface was taken away, so boot a new one against the same window
+        // and repaint. Booting from the options factory rather than a stashed
+        // value is why `HostOptions::netrender` is a closure: the second
+        // surface must have the same renderer configuration as the first.
+        if let Some(window) = self.s.window.clone() {
+            if self.s.surface.is_none() {
+                let size = window.inner_size();
+                match SurfaceHost::boot(
+                    window.clone(),
+                    size.width.max(1),
+                    size.height.max(1),
+                    (self.options.netrender)(),
+                ) {
+                    Ok(surface) => {
+                        self.s.surface = Some(surface);
+                        // The surface is new, so nothing is cached in it: force
+                        // a full repaint rather than an incremental one.
+                        self.redraw();
+                    }
+                    Err(e) => eprintln!("[cambium-host] surface re-boot failed: {e}"),
+                }
+            }
             return;
         }
         // Start comfortably on a large desktop, but never assume one.
@@ -498,17 +712,14 @@ where
             window.clone(),
             size.width.max(1),
             size.height.max(1),
-            self.options.netrender.take().unwrap_or_default(),
+            (self.options.netrender)(),
         )
         .expect("boot genet host");
         let init = self.init.take().expect("resumed once");
         let Init { state, logic, sheet } = init(&window);
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let runner = Runner::new(dom, logic, state);
-        let wake = self.s.a11y_wake.clone();
-        self.s.a11y = Some(A11yHost::new(move || {
-            wake.store(true, Ordering::Relaxed);
-        }));
+        self.s.a11y = Some(A11yHost::new(self.a11y_waker()));
         self.s.sheet = sheet;
         self.s.window = Some(window);
         self.s.surface = Some(surface);
@@ -520,26 +731,32 @@ where
         self.sync_a11y();
     }
 
+    /// The platform is taking the drawing surface away (Android, iOS; never on
+    /// the desktop backends). Drop the surface and nothing else: the window
+    /// handle, the runner's state, the retained layout, the accessibility tree,
+    /// and the leaf registry all survive, so `resumed` re-boots a surface and
+    /// repaints the same application rather than restarting it.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.s.surface = None;
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // A screen reader acted while the app was idle: turn the adapter's
-        // wake flag into a redraw so `sync_a11y` drains the action.
-        if self.s.a11y_wake.swap(false, Ordering::Relaxed)
-            && let Some(window) = self.s.window.as_ref()
-        {
-            window.request_redraw();
-        }
-        // Overlay scrollbars mid-hold/mid-fade keep frames coming until
-        // hidden; `Wait` never wakes without an event, so ask for a timed
-        // wake.
-        if self.s.scrollbar_fade.any_visible(std::time::Instant::now()) {
-            if let Some(window) = self.s.window.as_ref() {
-                window.request_redraw();
+        match self.idle_policy(std::time::Instant::now()) {
+            IdlePolicy::A11yWake => {
+                if let Some(window) = self.s.window.as_ref() {
+                    window.request_redraw();
+                }
+                // Come straight back: the flag was consumed, and the next idle
+                // turn settles on the real policy once the action is drained.
+                event_loop.set_control_flow(ControlFlow::Poll);
             }
-            event_loop.set_control_flow(ControlFlow::wait_duration(
-                std::time::Duration::from_millis(33),
-            ));
-        } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            IdlePolicy::Animate(after) => {
+                if let Some(window) = self.s.window.as_ref() {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::wait_duration(after));
+            }
+            IdlePolicy::Wait => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 
@@ -563,6 +780,9 @@ where
                 self.update_resize_cursor();
                 self.hover();
                 self.hover_dispatch();
+                // A captured drag gets the move before the text selection: an
+                // `on_pointer` element that took the press owns the gesture.
+                self.pointer_move();
                 self.drag_text_selection();
             }
             WindowEvent::MouseInput {
@@ -584,12 +804,18 @@ where
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                self.s.text_drag = None;
-            }
+            } => self.release(),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::Ime(ime) => self.ime(&ime),
-            WindowEvent::KeyboardInput { event, .. } => self.key(&event),
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    self.key(&KeyPress {
+                        key: event.logical_key,
+                        modifiers: self.s.modifiers,
+                        repeat: event.repeat,
+                    });
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.redraw();
                 // After the frame is laid out and presented, refresh the

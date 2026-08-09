@@ -18,7 +18,7 @@ use livery::{
     custom::CustomProperties,
     media::Device,
     stylesheet::{
-        ContainerSnapshot, Keyframes, RuleMutationError, StyleRule, Stylesheet,
+        ContainerSnapshot, CssomRule, Keyframes, RuleMutationError, StyleRule, Stylesheet,
         StylesheetDiagnostic,
     },
     values::{
@@ -353,6 +353,29 @@ impl StyleSet {
         self.authors
             .get(sheet)
             .map(|sheet| sheet.imports.len().saturating_add(sheet.items().len()))
+    }
+
+    /// A parsed rule object at a root-to-child CSSOM path. Leading imports are
+    /// resource-graph entries, then Livery's complete supported parsed rule
+    /// set follows. Group child paths are read-only projections today; only a
+    /// sheet root accepts CSSOM `insertRule` / `deleteRule`.
+    pub fn cssom_rule(&self, sheet: usize, path: &[usize]) -> Option<CssomRule> {
+        let (first, rest) = path.split_first()?;
+        let parent = self.authors.get(sheet)?;
+        if *first < parent.imports.len() {
+            return rest.is_empty().then(|| {
+                let import = &parent.imports[*first];
+                CssomRule::import(&import.authored_url, import.media.as_deref())
+            });
+        }
+        let mut rule = parent
+            .items()
+            .get(first.saturating_sub(parent.imports.len()))?
+            .cssom_rule();
+        for child in rest {
+            rule = rule.children.get(*child)?.clone();
+        }
+        Some(rule)
     }
 
     pub fn cssom_import_rule(&self, sheet: usize, index: usize) -> Option<CssomImportRule> {

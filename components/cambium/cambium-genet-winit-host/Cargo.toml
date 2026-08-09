@@ -13,12 +13,18 @@ repository = "https://github.com/merely-made/genet"
 publish = false
 
 [dependencies]
+# The accessibility tree type the host projects into and hands the adapter;
+# named here so the `Harness` can return one for a test to assert against.
+accesskit = "0.24"
 meristem = { version = "0.1.0", path = "../meristem" }
 cambium = { version = "0.3.3", path = "../cambium" }
 cambium-winit = { version = "0.3.0", path = "../cambium-winit" }
 cambium-winit-a11y = { version = "0.3.0", path = "../cambium-winit-a11y" }
 sprigging = { version = "0.2.1", path = "../sprigging" }
 genet-layout = { path = "../../genet-layout" }
+# The semantic-selector resolver the headless `Harness` drives applications by,
+# so a host test targets a control by role and label rather than by pixel.
+genet-probe = { path = "../../genet-probe" }
 genet-scripted-dom = { path = "../../genet-scripted-dom" }
 genet-winit-host = { path = "../../genet-winit-host" }
 layout_dom_api = { package = "layout-dom-api", path = "../../shared/layout-dom" }
@@ -27,3 +33,8 @@ paint_list_api = { workspace = true }
 paint_list_render = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
+
+[dev-dependencies]
+# The tests drive the harness by role/label, and read the DOM directly for the
+# assertions the state does not carry.
+layout_dom_api = { package = "layout-dom-api", path = "../../shared/layout-dom" }

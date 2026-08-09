@@ -157,7 +157,15 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<ComputedStyleValueInContext>("__computedStyleValueInContext", 3)?;
     engine.set_function::<StyleSheetCount>("__styleSheetCount", 0)?;
     engine.set_function::<StyleSheetKey>("__styleSheetKey", 1)?;
-    engine.set_function::<StyleSheetRuleCount>("__styleSheetRuleCount", 1)?;
+    engine.set_function::<StyleSheetRuleCount>("__styleSheetRuleCount", 2)?;
+    engine.set_function::<StyleSheetRuleKindNative>("__styleSheetRuleKind", 2)?;
+    engine.set_function::<StyleSheetRuleText>("__styleSheetRuleText", 2)?;
+    engine.set_function::<StyleSheetRuleSelectorText>("__styleSheetRuleSelectorText", 2)?;
+    engine.set_function::<StyleSheetRuleStyleText>("__styleSheetRuleStyleText", 2)?;
+    engine.set_function::<StyleSheetRuleConditionText>("__styleSheetRuleConditionText", 2)?;
+    engine.set_function::<StyleSheetRuleName>("__styleSheetRuleName", 2)?;
+    engine.set_function::<StyleSheetRuleKeyText>("__styleSheetRuleKeyText", 2)?;
+    engine.set_function::<StyleSheetRuleChildCount>("__styleSheetRuleChildCount", 2)?;
     engine.set_function::<StyleSheetOwnerNode>("__styleSheetOwnerNode", 1)?;
     engine.set_function::<StyleSheetImportHref>("__styleSheetImportHref", 2)?;
     engine.set_function::<StyleSheetImportMedia>("__styleSheetImportMedia", 2)?;
@@ -369,6 +377,34 @@ pub struct StyleSheetImportOwner {
     pub import_index: usize,
 }
 
+/// Every CSS rule kind the selected style engine can project today. The names
+/// deliberately stay engine-neutral; the JavaScript bootstrap maps them onto
+/// the browser-facing constructors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StyleSheetRuleKind {
+    Style,
+    Import,
+    Media,
+    Container,
+    Keyframes,
+    Keyframe,
+}
+
+/// A read-only CSS rule object supplied by the selected style engine. Rule
+/// mutations remain rooted at `CSSStyleSheet` until nested-group mutation owns
+/// a parser and resource-graph transaction of its own.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StyleSheetRule {
+    pub kind: StyleSheetRuleKind,
+    pub css_text: String,
+    pub selector_text: Option<String>,
+    pub style_text: Option<String>,
+    pub condition_text: Option<String>,
+    pub name: Option<String>,
+    pub key_text: Option<String>,
+    pub child_count: usize,
+}
+
 /// The host's retained author-stylesheet seam. The runtime owns the JS CSSOM
 /// wrappers, while the selected CSS engine owns rule parsing, mutation, and
 /// generation tracking behind this object-safe contract.
@@ -431,6 +467,34 @@ pub trait StyleSheetHandler {
     fn import_owner_by_key(&self, _key: &str) -> Option<StyleSheetImportOwner> {
         None
     }
+
+    /// Look up one root-to-child rule path. The compatibility default still
+    /// exposes a leading import for older hosts that only implemented the
+    /// R5c import callback; full engines override it for every supported rule.
+    fn rule_by_key(&self, key: &str, path: &[usize]) -> Option<StyleSheetRule> {
+        let [index] = path else {
+            return None;
+        };
+        self.import_rule_by_key(key, *index).map(|import| {
+            let media = import.media.filter(|media| !media.trim().is_empty());
+            let escaped_href = import.href.replace('"', "\\\"");
+            StyleSheetRule {
+                kind: StyleSheetRuleKind::Import,
+                css_text: format!(
+                    "@import url(\"{escaped_href}\"){};",
+                    media
+                        .as_deref()
+                        .map_or_else(String::new, |media| format!(" {media}"))
+                ),
+                selector_text: None,
+                style_text: None,
+                condition_text: media,
+                name: None,
+                key_text: None,
+                child_count: 0,
+            }
+        })
+    }
 }
 
 /// Clone the stylesheet handler out of host state before invoking it.
@@ -449,6 +513,25 @@ fn index_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, argument: usize) -> Option
 fn sheet_key_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, argument: usize) -> Option<String> {
     let value = cx.arg(argument);
     cx.value_to_string(&value).ok()
+}
+
+fn rule_path_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, argument: usize) -> Option<Vec<usize>> {
+    let value = cx.arg(argument);
+    let value = cx.value_to_string(&value).ok()?;
+    if value.is_empty() {
+        return Some(Vec::new());
+    }
+    value
+        .split('/')
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
+fn stylesheet_rule_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<StyleSheetRule> {
+    let key = sheet_key_arg::<E>(cx, 0)?;
+    let path = rule_path_arg::<E>(cx, 1)?;
+    host_stylesheets::<E>(cx)?.rule_by_key(&key, &path)
 }
 
 fn mutation_record(result: Result<usize, StyleSheetMutationError>) -> String {
@@ -479,14 +562,114 @@ impl<E: ScriptEngine> NativeFn<E> for StyleSheetKey {
     }
 }
 
-/// `__styleSheetRuleCount(sheet)` -> top-level rule count, or `-1` for a stale
-/// sheet wrapper.
+/// `__styleSheetRuleCount(sheet, path)` -> the list length at `path`, or `-1`
+/// for a stale sheet/rule wrapper. An empty path addresses the sheet root.
 struct StyleSheetRuleCount;
 impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleCount {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let count = sheet_key_arg::<E>(cx, 0)
-            .and_then(|key| host_stylesheets::<E>(cx)?.rule_count_by_key(&key))
-            .map_or_else(|| "-1".to_string(), |count| count.to_string());
+        let count = match (sheet_key_arg::<E>(cx, 0), rule_path_arg::<E>(cx, 1)) {
+            (Some(key), Some(path)) if path.is_empty() => {
+                host_stylesheets::<E>(cx).and_then(|handler| handler.rule_count_by_key(&key))
+            },
+            (Some(key), Some(path)) => host_stylesheets::<E>(cx)
+                .and_then(|handler| handler.rule_by_key(&key, &path))
+                .map(|rule| rule.child_count),
+            _ => None,
+        }
+        .map_or_else(|| "-1".to_string(), |count| count.to_string());
+        cx.make_string(&count)
+    }
+}
+
+fn rule_kind_name(kind: StyleSheetRuleKind) -> &'static str {
+    match kind {
+        StyleSheetRuleKind::Style => "style",
+        StyleSheetRuleKind::Import => "import",
+        StyleSheetRuleKind::Media => "media",
+        StyleSheetRuleKind::Container => "container",
+        StyleSheetRuleKind::Keyframes => "keyframes",
+        StyleSheetRuleKind::Keyframe => "keyframe",
+    }
+}
+
+/// `__styleSheetRuleKind(sheet, path)` -> one engine-neutral kind name, or
+/// `null` for an invalid/stale rule path.
+struct StyleSheetRuleKindNative;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleKindNative {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        match stylesheet_rule_arg::<E>(cx) {
+            Some(rule) => cx.make_string(rule_kind_name(rule.kind)),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+struct StyleSheetRuleText;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleText {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        match stylesheet_rule_arg::<E>(cx) {
+            Some(rule) => cx.make_string(&rule.css_text),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+fn optional_rule_string<E: ScriptEngine>(
+    cx: &mut E::CallCx<'_>,
+    value: Option<String>,
+) -> Result<E::Value, E::Error> {
+    match value {
+        Some(value) => cx.make_string(&value),
+        None => Ok(cx.make_null()),
+    }
+}
+
+struct StyleSheetRuleSelectorText;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleSelectorText {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let value = stylesheet_rule_arg::<E>(cx).and_then(|rule| rule.selector_text);
+        optional_rule_string::<E>(cx, value)
+    }
+}
+
+struct StyleSheetRuleStyleText;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleStyleText {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let value = stylesheet_rule_arg::<E>(cx).and_then(|rule| rule.style_text);
+        optional_rule_string::<E>(cx, value)
+    }
+}
+
+struct StyleSheetRuleConditionText;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleConditionText {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let value = stylesheet_rule_arg::<E>(cx).and_then(|rule| rule.condition_text);
+        optional_rule_string::<E>(cx, value)
+    }
+}
+
+struct StyleSheetRuleName;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleName {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let value = stylesheet_rule_arg::<E>(cx).and_then(|rule| rule.name);
+        optional_rule_string::<E>(cx, value)
+    }
+}
+
+struct StyleSheetRuleKeyText;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleKeyText {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let value = stylesheet_rule_arg::<E>(cx).and_then(|rule| rule.key_text);
+        optional_rule_string::<E>(cx, value)
+    }
+}
+
+struct StyleSheetRuleChildCount;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleChildCount {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let count = stylesheet_rule_arg::<E>(cx)
+            .map(|rule| rule.child_count.to_string())
+            .unwrap_or_else(|| "-1".to_owned());
         cx.make_string(&count)
     }
 }

@@ -961,6 +961,8 @@
     return Number(detail);
   }
   function CSSRule() {}
+  CSSRule.STYLE_RULE = 1; CSSRule.IMPORT_RULE = 3; CSSRule.MEDIA_RULE = 4;
+  CSSRule.KEYFRAMES_RULE = 7; CSSRule.KEYFRAME_RULE = 8; CSSRule.CONTAINER_RULE = 17;
   function MediaList(text) { this.__text = text || ''; }
   Object.defineProperty(MediaList.prototype, 'mediaText', {
     configurable: true,
@@ -968,94 +970,162 @@
   });
   MediaList.prototype.toString = function() { return this.__text; };
 
-  function CSSRuleList(sheetKey) { this.__sheetKey = sheetKey; }
+  function cssomPath(path) { return path.length ? path.join('/') : ''; }
+  function cssomRuleType(kind) {
+    if (kind === 'style') return CSSRule.STYLE_RULE;
+    if (kind === 'import') return CSSRule.IMPORT_RULE;
+    if (kind === 'media') return CSSRule.MEDIA_RULE;
+    if (kind === 'keyframes') return CSSRule.KEYFRAMES_RULE;
+    if (kind === 'keyframe') return CSSRule.KEYFRAME_RULE;
+    if (kind === 'container') return CSSRule.CONTAINER_RULE;
+    return 0;
+  }
+  // Author-rule declarations are intentionally read-only: nested-rule mutation
+  // needs a parser/resource transaction, while CSSStyleSheet root mutation is
+  // already routed through the retained engine. The surface still supplies the
+  // standard reads needed for CSSStyleRule and CSSKeyframeRule inspection.
+  function makeRuleStyleDecl(text) {
+    var api = {
+      getPropertyValue: function(name) {
+        var m = cssParse(text), target = String(name).toLowerCase();
+        for (var i = 0; i < m.length; i++) if (m[i][0] === target) return m[i][1];
+        return '';
+      },
+      setProperty: function() {}, removeProperty: function() { return ''; },
+      item: function(i) { var m = cssParse(text); i = i >>> 0; return i < m.length ? m[i][0] : ''; },
+    };
+    Object.defineProperty(api, 'length', { configurable: true, get: function() { return cssParse(text).length; } });
+    Object.defineProperty(api, 'cssText', { configurable: true, get: function() { return text || ''; }, set: function() {} });
+    return new Proxy(api, {
+      get: function(target, prop) {
+        if (typeof prop !== 'string' || prop === 'getPropertyValue' || prop === 'setProperty' || prop === 'removeProperty' || prop === 'item' || prop === 'length' || prop === 'cssText') return target[prop];
+        if (/^[0-9]+$/.test(prop)) return target.item(Number(prop));
+        return target.getPropertyValue(cssKebab(prop));
+      },
+      set: function() { return true; },
+    });
+  }
+  function CSSRuleList(sheetKey, path, parentRule) {
+    this.__sheetKey = String(sheetKey); this.__path = path || []; this.__parentRule = parentRule || null;
+  }
   Object.defineProperty(CSSRuleList.prototype, 'length', {
     configurable: true,
-    get: function() { var n = Number(__styleSheetRuleCount(String(this.__sheetKey))); return n < 0 ? 0 : n; }
+    get: function() { var n = Number(__styleSheetRuleCount(this.__sheetKey, cssomPath(this.__path))); return n < 0 ? 0 : n; }
   });
   CSSRuleList.prototype.item = function(index) {
     index = Number(index) >>> 0;
-    if (index >= this.length) return null;
-    var href = __styleSheetImportHref(String(this.__sheetKey), String(index));
-    return href === null ? null : cssomImportRule(this.__sheetKey, index);
+    return index >= this.length ? null : cssomRule(this.__sheetKey, this.__path.concat([index]), this.__parentRule);
   };
+  function makeRuleList(sheetKey, path, parentRule) {
+    var list = new CSSRuleList(sheetKey, path, parentRule);
+    return new Proxy(list, { get: function(target, prop) {
+      if (typeof prop === 'string' && /^[0-9]+$/.test(prop)) return target.item(Number(prop));
+      return target[prop];
+    }});
+  }
+  function CSSRuleBase(sheetKey, path, parentRule) {
+    this.__sheetKey = String(sheetKey); this.__path = path; this.__parentRule = parentRule || null;
+  }
+  CSSRuleBase.prototype = Object.create(CSSRule.prototype); CSSRuleBase.prototype.constructor = CSSRuleBase;
+  Object.defineProperty(CSSRuleBase.prototype, 'cssText', { configurable: true, get: function() {
+    var text = __styleSheetRuleText(this.__sheetKey, cssomPath(this.__path)); return text === null ? '' : String(text);
+  }});
+  Object.defineProperty(CSSRuleBase.prototype, 'type', { configurable: true, get: function() {
+    var kind = __styleSheetRuleKind(this.__sheetKey, cssomPath(this.__path)); return cssomRuleType(kind === null ? '' : String(kind));
+  }});
+  Object.defineProperty(CSSRuleBase.prototype, 'parentStyleSheet', { configurable: true, get: function() { return cssomSheet(this.__sheetKey); }});
+  Object.defineProperty(CSSRuleBase.prototype, 'parentRule', { configurable: true, get: function() { return this.__parentRule; }});
+  function CSSStyleRule(sheetKey, path, parentRule) { CSSRuleBase.call(this, sheetKey, path, parentRule); }
+  CSSStyleRule.prototype = Object.create(CSSRuleBase.prototype); CSSStyleRule.prototype.constructor = CSSStyleRule;
+  Object.defineProperty(CSSStyleRule.prototype, 'selectorText', { configurable: true, get: function() {
+    var value = __styleSheetRuleSelectorText(this.__sheetKey, cssomPath(this.__path)); return value === null ? '' : String(value);
+  }});
+  Object.defineProperty(CSSStyleRule.prototype, 'style', { configurable: true, get: function() {
+    var value = __styleSheetRuleStyleText(this.__sheetKey, cssomPath(this.__path)); return makeRuleStyleDecl(value === null ? '' : String(value));
+  }});
+  function CSSGroupingRule(sheetKey, path, parentRule) {
+    CSSRuleBase.call(this, sheetKey, path, parentRule); this.__rules = makeRuleList(sheetKey, path, this);
+  }
+  CSSGroupingRule.prototype = Object.create(CSSRuleBase.prototype); CSSGroupingRule.prototype.constructor = CSSGroupingRule;
+  Object.defineProperty(CSSGroupingRule.prototype, 'cssRules', { configurable: true, get: function() { return this.__rules; }});
+  function CSSMediaRule(sheetKey, path, parentRule) { CSSGroupingRule.call(this, sheetKey, path, parentRule); }
+  CSSMediaRule.prototype = Object.create(CSSGroupingRule.prototype); CSSMediaRule.prototype.constructor = CSSMediaRule;
+  Object.defineProperty(CSSMediaRule.prototype, 'media', { configurable: true, get: function() {
+    var value = __styleSheetRuleConditionText(this.__sheetKey, cssomPath(this.__path)); return new MediaList(value === null ? '' : String(value));
+  }});
+  function CSSContainerRule(sheetKey, path, parentRule) { CSSGroupingRule.call(this, sheetKey, path, parentRule); }
+  CSSContainerRule.prototype = Object.create(CSSGroupingRule.prototype); CSSContainerRule.prototype.constructor = CSSContainerRule;
+  Object.defineProperty(CSSContainerRule.prototype, 'conditionText', { configurable: true, get: function() {
+    var value = __styleSheetRuleConditionText(this.__sheetKey, cssomPath(this.__path)); return value === null ? '' : String(value);
+  }});
+  Object.defineProperty(CSSContainerRule.prototype, 'containerName', { configurable: true, get: function() {
+    var value = __styleSheetRuleName(this.__sheetKey, cssomPath(this.__path)); return value === null ? '' : String(value);
+  }});
+  function CSSKeyframesRule(sheetKey, path, parentRule) { CSSGroupingRule.call(this, sheetKey, path, parentRule); }
+  CSSKeyframesRule.prototype = Object.create(CSSGroupingRule.prototype); CSSKeyframesRule.prototype.constructor = CSSKeyframesRule;
+  Object.defineProperty(CSSKeyframesRule.prototype, 'name', { configurable: true, get: function() {
+    var value = __styleSheetRuleName(this.__sheetKey, cssomPath(this.__path)); return value === null ? '' : String(value);
+  }});
+  function CSSKeyframeRule(sheetKey, path, parentRule) { CSSRuleBase.call(this, sheetKey, path, parentRule); }
+  CSSKeyframeRule.prototype = Object.create(CSSRuleBase.prototype); CSSKeyframeRule.prototype.constructor = CSSKeyframeRule;
+  Object.defineProperty(CSSKeyframeRule.prototype, 'keyText', { configurable: true, get: function() {
+    var value = __styleSheetRuleKeyText(this.__sheetKey, cssomPath(this.__path)); return value === null ? '' : String(value);
+  }});
+  Object.defineProperty(CSSKeyframeRule.prototype, 'style', { configurable: true, get: function() {
+    var value = __styleSheetRuleStyleText(this.__sheetKey, cssomPath(this.__path)); return makeRuleStyleDecl(value === null ? '' : String(value));
+  }});
+  function CSSImportRule(sheetKey, index) { CSSRuleBase.call(this, sheetKey, [index], null); this.__index = index; }
+  CSSImportRule.prototype = Object.create(CSSRuleBase.prototype); CSSImportRule.prototype.constructor = CSSImportRule;
+  Object.defineProperty(CSSImportRule.prototype, 'href', { configurable: true, get: function() {
+    var href = __styleSheetImportHref(this.__sheetKey, String(this.__index)); return href === null ? '' : String(href);
+  }});
+  Object.defineProperty(CSSImportRule.prototype, 'media', { configurable: true, get: function() {
+    var media = __styleSheetImportMedia(this.__sheetKey, String(this.__index)); return new MediaList(media === null ? '' : String(media));
+  }});
+  Object.defineProperty(CSSImportRule.prototype, 'styleSheet', { configurable: true, get: function() {
+    var child = __styleSheetImportChildKey(this.__sheetKey, String(this.__index)); return child === null ? null : cssomSheet(String(child));
+  }});
   function CSSStyleSheet(sheetKey) {
     if (!(this instanceof CSSStyleSheet) || sheetKey === undefined) throw new TypeError('Illegal constructor');
-    this.__sheetKey = sheetKey;
-    this.__rules = new CSSRuleList(sheetKey);
+    this.__sheetKey = String(sheetKey); this.__rules = makeRuleList(this.__sheetKey, [], null);
   }
-  Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', {
-    configurable: true, get: function() { return this.__rules; }
-  });
-  Object.defineProperty(CSSStyleSheet.prototype, 'ownerNode', {
-    configurable: true, get: function() { return wrapNode(__styleSheetOwnerNode(String(this.__sheetKey))); }
-  });
-  Object.defineProperty(CSSStyleSheet.prototype, 'ownerRule', {
-    configurable: true,
-    get: function() {
-      var parent = __styleSheetOwnerImportParentKey(String(this.__sheetKey));
-      if (parent === null) return null;
-      var index = Number(__styleSheetOwnerImportIndex(String(this.__sheetKey)));
-      return index < 0 ? null : cssomImportRule(String(parent), index);
-    }
-  });
+  Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', { configurable: true, get: function() { return this.__rules; }});
+  Object.defineProperty(CSSStyleSheet.prototype, 'ownerNode', { configurable: true, get: function() { return wrapNode(__styleSheetOwnerNode(this.__sheetKey)); }});
+  Object.defineProperty(CSSStyleSheet.prototype, 'ownerRule', { configurable: true, get: function() {
+    var parent = __styleSheetOwnerImportParentKey(this.__sheetKey); if (parent === null) return null;
+    var index = Number(__styleSheetOwnerImportIndex(this.__sheetKey)); return index < 0 ? null : cssomImportRule(String(parent), index);
+  }});
   CSSStyleSheet.prototype.insertRule = function(rule, index) {
     index = index === undefined ? 0 : (Number(index) >>> 0);
-    return cssomMutationResult(__insertRule(String(this.__sheetKey), String(rule), String(index)));
+    var result = cssomMutationResult(__insertRule(this.__sheetKey, String(rule), String(index)));
+    invalidateCssomRuleCache(this.__sheetKey); return result;
   };
   CSSStyleSheet.prototype.deleteRule = function(index) {
-    index = Number(index) >>> 0;
-    cssomMutationResult(__deleteRule(String(this.__sheetKey), String(index)));
+    cssomMutationResult(__deleteRule(this.__sheetKey, String(Number(index) >>> 0)));
+    invalidateCssomRuleCache(this.__sheetKey);
   };
-  function CSSImportRule(sheetKey, index) {
-    this.__sheetKey = sheetKey;
-    this.__index = index;
+  var cssomSheetCache = {}; var cssomRuleCache = {}; var cssomImportCache = {};
+  function invalidateCssomRuleCache(sheetKey) {
+    var prefix = String(sheetKey) + '\u0000';
+    for (var key in cssomRuleCache) if (key.indexOf(prefix) === 0) delete cssomRuleCache[key];
   }
-  CSSImportRule.prototype = Object.create(CSSRule.prototype);
-  CSSImportRule.prototype.constructor = CSSImportRule;
-  Object.defineProperty(CSSImportRule.prototype, 'href', {
-    configurable: true,
-    get: function() {
-      var href = __styleSheetImportHref(String(this.__sheetKey), String(this.__index));
-      return href === null ? '' : String(href);
-    }
-  });
-  Object.defineProperty(CSSImportRule.prototype, 'media', {
-    configurable: true,
-    get: function() {
-      var media = __styleSheetImportMedia(String(this.__sheetKey), String(this.__index));
-      return new MediaList(media === null ? '' : String(media));
-    }
-  });
-  Object.defineProperty(CSSImportRule.prototype, 'styleSheet', {
-    configurable: true,
-    get: function() {
-      var child = __styleSheetImportChildKey(String(this.__sheetKey), String(this.__index));
-      return child === null ? null : cssomSheet(String(child));
-    }
-  });
-  Object.defineProperty(CSSImportRule.prototype, 'parentStyleSheet', {
-    configurable: true,
-    get: function() { return cssomSheet(this.__sheetKey); }
-  });
-  Object.defineProperty(CSSImportRule.prototype, 'cssText', {
-    configurable: true,
-    get: function() {
-      var media = this.media.mediaText;
-      return '@import url("' + this.href.replace(/"/g, '\\"') + '")' + (media ? ' ' + media : '') + ';';
-    }
-  });
-  var cssomSheetCache = {};
-  var cssomImportCache = {};
-  function cssomSheet(sheetKey) {
-    sheetKey = String(sheetKey);
-    if (!cssomSheetCache[sheetKey]) cssomSheetCache[sheetKey] = new CSSStyleSheet(sheetKey);
-    return cssomSheetCache[sheetKey];
-  }
+  function cssomSheet(sheetKey) { sheetKey = String(sheetKey); if (!cssomSheetCache[sheetKey]) cssomSheetCache[sheetKey] = new CSSStyleSheet(sheetKey); return cssomSheetCache[sheetKey]; }
   function cssomImportRule(sheetKey, index) {
-    var key = String(sheetKey) + '\u0000' + String(index);
-    if (!cssomImportCache[key]) cssomImportCache[key] = new CSSImportRule(String(sheetKey), index);
-    return cssomImportCache[key];
+    var key = String(sheetKey) + '\u0000' + String(index); if (!cssomImportCache[key]) cssomImportCache[key] = new CSSImportRule(String(sheetKey), index); return cssomImportCache[key];
+  }
+  function cssomRule(sheetKey, path, parentRule) {
+    var encoded = cssomPath(path), kind = __styleSheetRuleKind(String(sheetKey), encoded);
+    if (kind === null) return null; kind = String(kind);
+    if (kind === 'import') return path.length === 1 ? cssomImportRule(sheetKey, path[0]) : null;
+    var cacheKey = String(sheetKey) + '\u0000' + encoded, rule = cssomRuleCache[cacheKey];
+    if (rule) return rule;
+    if (kind === 'style') rule = new CSSStyleRule(sheetKey, path, parentRule);
+    else if (kind === 'media') rule = new CSSMediaRule(sheetKey, path, parentRule);
+    else if (kind === 'container') rule = new CSSContainerRule(sheetKey, path, parentRule);
+    else if (kind === 'keyframes') rule = new CSSKeyframesRule(sheetKey, path, parentRule);
+    else if (kind === 'keyframe') rule = new CSSKeyframeRule(sheetKey, path, parentRule);
+    else return null;
+    cssomRuleCache[cacheKey] = rule; return rule;
   }
   function StyleSheetList() {}
   Object.defineProperty(StyleSheetList.prototype, 'length', {
@@ -1077,6 +1147,12 @@
   globalThis.CSSRuleList = CSSRuleList;
   globalThis.CSSRule = CSSRule;
   globalThis.CSSImportRule = CSSImportRule;
+  globalThis.CSSStyleRule = CSSStyleRule;
+  globalThis.CSSGroupingRule = CSSGroupingRule;
+  globalThis.CSSMediaRule = CSSMediaRule;
+  globalThis.CSSContainerRule = CSSContainerRule;
+  globalThis.CSSKeyframesRule = CSSKeyframesRule;
+  globalThis.CSSKeyframeRule = CSSKeyframeRule;
   globalThis.CSSStyleSheet = CSSStyleSheet;
   globalThis.MediaList = MediaList;
   globalThis.StyleSheetList = StyleSheetList;

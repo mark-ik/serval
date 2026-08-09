@@ -777,12 +777,48 @@ where
     out
 }
 
+/// The **painted** origin of `target`: [`absolute_origin`] with each ancestor scroll
+/// container's retained offset applied, so the result is where the node actually lands
+/// after nested scroll. The single-target form of [`accumulate_painted_origins`] — for a
+/// host that needs one element's painted box per input event (a pointer drag's
+/// element-local coordinates) rather than every node's, and would otherwise allocate a
+/// whole-tree map per pointer move. Stops early once `target` is reached.
+pub fn painted_origin<D>(
+    dom: &D,
+    fragments: &FragmentPlane<D::NodeId>,
+    scroll: &ScrollOffsets<D::NodeId>,
+    target: D::NodeId,
+) -> Option<Point>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let mut found = None;
+    let _ = walk_origins(
+        dom,
+        fragments,
+        dom.document(),
+        Point::new(0.0, 0.0),
+        Some(scroll),
+        &mut |id, o| {
+            if id == target {
+                found = Some(o);
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    );
+    found
+}
+
 /// The **painted** origin of every laid-out node, keyed by node: like [`accumulate_origins`]
 /// but each scroll container's retained `scroll` offset shifts its descendants, so an entry
 /// is where the node actually paints after its ancestors' nested scroll. The scroll-aware
 /// answer genet otherwise has no public form of, for overlays / selection handles / IME
 /// anchoring / a11y bounds that must track scrolled content. Pass [`IncrementalLayout::
-/// element_scroll`](crate::IncrementalLayout::element_scroll) as `scroll`.
+/// element_scroll`](crate::IncrementalLayout::element_scroll) as `scroll`. For a single node
+/// use [`painted_origin`].
 pub fn accumulate_painted_origins<D>(
     dom: &D,
     fragments: &FragmentPlane<D::NodeId>,

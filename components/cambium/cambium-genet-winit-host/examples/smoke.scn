@@ -1,0 +1,49 @@
+# The host's headed receipt, driven by role and label rather than by pixels.
+#
+#   HOST_SMOKE_SCENARIO=components/cambium/cambium-genet-winit-host/examples/smoke.scn \
+#   HOST_SMOKE_RECEIPT=smoke.receipt \
+#     cargo run -p cambium-genet-winit-host --example smoke
+#
+# Every `click` resolves a selector against the retained DOM and delivers a real
+# press/release through the host's routing. Every `capture` reads back the frame
+# that was actually presented, so the receipt's digests are evidence a frame was
+# drawn — and that it changed when the state and the window size did.
+
+log host smoke: the first frame installed accessibility and revealed the window
+capture opened
+assert text cambium-genet-winit-host smoke
+
+# Clicking by label, twice, and asserting the app's own transitions rather than
+# the driver's intentions.
+click role:button clicked
+settle 1
+click role:button clicked
+settle 1
+assert event clicks 2
+assert snap clicks == 2
+
+# The drag rail: a press and release at the slider's centre. The level the
+# handler computed proves Down carried its local coordinate and its box size —
+# the centre of the rail is half of it, and nothing but `local` and `size` told
+# the handler that.
+click role:slider Level
+settle 1
+assert snap level >= 45
+assert snap level <= 55
+
+# A frame with real content in it, distinct from the opening one.
+capture busy
+
+# Resize: the visible root must redraw at the new size, which the next capture's
+# recorded dimensions prove.
+resize 560 400
+settle 4
+capture resized
+assert text cambium-genet-winit-host smoke
+
+# The Reset button restores the start state, by label.
+click role:button Reset
+settle 1
+assert snap clicks == 0
+assert event reset
+log host smoke: done

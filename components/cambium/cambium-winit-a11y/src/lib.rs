@@ -39,6 +39,28 @@ use layout_dom_api::LayoutDom as _;
 use sprigging::LeafRegistry;
 use winit::window::Window;
 
+/// What a screen reader asked for, kept as the action it actually requested.
+///
+/// AccessKit's `Click` and `Focus` are different requests and a host that
+/// collapses them lies to the reader: navigating a list with a virtual cursor
+/// issues `Focus`, and turning that into a click activates every control the
+/// reader merely moves across. They stay apart here so the host can route
+/// `Click` through its activation path and `Focus` through `set_focus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum A11yAction {
+    /// Activate the element — the reader's equivalent of a pointer click.
+    Click,
+    /// Move focus to the element, without activating it.
+    Focus,
+}
+
+/// One drained screen-reader request: which action, on which DOM node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct A11yRequest {
+    pub action: A11yAction,
+    pub node: NodeId,
+}
+
 /// Bridges genet-layout's a11y walk to a Sprigging leaf registry: when the walk
 /// reaches a `<custom-leaf>`, the registered leaf fills its own AccessKit node
 /// (a knob announces as a slider, a fretboard as a graphic). Mirrors the paint
@@ -84,8 +106,9 @@ impl A11yHost {
     /// Project the current layout into an AccessKit tree (with each leaf's own
     /// semantics), install it on the first call — revealing `window`, which must
     /// have been created hidden so the adapter attaches first — and update it
-    /// after. Returns the DOM nodes a screen reader asked to Click or Focus, in
-    /// request order, for the caller to activate through its own click path.
+    /// after. Returns the screen reader's Click and Focus requests, in request
+    /// order and still typed, for the caller to route each through the matching
+    /// path (activation for `Click`, focus for `Focus`).
     ///
     /// `focus` is the app's currently-focused DOM node's opaque id (from
     /// `LayoutDom::opaque_id`), used as the tree's focus when it is really in the
@@ -97,41 +120,10 @@ impl A11yHost {
         layout: &IncrementalLayout<NodeId>,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
-    ) -> Vec<NodeId> {
-        let root = dom.document();
-        let id_of = |d: &ScriptedDom, n: NodeId| A11yNodeId(d.opaque_id(n));
-        let skip = |_: &ScriptedDom, _: NodeId| false;
-        let projection = {
-            let mut source = SpriggingA11y(leaves);
-            project(
-                dom,
-                layout.fragments(),
-                root,
-                &id_of,
-                &skip,
-                &mut source,
-                true,
-            )
-        };
-
-        let mut nodes = Vec::with_capacity(projection.nodes.len());
-        self.action_map.clear();
-        self.action_map.reserve(projection.nodes.len());
-        for p in projection.nodes {
-            self.action_map.insert(p.id, p.dom);
-            nodes.push((p.id, p.node));
-        }
-        let node_count = nodes.len();
-        let focus = focus
-            .map(A11yNodeId)
-            .filter(|id| self.action_map.contains_key(id))
-            .unwrap_or(projection.root);
-        let tree = TreeUpdate {
-            nodes,
-            tree: Some(Tree::new(projection.root)),
-            tree_id: TreeId::ROOT,
-            focus,
-        };
+    ) -> Vec<A11yRequest> {
+        let (tree, action_map) = project_tree(dom, layout, leaves, focus);
+        self.action_map = action_map;
+        let node_count = tree.nodes.len();
 
         if !self.installed {
             match self.bridge.install(window, tree) {
@@ -147,12 +139,87 @@ impl A11yHost {
         }
 
         self.bridge.update(tree);
-        // Route a screen reader's activations back to their DOM nodes.
+        // Route a screen reader's requests back to their DOM nodes, each still
+        // carrying the action it asked for.
         self.bridge
             .drain_actions()
             .into_iter()
-            .filter(|req| matches!(req.action, Action::Click | Action::Focus))
-            .filter_map(|req| self.action_map.get(&req.target_node).copied())
+            .filter_map(|req| {
+                let action = match req.action {
+                    Action::Click => A11yAction::Click,
+                    Action::Focus => A11yAction::Focus,
+                    _ => return None,
+                };
+                let node = self.action_map.get(&req.target_node).copied()?;
+                Some(A11yRequest { action, node })
+            })
             .collect()
     }
+
+    /// Map a raw AccessKit request to a typed one against the tree that was
+    /// last synced. `None` for an action this host does not route, or a target
+    /// that is no longer in the tree.
+    ///
+    /// Public because it is the seam between "the OS asked for something" and
+    /// "the app does it": a test can feed a request the same way the adapter
+    /// does, without a screen reader.
+    pub fn map_request(&self, request: &accesskit::ActionRequest) -> Option<A11yRequest> {
+        let action = match request.action {
+            Action::Click => A11yAction::Click,
+            Action::Focus => A11yAction::Focus,
+            _ => return None,
+        };
+        let node = self.action_map.get(&request.target_node).copied()?;
+        Some(A11yRequest { action, node })
+    }
+}
+
+/// Project a laid-out Cambium document into an AccessKit tree, with no window
+/// and no platform adapter: the half of [`A11yHost::sync`] that is pure.
+///
+/// Returns the tree update and the AccessKit-id → DOM-node map a drained
+/// action is resolved through. Split out so the projection is assertable in an
+/// ordinary test — an accessibility regression that only a screen reader can
+/// catch is one nobody catches.
+pub fn project_tree(
+    dom: &ScriptedDom,
+    layout: &IncrementalLayout<NodeId>,
+    leaves: &mut LeafRegistry<u64>,
+    focus: Option<u64>,
+) -> (TreeUpdate, HashMap<A11yNodeId, NodeId>) {
+    let root = dom.document();
+    let id_of = |d: &ScriptedDom, n: NodeId| A11yNodeId(d.opaque_id(n));
+    let skip = |_: &ScriptedDom, _: NodeId| false;
+    let projection = {
+        let mut source = SpriggingA11y(leaves);
+        project(
+            dom,
+            layout.fragments(),
+            root,
+            &id_of,
+            &skip,
+            &mut source,
+            true,
+        )
+    };
+
+    let mut nodes = Vec::with_capacity(projection.nodes.len());
+    let mut action_map = HashMap::with_capacity(projection.nodes.len());
+    for p in projection.nodes {
+        action_map.insert(p.id, p.dom);
+        nodes.push((p.id, p.node));
+    }
+    // A stale focus id would point the reader at nothing, so it only stands
+    // when the node is really in this frame's tree.
+    let focus = focus
+        .map(A11yNodeId)
+        .filter(|id| action_map.contains_key(id))
+        .unwrap_or(projection.root);
+    let tree = TreeUpdate {
+        nodes,
+        tree: Some(Tree::new(projection.root)),
+        tree_id: TreeId::ROOT,
+        focus,
+    };
+    (tree, action_map)
 }

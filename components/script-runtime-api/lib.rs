@@ -49,7 +49,7 @@ mod webgl;
 pub use dom::{
     ComputedStyleHandler, CookieProvider, InlineStyleHandler, InlineStyleValueResult,
     MediaQueryHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
-    StyleSheetMutationError,
+    StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
 pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;

@@ -100,6 +100,7 @@ where
     keyframe_animation: Option<KeyframeAnimation<D::NodeId>>,
     nested_scroll: HashMap<D::NodeId, (f32, f32)>,
     image_sources: HashMap<String, Vec<u8>>,
+    font_sources: HashMap<String, Vec<u8>>,
     selection_anchor: Option<(D::NodeId, usize)>,
     selection_range: Option<TextRange<D::NodeId>>,
 }
@@ -132,6 +133,7 @@ where
             keyframe_animation: None,
             nested_scroll: HashMap::new(),
             image_sources: HashMap::new(),
+            font_sources: HashMap::new(),
             selection_anchor: None,
             selection_range: None,
         }
@@ -204,15 +206,62 @@ where
     /// still owns decoding and paint-key allocation; the host owns URL
     /// resolution and fetching.
     pub fn set_image_resource(&mut self, url: impl Into<String>, bytes: Vec<u8>) {
-        self.image_sources.insert(url.into(), bytes);
-        self.cached = None;
+        let url = url.into();
+        if self.image_sources.get(&url) == Some(&bytes) {
+            return;
+        }
+        self.image_sources.insert(url, bytes);
+        self.invalidate();
     }
 
     /// Supply host-resolved font bytes for a non-data URL. The host owns URL
-    /// resolution and fetching; Parley owns font registration and shaping.
-    pub fn set_font_resource(&mut self, _url: impl Into<String>, bytes: Vec<u8>) {
-        self.text.register_font_bytes(bytes);
-        self.cached = None;
+    /// resolution and fetching. A source identity replaces prior bytes rather
+    /// than registering another competing face in Parley's collection.
+    pub fn set_font_resource(&mut self, url: impl Into<String>, bytes: Vec<u8>) {
+        let url = url.into();
+        if self.font_sources.get(&url) == Some(&bytes) {
+            return;
+        }
+        self.font_sources.insert(url, bytes);
+        self.rebuild_font_resources();
+        self.invalidate();
+    }
+
+    /// Replace the complete host image ledger. A missing prior key is removed,
+    /// so a failed or deleted live image cannot remain painted from stale bytes.
+    pub fn replace_image_resources(
+        &mut self,
+        resources: impl IntoIterator<Item = (String, Vec<u8>)>,
+    ) {
+        let next = resources.into_iter().collect::<HashMap<_, _>>();
+        if self.image_sources == next {
+            return;
+        }
+        self.image_sources = next;
+        self.invalidate();
+    }
+
+    /// Replace the complete host font ledger. Fontique has no per-blob removal
+    /// operation, so a changed or removed source rebuilds this document's font
+    /// context from the surviving ledger before the next layout.
+    pub fn replace_font_resources(
+        &mut self,
+        resources: impl IntoIterator<Item = (String, Vec<u8>)>,
+    ) {
+        let next = resources.into_iter().collect::<HashMap<_, _>>();
+        if self.font_sources == next {
+            return;
+        }
+        self.font_sources = next;
+        self.rebuild_font_resources();
+        self.invalidate();
+    }
+
+    fn rebuild_font_resources(&mut self) {
+        self.text = TextSystem::new();
+        for bytes in self.font_sources.values().cloned() {
+            self.text.register_font_bytes(bytes);
+        }
     }
 
     pub fn frame(&mut self, width: u32, height: u32) -> Result<LiveryPaintList, LayoutError> {

@@ -425,6 +425,51 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
         Some((origin.x, origin.y, r.size.width, r.size.height))
     }
 
+    /// The **painted** rect `(x, y, w, h)` of `node` — [`absolute_rect`](Self::absolute_rect)
+    /// carried through every ancestor scroll container's retained offset and the document
+    /// scroll, so it is expressed in the same scene coordinates
+    /// [`hit_test`](Self::hit_test) takes its point in. `None` when `node` has no fragment.
+    ///
+    /// This is the answer a host needs to turn a cursor position into element-local
+    /// coordinates: `local = (cursor - painted_rect.origin)`, `size = painted_rect.size`.
+    /// `absolute_rect` cannot serve that — inside a scrolled container it names where the
+    /// box *would* be unscrolled, so a drag in a scrolled list would read a stale offset.
+    /// A `position: fixed` box (and its subtree) is pinned, so the document scroll is not
+    /// applied to it, mirroring the hit walk's own fixed branch.
+    pub fn painted_rect<D>(&self, dom: &D, node: Id) -> Option<(f32, f32, f32, f32)>
+    where
+        D: LayoutDom<NodeId = Id>,
+    {
+        let origin =
+            crate::genet_lane::painted_origin(dom, &self.fragments, &self.element_scroll, node)?;
+        let r = self.fragments.rect_of(node)?;
+        let (sx, sy) = if self.in_fixed_subtree(dom, node) {
+            (0.0, 0.0)
+        } else {
+            self.viewport.scroll
+        };
+        Some((origin.x - sx, origin.y - sy, r.size.width, r.size.height))
+    }
+
+    /// Whether `node` or any DOM ancestor is `position: fixed` — i.e. whether it paints
+    /// pinned to the viewport rather than translated by the document scroll.
+    fn in_fixed_subtree<D>(&self, dom: &D, node: Id) -> bool
+    where
+        D: LayoutDom<NodeId = Id>,
+    {
+        let mut cur = Some(node);
+        while let Some(n) = cur {
+            if crate::paint_emit::primary_cv(&self.styles, n)
+                .as_deref()
+                .is_some_and(crate::paint_emit::is_fixed)
+            {
+                return true;
+            }
+            cur = dom.parent(n);
+        }
+        false
+    }
+
     /// The current cascaded style plane — the other half (with [`fragments`](Self::fragments))
     /// a `GenetLaneView` hit-test reads, so a host can serve point queries off the
     /// session's retained layout instead of re-cascading.

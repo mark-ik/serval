@@ -77,7 +77,7 @@ pub struct ResolvedStylesheet {
 }
 
 /// Kinds of bytes a document engine may consume.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ResourceKind {
     Image,
     Font,
@@ -91,6 +91,43 @@ pub struct ResolvedResource {
     pub authored_url: String,
     pub resolved_url: String,
     pub bytes: Vec<u8>,
+}
+
+/// The stable identity of one document dependency across successive resource
+/// resolutions. The authored spelling plus its source-relative URL identifies
+/// one DOM/CSS use, so two linked stylesheets can both use `url(icon.png)`
+/// without collapsing into one live resource.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ResourceKey {
+    pub kind: ResourceKind,
+    pub authored_url: String,
+    pub resolved_url: String,
+}
+
+impl From<&ResolvedResource> for ResourceKey {
+    fn from(resource: &ResolvedResource) -> Self {
+        Self {
+            kind: resource.kind,
+            authored_url: resource.authored_url.clone(),
+            resolved_url: resource.resolved_url.clone(),
+        }
+    }
+}
+
+/// The resource portion of one live document reconciliation. Consumers receive
+/// the full next ledger as well as this delta, so removal never needs an empty
+/// byte sentinel and changed font bytes can replace prior registration.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResourceDelta {
+    pub added: Vec<ResolvedResource>,
+    pub updated: Vec<ResolvedResource>,
+    pub removed: Vec<ResourceKey>,
+}
+
+impl ResourceDelta {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.updated.is_empty() && self.removed.is_empty()
+    }
 }
 
 /// A dependency which did not become usable bytes. These diagnostics are part
@@ -243,6 +280,38 @@ impl ResolvedDocumentResources {
             .iter()
             .map(|sheet| sheet.text.as_str())
             .collect()
+    }
+
+    /// Compare this next resolution to a prior ledger. Resource ownership is
+    /// keyed by its consumer-visible spelling, source-relative URL, and kind;
+    /// changed bytes become a replacement.
+    pub fn resource_delta_from(&self, previous: &Self) -> ResourceDelta {
+        let old = previous
+            .resources
+            .iter()
+            .map(|resource| (ResourceKey::from(resource), resource))
+            .collect::<HashMap<_, _>>();
+        let next = self
+            .resources
+            .iter()
+            .map(|resource| (ResourceKey::from(resource), resource))
+            .collect::<HashMap<_, _>>();
+        let mut delta = ResourceDelta::default();
+        for resource in &self.resources {
+            let key = ResourceKey::from(resource);
+            match old.get(&key) {
+                None => delta.added.push(resource.clone()),
+                Some(previous) if *previous != resource => delta.updated.push(resource.clone()),
+                Some(_) => {},
+            }
+        }
+        for resource in &previous.resources {
+            let key = ResourceKey::from(resource);
+            if !next.contains_key(&key) {
+                delta.removed.push(key);
+            }
+        }
+        delta
     }
 }
 

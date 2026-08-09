@@ -14,7 +14,8 @@ use std::any::Any;
 
 #[cfg(feature = "livery")]
 use genet_document_resources::{
-    ResolvedDocumentResources, ResolvedStylesheet, ResourceKind, ResourceLimits, StylesheetOwner,
+    ResolvedDocumentResources, ResolvedStylesheet, ResourceDelta, ResourceKind, ResourceLimits,
+    StylesheetOwner,
 };
 use genet_host_api::ResourceFetcher;
 use genet_layout::{ScrollKey, TextSelection};
@@ -364,6 +365,44 @@ impl LiveryDocumentSession {
 
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    /// Replace only the host-fetched image and font ledger. The retained
+    /// stylesheet graph must be unchanged; a stylesheet change belongs to the
+    /// CSSOM/live-style reconciliation path, not an asset update hidden under
+    /// a static document session.
+    pub fn replace_resource_bytes(
+        &mut self,
+        next: ResolvedDocumentResources,
+    ) -> Result<ResourceDelta, String> {
+        if next.stylesheets != self.resources.stylesheets {
+            return Err("resource replacement cannot change the stylesheet graph".to_owned());
+        }
+        let delta = next.resource_delta_from(&self.resources);
+        if delta.is_empty() {
+            self.resources = next;
+            return Ok(delta);
+        }
+        let images = next
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::Image)
+            .flat_map(|resource| {
+                let mut keys = vec![(resource.authored_url.clone(), resource.bytes.clone())];
+                if resource.resolved_url != resource.authored_url {
+                    keys.push((resource.resolved_url.clone(), resource.bytes.clone()));
+                }
+                keys
+            });
+        let fonts = next
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::Font)
+            .map(|resource| (resource.resolved_url.clone(), resource.bytes.clone()));
+        self.doc.replace_image_resources(images);
+        self.doc.replace_font_resources(fonts);
+        self.resources = next;
+        Ok(delta)
     }
 
     /// Missing or deferred dependencies observed while assembling this

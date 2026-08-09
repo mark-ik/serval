@@ -40,7 +40,7 @@ pub use layout::{
     layout, resolve_container_query_styles, resolve_container_relative_styles, used_value_context,
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
-pub use livery::stylesheet::RuleMutationError;
+pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
 pub(crate) use paint::emit_paint_list_with_text_system_scrolled_with_images;
 pub use paint::{LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system};
