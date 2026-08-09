@@ -129,6 +129,24 @@ where
                 "switch" => return Role::Switch,
                 "tab" => return Role::Tab,
                 "tablist" => return Role::TabList,
+                // Value-bearing and announcement roles. Without these an
+                // authored `role="alert"` projects as a generic container, so a
+                // screen reader is never told the thing happened, and a
+                // `role="progressbar"` announces as "group" with no value.
+                "alert" => return Role::Alert,
+                "status" => return Role::Status,
+                "log" => return Role::Log,
+                "progressbar" => return Role::ProgressIndicator,
+                "slider" => return Role::Slider,
+                "spinbutton" => return Role::SpinButton,
+                "textbox" => return Role::TextInput,
+                "note" => return Role::Note,
+                "list" => return Role::List,
+                "listitem" => return Role::ListItem,
+                "main" => return Role::Main,
+                "navigation" => return Role::Navigation,
+                "region" => return Role::Region,
+                "heading" => return Role::Heading,
                 _ => {},
             }
         }
@@ -217,6 +235,35 @@ where
         Some("true") => access.set_selected(true),
         Some("false") => access.set_selected(false),
         _ => {},
+    }
+
+    // A pressed toggle button reports as toggled, the same as a checkbox: an
+    // `aria-pressed` row whose selection is only visible in CSS is invisible to
+    // a reader.
+    if let Some(pressed) = attr(dom, node, "aria-pressed").and_then(|v| match v {
+        "true" => Some(Toggled::True),
+        "false" => Some(Toggled::False),
+        "mixed" => Some(Toggled::Mixed),
+        _ => None,
+    }) {
+        access.set_toggled(pressed);
+    }
+
+    // The value range for a progress bar, slider, or spin button. A progress
+    // indicator with no value announces only that something is happening, which
+    // is exactly the "fake spinner" a real transfer must not be reduced to.
+    for (name, set) in [
+        ("aria-valuenow", 0u8),
+        ("aria-valuemin", 1),
+        ("aria-valuemax", 2),
+    ] {
+        if let Some(value) = attr(dom, node, name).and_then(|v| v.parse::<f64>().ok()) {
+            match set {
+                0 => access.set_numeric_value(value),
+                1 => access.set_min_numeric_value(value),
+                _ => access.set_max_numeric_value(value),
+            }
+        }
     }
 
     // A chisel leaf is a replaced element: its interior is invisible to the DOM,
@@ -754,6 +801,67 @@ mod tests {
             switch_node.toggled(),
             Some(Toggled::False),
             "aria-checked=false is unchecked"
+        );
+    }
+
+    /// The announcement and value-bearing roles. Each of these was a generic
+    /// container before: an authored `role="alert"` never reached the reader as
+    /// an alert, and a `role="progressbar"` announced with no value at all —
+    /// which is the "fake spinner" a real transfer must never be reduced to.
+    #[test]
+    fn announcement_and_value_roles_reach_the_tree() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let div = dom.create_element(html("div"));
+        dom.append_child(root, div);
+
+        let alert = dom.create_element(html("div"));
+        dom.set_attribute(alert, attr_name("role"), "alert");
+        dom.append_child(div, alert);
+
+        let bar = dom.create_element(html("div"));
+        dom.set_attribute(bar, attr_name("role"), "progressbar");
+        dom.set_attribute(bar, attr_name("aria-label"), "Transfer");
+        dom.set_attribute(bar, attr_name("aria-valuenow"), "42");
+        dom.set_attribute(bar, attr_name("aria-valuemin"), "0");
+        dom.set_attribute(bar, attr_name("aria-valuemax"), "100");
+        dom.append_child(div, bar);
+
+        let row = dom.create_element(html("button"));
+        dom.set_attribute(row, attr_name("aria-pressed"), "true");
+        dom.append_child(div, row);
+
+        let log = dom.create_element(html("ul"));
+        dom.set_attribute(log, attr_name("role"), "log");
+        dom.append_child(div, log);
+
+        let fragments = fragments_from_scripted_dom(&dom);
+        let tree = accesskit_tree(&dom, &fragments, None);
+        let node = |n: NodeId| {
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == access_id(&dom, n))
+                .map(|(_, node)| node)
+                .unwrap_or_else(|| panic!("node missing from a11y tree"))
+        };
+
+        assert_eq!(node(alert).role(), Role::Alert, "a refusal announces");
+        assert_eq!(node(log).role(), Role::Log, "an event log announces");
+
+        let bar_node = node(bar);
+        assert_eq!(bar_node.role(), Role::ProgressIndicator);
+        assert_eq!(
+            bar_node.numeric_value(),
+            Some(42.0),
+            "and it carries how far along it is",
+        );
+        assert_eq!(bar_node.min_numeric_value(), Some(0.0));
+        assert_eq!(bar_node.max_numeric_value(), Some(100.0));
+
+        assert_eq!(
+            node(row).toggled(),
+            Some(Toggled::True),
+            "a pressed toggle button reports as toggled, not only in CSS",
         );
     }
 
