@@ -107,6 +107,34 @@ fn body_background_propagates_to_the_canvas_and_not_its_offset_box() {
 }
 
 #[test]
+fn collapsed_table_caption_paints_once() {
+    let document = StaticDocument::parse(
+        "<table><caption>caption</caption><tbody><tr><td>cell</td></tr></tbody></table>",
+    );
+    let styles = StyleSet::cambium(&["table { border-collapse: collapse; } \
+         caption { color: rgb(255, 0, 255); } \
+         td { border: 1px solid black; }"]);
+    let mut retained = LiveryDocument::new(document, styles, Device::screen(320.0, 240.0));
+    let list = retained.frame(320, 240).expect("collapsed table frame");
+    let caption_runs = list
+        .commands()
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                PaintCmd::DrawText(run)
+                    if run.color == ColorF::new(1.0, 0.0, 1.0, 1.0)
+            )
+        })
+        .count();
+
+    assert_eq!(
+        caption_runs, 1,
+        "a collapsed table caption has one DOM text owner and must paint once"
+    );
+}
+
+#[test]
 fn display_none_root_keeps_the_canvas_background_transparent() {
     let list = render(
         r#"<html><body><p>hidden</p></body></html>"#,

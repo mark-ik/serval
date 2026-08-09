@@ -48,7 +48,8 @@ mod webgl;
 
 pub use dom::{
     ComputedStyleHandler, CookieProvider, InlineStyleHandler, InlineStyleValueResult,
-    MediaQueryHandler, StyleSheetHandler, StyleSheetMutationError,
+    MediaQueryHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
+    StyleSheetMutationError,
 };
 pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;

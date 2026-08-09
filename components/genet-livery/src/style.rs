@@ -4,7 +4,9 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use genet_document_resources::{ResolvedStylesheet, StylesheetOwner};
+use genet_document_resources::{
+    ResolvedImportRule, ResolvedStylesheet, StylesheetImportParent, StylesheetOwner,
+};
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
     ComputedValues, PropertyId, PropertyValue,
@@ -43,18 +45,34 @@ pub struct UsedValueContext {
 /// needs the enclosed parsed stylesheet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthorStylesheet {
+    sheet_id: u64,
     owner: StylesheetOwner,
+    owner_node: Option<u64>,
     source_url: Option<String>,
+    requested_url: Option<String>,
+    content_type: Option<String>,
     media: Option<String>,
+    imports: Vec<ResolvedImportRule>,
+    import_parent: Option<StylesheetImportParent>,
+    cssom_key: String,
+    authored_text: String,
     stylesheet: Stylesheet,
 }
 
 impl AuthorStylesheet {
-    fn from_resolved(sheet: &ResolvedStylesheet) -> Self {
+    fn from_resolved(sheet: &ResolvedStylesheet, cssom_key: String) -> Self {
         Self {
+            sheet_id: sheet.sheet_id,
             owner: sheet.owner,
+            owner_node: sheet.owner_node,
             source_url: sheet.source_url.clone(),
+            requested_url: sheet.requested_url.clone(),
+            content_type: sheet.content_type.clone(),
             media: sheet.media.clone(),
+            imports: sheet.imports.clone(),
+            import_parent: sheet.import_parent,
+            cssom_key,
+            authored_text: sheet.text.clone(),
             stylesheet: Stylesheet::parse(&sheet.text, Origin::Author)
                 .with_document_media(sheet.media.as_deref()),
         }
@@ -64,6 +82,13 @@ impl AuthorStylesheet {
         self.owner
     }
 
+    /// The stable document-element identity for a direct sheet. Imported
+    /// sheets retain their root's value for source attribution, but are not
+    /// members of `document.styleSheets`.
+    pub fn owner_node(&self) -> Option<u64> {
+        self.owner_node
+    }
+
     pub fn source_url(&self) -> Option<&str> {
         self.source_url.as_deref()
     }
@@ -71,6 +96,46 @@ impl AuthorStylesheet {
     pub fn media(&self) -> Option<&str> {
         self.media.as_deref()
     }
+
+    /// Opaque CSSOM identity. Direct sheets derive it from their owner element;
+    /// imported sheets derive it from their parent import path.
+    pub fn cssom_key(&self) -> &str {
+        &self.cssom_key
+    }
+
+    fn refresh_resource_graph(&mut self, source: &ResolvedStylesheet, cssom_key: String) {
+        self.sheet_id = source.sheet_id;
+        self.imports = source.imports.clone();
+        self.import_parent = source.import_parent;
+        self.cssom_key = cssom_key;
+    }
+
+    fn can_retain_live_cssom(&self, source: &ResolvedStylesheet) -> bool {
+        self.owner != StylesheetOwner::Imported
+            && source.owner != StylesheetOwner::Imported
+            && self.owner == source.owner
+            && self.owner_node == source.owner_node
+            && self.source_url == source.source_url
+            && self.requested_url == source.requested_url
+            && self.content_type == source.content_type
+            && self.media == source.media
+            && self.authored_text == source.text
+    }
+}
+
+/// CSSOM metadata for a retained `@import` rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CssomImportRule {
+    pub href: String,
+    pub media: Option<String>,
+    pub child_sheet_key: Option<String>,
+}
+
+/// The parent import rule for an imported CSSOM stylesheet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CssomImportOwner {
+    pub parent_sheet_key: String,
+    pub import_index: usize,
 }
 
 impl Deref for AuthorStylesheet {
@@ -94,6 +159,59 @@ pub struct StyleSet {
     rules: Vec<StyleRule>,
     keyframes: Vec<Keyframes>,
     diagnostics: Vec<StylesheetDiagnostic>,
+    generation: u64,
+}
+
+fn cssom_keys(sheets: &[ResolvedStylesheet]) -> Vec<String> {
+    fn resolve(
+        index: usize,
+        sheets: &[ResolvedStylesheet],
+        by_id: &HashMap<u64, usize>,
+        keys: &mut [Option<String>],
+        active: &mut Vec<usize>,
+    ) -> String {
+        if let Some(key) = &keys[index] {
+            return key.clone();
+        }
+        let sheet = &sheets[index];
+        if active.contains(&index) {
+            return format!("orphan-import:{}", sheet.sheet_id);
+        }
+        active.push(index);
+        let key = match sheet.import_parent {
+            None => sheet.owner_node.map_or_else(
+                || format!("document:{}", sheet.document_order),
+                |owner_node| format!("node:{owner_node}"),
+            ),
+            Some(parent) => by_id
+                .get(&parent.sheet_id)
+                .copied()
+                .map(|parent_index| {
+                    let parent_key = resolve(parent_index, sheets, by_id, keys, active);
+                    format!("{parent_key}/import:{}", parent.import_index)
+                })
+                .unwrap_or_else(|| format!("orphan-import:{}", sheet.sheet_id)),
+        };
+        active.pop();
+        keys[index] = Some(key.clone());
+        key
+    }
+
+    let by_id = sheets
+        .iter()
+        .enumerate()
+        .map(|(index, sheet)| (sheet.sheet_id, index))
+        .collect::<HashMap<_, _>>();
+    let mut keys = vec![None; sheets.len()];
+    for index in 0..sheets.len() {
+        let _ = resolve(index, sheets, &by_id, &mut keys, &mut Vec::new());
+    }
+    keys.into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            key.unwrap_or_else(|| format!("orphan-import:{}", sheets[index].sheet_id))
+        })
+        .collect()
 }
 
 impl StyleSet {
@@ -106,9 +224,15 @@ impl StyleSet {
             .iter()
             .enumerate()
             .map(|(document_order, text)| ResolvedStylesheet {
+                sheet_id: document_order as u64,
                 owner: StylesheetOwner::Inline,
+                owner_node: None,
                 source_url: None,
+                requested_url: None,
+                content_type: None,
                 media: None,
+                imports: Vec::new(),
+                import_parent: None,
                 text: (*text).to_owned(),
                 document_order: document_order as u64,
             })
@@ -127,11 +251,50 @@ impl StyleSet {
             ua: Stylesheet::parse(ua_sheet, Origin::UserAgent),
             ..Self::default()
         };
-        for source in author_sheets {
-            result.authors.push(AuthorStylesheet::from_resolved(source));
+        let cssom_keys = cssom_keys(author_sheets);
+        for (source, cssom_key) in author_sheets.iter().zip(cssom_keys) {
+            result
+                .authors
+                .push(AuthorStylesheet::from_resolved(source, cssom_key));
         }
         result.rebuild();
         result
+    }
+
+    /// Reconcile a live document's freshly resolved resource set. Direct
+    /// `<style>` and `<link>` sheets with unchanged owner, identity, media,
+    /// response metadata, and source text retain their parsed CSSOM object, so
+    /// prior `insertRule` / `deleteRule` mutations survive an unrelated sheet
+    /// insertion, removal, or reorder. Imported sheets always derive afresh
+    /// from their current parent response.
+    pub fn replace_author_sheets(&mut self, author_sheets: &[ResolvedStylesheet]) {
+        let cssom_keys = cssom_keys(author_sheets);
+        let mut previous = self
+            .authors
+            .drain(..)
+            .map(Some)
+            .collect::<Vec<Option<AuthorStylesheet>>>();
+        let mut authors = Vec::with_capacity(author_sheets.len());
+        for (source, cssom_key) in author_sheets.iter().zip(cssom_keys) {
+            let retained = previous
+                .iter()
+                .position(|candidate| {
+                    candidate
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.can_retain_live_cssom(source))
+                })
+                .and_then(|index| previous[index].take());
+            let author = match retained {
+                Some(mut retained) => {
+                    retained.refresh_resource_graph(source, cssom_key);
+                    retained
+                },
+                None => AuthorStylesheet::from_resolved(source, cssom_key),
+            };
+            authors.push(author);
+        }
+        self.authors = authors;
+        self.rebuild();
     }
 
     /// Rebuild the flattened cascade views from the retained sheets, with
@@ -150,6 +313,7 @@ impl StyleSet {
             source_order = source_order.saturating_add(author.rules().len() as u64);
             self.keyframes.extend(author.keyframes().iter().cloned());
         }
+        self.generation = self.generation.saturating_add(1);
     }
 
     /// The retained author sheets, in document order.
@@ -157,13 +321,74 @@ impl StyleSet {
         &self.authors
     }
 
-    /// Aggregate monotonic sheet stamp for consumers retaining a style plane.
-    pub fn generation(&self) -> u64 {
+    /// Author-sheet slots which appear in `document.styleSheets`. Flattened
+    /// `@import` sheets contribute to the cascade but remain children of their
+    /// parent sheet rather than document-list entries.
+    pub fn document_sheet_indexes(&self) -> Vec<usize> {
         self.authors
             .iter()
-            .fold(self.ua.generation(), |generation, sheet| {
-                generation.saturating_add(sheet.generation())
+            .enumerate()
+            .filter_map(|(index, sheet)| {
+                (sheet.owner != StylesheetOwner::Imported).then_some(index)
             })
+            .collect()
+    }
+
+    /// Look up either a direct document sheet or an imported child through its
+    /// stable opaque CSSOM key.
+    pub fn author_index_by_cssom_key(&self, key: &str) -> Option<usize> {
+        self.authors
+            .iter()
+            .position(|sheet| sheet.cssom_key() == key)
+    }
+
+    pub fn cssom_key(&self, sheet: usize) -> Option<&str> {
+        self.authors.get(sheet).map(AuthorStylesheet::cssom_key)
+    }
+
+    /// Top-level CSSOM rules. The resolver has already removed leading imports
+    /// from the parser input, so restore their visible positions before the
+    /// selected engine's parsed rule count.
+    pub fn cssom_rule_count(&self, sheet: usize) -> Option<usize> {
+        self.authors
+            .get(sheet)
+            .map(|sheet| sheet.imports.len().saturating_add(sheet.items().len()))
+    }
+
+    pub fn cssom_import_rule(&self, sheet: usize, index: usize) -> Option<CssomImportRule> {
+        let parent = self.authors.get(sheet)?;
+        let import = parent.imports.get(index)?;
+        let child_sheet_key = import.child_sheet_id.and_then(|child_sheet_id| {
+            self.authors
+                .iter()
+                .find(|sheet| sheet.sheet_id == child_sheet_id)
+                .map(|sheet| sheet.cssom_key.clone())
+        });
+        Some(CssomImportRule {
+            href: import.authored_url.clone(),
+            media: import.media.clone(),
+            child_sheet_key,
+        })
+    }
+
+    pub fn cssom_import_owner(&self, sheet: usize) -> Option<CssomImportOwner> {
+        let parent = self.authors.get(sheet)?.import_parent?;
+        let parent_sheet = self
+            .authors
+            .iter()
+            .find(|sheet| sheet.sheet_id == parent.sheet_id)?;
+        Some(CssomImportOwner {
+            parent_sheet_key: parent_sheet.cssom_key.clone(),
+            import_index: parent.import_index,
+        })
+    }
+
+    /// Monotonic author-cascade stamp for consumers retaining a style plane.
+    /// This changes for sheet replacement/reordering as well as CSSOM rule
+    /// mutations, even when individual parsed sheet generations happen to sum
+    /// to the same value.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub(crate) fn has_sibling_dependencies(&self) -> bool {
@@ -191,11 +416,36 @@ impl StyleSet {
             .ok_or(RuleMutationError::IndexSize)?;
         let inserted = target.insert_rule(rule, index)?;
         if target.media.is_some() {
-            target.stylesheet = std::mem::take(&mut target.stylesheet)
-                .with_document_media(target.media.as_deref());
+            target.stylesheet =
+                std::mem::take(&mut target.stylesheet).with_document_media(target.media.as_deref());
         }
         self.rebuild();
         Ok(inserted)
+    }
+
+    /// CSSOM mutation counts leading `@import` rules even though the selected
+    /// parser receives their flattened child sheets separately. Import-rule
+    /// mutation itself stays outside this projection because the immutable
+    /// resource graph, not the parser, owns fetch and child replacement.
+    pub fn insert_cssom_rule(
+        &mut self,
+        sheet: usize,
+        rule: &str,
+        index: usize,
+    ) -> Result<usize, RuleMutationError> {
+        let import_count = self
+            .authors
+            .get(sheet)
+            .ok_or(RuleMutationError::IndexSize)?
+            .imports
+            .len();
+        if index < import_count {
+            return Err(RuleMutationError::Syntax(
+                "inserting before a retained @import rule is not supported".to_owned(),
+            ));
+        }
+        self.insert_author_rule(sheet, rule, index.saturating_sub(import_count))
+            .map(|inserted| inserted.saturating_add(import_count))
     }
 
     /// CSSOM `deleteRule` on one author sheet; the cascade views rebuild.
@@ -211,6 +461,25 @@ impl StyleSet {
         target.delete_rule(index)?;
         self.rebuild();
         Ok(())
+    }
+
+    pub fn delete_cssom_rule(
+        &mut self,
+        sheet: usize,
+        index: usize,
+    ) -> Result<(), RuleMutationError> {
+        let import_count = self
+            .authors
+            .get(sheet)
+            .ok_or(RuleMutationError::IndexSize)?
+            .imports
+            .len();
+        if index < import_count {
+            return Err(RuleMutationError::Syntax(
+                "deleting a retained @import rule is not supported".to_owned(),
+            ));
+        }
+        self.delete_author_rule(sheet, index.saturating_sub(import_count))
     }
 
     pub fn rules(&self) -> &[StyleRule] {

@@ -156,7 +156,14 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<ComputedStyleValue>("__computedStyleValue", 2)?;
     engine.set_function::<ComputedStyleValueInContext>("__computedStyleValueInContext", 3)?;
     engine.set_function::<StyleSheetCount>("__styleSheetCount", 0)?;
+    engine.set_function::<StyleSheetKey>("__styleSheetKey", 1)?;
     engine.set_function::<StyleSheetRuleCount>("__styleSheetRuleCount", 1)?;
+    engine.set_function::<StyleSheetOwnerNode>("__styleSheetOwnerNode", 1)?;
+    engine.set_function::<StyleSheetImportHref>("__styleSheetImportHref", 2)?;
+    engine.set_function::<StyleSheetImportMedia>("__styleSheetImportMedia", 2)?;
+    engine.set_function::<StyleSheetImportChildKey>("__styleSheetImportChildKey", 2)?;
+    engine.set_function::<StyleSheetOwnerImportParentKey>("__styleSheetOwnerImportParentKey", 1)?;
+    engine.set_function::<StyleSheetOwnerImportIndex>("__styleSheetOwnerImportIndex", 1)?;
     engine.set_function::<InsertRule>("__insertRule", 3)?;
     engine.set_function::<DeleteRule>("__deleteRule", 2)?;
     engine.set_function::<MatchMedia>("__matchMedia", 1)?;
@@ -345,6 +352,23 @@ pub enum StyleSheetMutationError {
     Syntax(String),
 }
 
+/// CSSOM metadata for a leading `@import` rule supplied by the selected style
+/// engine. The runtime retains only this browser-facing projection; resource
+/// discovery and child loading remain engine-neutral.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StyleSheetImportRule {
+    pub href: String,
+    pub media: Option<String>,
+    pub child_sheet_key: Option<String>,
+}
+
+/// The parent import rule for an imported CSSOM stylesheet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StyleSheetImportOwner {
+    pub parent_sheet_key: String,
+    pub import_index: usize,
+}
+
 /// The host's retained author-stylesheet seam. The runtime owns the JS CSSOM
 /// wrappers, while the selected CSS engine owns rule parsing, mutation, and
 /// generation tracking behind this object-safe contract.
@@ -358,6 +382,55 @@ pub trait StyleSheetHandler {
         index: usize,
     ) -> Result<usize, StyleSheetMutationError>;
     fn delete_rule(&self, sheet: usize, index: usize) -> Result<(), StyleSheetMutationError>;
+
+    /// Stable opaque identity for a document-list sheet. The default preserves
+    /// the earlier positional contract for fixed sheet lists; live hosts
+    /// override it with the owning DOM element's identity.
+    fn sheet_key(&self, sheet: usize) -> Option<String> {
+        (sheet < self.sheet_count()).then(|| sheet.to_string())
+    }
+
+    /// Look up a CSSOM sheet through its stable key.
+    fn rule_count_by_key(&self, key: &str) -> Option<usize> {
+        key.parse().ok().and_then(|sheet| self.rule_count(sheet))
+    }
+
+    /// Mutate a CSSOM sheet through its stable key.
+    fn insert_rule_by_key(
+        &self,
+        key: &str,
+        rule: &str,
+        index: usize,
+    ) -> Result<usize, StyleSheetMutationError> {
+        key.parse()
+            .map_or(Err(StyleSheetMutationError::IndexSize), |sheet| {
+                self.insert_rule(sheet, rule, index)
+            })
+    }
+
+    /// Remove a CSSOM rule through its stable sheet key.
+    fn delete_rule_by_key(&self, key: &str, index: usize) -> Result<(), StyleSheetMutationError> {
+        key.parse()
+            .map_or(Err(StyleSheetMutationError::IndexSize), |sheet| {
+                self.delete_rule(sheet, index)
+            })
+    }
+
+    /// The direct `<style>` / `<link>` owner for a document-list sheet.
+    /// `None` is correct for host-supplied anonymous sheets and stale wrappers.
+    fn owner_node_by_key(&self, _key: &str) -> Option<u64> {
+        None
+    }
+
+    /// A leading import rule in this sheet's CSSOM rule list.
+    fn import_rule_by_key(&self, _key: &str, _index: usize) -> Option<StyleSheetImportRule> {
+        None
+    }
+
+    /// The import rule which owns an imported child sheet.
+    fn import_owner_by_key(&self, _key: &str) -> Option<StyleSheetImportOwner> {
+        None
+    }
 }
 
 /// Clone the stylesheet handler out of host state before invoking it.
@@ -371,6 +444,11 @@ fn host_stylesheets<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<Rc<dyn St
 fn index_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, argument: usize) -> Option<usize> {
     let value = cx.arg(argument);
     cx.value_to_string(&value).ok()?.parse().ok()
+}
+
+fn sheet_key_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, argument: usize) -> Option<String> {
+    let value = cx.arg(argument);
+    cx.value_to_string(&value).ok()
 }
 
 fn mutation_record(result: Result<usize, StyleSheetMutationError>) -> String {
@@ -390,15 +468,108 @@ impl<E: ScriptEngine> NativeFn<E> for StyleSheetCount {
     }
 }
 
+/// `__styleSheetKey(index)` -> stable key for the live list slot, or `-1`.
+struct StyleSheetKey;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetKey {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let key = index_arg::<E>(cx, 0)
+            .and_then(|sheet| host_stylesheets::<E>(cx)?.sheet_key(sheet))
+            .map_or_else(|| "-1".to_string(), |key| key.to_string());
+        cx.make_string(&key)
+    }
+}
+
 /// `__styleSheetRuleCount(sheet)` -> top-level rule count, or `-1` for a stale
 /// sheet wrapper.
 struct StyleSheetRuleCount;
 impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleCount {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let count = index_arg::<E>(cx, 0)
-            .and_then(|sheet| host_stylesheets::<E>(cx)?.rule_count(sheet))
+        let count = sheet_key_arg::<E>(cx, 0)
+            .and_then(|key| host_stylesheets::<E>(cx)?.rule_count_by_key(&key))
             .map_or_else(|| "-1".to_string(), |count| count.to_string());
         cx.make_string(&count)
+    }
+}
+
+/// `__styleSheetOwnerNode(key)` -> the owner element's canonical reflector, or
+/// `null` for anonymous / stale sheets.
+struct StyleSheetOwnerNode;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetOwnerNode {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let owner = sheet_key_arg::<E>(cx, 0)
+            .and_then(|key| host_stylesheets::<E>(cx)?.owner_node_by_key(&key));
+        match owner {
+            Some(owner) => reflect_pinned::<E>(cx, owner),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+fn import_rule_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<StyleSheetImportRule> {
+    let key = sheet_key_arg::<E>(cx, 0)?;
+    let index = index_arg::<E>(cx, 1)?;
+    host_stylesheets::<E>(cx)?.import_rule_by_key(&key, index)
+}
+
+/// `__styleSheetImportHref(parent, index)` -> the authored import URL, or
+/// `null` when that CSSOM rule is not an import.
+struct StyleSheetImportHref;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetImportHref {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        match import_rule_arg::<E>(cx) {
+            Some(rule) => cx.make_string(&rule.href),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__styleSheetImportMedia(parent, index)` -> the import media text, or
+/// `null` when that CSSOM rule is not an import.
+struct StyleSheetImportMedia;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetImportMedia {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        match import_rule_arg::<E>(cx) {
+            Some(rule) => cx.make_string(rule.media.as_deref().unwrap_or("")),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__styleSheetImportChildKey(parent, index)` -> the imported child sheet key,
+/// or `null` when the rule has no loaded child.
+struct StyleSheetImportChildKey;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetImportChildKey {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        match import_rule_arg::<E>(cx).and_then(|rule| rule.child_sheet_key) {
+            Some(key) => cx.make_string(&key),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__styleSheetOwnerImportParentKey(child)` -> the parent sheet key for an
+/// imported child, or `null` for direct and stale sheets.
+struct StyleSheetOwnerImportParentKey;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetOwnerImportParentKey {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let owner = sheet_key_arg::<E>(cx, 0)
+            .and_then(|key| host_stylesheets::<E>(cx)?.import_owner_by_key(&key));
+        match owner {
+            Some(owner) => cx.make_string(&owner.parent_sheet_key),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__styleSheetOwnerImportIndex(child)` -> the parent import-rule index, or
+/// `-1` for direct and stale sheets.
+struct StyleSheetOwnerImportIndex;
+impl<E: ScriptEngine> NativeFn<E> for StyleSheetOwnerImportIndex {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let index = sheet_key_arg::<E>(cx, 0)
+            .and_then(|key| host_stylesheets::<E>(cx)?.import_owner_by_key(&key))
+            .map_or_else(|| "-1".to_owned(), |owner| owner.import_index.to_string());
+        cx.make_string(&index)
     }
 }
 
@@ -407,12 +578,14 @@ impl<E: ScriptEngine> NativeFn<E> for StyleSheetRuleCount {
 struct InsertRule;
 impl<E: ScriptEngine> NativeFn<E> for InsertRule {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let sheet = index_arg::<E>(cx, 0);
+        let sheet = sheet_key_arg::<E>(cx, 0);
         let rule_value = cx.arg(1);
         let rule = cx.value_to_string(&rule_value)?;
         let index = index_arg::<E>(cx, 2);
         let result = match (host_stylesheets::<E>(cx), sheet, index) {
-            (Some(handler), Some(sheet), Some(index)) => handler.insert_rule(sheet, &rule, index),
+            (Some(handler), Some(sheet), Some(index)) => {
+                handler.insert_rule_by_key(&sheet, &rule, index)
+            },
             _ => Err(StyleSheetMutationError::IndexSize),
         };
         cx.make_string(&mutation_record(result))
@@ -423,11 +596,11 @@ impl<E: ScriptEngine> NativeFn<E> for InsertRule {
 struct DeleteRule;
 impl<E: ScriptEngine> NativeFn<E> for DeleteRule {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let sheet = index_arg::<E>(cx, 0);
+        let sheet = sheet_key_arg::<E>(cx, 0);
         let index = index_arg::<E>(cx, 1);
         let result = match (host_stylesheets::<E>(cx), sheet, index) {
             (Some(handler), Some(sheet), Some(index)) => {
-                handler.delete_rule(sheet, index).map(|()| index)
+                handler.delete_rule_by_key(&sheet, index).map(|()| index)
             },
             _ => Err(StyleSheetMutationError::IndexSize),
         };

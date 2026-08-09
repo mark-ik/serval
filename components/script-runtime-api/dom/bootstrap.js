@@ -949,8 +949,8 @@
 
   // Retained author stylesheets. The selected CSS engine owns the actual rule
   // objects; these live wrappers ask it for counts and route CSSOM mutation into
-  // its parser. Script-created <style> discovery is a separate DOM-integration
-  // step; this list covers the sheets registered by the document host.
+  // its parser. Keys come from the host rather than list indices, so a wrapper
+  // remains attached to the same `<style>` / `<link>` while the live list changes.
   function cssomMutationResult(record) {
     var text = String(record);
     var cut = text.indexOf('\n');
@@ -960,37 +960,113 @@
     if (kind === 'syntax') throw new DOMException(detail, 'SyntaxError');
     return Number(detail);
   }
-  function CSSRuleList(sheetIndex) { this.__sheetIndex = sheetIndex; }
+  function CSSRule() {}
+  function MediaList(text) { this.__text = text || ''; }
+  Object.defineProperty(MediaList.prototype, 'mediaText', {
+    configurable: true,
+    get: function() { return this.__text; },
+  });
+  MediaList.prototype.toString = function() { return this.__text; };
+
+  function CSSRuleList(sheetKey) { this.__sheetKey = sheetKey; }
   Object.defineProperty(CSSRuleList.prototype, 'length', {
     configurable: true,
-    get: function() { var n = Number(__styleSheetRuleCount(String(this.__sheetIndex))); return n < 0 ? 0 : n; }
+    get: function() { var n = Number(__styleSheetRuleCount(String(this.__sheetKey))); return n < 0 ? 0 : n; }
   });
-  CSSRuleList.prototype.item = function() { return null; };
-  function CSSStyleSheet(sheetIndex) {
-    if (!(this instanceof CSSStyleSheet) || sheetIndex === undefined) throw new TypeError('Illegal constructor');
-    this.__sheetIndex = sheetIndex;
-    this.__rules = new CSSRuleList(sheetIndex);
+  CSSRuleList.prototype.item = function(index) {
+    index = Number(index) >>> 0;
+    if (index >= this.length) return null;
+    var href = __styleSheetImportHref(String(this.__sheetKey), String(index));
+    return href === null ? null : cssomImportRule(this.__sheetKey, index);
+  };
+  function CSSStyleSheet(sheetKey) {
+    if (!(this instanceof CSSStyleSheet) || sheetKey === undefined) throw new TypeError('Illegal constructor');
+    this.__sheetKey = sheetKey;
+    this.__rules = new CSSRuleList(sheetKey);
   }
   Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', {
     configurable: true, get: function() { return this.__rules; }
   });
+  Object.defineProperty(CSSStyleSheet.prototype, 'ownerNode', {
+    configurable: true, get: function() { return wrapNode(__styleSheetOwnerNode(String(this.__sheetKey))); }
+  });
+  Object.defineProperty(CSSStyleSheet.prototype, 'ownerRule', {
+    configurable: true,
+    get: function() {
+      var parent = __styleSheetOwnerImportParentKey(String(this.__sheetKey));
+      if (parent === null) return null;
+      var index = Number(__styleSheetOwnerImportIndex(String(this.__sheetKey)));
+      return index < 0 ? null : cssomImportRule(String(parent), index);
+    }
+  });
   CSSStyleSheet.prototype.insertRule = function(rule, index) {
     index = index === undefined ? 0 : (Number(index) >>> 0);
-    return cssomMutationResult(__insertRule(String(this.__sheetIndex), String(rule), String(index)));
+    return cssomMutationResult(__insertRule(String(this.__sheetKey), String(rule), String(index)));
   };
   CSSStyleSheet.prototype.deleteRule = function(index) {
     index = Number(index) >>> 0;
-    cssomMutationResult(__deleteRule(String(this.__sheetIndex), String(index)));
+    cssomMutationResult(__deleteRule(String(this.__sheetKey), String(index)));
   };
-  function StyleSheetList() { this.__cache = []; }
+  function CSSImportRule(sheetKey, index) {
+    this.__sheetKey = sheetKey;
+    this.__index = index;
+  }
+  CSSImportRule.prototype = Object.create(CSSRule.prototype);
+  CSSImportRule.prototype.constructor = CSSImportRule;
+  Object.defineProperty(CSSImportRule.prototype, 'href', {
+    configurable: true,
+    get: function() {
+      var href = __styleSheetImportHref(String(this.__sheetKey), String(this.__index));
+      return href === null ? '' : String(href);
+    }
+  });
+  Object.defineProperty(CSSImportRule.prototype, 'media', {
+    configurable: true,
+    get: function() {
+      var media = __styleSheetImportMedia(String(this.__sheetKey), String(this.__index));
+      return new MediaList(media === null ? '' : String(media));
+    }
+  });
+  Object.defineProperty(CSSImportRule.prototype, 'styleSheet', {
+    configurable: true,
+    get: function() {
+      var child = __styleSheetImportChildKey(String(this.__sheetKey), String(this.__index));
+      return child === null ? null : cssomSheet(String(child));
+    }
+  });
+  Object.defineProperty(CSSImportRule.prototype, 'parentStyleSheet', {
+    configurable: true,
+    get: function() { return cssomSheet(this.__sheetKey); }
+  });
+  Object.defineProperty(CSSImportRule.prototype, 'cssText', {
+    configurable: true,
+    get: function() {
+      var media = this.media.mediaText;
+      return '@import url("' + this.href.replace(/"/g, '\\"') + '")' + (media ? ' ' + media : '') + ';';
+    }
+  });
+  var cssomSheetCache = {};
+  var cssomImportCache = {};
+  function cssomSheet(sheetKey) {
+    sheetKey = String(sheetKey);
+    if (!cssomSheetCache[sheetKey]) cssomSheetCache[sheetKey] = new CSSStyleSheet(sheetKey);
+    return cssomSheetCache[sheetKey];
+  }
+  function cssomImportRule(sheetKey, index) {
+    var key = String(sheetKey) + '\u0000' + String(index);
+    if (!cssomImportCache[key]) cssomImportCache[key] = new CSSImportRule(String(sheetKey), index);
+    return cssomImportCache[key];
+  }
+  function StyleSheetList() {}
   Object.defineProperty(StyleSheetList.prototype, 'length', {
     configurable: true, get: function() { return Number(__styleSheetCount()); }
   });
   StyleSheetList.prototype.item = function(index) {
     index = Number(index) >>> 0;
     if (index >= this.length) return null;
-    if (!this.__cache[index]) this.__cache[index] = new CSSStyleSheet(index);
-    return this.__cache[index];
+    var key = String(__styleSheetKey(String(index)));
+    if (key === '-1') return null;
+    return cssomSheet(key);
   };
   var documentStyleSheets = new Proxy(new StyleSheetList(), {
     get: function(target, prop) {
@@ -999,7 +1075,10 @@
     }
   });
   globalThis.CSSRuleList = CSSRuleList;
+  globalThis.CSSRule = CSSRule;
+  globalThis.CSSImportRule = CSSImportRule;
   globalThis.CSSStyleSheet = CSSStyleSheet;
+  globalThis.MediaList = MediaList;
   globalThis.StyleSheetList = StyleSheetList;
 
   // querySelector / querySelectorAll, shared by Element and Document (scope is the

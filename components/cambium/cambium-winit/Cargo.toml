@@ -13,5 +13,5 @@ publish = true
 # `genet-winit-host`) inherit `publish = false` and made this crate
 # unpublishable with them. Adding anything unpublishable here undoes that.
 [dependencies]
-cambium = { version = "0.3.2", path = "../cambium" }
+cambium = { version = "0.3.3", path = "../cambium" }
 winit = "0.30.13"

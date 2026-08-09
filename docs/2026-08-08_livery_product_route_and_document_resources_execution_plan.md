@@ -2,7 +2,14 @@
 
 **Date:** 2026-08-08
 
-**Status:** scoped. R0 is the first executable gate. This plan stops with an
+**Status:** R0-R4 and R5a-R5c landed 2026-08-08. R5a carries redirect-final
+stylesheet identity, response type, and bounded `@import` expansion through
+the opt-in Livery route. R5b carries direct stylesheet ownership and live
+insert/remove, media, and URL reconciliation through the scripted Livery
+consumer. R5c projects loaded import parent-child ownership through CSSOM.
+The collapsed-border case remains a named K4g deferral; its caption wrapping
+is covered by the product scene and headed receipt. R5 remains a cutover
+prerequisite for cache policy and host fetch policy. This plan stops with an
 explicit Pelt Livery route; it does not flip the static or fullweb default.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md)
@@ -273,6 +280,65 @@ Before F4, close or explicitly knock out:
 R5 must decide whether `ResourceFetcher` grows a response type. That decision
 is made from these consumers and receipts, not from the full Fetch standard in
 the abstract.
+
+#### R5a. Response identity and import graph
+
+`ResourceFetcher::fetch_response` now carries final URL, `Content-Type`, and
+bytes while leaving existing byte-only hosts source-compatible. The shared
+resolver retains both the requested and final stylesheet URLs, admits only
+`text/css` when a type is known, and expands leading imports before their
+parent stylesheet. It preserves sheet-relative bases after redirects, wraps
+import media in a nested `@media` gate, diagnoses cycles and out-of-order
+imports, and exposes host-configurable depth and stylesheet-byte limits.
+
+`@import layer(...)` and `@import supports(...)` remain explicit diagnostics:
+the current Livery cascade does not have those import semantics, so fetching
+and flattening them would be incorrect. The R5a receipt names the remaining
+dynamic and CSSOM ownership work.
+
+#### R5b. Live direct-sheet ownership
+
+`LiveryCssom::install_live` resolves the mutable `ScriptedDom` through the
+same `ResolvedDocumentResources` and host-selected `ResourceLimits` path as
+the static Livery route. Before computed-style or `document.styleSheets`
+access, it recognizes document mutation, rebuilds the shared resource set,
+and retains the parsed direct stylesheet object when its owning element and
+resource identity are unchanged. Thus CSSOM rule mutation survives unrelated
+document-sheet insertions, removals, and reordering.
+
+Document stylesheet entries use stable opaque owner keys rather than their
+current list positions. The DOM bridge exposes each direct sheet's
+`CSSStyleSheet.ownerNode`; imported sheets remain absent from the document
+list. The live receipt covers inserted and removed `<style>` and `<link>`
+elements, `media` and `href` mutation, linked-resource replacement and
+failure, stable wrapper identity, and CSSOM rule retention.
+
+R5b does not expose `CSSImportRule` or imported child `CSSStyleSheet` objects,
+so imported sheets have no JavaScript `ownerRule` relationship yet. It also
+does not turn the static Pelt session into a scripted live-document route,
+revalidate cache entries, or add shared redirect/concurrency policy beyond
+the host transport's existing cap. Those remain named R5/F4 work.
+
+#### R5c. Imported-sheet CSSOM ownership
+
+The engine-neutral resource graph retains each leading import's authored URL,
+resolved URL, media condition, loaded child identity, and parent import slot.
+The resolver continues to own fetch and diagnostics; Livery only translates
+the retained graph into a CSSOM projection.
+
+Loaded imports are now available as leading `CSSImportRule` entries in their
+parent sheet. `CSSImportRule.styleSheet` returns a stable child
+`CSSStyleSheet`; the child reports the same rule through `ownerRule` and has a
+null `ownerNode`. Opaque sheet keys remain strings end to end, avoiding loss
+of DOM identities in JavaScript. Imported children never enter
+`document.styleSheets`.
+
+This is an ownership projection, not a full CSS rule-object implementation.
+`CSSRuleList.item()` still returns only import rules, and mutation of an
+import rule itself reports `SyntaxError`; ordinary rules in a loaded imported
+sheet continue to accept `insertRule` and `deleteRule`. Cache revalidation,
+shared redirect/concurrency policy, dynamic image/font replacement, and a
+scripted product-route session remain named R5/F4 work.
 
 ## Verification ladder
 

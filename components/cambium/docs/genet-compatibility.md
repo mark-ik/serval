@@ -23,12 +23,31 @@ Verified on 2026-07-22:
 | `genet-static-dom` | 0.1.0 | crates.io |
 | `genet-scripted-dom` | 0.1.0 | crates.io and sibling path |
 
-The published Cambium stack is `meristem 0.1.0`, `sprigging 0.2.0`,
-`cambium 0.3.0`, `cambium-winit 0.2.0`, and `cambium-nematic 0.3.0`.
-Cambium Winit's 0.3.0 source is versioned with the workspace, but its new
-accessibility host depends on `genet-layout`, which does not yet have a
-standalone crates.io release. Keep its published line at 0.2.0 until that
-dependency closes rather than shipping a package that cannot resolve.
+## The Cambium stack: source vs registry (verified 2026-08-09)
+
+| Package | Workspace | crates.io | State |
+| --- | --- | --- | --- |
+| `meristem` | 0.1.1 | 0.1.1 | current |
+| `sprigging` | 0.2.1 | 0.2.1 | current |
+| `cambium` | 0.3.2 | 0.3.2 | current |
+| `cambium-nematic` | 0.3.1 | 0.3.1 | current |
+| `cambium-winit` | 0.3.0 | 0.1.0 installable; 0.2.0 **yanked** | publishable, unpublished |
+| `cambium-winit-a11y` | 0.3.0 | never published | `publish = false` by design |
+
+`cambium-winit` 0.3.0 became publishable on 2026-07-26, when the
+accessibility host moved out to `cambium-winit-a11y` exactly because
+`genet-layout` and `genet-winit-host` inherit Genet's `publish = false`.
+This document's earlier guidance ("keep its published line at 0.2.0 until
+that dependency closes") is superseded: the dependency closed with that
+split, and 0.2.0 is yanked on crates.io, so the installable registry line is
+0.1.0 until 0.3.0 ships. `cambium-winit-a11y` can never publish, and that is
+the reason it exists: holding the genet-coupled half keeps `cambium-winit`
+down to `cambium` + `winit`.
+
+Until `cambium-winit` 0.3.0 is published, the registry graph does not
+resolve into a usable input-mapped host stack. Consumers ride the git-first
+rule regardless (every sibling takes the family from genet.git by branch,
+per the 2026-07-26 ruling); the registry serves external consumers only.
 Cambium Nematic's release boundary is Cambium plus the protocol AST package,
 without Genet's layout or rendering engine.
 

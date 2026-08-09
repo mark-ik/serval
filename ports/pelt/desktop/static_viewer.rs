@@ -244,6 +244,63 @@ mod livery_route_tests {
                 .any(|operation| matches!(operation, SceneOp::Image(_))),
             "the linked CSS background or HTML image reaches the product scene"
         );
+        let collapsed_caption_runs = first
+            .ops
+            .iter()
+            .filter_map(|operation| match operation {
+                SceneOp::GlyphRun(run)
+                    if run.color
+                        == [
+                            f32::from(0x6b_u8) / 255.0,
+                            f32::from(0x1f_u8) / 255.0,
+                            f32::from(0x2d_u8) / 255.0,
+                            1.0,
+                        ] =>
+                {
+                    run.glyphs
+                        .first()
+                        .filter(|glyph| glyph.y > 200.0)
+                        .map(|glyph| (glyph.x, glyph.y, run.glyphs.len()))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let collapsed_cell_runs = first
+            .ops
+            .iter()
+            .filter_map(|operation| match operation {
+                SceneOp::GlyphRun(run)
+                    if run.color
+                        == [
+                            f32::from(0x3d_u8) / 255.0,
+                            f32::from(0x2b_u8) / 255.0,
+                            f32::from(0x1f_u8) / 255.0,
+                            1.0,
+                        ] =>
+                {
+                    run.glyphs
+                        .first()
+                        .filter(|glyph| glyph.y > 400.0 && run.glyphs.len() == 3)
+                        .map(|glyph| (glyph.x, glyph.y))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let caption_last_baseline = collapsed_caption_runs
+            .iter()
+            .map(|(_, baseline, _)| *baseline)
+            .max_by(f32::total_cmp)
+            .expect("collapsed caption paints its wrapped text");
+        let cell_first_baseline = collapsed_cell_runs
+            .iter()
+            .map(|(_, baseline)| *baseline)
+            .min_by(f32::total_cmp)
+            .expect("collapsed table paints its cells");
+        assert!(
+            caption_last_baseline + 16.0 <= cell_first_baseline,
+            "the collapsed table grid must begin after every caption line: \
+             captions={collapsed_caption_runs:?} cells={collapsed_cell_runs:?}"
+        );
 
         let concrete = session
             .as_any()
@@ -656,15 +713,16 @@ pub(crate) mod windowed {
             );
             frame.present();
             self.redraws += 1;
-            if self
-                .config
-                .frames
-                .is_some_and(|limit| self.redraws >= limit)
-            {
-                event_loop.exit();
-                return;
-            }
-            if more {
+            if let Some(limit) = self.config.frames {
+                if self.redraws >= limit {
+                    event_loop.exit();
+                    return;
+                }
+                // Static documents settle after their first paint. A bounded
+                // headed smoke still needs the requested number of presented
+                // frames, so it owns the next redraw until the limit is met.
+                self.request_redraw();
+            } else if more {
                 self.request_redraw();
             }
         }

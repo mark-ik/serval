@@ -14,7 +14,7 @@ use std::any::Any;
 
 #[cfg(feature = "livery")]
 use genet_document_resources::{
-    ResolvedDocumentResources, ResolvedStylesheet, ResourceKind, StylesheetOwner,
+    ResolvedDocumentResources, ResolvedStylesheet, ResourceKind, ResourceLimits, StylesheetOwner,
 };
 use genet_host_api::ResourceFetcher;
 use genet_layout::{ScrollKey, TextSelection};
@@ -207,6 +207,7 @@ impl DocumentSession<Scene> for StaticDocumentSession {
 pub struct LiverySessionEngine<Fetch> {
     fetcher: Fetch,
     author_css: Vec<String>,
+    resource_limits: ResourceLimits,
 }
 
 #[cfg(feature = "livery")]
@@ -215,6 +216,7 @@ impl<Fetch> LiverySessionEngine<Fetch> {
         Self {
             fetcher,
             author_css: Vec::new(),
+            resource_limits: ResourceLimits::default(),
         }
     }
 
@@ -227,7 +229,15 @@ impl<Fetch> LiverySessionEngine<Fetch> {
         Self {
             fetcher,
             author_css: sheets.into_iter().map(Into::into).collect(),
+            resource_limits: ResourceLimits::default(),
         }
+    }
+
+    /// Select bounded recursive stylesheet resolution for sessions made by
+    /// this host engine.
+    pub fn with_resource_limits(mut self, resource_limits: ResourceLimits) -> Self {
+        self.resource_limits = resource_limits;
+        self
     }
 }
 
@@ -249,23 +259,50 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessio
         let source = match &request.body {
             Some(body) => body.clone(),
             None => {
-                let bytes = self.fetcher.fetch(&base_resource).ok_or_else(|| {
+                let response = self.fetcher.fetch_response(&base_resource).ok_or_else(|| {
                     SessionError::SpawnFailed(format!("could not load {base_resource}"))
                 })?;
-                String::from_utf8_lossy(&bytes).into_owned()
+                let base_resource = response.final_url;
+                let source = String::from_utf8_lossy(&response.bytes).into_owned();
+                let dom = genet_static_dom::StaticDocument::parse(&source);
+                return self.spawn_livery_document(request, dom, base_resource);
             },
         };
         let dom = genet_static_dom::StaticDocument::parse(&source);
-        let resources =
-            ResolvedDocumentResources::resolve(&dom, Some(&base_resource), &self.fetcher);
+        self.spawn_livery_document(request, dom, base_resource)
+    }
+}
+
+#[cfg(feature = "livery")]
+impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
+    fn spawn_livery_document(
+        &self,
+        request: &SessionSpawnRequest,
+        dom: genet_static_dom::StaticDocument,
+        base_resource: String,
+    ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
+        let resources = ResolvedDocumentResources::resolve_with_limits(
+            &dom,
+            Some(&base_resource),
+            &self.fetcher,
+            self.resource_limits,
+        );
         let mut sheets = self
             .author_css
             .iter()
             .enumerate()
             .map(|(document_order, text)| ResolvedStylesheet {
+                // Resource-resolved sheet ids begin at zero. Keep injected
+                // host sheets in a disjoint range when the vectors join.
+                sheet_id: u64::MAX.saturating_sub(document_order as u64),
                 owner: StylesheetOwner::Inline,
+                owner_node: None,
                 source_url: None,
+                requested_url: None,
+                content_type: None,
                 media: None,
+                imports: Vec::new(),
+                import_parent: None,
                 text: text.clone(),
                 document_order: document_order as u64,
             })
@@ -961,6 +998,67 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "livery")]
+    struct ImportedSheetFetch;
+
+    #[cfg(feature = "livery")]
+    impl ResourceFetcher for ImportedSheetFetch {
+        fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+            match url {
+                "https://example.test/docs/styles/root.css" => Some(
+                    genet_host_api::ResourceResponse::new(
+                        "https://cdn.example.test/styles/root.css",
+                        br#"@import "palette.css"; .card { color: rgb(255, 0, 0); }"#.to_vec(),
+                    )
+                    .with_content_type("text/css"),
+                ),
+                "https://cdn.example.test/styles/palette.css" => Some(
+                    genet_host_api::ResourceResponse::new(
+                        url,
+                        br#".card { color: rgb(0, 0, 255); }"#.to_vec(),
+                    )
+                    .with_content_type("text/css; charset=utf-8"),
+                ),
+                _ => None,
+            }
+        }
+    }
+
+    #[cfg(feature = "livery")]
+    struct RedirectedDocumentFetch;
+
+    #[cfg(feature = "livery")]
+    impl ResourceFetcher for RedirectedDocumentFetch {
+        fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+            match url {
+                "https://example.test/start" => Some(
+                    genet_host_api::ResourceResponse::new(
+                        "https://cdn.example.test/final/index.html",
+                        br#"<link rel="stylesheet" href="site.css"><p class="card">final base</p>"#
+                            .to_vec(),
+                    )
+                    .with_content_type("text/html"),
+                ),
+                "https://cdn.example.test/final/site.css" => Some(
+                    genet_host_api::ResourceResponse::new(
+                        url,
+                        br#".card { color: rgb(0, 128, 0); }"#.to_vec(),
+                    )
+                    .with_content_type("text/css"),
+                ),
+                _ => None,
+            }
+        }
+    }
+
     #[test]
     fn static_session_spawns_from_body_and_navigates() {
         let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
@@ -1408,6 +1506,103 @@ mod tests {
                 "https://example.test/docs/styles/images/hero.png",
                 "https://example.test/docs/fonts/text.woff2",
             ]
+        );
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_applies_imports_before_their_redirected_parent_sheet() {
+        let engine = LiverySessionEngine::new(ImportedSheetFetch);
+        let request = SessionSpawnRequest::new("https://example.test/docs/index.html")
+            .with_body(
+                r#"<html><head><link rel="stylesheet" href="styles/root.css"></head>
+<body><p class="card">cascade</p></body></html>"#,
+            )
+            .with_viewport(320, 240);
+        let mut session = engine
+            .spawn(&request)
+            .expect("imported Livery route spawns");
+        let scene = session.frame(320, 240);
+        assert!(
+            scene.ops.iter().any(|operation| {
+                matches!(operation, netrender::SceneOp::GlyphRun(run) if run.color == [1.0, 0.0, 0.0, 1.0])
+            }),
+            "the parent sheet follows the imported sheet in the author cascade"
+        );
+        let concrete = session
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("session keeps its resource ledger");
+        assert!(concrete.resource_diagnostics().is_empty());
+        assert_eq!(concrete.resources.stylesheets.len(), 2);
+        assert_eq!(
+            concrete.resources.stylesheets[0].owner,
+            StylesheetOwner::Imported
+        );
+        assert_eq!(
+            concrete.resources.stylesheets[1].source_url.as_deref(),
+            Some("https://cdn.example.test/styles/root.css")
+        );
+        assert_eq!(
+            concrete.resources.stylesheets[1].requested_url.as_deref(),
+            Some("https://example.test/docs/styles/root.css")
+        );
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_applies_host_selected_import_limits() {
+        let engine =
+            LiverySessionEngine::new(ImportedSheetFetch).with_resource_limits(ResourceLimits {
+                max_import_depth: 0,
+                max_stylesheet_bytes: 2 * 1024 * 1024,
+            });
+        let request = SessionSpawnRequest::new("https://example.test/docs/index.html").with_body(
+            r#"<html><head><link rel="stylesheet" href="styles/root.css"></head>
+<body><p class="card">bounded</p></body></html>"#,
+        );
+        let session = engine.spawn(&request).expect("bounded Livery route spawns");
+        let concrete = session
+            .as_any_ref()
+            .downcast_ref::<LiveryDocumentSession>()
+            .expect("session keeps its resource ledger");
+        assert_eq!(concrete.resource_set().stylesheets.len(), 1);
+        assert!(matches!(
+            concrete.resource_diagnostics(),
+            [
+                genet_document_resources::ResourceDiagnostic::ImportRuleDepthLimit {
+                    max_depth: 0,
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_resolves_links_against_a_redirected_document_identity() {
+        let engine = LiverySessionEngine::new(RedirectedDocumentFetch);
+        let request =
+            SessionSpawnRequest::new("https://example.test/start").with_viewport(320, 240);
+        let mut session = engine.spawn(&request).expect("redirected document spawns");
+        let scene = session.frame(320, 240);
+        assert!(
+            scene.ops.iter().any(|operation| {
+                matches!(operation, netrender::SceneOp::GlyphRun(run) if run.color == [0.0, 128.0 / 255.0, 0.0, 1.0])
+            }),
+            "the final document identity supplies the linked stylesheet base"
+        );
+        let concrete = session
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("session keeps its resource ledger");
+        assert_eq!(
+            concrete.resources.document_url.as_deref(),
+            Some("https://cdn.example.test/final/index.html")
+        );
+        assert_eq!(
+            concrete.resources.stylesheets[0].source_url.as_deref(),
+            Some("https://cdn.example.test/final/site.css")
         );
     }
 }

@@ -33,6 +33,7 @@ table { margin: 18px 0; }
   background-color: #fffaf0;
 }
 
+.collapsed caption { color: #6b1f2d; }
 .collapsed td { border: 3px solid #6b1f2d; padding: 5px; }
 
 .jump, .target { display: block; }

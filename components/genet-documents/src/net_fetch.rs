@@ -21,6 +21,9 @@ use std::time::Duration;
 
 use tokio::runtime::Runtime;
 
+#[cfg(feature = "netfetch")]
+use genet_host_api::ResourceResponse;
+
 /// The shared tokio runtime the blocking bridge drives. Built once on first use: a
 /// current-thread runtime is enough (a one-shot GET; `block_on` drives the hyper
 /// connection task spawned inside `fetch`). `enable_all` lights the IO + time drivers
@@ -43,6 +46,13 @@ fn runtime() -> &'static Runtime {
 /// than a lossy string.
 #[cfg(feature = "netfetch")]
 pub(crate) fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
+    http_get_response(url).map(|response| response.bytes)
+}
+
+/// Blocking HTTP GET retaining the final redirect identity and `Content-Type`
+/// for resource consumers. The byte-only helper stays for older callers.
+#[cfg(feature = "netfetch")]
+pub(crate) fn http_get_response(url: &str) -> Option<ResourceResponse> {
     runtime().block_on(async move {
         let parsed = url::Url::parse(url).ok()?;
         // The current shell loads synchronously before it opens a window. Bound
@@ -55,7 +65,22 @@ pub(crate) fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
             if response.is_network_error() || response.status < 200 || response.status >= 300 {
                 return None;
             }
-            response.bytes().await.ok().map(|b| b.to_vec())
+            let final_url = response
+                .url_list
+                .last()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| url.to_owned());
+            let content_type = response
+                .headers
+                .iter()
+                .rev()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, value)| value.clone());
+            response.bytes().await.ok().map(|bytes| ResourceResponse {
+                final_url,
+                content_type,
+                bytes: bytes.to_vec(),
+            })
         })
         .await
         .ok()

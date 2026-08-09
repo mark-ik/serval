@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
+use genet_document_resources::{ResolvedDocumentResources, ResourceFetcher, ResourceLimits};
 use genet_livery::{
     Device, IncrementalStyle, InteractionStates, RestyleStats, RuleMutationError, StyleSet,
     ViewportSizes, canonicalize_specified_value, content_box_size, layout,
@@ -25,15 +26,59 @@ use layout_dom_api::{
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, Runtime,
-    StyleSheetHandler, StyleSheetMutationError,
+    StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule, StyleSheetMutationError,
 };
 
 struct LiveryState {
     styles: StyleSet,
+    document_sheets: Vec<usize>,
     device: Device,
     interactions: InteractionStates<NodeId>,
     session: IncrementalStyle<NodeId>,
     mutation_cursor: u64,
+    live_sheets: Option<LiveStylesheetSource>,
+}
+
+struct LiveStylesheetSource {
+    document_url: String,
+    fetcher: Rc<dyn ResourceFetcher>,
+    limits: ResourceLimits,
+    resources: ResolvedDocumentResources,
+    mutation_cursor: u64,
+}
+
+impl LiveryState {
+    fn sheet_key_at(&self, list_index: usize) -> Option<String> {
+        let author_index = *self.document_sheets.get(list_index)?;
+        self.styles.cssom_key(author_index).map(str::to_owned)
+    }
+
+    fn author_index_for_key(&self, key: &str) -> Option<usize> {
+        self.styles.author_index_by_cssom_key(key)
+    }
+}
+
+fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
+    let Some(live) = state.live_sheets.as_mut() else {
+        return;
+    };
+    let (base, pending) = host.dom.pending_mutations();
+    let end = base.saturating_add(pending.len() as u64);
+    if live.mutation_cursor >= base && live.mutation_cursor == end {
+        return;
+    }
+    let resources = ResolvedDocumentResources::resolve_with_limits(
+        &host.dom,
+        Some(&live.document_url),
+        live.fetcher.as_ref(),
+        live.limits,
+    );
+    if resources != live.resources {
+        state.styles.replace_author_sheets(&resources.stylesheets);
+        state.document_sheets = state.styles.document_sheet_indexes();
+        live.resources = resources;
+    }
+    live.mutation_cursor = end;
 }
 
 /// A retained Livery stylesheet session installed on one scripted runtime.
@@ -54,21 +99,79 @@ impl LiveryCssom {
         author_sheets: &[&str],
         device: Device,
     ) -> Self {
+        let styles = StyleSet::cambium(author_sheets);
         let state = Rc::new(RefCell::new(LiveryState {
-            styles: StyleSet::cambium(author_sheets),
+            document_sheets: styles.document_sheet_indexes(),
+            styles,
             device,
             interactions: InteractionStates::default(),
             session: IncrementalStyle::new(),
             mutation_cursor: 0,
+            live_sheets: None,
         }));
+        Self::install_state(runtime, state)
+    }
+
+    /// Install a live resource-backed stylesheet set. The shared resolver runs
+    /// again after DOM mutations and reconciles retained direct-sheet CSSOM
+    /// objects by their owner node, while imported sheets remain cascade-only
+    /// children of their parent source.
+    pub fn install_live<E, Fetch>(
+        runtime: &mut Runtime<E>,
+        fetcher: Fetch,
+        document_url: impl Into<String>,
+        limits: ResourceLimits,
+        device: Device,
+    ) -> Self
+    where
+        E: ScriptEngine,
+        Fetch: ResourceFetcher + 'static,
+    {
+        let document_url = document_url.into();
+        let fetcher: Rc<dyn ResourceFetcher> = Rc::new(fetcher);
+        let (resources, mutation_cursor) = {
+            let host = runtime.host().borrow();
+            let resources = ResolvedDocumentResources::resolve_with_limits(
+                &host.dom,
+                Some(&document_url),
+                fetcher.as_ref(),
+                limits,
+            );
+            let (base, pending) = host.dom.pending_mutations();
+            (resources, base.saturating_add(pending.len() as u64))
+        };
+        let styles = StyleSet::cambium_resources(&resources.stylesheets);
+        let state = Rc::new(RefCell::new(LiveryState {
+            document_sheets: styles.document_sheet_indexes(),
+            styles,
+            device,
+            interactions: InteractionStates::default(),
+            session: IncrementalStyle::new(),
+            mutation_cursor,
+            live_sheets: Some(LiveStylesheetSource {
+                document_url,
+                fetcher,
+                limits,
+                resources,
+                mutation_cursor,
+            }),
+        }));
+        Self::install_state(runtime, state)
+    }
+
+    fn install_state<E: ScriptEngine>(
+        runtime: &mut Runtime<E>,
+        state: Rc<RefCell<LiveryState>>,
+    ) -> Self {
         let host = Rc::downgrade(runtime.host());
         runtime.set_computed_style_handler(Box::new(LiveryComputedStyle {
-            host,
+            host: host.clone(),
             state: state.clone(),
         }));
         runtime.set_inline_style_handler(Box::new(LiveryInlineStyle));
         runtime.set_stylesheet_handler(Box::new(LiveryStyleSheets {
             state: state.clone(),
+            host,
         }));
         Self { state }
     }
@@ -86,12 +189,23 @@ impl LiveryCssom {
 
     /// The retained generation stamp for one author sheet.
     pub fn generation(&self, sheet: usize) -> Option<u64> {
-        self.state
-            .borrow()
+        let state = self.state.borrow();
+        let sheet = *state.document_sheets.get(sheet)?;
+        state
             .styles
             .author_sheets()
             .get(sheet)
             .map(|sheet| sheet.generation())
+    }
+
+    /// The shared resource ledger for a live CSSOM installation. Static
+    /// `install` sessions have no resource owner and return `None`.
+    pub fn resource_set(&self) -> Option<ResolvedDocumentResources> {
+        self.state
+            .borrow()
+            .live_sheets
+            .as_ref()
+            .map(|live| live.resources.clone())
     }
 
     /// Work performed by the latest scripted computed-style read.
@@ -135,6 +249,7 @@ impl ComputedStyleHandler for LiveryComputedStyle {
         let (base, pending) = host.dom.pending_mutations();
         let end = base.saturating_add(pending.len() as u64);
         let mut state = self.state.borrow_mut();
+        synchronize_live_styles(&host, &mut state);
         if state.mutation_cursor < base || state.mutation_cursor > end {
             state.session.invalidate();
             state.mutation_cursor = base;
@@ -184,6 +299,7 @@ impl ComputedStyleHandler for LiveryComputedStyle {
         let (base, pending) = host.dom.pending_mutations();
         let end = base.saturating_add(pending.len() as u64);
         let mut state = self.state.borrow_mut();
+        synchronize_live_styles(&host, &mut state);
         if state.mutation_cursor < base || state.mutation_cursor > end {
             state.session.invalidate();
             state.mutation_cursor = base;
@@ -195,6 +311,7 @@ impl ComputedStyleHandler for LiveryComputedStyle {
             interactions,
             session,
             mutation_cursor,
+            ..
         } = &mut *state;
         session.update(&host.dom, styles, device, interactions, &pending[start..]);
         *mutation_cursor = end;
@@ -374,20 +491,37 @@ fn inline_stylesheets(dom: &impl LayoutDom) -> Vec<String> {
 
 struct LiveryStyleSheets {
     state: Rc<RefCell<LiveryState>>,
+    host: Weak<RefCell<HostState>>,
+}
+
+impl LiveryStyleSheets {
+    fn synchronize(&self) {
+        let Some(host) = self.host.upgrade() else {
+            return;
+        };
+        let host = host.borrow();
+        synchronize_live_styles(&host, &mut self.state.borrow_mut());
+    }
+
+    fn author_index(&self, sheet: usize) -> Option<usize> {
+        self.state.borrow().document_sheets.get(sheet).copied()
+    }
+
+    fn author_index_by_key(&self, key: &str) -> Option<usize> {
+        self.state.borrow().author_index_for_key(key)
+    }
 }
 
 impl StyleSheetHandler for LiveryStyleSheets {
     fn sheet_count(&self) -> usize {
-        self.state.borrow().styles.author_sheets().len()
+        self.synchronize();
+        self.state.borrow().document_sheets.len()
     }
 
     fn rule_count(&self, sheet: usize) -> Option<usize> {
-        self.state
-            .borrow()
-            .styles
-            .author_sheets()
-            .get(sheet)
-            .map(|sheet| sheet.items().len())
+        self.synchronize();
+        let sheet = self.author_index(sheet)?;
+        self.state.borrow().styles.cssom_rule_count(sheet)
     }
 
     fn insert_rule(
@@ -396,19 +530,109 @@ impl StyleSheetHandler for LiveryStyleSheets {
         rule: &str,
         index: usize,
     ) -> Result<usize, StyleSheetMutationError> {
+        self.synchronize();
+        let sheet = self
+            .author_index(sheet)
+            .ok_or(StyleSheetMutationError::IndexSize)?;
         self.state
             .borrow_mut()
             .styles
-            .insert_author_rule(sheet, rule, index)
+            .insert_cssom_rule(sheet, rule, index)
             .map_err(mutation_error)
     }
 
     fn delete_rule(&self, sheet: usize, index: usize) -> Result<(), StyleSheetMutationError> {
+        self.synchronize();
+        let sheet = self
+            .author_index(sheet)
+            .ok_or(StyleSheetMutationError::IndexSize)?;
         self.state
             .borrow_mut()
             .styles
-            .delete_author_rule(sheet, index)
+            .delete_cssom_rule(sheet, index)
             .map_err(mutation_error)
+    }
+
+    fn sheet_key(&self, sheet: usize) -> Option<String> {
+        self.synchronize();
+        self.state.borrow().sheet_key_at(sheet)
+    }
+
+    fn rule_count_by_key(&self, key: &str) -> Option<usize> {
+        self.synchronize();
+        let sheet = self.author_index_by_key(key)?;
+        self.state.borrow().styles.cssom_rule_count(sheet)
+    }
+
+    fn insert_rule_by_key(
+        &self,
+        key: &str,
+        rule: &str,
+        index: usize,
+    ) -> Result<usize, StyleSheetMutationError> {
+        self.synchronize();
+        let sheet = self
+            .author_index_by_key(key)
+            .ok_or(StyleSheetMutationError::IndexSize)?;
+        self.state
+            .borrow_mut()
+            .styles
+            .insert_cssom_rule(sheet, rule, index)
+            .map_err(mutation_error)
+    }
+
+    fn delete_rule_by_key(&self, key: &str, index: usize) -> Result<(), StyleSheetMutationError> {
+        self.synchronize();
+        let sheet = self
+            .author_index_by_key(key)
+            .ok_or(StyleSheetMutationError::IndexSize)?;
+        self.state
+            .borrow_mut()
+            .styles
+            .delete_cssom_rule(sheet, index)
+            .map_err(mutation_error)
+    }
+
+    fn owner_node_by_key(&self, key: &str) -> Option<u64> {
+        self.synchronize();
+        let sheet = self.author_index_by_key(key)?;
+        self.state
+            .borrow()
+            .styles
+            .author_sheets()
+            .get(sheet)
+            .and_then(|sheet| {
+                (sheet.owner() != genet_document_resources::StylesheetOwner::Imported)
+                    .then(|| sheet.owner_node())
+                    .flatten()
+            })
+    }
+
+    fn import_rule_by_key(&self, key: &str, index: usize) -> Option<StyleSheetImportRule> {
+        self.synchronize();
+        let sheet = self.author_index_by_key(key)?;
+        self.state
+            .borrow()
+            .styles
+            .cssom_import_rule(sheet, index)
+            .map(|rule| StyleSheetImportRule {
+                href: rule.href,
+                media: rule.media,
+                child_sheet_key: rule.child_sheet_key,
+            })
+    }
+
+    fn import_owner_by_key(&self, key: &str) -> Option<StyleSheetImportOwner> {
+        self.synchronize();
+        let sheet = self.author_index_by_key(key)?;
+        self.state
+            .borrow()
+            .styles
+            .cssom_import_owner(sheet)
+            .map(|owner| StyleSheetImportOwner {
+                parent_sheet_key: owner.parent_sheet_key,
+                import_index: owner.import_index,
+            })
     }
 }
 
@@ -426,6 +650,128 @@ mod tests {
     use genet_static_dom::StaticDocument;
     use layout_dom_api::LayoutDomMut;
     use script_engine_boa::BoaEngine;
+
+    struct LiveSheetFetch;
+
+    impl ResourceFetcher for LiveSheetFetch {
+        fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+            match url {
+                "https://example.test/docs/theme.css" => Some(b".card { color: green; }".to_vec()),
+                "https://example.test/docs/replacement.css" => {
+                    Some(b".card { color: orange; }".to_vec())
+                },
+                "https://example.test/docs/parent.css" => {
+                    Some(b"@import url('child.css') screen; .host { display: block; }".to_vec())
+                },
+                "https://example.test/docs/child.css" => Some(b".card { color: blue; }".to_vec()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn boa_live_cssom_reconciles_inserted_removed_and_media_gated_sheets() {
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse(
+            "<html><head><style id='base'>.card { color: red; }</style></head>\
+             <body><div id='card' class='card'></div></body></html>",
+        ));
+        let cssom = LiveryCssom::install_live(
+            &mut runtime,
+            LiveSheetFetch,
+            "https://example.test/docs/index.html",
+            ResourceLimits::default(),
+            Device::screen(800.0, 600.0),
+        );
+
+        runtime
+            .eval(
+                "var card = document.getElementById('card');\
+                 var head = document.head;\
+                 var base = document.styleSheets[0];\
+                 console.log(document.styleSheets.length + '|' + base.ownerNode.id + '|' + getComputedStyle(card).color);\
+                 base.insertRule('.card { color: purple; }', base.cssRules.length);\
+                 console.log(base.cssRules.length + '|' + getComputedStyle(card).color);\
+                 var dynamic = document.createElement('style');\
+                 dynamic.id = 'dynamic'; dynamic.textContent = '.card { color: blue; }'; head.appendChild(dynamic);\
+                 console.log(document.styleSheets.length + '|' + String(document.styleSheets[0] === base));\
+                 console.log(document.styleSheets[1].ownerNode.id + '|' + getComputedStyle(card).color);\
+                 var link = document.createElement('link');\
+                 link.id = 'theme'; link.setAttribute('rel', 'stylesheet'); link.setAttribute('href', 'theme.css'); link.setAttribute('media', 'screen'); head.appendChild(link);\
+                 console.log(document.styleSheets.length + '|' + document.styleSheets[2].ownerNode.id + '|' + getComputedStyle(card).color);\
+                 var theme = document.styleSheets[2];\
+                 link.setAttribute('media', 'print');\
+                 console.log(document.styleSheets.length + '|' + getComputedStyle(card).color);\
+                 head.removeChild(dynamic);\
+                 console.log(document.styleSheets.length + '|' + String(document.styleSheets[0] === base) + '|' + getComputedStyle(card).color);\
+                 link.setAttribute('media', 'screen');\
+                 console.log(String(document.styleSheets[1] === theme) + '|' + getComputedStyle(card).color);\
+                 link.setAttribute('href', 'replacement.css');\
+                 console.log(String(document.styleSheets[1] === theme) + '|' + getComputedStyle(card).color);\
+                 link.setAttribute('href', 'missing.css');\
+                 console.log(document.styleSheets.length + '|' + String(theme.ownerNode === null) + '|' + getComputedStyle(card).color);\
+                 head.removeChild(link);\
+                 console.log(document.styleSheets.length + '|' + String(document.styleSheets[0] === base) + '|' + getComputedStyle(card).color);",
+            )
+            .expect("live Livery CSSOM script");
+
+        assert_eq!(
+            runtime.host().borrow().console,
+            vec![
+                "1|base|rgb(255, 0, 0)",
+                "2|rgb(128, 0, 128)",
+                "2|true",
+                "dynamic|rgb(0, 0, 255)",
+                "3|theme|rgb(0, 128, 0)",
+                "3|rgb(0, 0, 255)",
+                "2|true|rgb(128, 0, 128)",
+                "true|rgb(0, 128, 0)",
+                "true|rgb(255, 165, 0)",
+                "1|true|rgb(128, 0, 128)",
+                "1|true|rgb(128, 0, 128)",
+            ],
+        );
+        let resources = cssom.resource_set().expect("live resource ledger");
+        assert_eq!(resources.stylesheets.len(), 1);
+        assert!(resources.stylesheets[0].owner_node.is_some());
+    }
+
+    #[test]
+    fn boa_live_cssom_exposes_imported_sheet_owner_graph() {
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse(
+            "<html><head><link id='theme' rel='stylesheet' href='parent.css'></head>\
+             <body><div id='card' class='card'></div></body></html>",
+        ));
+        let _cssom = LiveryCssom::install_live(
+            &mut runtime,
+            LiveSheetFetch,
+            "https://example.test/docs/index.html",
+            ResourceLimits::default(),
+            Device::screen(800.0, 600.0),
+        );
+
+        runtime
+            .eval(
+                "var card = document.getElementById('card');\
+                 var parent = document.styleSheets[0];\
+                 var rule = parent.cssRules.item(0);\
+                 var child = rule.styleSheet;\
+                 console.log(document.styleSheets.length + '|' + parent.ownerNode.id + '|' + parent.cssRules.length + '|' + String(child.ownerNode === null));\
+                 console.log(rule.href + '|' + rule.media.mediaText + '|' + String(rule.parentStyleSheet === parent) + '|' + String(child.ownerRule === rule) + '|' + String(rule instanceof CSSImportRule) + '|' + child.cssRules.length + '|' + getComputedStyle(card).color);\
+                 console.log(child.insertRule('.card { color: green; }', child.cssRules.length) + '|' + getComputedStyle(card).color);",
+            )
+            .expect("import ownership CSSOM script");
+
+        assert_eq!(
+            runtime.host().borrow().console,
+            vec![
+                "1|theme|2|true",
+                "child.css|screen|true|true|true|1|rgb(0, 0, 255)",
+                "1|rgb(0, 128, 0)",
+            ],
+        );
+    }
 
     #[test]
     fn boa_reaches_livery_stylesheets_mutation_and_computed_values() {
@@ -461,13 +807,13 @@ mod tests {
         assert_eq!(
             runtime.host().borrow().console,
             vec![
-                "1|1|#ff0000|#ff0000",
+                "1|1|rgb(255, 0, 0)|#ff0000",
                 "1",
-                "2|#0000ff|#0000ff",
+                "2|rgb(0, 0, 255)|#0000ff",
                 "IndexSizeError",
                 "SyntaxError",
-                "2|#0000ff",
-                "1|#ff0000",
+                "2|rgb(0, 0, 255)",
+                "1|rgb(255, 0, 0)",
             ],
         );
         assert_eq!(cssom.generation(0), Some(initial_generation + 2));
@@ -672,7 +1018,12 @@ mod tests {
 
         assert_eq!(
             runtime.host().borrow().console,
-            vec!["#ff0000|#ff0000", "4", "#008000|#ff0000", "#ff0000|#ff0000",]
+            vec![
+                "rgb(255, 0, 0)|rgb(255, 0, 0)",
+                "4",
+                "rgb(0, 128, 0)|rgb(255, 0, 0)",
+                "rgb(255, 0, 0)|rgb(255, 0, 0)",
+            ]
         );
     }
 
@@ -767,7 +1118,7 @@ mod tests {
 
         assert_eq!(
             runtime.host().borrow().console,
-            vec!["CanvasText", "#0000ff"]
+            vec!["rgb(0, 0, 0)", "rgb(0, 0, 255)"]
         );
         let stats = cssom.last_restyle_stats();
         assert_eq!(stats.snapshots, 1);
@@ -808,7 +1159,7 @@ mod tests {
 
         assert_eq!(
             runtime.host().borrow().console,
-            vec!["CanvasText", "#0000ff"]
+            vec!["rgb(0, 0, 0)", "rgb(0, 0, 255)"]
         );
         assert!(cssom.last_restyle_stats().full_document);
     }

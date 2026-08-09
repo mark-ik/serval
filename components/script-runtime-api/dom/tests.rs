@@ -1440,6 +1440,100 @@ fn stylesheet_cssom_routes_to_handler_on_nova() {
     stylesheet_cssom_routes_to_handler::<script_engine_nova::NovaEngine>();
 }
 
+/// Imported sheets stay out of `document.styleSheets`, but the parent rule and
+/// child sheet retain their CSSOM ownership relationship.
+fn imported_stylesheet_cssom_relationships<E: ScriptEngine>() {
+    struct Stub;
+
+    impl crate::StyleSheetHandler for Stub {
+        fn sheet_count(&self) -> usize {
+            1
+        }
+
+        fn rule_count(&self, sheet: usize) -> Option<usize> {
+            (sheet == 0).then_some(2)
+        }
+
+        fn insert_rule(
+            &self,
+            _sheet: usize,
+            _rule: &str,
+            _index: usize,
+        ) -> Result<usize, crate::StyleSheetMutationError> {
+            Err(crate::StyleSheetMutationError::IndexSize)
+        }
+
+        fn delete_rule(
+            &self,
+            _sheet: usize,
+            _index: usize,
+        ) -> Result<(), crate::StyleSheetMutationError> {
+            Err(crate::StyleSheetMutationError::IndexSize)
+        }
+
+        fn sheet_key(&self, sheet: usize) -> Option<String> {
+            (sheet == 0).then(|| "parent".to_owned())
+        }
+
+        fn rule_count_by_key(&self, key: &str) -> Option<usize> {
+            match key {
+                "parent" => Some(2),
+                "child" => Some(1),
+                _ => None,
+            }
+        }
+
+        fn import_rule_by_key(
+            &self,
+            key: &str,
+            index: usize,
+        ) -> Option<crate::StyleSheetImportRule> {
+            (key == "parent" && index == 0).then(|| crate::StyleSheetImportRule {
+                href: "child.css".to_owned(),
+                media: Some("screen".to_owned()),
+                child_sheet_key: Some("child".to_owned()),
+            })
+        }
+
+        fn import_owner_by_key(&self, key: &str) -> Option<crate::StyleSheetImportOwner> {
+            (key == "child").then(|| crate::StyleSheetImportOwner {
+                parent_sheet_key: "parent".to_owned(),
+                import_index: 0,
+            })
+        }
+    }
+
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.set_stylesheet_handler(Box::new(Stub));
+    rt.eval(
+        "var parent = document.styleSheets[0];\
+         var rule = parent.cssRules.item(0);\
+         var child = rule.styleSheet;\
+         console.log(document.styleSheets.length + '|' + parent.cssRules.length + '|' +\
+           String(rule instanceof CSSImportRule) + '|' + String(parent.cssRules.item(1) === null));\
+         console.log(rule.href + '|' + rule.media.mediaText + '|' +\
+           String(rule.parentStyleSheet === parent) + '|' +\
+           String(child.ownerNode === null) + '|' +\
+           String(child.ownerRule === rule) + '|' + child.cssRules.length);",
+    )
+    .expect("import CSSOM script");
+    assert_eq!(
+        rt.host().borrow().console,
+        vec!["1|2|true|true", "child.css|screen|true|true|true|1"],
+    );
+}
+
+#[test]
+fn imported_stylesheet_cssom_relationships_on_boa() {
+    imported_stylesheet_cssom_relationships::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn imported_stylesheet_cssom_relationships_on_nova() {
+    imported_stylesheet_cssom_relationships::<script_engine_nova::NovaEngine>();
+}
+
 /// `document.cookie` reads the host `CookieProvider` (get) and forwards an
 /// assignment (set), the cookie convergence seam (native session store).
 fn document_cookie_reads_and_writes_provider<E: ScriptEngine>() {

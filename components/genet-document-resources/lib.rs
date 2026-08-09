@@ -9,26 +9,69 @@
 
 use std::collections::HashMap;
 
-pub use genet_host_api::ResourceFetcher;
-use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
+pub use genet_host_api::{ResourceFetcher, ResourceResponse};
+use layout_dom_api::{LayoutDom, LocalName, Namespace};
 
 type ByteFetcher<'a> = dyn FnMut(&str) -> Option<Vec<u8>> + 'a;
+type ResponseFetcher<'a> = dyn FnMut(&str) -> Option<ResourceResponse> + 'a;
 
 /// The HTML node kind which owns an author stylesheet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StylesheetOwner {
     Inline,
     Linked,
+    Imported,
+}
+
+/// One leading `@import` rule retained in the resource graph. The resolver
+/// keeps it even when the imported response is unavailable, so a CSSOM
+/// consumer can distinguish a present rule with no child sheet from no rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedImportRule {
+    /// The URL spelling from the import rule.
+    pub authored_url: String,
+    /// The URL resolved against the importing sheet's final identity.
+    pub resolved_url: String,
+    /// The supported import media condition, if one was present.
+    pub media: Option<String>,
+    /// The resource-graph identity of the loaded child sheet, if available.
+    pub child_sheet_id: Option<u64>,
+}
+
+/// The import rule which introduced an imported stylesheet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StylesheetImportParent {
+    pub sheet_id: u64,
+    pub import_index: usize,
 }
 
 /// One author stylesheet, in document linking order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedStylesheet {
+    /// Identity within one resolved resource graph. It connects retained import
+    /// rules to their child sheets; document owners remain the stable identity
+    /// for direct CSSOM sheets across later resolutions.
+    pub sheet_id: u64,
     pub owner: StylesheetOwner,
-    /// `None` for inline sheets without a known document identity.
+    /// Opaque identity of the document `<style>` or `<link>` element that
+    /// introduced this sheet. Imported sheets inherit their root owner's id;
+    /// consumers use it to retain a live CSSOM sheet across re-resolution.
+    pub owner_node: Option<u64>,
+    /// Identity after redirect handling. `None` for inline sheets without a
+    /// known document identity.
     pub source_url: Option<String>,
+    /// The resolved URL given to the host before redirect handling. `None` for
+    /// inline sheets and host-supplied sheets without a URL.
+    pub requested_url: Option<String>,
+    /// Response `Content-Type`, retained so consumers can explain why a linked
+    /// sheet did or did not enter the cascade.
+    pub content_type: Option<String>,
     /// Link `media`, retained for the selected style engine to evaluate.
     pub media: Option<String>,
+    /// Leading imports in this sheet, in CSS rule order.
+    pub imports: Vec<ResolvedImportRule>,
+    /// The parent import for an imported sheet. Direct sheets have no parent.
+    pub import_parent: Option<StylesheetImportParent>,
     pub text: String,
     pub document_order: u64,
 }
@@ -67,6 +110,16 @@ pub enum ResourceDiagnostic {
         authored_url: String,
         resolved_url: String,
     },
+    LinkedStylesheetUnsupportedContentType {
+        authored_url: String,
+        resolved_url: String,
+        content_type: String,
+    },
+    LinkedStylesheetBodyLimit {
+        authored_url: String,
+        resolved_url: String,
+        max_bytes: usize,
+    },
     ResourceUnavailable {
         kind: ResourceKind,
         authored_url: String,
@@ -77,9 +130,66 @@ pub enum ResourceDiagnostic {
         authored_url: String,
         resolved_url: String,
     },
-    /// Livery has no import rule object yet. It is intentionally reported
-    /// rather than stripping the rule and overstating support.
-    ImportRulePendingR5 { source_url: Option<String> },
+    ImportRuleUnavailable {
+        source_url: Option<String>,
+        authored_url: String,
+        resolved_url: String,
+    },
+    ImportRuleInvalidUtf8 {
+        source_url: Option<String>,
+        authored_url: String,
+        resolved_url: String,
+    },
+    ImportRuleUnsupportedContentType {
+        source_url: Option<String>,
+        authored_url: String,
+        resolved_url: String,
+        content_type: String,
+    },
+    ImportRuleCycle {
+        source_url: Option<String>,
+        resolved_url: String,
+    },
+    ImportRuleDepthLimit {
+        source_url: Option<String>,
+        resolved_url: String,
+        max_depth: usize,
+    },
+    ImportRuleBodyLimit {
+        source_url: Option<String>,
+        authored_url: String,
+        resolved_url: String,
+        max_bytes: usize,
+    },
+    /// The selected cascade has no `@layer` or `@supports` import semantics.
+    /// Retain a precise blocker instead of fetching and applying it incorrectly.
+    ImportRuleUnsupportedCondition {
+        source_url: Option<String>,
+        authored_url: String,
+        condition: String,
+    },
+    ImportRuleOutOfOrder {
+        source_url: Option<String>,
+    },
+}
+
+/// Host-configurable bounds for one static resource resolution pass. The
+/// resolver is deliberately serial, so concurrent fetches are always one;
+/// asynchronous hosts enforce their own transport concurrency before exposing
+/// [`ResourceFetcher`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceLimits {
+    pub max_import_depth: usize,
+    pub max_stylesheet_bytes: usize,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_import_depth: 16,
+            max_stylesheet_bytes: 2 * 1024 * 1024,
+        }
+    }
 }
 
 /// The host-owned resource view of one parsed HTML document.
@@ -98,8 +208,24 @@ impl ResolvedDocumentResources {
         D: LayoutDom,
         Fetch: ResourceFetcher + ?Sized,
     {
-        let mut fetch = |url: &str| fetcher.fetch(url);
-        resolve_with(dom, document_url, &mut fetch)
+        let mut fetch = |url: &str| fetcher.fetch_response(url);
+        resolve_responses_with_limits(dom, document_url, &mut fetch, ResourceLimits::default())
+    }
+
+    /// Resolve resources with explicit host-selected bounds for recursive CSS
+    /// imports and individual stylesheet bodies.
+    pub fn resolve_with_limits<D, Fetch>(
+        dom: &D,
+        document_url: Option<&str>,
+        fetcher: &Fetch,
+        limits: ResourceLimits,
+    ) -> Self
+    where
+        D: LayoutDom,
+        Fetch: ResourceFetcher + ?Sized,
+    {
+        let mut fetch = |url: &str| fetcher.fetch_response(url);
+        resolve_responses_with_limits(dom, document_url, &mut fetch, limits)
     }
 
     /// Discover only inline content. Linked resources remain visible as
@@ -108,7 +234,7 @@ impl ResolvedDocumentResources {
     where
         D: LayoutDom,
     {
-        collect(dom, document_url, None)
+        collect(dom, document_url, None, ResourceLimits::default())
     }
 
     /// Return the text in retained author-sheet order.
@@ -131,13 +257,29 @@ pub fn resolve_with<D>(
 where
     D: LayoutDom,
 {
-    collect(dom, document_url, Some(fetch))
+    let mut responses = |url: &str| fetch(url).map(|bytes| ResourceResponse::new(url, bytes));
+    resolve_responses_with_limits(dom, document_url, &mut responses, ResourceLimits::default())
+}
+
+/// Response-aware closure entry point for compatibility adapters that already
+/// own response metadata and do not need to implement the host trait.
+pub fn resolve_responses_with_limits<D>(
+    dom: &D,
+    document_url: Option<&str>,
+    fetch: &mut ResponseFetcher<'_>,
+    limits: ResourceLimits,
+) -> ResolvedDocumentResources
+where
+    D: LayoutDom,
+{
+    collect(dom, document_url, Some(fetch), limits)
 }
 
 fn collect<D>(
     dom: &D,
     document_url: Option<&str>,
-    mut fetch: Option<&mut ByteFetcher<'_>>,
+    mut fetch: Option<&mut ResponseFetcher<'_>>,
+    limits: ResourceLimits,
 ) -> ResolvedDocumentResources
 where
     D: LayoutDom,
@@ -146,17 +288,34 @@ where
         document_url: document_url.map(str::to_owned),
         ..Default::default()
     };
-    let mut order = 0;
+    let mut direct_sheets = Vec::new();
     collect_stylesheets(
         dom,
         dom.document(),
         document_url,
         &mut fetch,
-        &mut order,
-        &mut result,
+        &mut direct_sheets,
+        &mut result.diagnostics,
+        limits,
     );
 
-    let mut cached = HashMap::<String, Option<Vec<u8>>>::new();
+    let mut order = StylesheetOrder::default();
+    let mut cached_sheets = HashMap::<String, Option<ResourceResponse>>::new();
+    for sheet in direct_sheets {
+        let mut sheet = sheet;
+        sheet.sheet_id = order.allocate_sheet_id();
+        expand_stylesheet(
+            sheet,
+            &mut fetch,
+            &mut cached_sheets,
+            &mut ImportTrail::default(),
+            limits,
+            &mut order,
+            &mut result,
+        );
+    }
+
+    let mut cached = HashMap::<String, Option<ResourceResponse>>::new();
     collect_document_resources(
         dom,
         dom.document(),
@@ -167,13 +326,6 @@ where
     );
     let sheets = result.stylesheets.clone();
     for sheet in &sheets {
-        if starts_with_import(&sheet.text) {
-            result
-                .diagnostics
-                .push(ResourceDiagnostic::ImportRulePendingR5 {
-                    source_url: sheet.source_url.clone(),
-                });
-        }
         collect_stylesheet_resources(
             &sheet.text,
             sheet.source_url.as_deref(),
@@ -189,9 +341,10 @@ fn collect_stylesheets<D>(
     dom: &D,
     node: D::NodeId,
     document_url: Option<&str>,
-    fetch: &mut Option<&mut ByteFetcher<'_>>,
-    order: &mut u64,
-    result: &mut ResolvedDocumentResources,
+    fetch: &mut Option<&mut ResponseFetcher<'_>>,
+    sheets: &mut Vec<ResolvedStylesheet>,
+    diagnostics: &mut Vec<ResourceDiagnostic>,
+    limits: ResourceLimits,
 ) where
     D: LayoutDom,
 {
@@ -202,14 +355,19 @@ fn collect_stylesheets<D>(
         let mut text = String::new();
         collect_text(dom, node, &mut text);
         if !text.trim().is_empty() {
-            result.stylesheets.push(ResolvedStylesheet {
+            sheets.push(ResolvedStylesheet {
+                sheet_id: 0,
                 owner: StylesheetOwner::Inline,
+                owner_node: Some(dom.opaque_id(node)),
                 source_url: document_url.map(str::to_owned),
+                requested_url: None,
+                content_type: None,
                 media: None,
+                imports: Vec::new(),
+                import_parent: None,
                 text,
-                document_order: *order,
+                document_order: 0,
             });
-            *order = order.saturating_add(1);
         }
     }
 
@@ -229,57 +387,476 @@ fn collect_stylesheets<D>(
                 .filter(|media| !media.is_empty())
                 .map(str::to_owned);
             match fetch.as_deref_mut() {
-                None => {
-                    result
-                        .diagnostics
-                        .push(ResourceDiagnostic::LinkedStylesheetNoByteAuthority {
-                            authored_url: authored_url.to_owned(),
-                            resolved_url,
-                        })
-                },
-                Some(fetch) => {
-                    match fetch(&resolved_url) {
-                        Some(bytes) => match String::from_utf8(bytes) {
-                            Ok(text) => {
-                                result.stylesheets.push(ResolvedStylesheet {
-                                    owner: StylesheetOwner::Linked,
-                                    source_url: Some(resolved_url),
-                                    media,
-                                    text,
-                                    document_order: *order,
-                                });
-                                *order = order.saturating_add(1);
-                            },
-                            Err(_) => result.diagnostics.push(
-                                ResourceDiagnostic::LinkedStylesheetInvalidUtf8 {
-                                    authored_url: authored_url.to_owned(),
-                                    resolved_url,
-                                },
-                            ),
-                        },
-                        None => result.diagnostics.push(
-                            ResourceDiagnostic::LinkedStylesheetUnavailable {
+                None => diagnostics.push(ResourceDiagnostic::LinkedStylesheetNoByteAuthority {
+                    authored_url: authored_url.to_owned(),
+                    resolved_url,
+                }),
+                Some(fetch) => match fetch(&resolved_url) {
+                    Some(response) if !is_css_response(response.content_type.as_deref()) => {
+                        diagnostics.push(
+                            ResourceDiagnostic::LinkedStylesheetUnsupportedContentType {
                                 authored_url: authored_url.to_owned(),
                                 resolved_url,
+                                content_type: response.content_type.unwrap_or_default(),
                             },
-                        ),
-                    }
+                        );
+                    },
+                    Some(response) if response.bytes.len() > limits.max_stylesheet_bytes => {
+                        diagnostics.push(ResourceDiagnostic::LinkedStylesheetBodyLimit {
+                            authored_url: authored_url.to_owned(),
+                            resolved_url,
+                            max_bytes: limits.max_stylesheet_bytes,
+                        });
+                    },
+                    Some(response) => match String::from_utf8(response.bytes) {
+                        Ok(text) => {
+                            sheets.push(ResolvedStylesheet {
+                                sheet_id: 0,
+                                owner: StylesheetOwner::Linked,
+                                owner_node: Some(dom.opaque_id(node)),
+                                source_url: Some(response.final_url),
+                                requested_url: Some(resolved_url),
+                                content_type: response.content_type,
+                                media,
+                                imports: Vec::new(),
+                                import_parent: None,
+                                text,
+                                document_order: 0,
+                            });
+                        },
+                        Err(_) => {
+                            diagnostics.push(ResourceDiagnostic::LinkedStylesheetInvalidUtf8 {
+                                authored_url: authored_url.to_owned(),
+                                resolved_url,
+                            })
+                        },
+                    },
+                    None => diagnostics.push(ResourceDiagnostic::LinkedStylesheetUnavailable {
+                        authored_url: authored_url.to_owned(),
+                        resolved_url,
+                    }),
                 },
             }
         }
     }
 
     for child in dom.dom_children(node) {
-        collect_stylesheets(dom, child, document_url, fetch, order, result);
+        collect_stylesheets(dom, child, document_url, fetch, sheets, diagnostics, limits);
     }
+}
+
+#[derive(Debug)]
+struct ImportRule {
+    authored_url: String,
+    media: Option<String>,
+    unsupported_condition: Option<String>,
+}
+
+#[derive(Debug)]
+struct ImportScan {
+    imports: Vec<ImportRule>,
+    remaining: String,
+    out_of_order: bool,
+}
+
+#[derive(Default)]
+struct ImportTrail {
+    active: Vec<String>,
+    depth: usize,
+}
+
+#[derive(Default)]
+struct StylesheetOrder {
+    document_order: u64,
+    next_sheet_id: u64,
+}
+
+impl StylesheetOrder {
+    fn allocate_sheet_id(&mut self) -> u64 {
+        let id = self.next_sheet_id;
+        self.next_sheet_id = self.next_sheet_id.saturating_add(1);
+        id
+    }
+}
+
+fn expand_stylesheet(
+    mut sheet: ResolvedStylesheet,
+    fetch: &mut Option<&mut ResponseFetcher<'_>>,
+    cached: &mut HashMap<String, Option<ResourceResponse>>,
+    trail: &mut ImportTrail,
+    limits: ResourceLimits,
+    order: &mut StylesheetOrder,
+    result: &mut ResolvedDocumentResources,
+) {
+    let source_url = sheet.source_url.clone();
+    let pushed_current = source_url.as_ref().is_some_and(|source| {
+        !trail
+            .active
+            .iter()
+            .any(|active_source| active_source == source)
+    });
+    if pushed_current {
+        trail
+            .active
+            .push(source_url.clone().expect("checked source URL"));
+    }
+
+    let scan = scan_leading_imports(&sheet.text);
+    sheet.text = scan.remaining;
+    sheet.imports = scan
+        .imports
+        .iter()
+        .map(|import| ResolvedImportRule {
+            authored_url: import.authored_url.clone(),
+            resolved_url: resolve_url(source_url.as_deref(), &import.authored_url),
+            media: import.media.clone(),
+            child_sheet_id: None,
+        })
+        .collect();
+    if scan.out_of_order {
+        result
+            .diagnostics
+            .push(ResourceDiagnostic::ImportRuleOutOfOrder {
+                source_url: source_url.clone(),
+            });
+    }
+    for (import_index, import) in scan.imports.into_iter().enumerate() {
+        if let Some(condition) = import.unsupported_condition {
+            result
+                .diagnostics
+                .push(ResourceDiagnostic::ImportRuleUnsupportedCondition {
+                    source_url: source_url.clone(),
+                    authored_url: import.authored_url,
+                    condition,
+                });
+            continue;
+        }
+        let resolved_url = resolve_url(source_url.as_deref(), &import.authored_url);
+        if trail.depth >= limits.max_import_depth {
+            result
+                .diagnostics
+                .push(ResourceDiagnostic::ImportRuleDepthLimit {
+                    source_url: source_url.clone(),
+                    resolved_url,
+                    max_depth: limits.max_import_depth,
+                });
+            continue;
+        }
+        let response = match fetch.as_deref_mut() {
+            Some(fetcher) => cached
+                .entry(resolved_url.clone())
+                .or_insert_with(|| fetcher(&resolved_url))
+                .clone(),
+            None => {
+                result
+                    .diagnostics
+                    .push(ResourceDiagnostic::ImportRuleUnavailable {
+                        source_url: source_url.clone(),
+                        authored_url: import.authored_url,
+                        resolved_url,
+                    });
+                continue;
+            },
+        };
+        let Some(response) = response else {
+            result
+                .diagnostics
+                .push(ResourceDiagnostic::ImportRuleUnavailable {
+                    source_url: source_url.clone(),
+                    authored_url: import.authored_url,
+                    resolved_url,
+                });
+            continue;
+        };
+        if !is_css_response(response.content_type.as_deref()) {
+            result
+                .diagnostics
+                .push(ResourceDiagnostic::ImportRuleUnsupportedContentType {
+                    source_url: source_url.clone(),
+                    authored_url: import.authored_url,
+                    resolved_url,
+                    content_type: response.content_type.clone().unwrap_or_default(),
+                });
+            continue;
+        }
+        if response.bytes.len() > limits.max_stylesheet_bytes {
+            result
+                .diagnostics
+                .push(ResourceDiagnostic::ImportRuleBodyLimit {
+                    source_url: source_url.clone(),
+                    authored_url: import.authored_url,
+                    resolved_url,
+                    max_bytes: limits.max_stylesheet_bytes,
+                });
+            continue;
+        }
+        if trail
+            .active
+            .iter()
+            .any(|active_source| active_source == &response.final_url)
+        {
+            result
+                .diagnostics
+                .push(ResourceDiagnostic::ImportRuleCycle {
+                    source_url: source_url.clone(),
+                    resolved_url,
+                });
+            continue;
+        }
+        let text = match String::from_utf8(response.bytes.clone()) {
+            Ok(text) => text,
+            Err(_) => {
+                result
+                    .diagnostics
+                    .push(ResourceDiagnostic::ImportRuleInvalidUtf8 {
+                        source_url: source_url.clone(),
+                        authored_url: import.authored_url,
+                        resolved_url,
+                    });
+                continue;
+            },
+        };
+        let text = import
+            .media
+            .as_deref()
+            .map_or(text.clone(), |media| wrap_import_media(&text, media));
+        let child_sheet_id = order.allocate_sheet_id();
+        sheet.imports[import_index].child_sheet_id = Some(child_sheet_id);
+        trail.depth = trail.depth.saturating_add(1);
+        expand_stylesheet(
+            ResolvedStylesheet {
+                sheet_id: child_sheet_id,
+                owner: StylesheetOwner::Imported,
+                owner_node: sheet.owner_node,
+                source_url: Some(response.final_url.clone()),
+                requested_url: Some(resolved_url),
+                content_type: response.content_type.clone(),
+                media: sheet.media.clone(),
+                imports: Vec::new(),
+                import_parent: Some(StylesheetImportParent {
+                    sheet_id: sheet.sheet_id,
+                    import_index,
+                }),
+                text,
+                document_order: 0,
+            },
+            fetch,
+            cached,
+            trail,
+            limits,
+            order,
+            result,
+        );
+        trail.depth = trail.depth.saturating_sub(1);
+    }
+    sheet.document_order = order.document_order;
+    order.document_order = order.document_order.saturating_add(1);
+    result.stylesheets.push(sheet);
+    if pushed_current {
+        trail.active.pop();
+    }
+}
+
+fn is_css_response(content_type: Option<&str>) -> bool {
+    content_type.is_none_or(|content_type| {
+        content_type
+            .split_once(';')
+            .map_or(content_type, |(primary, _)| primary)
+            .trim()
+            .eq_ignore_ascii_case("text/css")
+    })
+}
+
+fn scan_leading_imports(input: &str) -> ImportScan {
+    let mut cursor = 0;
+    let mut imports = Vec::new();
+    loop {
+        skip_css_trivia(input, &mut cursor);
+        let Some(after_keyword) = after_import_keyword(input, cursor) else {
+            break;
+        };
+        let Some(end) = find_import_terminator(input, after_keyword) else {
+            break;
+        };
+        let prelude = input[after_keyword..end].trim();
+        let Some(import) = parse_import_rule(prelude) else {
+            break;
+        };
+        imports.push(import);
+        cursor = end + 1;
+    }
+    let remaining = input[cursor..].to_owned();
+    let out_of_order = contains_import_keyword(&remaining);
+    ImportScan {
+        imports,
+        remaining,
+        out_of_order,
+    }
+}
+
+fn skip_css_trivia(input: &str, cursor: &mut usize) {
+    loop {
+        while input[*cursor..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+        {
+            *cursor += input[*cursor..]
+                .chars()
+                .next()
+                .expect("checked char")
+                .len_utf8();
+        }
+        if !input[*cursor..].starts_with("/*") {
+            return;
+        }
+        let Some(end) = input[*cursor + 2..].find("*/") else {
+            *cursor = input.len();
+            return;
+        };
+        *cursor += end + 4;
+    }
+}
+
+fn after_import_keyword(input: &str, cursor: usize) -> Option<usize> {
+    let rest = input.get(cursor..)?;
+    let keyword = rest.get(..7)?;
+    if !keyword.eq_ignore_ascii_case("@import") {
+        return None;
+    }
+    let after = cursor + 7;
+    input
+        .get(after..)
+        .and_then(|rest| rest.chars().next())
+        .filter(|character| {
+            character.is_whitespace() || matches!(character, '\'' | '"' | 'u' | 'U')
+        })?;
+    Some(after)
+}
+
+fn find_import_terminator(input: &str, start: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut parentheses = 0_u32;
+    for (offset, character) in input[start..].char_indices() {
+        if let Some(open_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == open_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' => parentheses = parentheses.saturating_add(1),
+            ')' => parentheses = parentheses.saturating_sub(1),
+            ';' if parentheses == 0 => return Some(start + offset),
+            _ => {},
+        }
+    }
+    None
+}
+
+fn parse_import_rule(prelude: &str) -> Option<ImportRule> {
+    let (authored_url, rest) = if let Some(after_url) = prelude
+        .get(..3)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("url"))
+        .and_then(|_| prelude.get(3..))
+    {
+        let after_url = after_url.trim_start();
+        let body = after_url.strip_prefix('(')?;
+        let close = body.rfind(')')?;
+        (
+            body[..close].trim().trim_matches(['\'', '"']).to_owned(),
+            &body[close + 1..],
+        )
+    } else {
+        let quote = prelude
+            .chars()
+            .next()
+            .filter(|quote| matches!(quote, '\'' | '"'))?;
+        let after_quote = &prelude[quote.len_utf8()..];
+        let close = after_quote.find(quote)?;
+        (
+            after_quote[..close].to_owned(),
+            &after_quote[close + quote.len_utf8()..],
+        )
+    };
+    if authored_url.is_empty() {
+        return None;
+    }
+    let condition = rest.trim();
+    let unsupported_condition = condition
+        .split_ascii_whitespace()
+        .next()
+        .filter(|token| {
+            token.eq_ignore_ascii_case("layer")
+                || token.starts_with("layer(")
+                || token.eq_ignore_ascii_case("supports")
+                || token.starts_with("supports(")
+        })
+        .map(str::to_owned);
+    Some(ImportRule {
+        authored_url,
+        media: unsupported_condition
+            .is_none()
+            .then(|| condition.to_owned())
+            .filter(|media| !media.is_empty()),
+        unsupported_condition,
+    })
+}
+
+fn wrap_import_media(text: &str, media: &str) -> String {
+    format!("@media {media} {{\n{text}\n}}")
+}
+
+fn contains_import_keyword(input: &str) -> bool {
+    let mut cursor = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut block_depth = 0_u32;
+    while cursor < input.len() {
+        if quote.is_none() && input[cursor..].starts_with("/*") {
+            let Some(end) = input[cursor + 2..].find("*/") else {
+                return false;
+            };
+            cursor += end + 4;
+            continue;
+        }
+        let character = input[cursor..].chars().next().expect("checked cursor");
+        if let Some(open_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == open_quote {
+                quote = None;
+            }
+        } else {
+            match character {
+                '\'' | '"' => quote = Some(character),
+                '{' => block_depth = block_depth.saturating_add(1),
+                '}' => block_depth = block_depth.saturating_sub(1),
+                '@' if block_depth == 0 && after_import_keyword(input, cursor).is_some() => {
+                    return true;
+                },
+                _ => {},
+            }
+        }
+        cursor += character.len_utf8();
+    }
+    false
 }
 
 fn collect_document_resources<D>(
     dom: &D,
     node: D::NodeId,
     document_url: Option<&str>,
-    fetch: &mut Option<&mut ByteFetcher<'_>>,
-    cached: &mut HashMap<String, Option<Vec<u8>>>,
+    fetch: &mut Option<&mut ResponseFetcher<'_>>,
+    cached: &mut HashMap<String, Option<ResourceResponse>>,
     result: &mut ResolvedDocumentResources,
 ) where
     D: LayoutDom,
@@ -322,8 +899,8 @@ fn collect_document_resources<D>(
 fn collect_stylesheet_resources(
     css: &str,
     base_url: Option<&str>,
-    fetch: &mut Option<&mut ByteFetcher<'_>>,
-    cached: &mut HashMap<String, Option<Vec<u8>>>,
+    fetch: &mut Option<&mut ResponseFetcher<'_>>,
+    cached: &mut HashMap<String, Option<ResourceResponse>>,
     result: &mut ResolvedDocumentResources,
 ) {
     let mut cursor = 0;
@@ -352,8 +929,8 @@ fn collect_resource(
     kind: ResourceKind,
     authored_url: &str,
     base_url: Option<&str>,
-    fetch: &mut Option<&mut ByteFetcher<'_>>,
-    cached: &mut HashMap<String, Option<Vec<u8>>>,
+    fetch: &mut Option<&mut ResponseFetcher<'_>>,
+    cached: &mut HashMap<String, Option<ResourceResponse>>,
     result: &mut ResolvedDocumentResources,
 ) {
     if authored_url.starts_with('#') {
@@ -377,15 +954,15 @@ fn collect_resource(
             });
         return;
     };
-    let bytes = cached
+    let response = cached
         .entry(resolved_url.clone())
         .or_insert_with(|| fetch(&resolved_url));
-    match bytes {
-        Some(bytes) => result.resources.push(ResolvedResource {
+    match response {
+        Some(response) => result.resources.push(ResolvedResource {
             kind,
             authored_url: authored_url.to_owned(),
             resolved_url,
-            bytes: bytes.clone(),
+            bytes: response.bytes.clone(),
         }),
         None if explicitly_unsupported_scheme(&resolved_url) => {
             result
@@ -410,8 +987,13 @@ fn collect_text<D>(dom: &D, node: D::NodeId, output: &mut String)
 where
     D: LayoutDom,
 {
-    if dom.kind(node) == NodeKind::Text {
-        output.push_str(dom.text(node).unwrap_or(""));
+    // Static HTML keeps text in text children. The live scripted DOM stores a
+    // `textContent` replacement on the target element until its fuller child
+    // replacement model lands. Prefer that direct value so a dynamic `<style>`
+    // and an edited existing `<style>` never retain stale child text.
+    if let Some(text) = dom.text(node) {
+        output.push_str(text);
+        return;
     }
     for child in dom.dom_children(node) {
         collect_text(dom, child, output);
@@ -448,12 +1030,6 @@ fn resource_kind_for_css_url(url: &str) -> ResourceKind {
     }
 }
 
-fn starts_with_import(css: &str) -> bool {
-    let css = css.trim_start_matches(|ch: char| ch.is_whitespace());
-    css.get(..7)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@import"))
-}
-
 fn explicitly_unsupported_scheme(url: &str) -> bool {
     let scheme = url.split_once(':').map(|(scheme, _)| scheme);
     matches!(scheme, Some("about" | "javascript" | "mailto" | "tel"))
@@ -467,14 +1043,14 @@ pub fn resolve_url(base_url: Option<&str>, authored_url: &str) -> String {
         return authored_url.to_owned();
     };
     if has_scheme(authored_url) {
-        return authored_url.to_owned();
+        return normalize_remote_path(authored_url.to_owned());
     }
     if let Some((scheme, authority_end)) = remote_origin(base) {
         if let Some(network_path) = authored_url.strip_prefix("//") {
-            return format!("{scheme}://{network_path}");
+            return normalize_remote_path(format!("{scheme}://{network_path}"));
         }
         if authored_url.starts_with('/') {
-            return format!("{}{}", &base[..authority_end], authored_url);
+            return normalize_remote_path(format!("{}{}", &base[..authority_end], authored_url));
         }
         let page_end = base.find(['?', '#']).unwrap_or(base.len());
         if authored_url.starts_with('?') || authored_url.starts_with('#') {
@@ -483,15 +1059,62 @@ pub fn resolve_url(base_url: Option<&str>, authored_url: &str) -> String {
         let page = &base[..page_end];
         let path_start = authority_end.min(page.len());
         if let Some(index) = page[path_start..].rfind('/') {
-            return format!("{}{}", &page[..path_start + index + 1], authored_url);
+            return normalize_remote_path(format!(
+                "{}{}",
+                &page[..path_start + index + 1],
+                authored_url
+            ));
         }
-        return format!("{page}/{authored_url}");
+        return normalize_remote_path(format!("{page}/{authored_url}"));
     }
     if authored_url.starts_with('/') || authored_url.starts_with('\\') {
         return authored_url.to_owned();
     }
     let cut = base.rfind(['/', '\\']).map_or(0, |index| index + 1);
     format!("{}{}", &base[..cut], authored_url)
+}
+
+/// Remove literal `.` and `..` segments from a remote URL path. The host's
+/// byte fetcher receives one canonical source identity, so a stylesheet's
+/// `../font.woff2` does not become a distinct, unfetchable spelling. Local
+/// paths retain their original spelling because the local-first host accepts
+/// normal filesystem path traversal directly.
+fn normalize_remote_path(url: String) -> String {
+    let Some((_, authority_end)) = remote_origin(&url) else {
+        return url;
+    };
+    let resource_end = url.find(['?', '#']).unwrap_or(url.len());
+    let path = &url[authority_end..resource_end];
+    if !path.split('/').any(|segment| matches!(segment, "." | "..")) {
+        return url;
+    }
+
+    let leading_slash = path.starts_with('/');
+    let trailing_slash = path.ends_with('/') || path.ends_with("/.") || path.ends_with("/..");
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {},
+            ".." => {
+                segments.pop();
+            },
+            segment => segments.push(segment),
+        }
+    }
+    let mut normalized = String::new();
+    if leading_slash {
+        normalized.push('/');
+    }
+    normalized.push_str(&segments.join("/"));
+    if trailing_slash && !normalized.ends_with('/') {
+        normalized.push('/');
+    }
+    format!(
+        "{}{}{}",
+        &url[..authority_end],
+        normalized,
+        &url[resource_end..]
+    )
 }
 
 fn has_scheme(url: &str) -> bool {
@@ -584,14 +1207,179 @@ mod tests {
     }
 
     #[test]
-    fn leading_import_is_an_explicit_r5_diagnostic() {
+    fn fetch_free_import_is_an_explicit_resource_diagnostic() {
         let document =
             StaticDocument::parse(r#"<style>@import url("later.css"); p { color: red }</style>"#);
         let resources = ResolvedDocumentResources::discover(&document, None);
         assert!(matches!(
             resources.diagnostics.as_slice(),
-            [ResourceDiagnostic::ImportRulePendingR5 { .. }, ..]
+            [ResourceDiagnostic::ImportRuleUnavailable { .. }]
         ));
+    }
+
+    struct ResponseFetch;
+
+    impl ResourceFetcher for ResponseFetch {
+        fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+            match url {
+                "https://example.test/docs/outer.css" => Some(
+                    ResourceResponse::new(
+                        "https://cdn.example.test/styles/outer.css",
+                        br#"@import url("inner.css") screen; .card { color: red; }"#.to_vec(),
+                    )
+                    .with_content_type("text/css; charset=utf-8"),
+                ),
+                "https://cdn.example.test/styles/inner.css" => Some(
+                    ResourceResponse::new(
+                        "https://cdn.example.test/styles/inner.css",
+                        br#".card { background-image: url(images/inner.png); color: blue; }"#
+                            .to_vec(),
+                    )
+                    .with_content_type("text/css"),
+                ),
+                "https://cdn.example.test/styles/images/inner.png" => {
+                    Some(ResourceResponse::new(url, vec![1, 2, 3]))
+                },
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn imported_sheets_precede_their_parent_and_keep_final_identities() {
+        let document = StaticDocument::parse(
+            r#"<style>@import url("outer.css"); .card { color: green; }</style>"#,
+        );
+        let resources = ResolvedDocumentResources::resolve(
+            &document,
+            Some("https://example.test/docs/page.html"),
+            &ResponseFetch,
+        );
+        assert!(resources.diagnostics.is_empty(), "{resources:#?}");
+        assert_eq!(resources.stylesheets.len(), 3);
+        let inner = &resources.stylesheets[0];
+        let outer = &resources.stylesheets[1];
+        let root = &resources.stylesheets[2];
+        assert_eq!(root.imports.len(), 1);
+        assert_eq!(root.imports[0].authored_url, "outer.css");
+        assert_eq!(root.imports[0].child_sheet_id, Some(outer.sheet_id));
+        assert_eq!(
+            outer.import_parent,
+            Some(StylesheetImportParent {
+                sheet_id: root.sheet_id,
+                import_index: 0,
+            })
+        );
+        assert_eq!(outer.imports.len(), 1);
+        assert_eq!(outer.imports[0].media.as_deref(), Some("screen"));
+        assert_eq!(outer.imports[0].child_sheet_id, Some(inner.sheet_id));
+        assert_eq!(
+            inner.import_parent,
+            Some(StylesheetImportParent {
+                sheet_id: outer.sheet_id,
+                import_index: 0,
+            })
+        );
+        assert_eq!(resources.stylesheets[0].owner, StylesheetOwner::Imported);
+        assert_eq!(
+            resources.stylesheets[0].source_url.as_deref(),
+            Some("https://cdn.example.test/styles/inner.css")
+        );
+        assert_eq!(
+            resources.stylesheets[0].requested_url.as_deref(),
+            Some("https://cdn.example.test/styles/inner.css")
+        );
+        assert!(resources.stylesheets[0].text.starts_with("@media screen"));
+        assert_eq!(
+            resources.stylesheets[1].source_url.as_deref(),
+            Some("https://cdn.example.test/styles/outer.css")
+        );
+        assert_eq!(
+            resources.stylesheets[1].requested_url.as_deref(),
+            Some("https://example.test/docs/outer.css")
+        );
+        assert_eq!(resources.stylesheets[2].owner, StylesheetOwner::Inline);
+        assert!(resources.stylesheets[2].text.contains("green"));
+        assert!(resources.resources.iter().any(|resource| {
+            resource.resolved_url == "https://cdn.example.test/styles/images/inner.png"
+        }));
+    }
+
+    #[test]
+    fn cyclic_import_is_reported_without_reapplying_a_sheet() {
+        let document = StaticDocument::parse(r#"<style>@import "a.css";</style>"#);
+        let mut fetch = |url: &str| match url {
+            "https://example.test/a.css" => Some(ResourceResponse::new(
+                url,
+                br#"@import "b.css"; .a { color: red; }"#.to_vec(),
+            )),
+            "https://example.test/b.css" => Some(ResourceResponse::new(
+                url,
+                br#"@import "a.css"; .b { color: blue; }"#.to_vec(),
+            )),
+            _ => None,
+        };
+        let resources = resolve_responses_with_limits(
+            &document,
+            Some("https://example.test/page.html"),
+            &mut fetch,
+            ResourceLimits::default(),
+        );
+        assert_eq!(resources.stylesheets.len(), 3);
+        assert!(matches!(
+            resources.diagnostics.as_slice(),
+            [ResourceDiagnostic::ImportRuleCycle { .. }]
+        ));
+    }
+
+    #[test]
+    fn non_css_link_response_does_not_enter_the_cascade() {
+        let document = StaticDocument::parse(r#"<link rel="stylesheet" href="not-css">"#);
+        let mut fetch = |url: &str| {
+            Some(
+                ResourceResponse::new(url, b"<html>not a stylesheet</html>".to_vec())
+                    .with_content_type("text/html"),
+            )
+        };
+        let resources = resolve_responses_with_limits(
+            &document,
+            Some("https://example.test/page.html"),
+            &mut fetch,
+            ResourceLimits::default(),
+        );
+        assert!(resources.stylesheets.is_empty());
+        assert!(matches!(
+            resources.diagnostics.as_slice(),
+            [ResourceDiagnostic::LinkedStylesheetUnsupportedContentType { content_type, .. }]
+                if content_type == "text/html"
+        ));
+    }
+
+    #[test]
+    fn late_top_level_import_is_reported_but_css_literals_are_not() {
+        let document =
+            StaticDocument::parse(r#"<style>.card { color: red; } @import "late.css";</style>"#);
+        let resources =
+            ResolvedDocumentResources::discover(&document, Some("https://example.test/page.html"));
+        assert!(
+            matches!(
+                resources.diagnostics.as_slice(),
+                [ResourceDiagnostic::ImportRuleOutOfOrder { source_url: Some(source_url) }]
+                    if source_url == "https://example.test/page.html"
+            ),
+            "{resources:#?}"
+        );
+
+        let document = StaticDocument::parse(
+            r#"<style>.card::before { content: "@import late.css"; }</style>"#,
+        );
+        let resources =
+            ResolvedDocumentResources::discover(&document, Some("https://example.test/page.html"));
+        assert!(resources.diagnostics.is_empty(), "{resources:#?}");
     }
 
     #[test]
@@ -606,6 +1394,24 @@ mod tests {
                 "images/logo.png"
             ),
             "https://example.test/docs/css/images/logo.png"
+        );
+    }
+
+    #[test]
+    fn normalizes_dot_segments_in_remote_resource_identities() {
+        assert_eq!(
+            resolve_url(
+                Some("https://example.test/docs/styles/site.css"),
+                "../fonts/text.woff2"
+            ),
+            "https://example.test/docs/fonts/text.woff2"
+        );
+        assert_eq!(
+            resolve_url(
+                Some("https://example.test/docs/page.html"),
+                "https://cdn.example.test/a/../font.woff2"
+            ),
+            "https://cdn.example.test/font.woff2"
         );
     }
 }

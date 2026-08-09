@@ -123,12 +123,49 @@ impl ShellEngine for DeferredShellEngine {
     }
 }
 
+/// One host-owned resource response. Engines receive the final identity and a
+/// bounded metadata surface, never a transport handle or mutable cache entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceResponse {
+    /// Identity after the host's redirect policy has finished.
+    pub final_url: String,
+    /// The response `Content-Type` when the host obtained one.
+    pub content_type: Option<String>,
+    /// Fully collected resource bytes. Streaming remains a host concern at this
+    /// synchronous document-session boundary.
+    pub bytes: Vec<u8>,
+}
+
+impl ResourceResponse {
+    pub fn new(final_url: impl Into<String>, bytes: Vec<u8>) -> Self {
+        Self {
+            final_url: final_url.into(),
+            content_type: None,
+            bytes,
+        }
+    }
+
+    pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.content_type = Some(content_type.into());
+        self
+    }
+}
+
 /// Host-shell resource-fetch contract: turn a URL into bytes for whichever engine
 /// is hosted underneath. Networking is a *platform-integration* concern the shell
-/// owns — kept off the engine, which only consumes bytes. Impls live in the ports
-/// (a local-file fetcher, a netfetcher-backed fetcher, …); an engine's own byte
-/// seams (e.g. genet's `ImageLoader`) delegate to whichever the shell supplies.
+/// owns — kept off the engine, which only consumes host-owned response records.
+/// Impls live in the ports (a local-file fetcher, a netfetcher-backed fetcher, …);
+/// an engine's own byte seams (e.g. genet's `ImageLoader`) delegate to whichever
+/// the shell supplies.
 pub trait ResourceFetcher {
     /// Fetch `url` to bytes, or `None` on failure / unsupported scheme.
     fn fetch(&self, url: &str) -> Option<Vec<u8>>;
+
+    /// Fetch `url` with its redirect-final identity and response type. Existing
+    /// byte-only hosts remain valid: their requested URL is the final identity and
+    /// their content type is unknown until they opt into this richer response.
+    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        self.fetch(url)
+            .map(|bytes| ResourceResponse::new(url, bytes))
+    }
 }

@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use genet_document_resources::{ResolvedDocumentResources, ResolvedStylesheet, ResourceKind};
-use genet_host_api::ResourceFetcher;
+use genet_host_api::{ResourceFetcher, ResourceResponse};
 use genet_layout::{
     ImageLoader, IncrementalLayout, ScrollKey, ScrollOffsets, TextRange, TextSelection,
 };
@@ -65,6 +65,15 @@ impl ResourceFetcher for LocalFetcher {
         // scheme check would misread. A remote URL with no `netfetch` lands here and
         // fails to `None`.
         std::fs::read(url).ok()
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        #[cfg(feature = "netfetch")]
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return crate::net_fetch::http_get_response(url);
+        }
+        self.fetch(url)
+            .map(|bytes| ResourceResponse::new(url, bytes))
     }
 }
 
@@ -193,11 +202,11 @@ impl LoadedDocument {
             Some((res, frag)) => (res, (!frag.is_empty()).then(|| frag.to_string())),
             None => (url, None),
         };
-        let bytes = fetcher
-            .fetch(resource)
+        let response = fetcher
+            .fetch_response(resource)
             .ok_or_else(|| format!("could not load {resource}"))?;
-        let doc = StaticDocument::parse(&String::from_utf8_lossy(&bytes));
-        let mut me = Self::from_document(doc, Some(resource), Some(fetcher));
+        let doc = StaticDocument::parse(&String::from_utf8_lossy(&response.bytes));
+        let mut me = Self::from_document(doc, Some(&response.final_url), Some(fetcher));
         me.pending_fragment = fragment;
         Ok(me)
     }
