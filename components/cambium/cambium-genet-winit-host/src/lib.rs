@@ -132,6 +132,15 @@ pub struct FocusedTextSlot<State> {
 pub struct KeyPress {
     /// The logical key, after the layout and modifiers the OS applied.
     pub key: winit::keyboard::Key,
+    /// The text this press produces, when the platform reports any.
+    ///
+    /// Carried because `key` alone is not always enough. Windows delivers
+    /// injected text as `VK_PACKET`, which winit surfaces as
+    /// `Key::Unidentified` — and injected text is not an exotic case: on-screen
+    /// keyboards, keyboard remappers, and several assistive input tools all
+    /// type that way. Without this field a person using one of them cannot type
+    /// into the application at all.
+    pub text: Option<String>,
     /// Modifiers held at the time of the press.
     pub modifiers: ModifiersState,
     /// Whether this is an auto-repeat rather than a fresh press.
@@ -141,8 +150,13 @@ pub struct KeyPress {
 impl KeyPress {
     /// A press with no modifiers held.
     pub fn new(key: winit::keyboard::Key) -> Self {
+        let text = match &key {
+            winit::keyboard::Key::Character(c) => Some(c.to_string()),
+            _ => None,
+        };
         Self {
             key,
+            text,
             modifiers: ModifiersState::empty(),
             repeat: false,
         }
@@ -158,6 +172,24 @@ impl KeyPress {
     pub fn with_modifiers(mut self, modifiers: ModifiersState) -> Self {
         self.modifiers = modifiers;
         self
+    }
+
+    /// The character this press should insert when the platform could not name
+    /// the key but did report text. `None` for a named key, a control
+    /// character, or a chord — a shortcut must not become typed text.
+    pub fn injected_text(&self) -> Option<&str> {
+        if !matches!(self.key, winit::keyboard::Key::Unidentified(_)) {
+            return None;
+        }
+        // A modifier chord is a command, not typing.
+        if self.modifiers.control_key() || self.modifiers.super_key() {
+            return None;
+        }
+        let text = self.text.as_deref()?;
+        if text.is_empty() || text.chars().any(char::is_control) {
+            return None;
+        }
+        Some(text)
     }
 }
 
@@ -811,6 +843,7 @@ where
                 if event.state == ElementState::Pressed {
                     self.key(&KeyPress {
                         key: event.logical_key,
+                        text: event.text.as_ref().map(|t| t.to_string()),
                         modifiers: self.s.modifiers,
                         repeat: event.repeat,
                     });

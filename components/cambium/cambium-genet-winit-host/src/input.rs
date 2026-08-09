@@ -55,6 +55,16 @@ fn from_visual_selection(selection: VisualSelection) -> CaretSelection {
     }
 }
 
+/// Whether `CAMBIUM_HOST_KEY_TRACE` asks for a per-keypress trace. Read once:
+/// a keyboard path is not the place to hit the environment per event.
+fn key_trace() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("CAMBIUM_HOST_KEY_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
+    })
+}
+
 /// Which visual caret movement a key means, or `None` for a key the host has no
 /// caret default for.
 fn caret_movement(key: &WinitKey, word: bool) -> Option<VisualMovement> {
@@ -307,6 +317,21 @@ where
     }
 
     pub(crate) fn key(&mut self, press: &KeyPress) {
+        // `CAMBIUM_HOST_KEY_TRACE=1` reports every key the host was handed and
+        // what became of it. It exists because "typing does not work" has three
+        // very different causes — the window never got the event, winit could
+        // not name the key, or the tree dropped it — and from outside they look
+        // identical. One line per press tells them apart.
+        let trace = key_trace();
+        if trace {
+            eprintln!(
+                "[cambium-host] key {:?} text={:?} mods={:?} focus={:?}",
+                press.key,
+                press.text,
+                press.modifiers,
+                self.s.runner.as_ref().and_then(|r| r.focus()),
+            );
+        }
         // The application's own policy first (an Escape that closes a popover, a
         // global shortcut): it can consume the event before the tree sees it.
         {
@@ -314,14 +339,36 @@ where
                 return;
             };
             if (self.hooks.key_intercept)(runner, press) {
+                if trace {
+                    eprintln!("[cambium-host]   consumed by key_intercept");
+                }
                 self.after_dispatch();
                 return;
             }
         }
         let mods = modifiers_from_winit(press.modifiers);
-        let Some(kev) = key_event_from_winit(&press.key, mods) else {
-            return;
+        let kev = match key_event_from_winit(&press.key, mods) {
+            Some(kev) => kev,
+            // The platform could not name the key but did report text: an
+            // on-screen keyboard, a remapper, or an assistive input tool
+            // injected it (on Windows, `VK_PACKET`). Type it, or none of those
+            // can type here at all.
+            None => match press.injected_text() {
+                Some(text) => cambium::KeyEvent::with_mods(
+                    cambium::Key::Character(text.to_string()),
+                    mods,
+                ),
+                None => {
+                    if trace {
+                        eprintln!("[cambium-host]   dropped: no Cambium key and no text");
+                    }
+                    return;
+                }
+            },
         };
+        if trace {
+            eprintln!("[cambium-host]   dispatching {:?}", kev.key);
+        }
         // Snapshot the caret before dispatch: the host's visual movement below
         // recomputes from this rather than from whatever logical move the field
         // just applied.

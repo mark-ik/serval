@@ -272,8 +272,18 @@ where
     /// modifiers [`set_modifiers`](Self::set_modifiers) last set.
     pub fn key(&mut self, key: WinitKey) {
         let modifiers = self.host.s.modifiers;
+        self.press_key(&KeyPress::new(key).with_modifiers(modifiers));
+    }
+
+    /// Deliver text the way an on-screen keyboard or a remapper does: the
+    /// platform could not name the key, but reported what it produces. On
+    /// Windows this is `VK_PACKET`, which every `SendInput`-based assistive
+    /// tool uses.
+    pub fn key_injected(&mut self, text: &str) {
+        let modifiers = self.host.s.modifiers;
         self.press_key(&KeyPress {
-            key,
+            key: WinitKey::Unidentified(winit::keyboard::NativeKey::Unidentified),
+            text: Some(text.to_string()),
             modifiers,
             repeat: false,
         });

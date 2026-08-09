@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, hash::Hash};
 
-use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
+use layout_dom_api::{DomMutation, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind};
 use livery::cascade::DeclaredValue;
 use livery::media::{Device, SystemPalette};
 use livery::{AnimationClass, PropertyId};
@@ -73,7 +73,7 @@ struct KeyframeAnimation<Id> {
     timing: TimingFunction,
 }
 
-/// A static DOM plus the Livery state that should survive between frames.
+/// A retained DOM plus the Livery state that should survive between frames.
 ///
 /// Equal-size frames reuse the complete paint list. Resizes recascade media
 /// queries, relayout, and repaint while retaining Parley's font database,
@@ -160,6 +160,49 @@ where
         self.cached = None;
         self.layout = None;
         self.style_session.invalidate();
+    }
+
+    /// Apply one exact DOM-mutation batch before the next frame.
+    ///
+    /// A retained frame is otherwise eligible for paint-list reuse. A table
+    /// mutation must not reuse its old candidates, winner grid, metrics, or
+    /// collapsed-border paint, so any nonempty batch discards every derived
+    /// frame artifact and updates the retained style plane first. The next
+    /// [`Self::frame`] then rebuilds layout and paint from that same style
+    /// generation. The current correctness path deliberately rebuilds the
+    /// whole layout; callers must not infer incremental table geometry from
+    /// `RestyleStats`.
+    pub fn apply_dom_mutations(&mut self, mutations: &[DomMutation<D::NodeId>]) -> RestyleStats {
+        if mutations.is_empty() {
+            return self.style_session.last_stats();
+        }
+
+        self.cached = None;
+        self.layout = None;
+        self.transitions.clear();
+        self.keyframe_animation = None;
+        self.style_session.update(
+            &self.dom,
+            &self.style_set,
+            &self.device,
+            &self.interactions,
+            mutations,
+        )
+    }
+
+    /// Mutate the owned DOM and atomically hand its exact recorded batch to
+    /// [`Self::apply_dom_mutations`]. This is the retained-document entry point
+    /// for script-hosted tables: a caller cannot accidentally paint a cached
+    /// frame after changing table structure or a participating border style.
+    pub fn mutate_dom<R>(&mut self, mutate: impl FnOnce(&mut D) -> R) -> (R, RestyleStats)
+    where
+        D: LayoutDomMut,
+    {
+        let result = mutate(&mut self.dom);
+        let mut mutations = Vec::new();
+        self.dom.drain_mutations(&mut mutations);
+        let stats = self.apply_dom_mutations(&mutations);
+        (result, stats)
     }
 
     /// Set the host preference that media queries and an element's supported

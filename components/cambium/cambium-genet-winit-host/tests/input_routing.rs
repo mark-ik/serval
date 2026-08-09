@@ -296,6 +296,49 @@ fn a_control_can_be_clicked_by_role_and_label() {
     assert_eq!(h.state().clicks, vec!["beta"]);
 }
 
+/// Text the platform could not name a key for still types.
+///
+/// Windows delivers injected text as `VK_PACKET`, which winit surfaces as
+/// `Key::Unidentified`, and the host used to drop it. Injected text is not an
+/// exotic case: on-screen keyboards, keyboard remappers, and several assistive
+/// input tools all type that way, so dropping it meant a person using one could
+/// not type into the application at all. Found by tracing a live headed run.
+#[test]
+fn injected_text_types_even_though_the_key_is_unnamed() {
+    let mut h = harness();
+    h.click_at(10.0, 12.0); // focus Alpha, which has a key handler
+    let before = h.state().keys.len();
+
+    h.key_injected("q");
+    assert_eq!(
+        h.state().keys.len(),
+        before + 1,
+        "an unnamed key carrying text still reaches the focused element: {:?}",
+        h.state().keys,
+    );
+    assert!(
+        h.state().keys.last().is_some_and(|k| k.contains('q')),
+        "and it arrives as the character it produces: {:?}",
+        h.state().keys,
+    );
+}
+
+/// A modifier chord is a command, not typing, so injected text under Ctrl is
+/// still dropped — otherwise Ctrl+S would insert an "s".
+#[test]
+fn an_injected_chord_is_not_typed() {
+    let mut h = harness();
+    h.click_at(10.0, 12.0);
+    let before = h.state().keys.len();
+    h.set_modifiers(ModifiersState::CONTROL);
+    h.key_injected("s");
+    assert_eq!(
+        h.state().keys.len(),
+        before,
+        "Ctrl + injected text is a shortcut, not an insertion",
+    );
+}
+
 /// The caret default: clicking into a text field places the caret, and an arrow
 /// key moves it — both gated on nothing having prevented the default.
 #[test]
