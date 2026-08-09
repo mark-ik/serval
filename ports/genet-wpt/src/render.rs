@@ -39,7 +39,7 @@ use paint_api::wgpu_readback::read_texture_to_image;
 use paint_api::{PaintMessage, PipelineExitSource};
 use paint_list_api::{
     ColorF, CommonPlacement, DeviceIntSize, IdNamespace, ImageKey, LayoutPoint, LayoutRect,
-    PaintCmd, PaintEnvelope, RectItem,
+    LayoutTransform, PaintCmd, PaintEnvelope, RectItem, TransformKind, TransformSpec,
 };
 use paint_types::PipelineId;
 use paint_types::units::{DeviceIntRect, LayoutSize};
@@ -55,6 +55,64 @@ pub type Image = image::ImageBuffer<image::Rgba<u8>, Vec<u8>>;
 pub struct LiveryRender {
     pub image: Image,
     pub table_ledger: TableShadowLedger,
+}
+
+/// The two coordinate spaces a reftest render needs.
+///
+/// Layout remains in CSS pixels. The device target and the final paint-stream
+/// transform use `device_scale`, so a scale-two run exercises the same page
+/// geometry at twice the raster resolution rather than laying out a wider page.
+#[derive(Clone, Copy, Debug)]
+pub struct RenderViewport {
+    css_width: u32,
+    css_height: u32,
+    device_scale: f32,
+    device_width: u32,
+    device_height: u32,
+}
+
+impl RenderViewport {
+    pub fn new(css_width: u32, css_height: u32, device_scale: f32) -> Result<Self, String> {
+        if css_width == 0 || css_height == 0 {
+            return Err("reftest CSS viewport must be non-zero".to_owned());
+        }
+        if !device_scale.is_finite() || device_scale <= 0.0 {
+            return Err(format!(
+                "invalid device scale {device_scale}; expected a finite number greater than zero"
+            ));
+        }
+        let device_width = scaled_dimension(css_width, device_scale)?;
+        let device_height = scaled_dimension(css_height, device_scale)?;
+        Ok(Self {
+            css_width,
+            css_height,
+            device_scale,
+            device_width,
+            device_height,
+        })
+    }
+
+    pub fn css_size(self) -> (u32, u32) {
+        (self.css_width, self.css_height)
+    }
+
+    pub fn device_size(self) -> (u32, u32) {
+        (self.device_width, self.device_height)
+    }
+
+    pub fn device_scale(self) -> f32 {
+        self.device_scale
+    }
+}
+
+fn scaled_dimension(css: u32, device_scale: f32) -> Result<u32, String> {
+    let scaled = (css as f64 * device_scale as f64).round();
+    if !scaled.is_finite() || scaled < 1.0 || scaled > i32::MAX as f64 {
+        return Err(format!(
+            "device scale {device_scale} makes CSS dimension {css} unrepresentable"
+        ));
+    }
+    Ok(scaled as u32)
 }
 
 /// A booted renderer reused across a subset's tests.
@@ -107,32 +165,34 @@ impl Renderer {
         PipelineId(1, index)
     }
 
-    /// Render `html` to an image at `width` x `height`, resolving the
-    /// page's inline + linked CSS and local images relative to `base_dir`
-    /// (and `tests_root` for `/`-absolute URLs).
+    /// Render `html` to an image in `viewport`, resolving the page's inline +
+    /// linked CSS and local images relative to `base_dir` (and `tests_root`
+    /// for `/`-absolute URLs).
     pub fn render_html(
         &self,
         html: &str,
         base_dir: &Path,
         tests_root: &Path,
-        width: u32,
-        height: u32,
+        viewport: RenderViewport,
         is_xml: bool,
     ) -> Image {
         let pipeline_id = self.next_pipeline_id();
+        let (css_width, css_height) = viewport.css_size();
         let envelope = isolate_image_keys(
             with_reftest_backdrop(
-                html_to_envelope(html, base_dir, tests_root, width, height, is_xml),
-                width,
-                height,
+                html_to_envelope(html, base_dir, tests_root, css_width, css_height, is_xml),
+                css_width,
+                css_height,
             ),
             pipeline_id,
         );
+        let envelope = scale_envelope_for_device(envelope, viewport);
+        let (device_width, device_height) = viewport.device_size();
         let paint = self.paint.borrow();
         paint.handle_messages(vec![PaintMessage::SendPaintList {
             webview_id: self.webview_id,
             envelope,
-            paint_info: paint_info_for(pipeline_id, width, height),
+            paint_info: paint_info_for(pipeline_id, viewport),
         }]);
         paint.render(self.webview_id);
         let master = paint
@@ -143,10 +203,10 @@ impl Renderer {
             &self.queue,
             &master,
             master.format(),
-            PhysicalSize::new(width, height),
+            PhysicalSize::new(device_width, device_height),
             DeviceIntRect::new(
                 paint_types::units::DeviceIntPoint::new(0, 0),
-                paint_types::units::DeviceIntPoint::new(width as i32, height as i32),
+                paint_types::units::DeviceIntPoint::new(device_width as i32, device_height as i32),
             ),
         )
         .expect("master readback");
@@ -167,11 +227,11 @@ impl Renderer {
         html: &str,
         base_dir: &Path,
         tests_root: &Path,
-        width: u32,
-        height: u32,
+        viewport: RenderViewport,
         is_xml: bool,
     ) -> LiveryRender {
         let pipeline_id = self.next_pipeline_id();
+        let (css_width, css_height) = viewport.css_size();
         let document = if is_xml {
             StaticDocument::parse_xml(html)
         } else {
@@ -188,7 +248,7 @@ impl Renderer {
         let mut session = LiveryDocument::new(
             document,
             LiveryStyleSet::cambium(&sheet_refs),
-            LiveryDevice::screen(width as f32, height as f32),
+            LiveryDevice::screen(css_width as f32, css_height as f32),
         );
         let image_loader = LocalFileImageLoader::new(resolver);
         for url in livery_image_urls(&sheets).into_iter().chain(dom_image_urls) {
@@ -202,18 +262,20 @@ impl Renderer {
             }
         }
         let list = session
-            .frame(width, height)
+            .frame(css_width, css_height)
             .expect("Livery WPT reftest layout");
         let table_ledger = session.table_shadow_ledger().cloned().unwrap_or_default();
         let envelope = isolate_image_keys(
-            with_reftest_backdrop(PaintEnvelope::from_list(&list), width, height),
+            with_reftest_backdrop(PaintEnvelope::from_list(&list), css_width, css_height),
             pipeline_id,
         );
+        let envelope = scale_envelope_for_device(envelope, viewport);
+        let (device_width, device_height) = viewport.device_size();
         let paint = self.paint.borrow();
         paint.handle_messages(vec![PaintMessage::SendPaintList {
             webview_id: self.webview_id,
             envelope,
-            paint_info: paint_info_for(pipeline_id, width, height),
+            paint_info: paint_info_for(pipeline_id, viewport),
         }]);
         paint.render(self.webview_id);
         let master = paint
@@ -224,10 +286,10 @@ impl Renderer {
             &self.queue,
             &master,
             master.format(),
-            PhysicalSize::new(width, height),
+            PhysicalSize::new(device_width, device_height),
             DeviceIntRect::new(
                 paint_types::units::DeviceIntPoint::new(0, 0),
-                paint_types::units::DeviceIntPoint::new(width as i32, height as i32),
+                paint_types::units::DeviceIntPoint::new(device_width as i32, device_height as i32),
             ),
         )
         .expect("Livery master readback");
@@ -293,6 +355,35 @@ fn with_reftest_backdrop(mut envelope: PaintEnvelope, width: u32, height: u32) -
             color: ColorF::WHITE,
         }),
     );
+    envelope
+}
+
+/// Adapt a CSS-space paint envelope to the physical target selected by the
+/// WPT runner. `PaintDisplayListInfo` records the scale for Paint, but the
+/// NetRender provider consumes the envelope's viewport and coordinates, so the
+/// provider needs this explicit root transform too.
+fn scale_envelope_for_device(
+    mut envelope: PaintEnvelope,
+    viewport: RenderViewport,
+) -> PaintEnvelope {
+    let (device_width, device_height) = viewport.device_size();
+    envelope.viewport = DeviceIntSize::new(device_width as i32, device_height as i32);
+    if viewport.device_scale() == 1.0 {
+        return envelope;
+    }
+
+    let scale = viewport.device_scale();
+    envelope.commands.insert(
+        0,
+        PaintCmd::PushTransform(TransformSpec {
+            origin: LayoutPoint::new(0.0, 0.0),
+            transform: LayoutTransform::new(
+                scale, 0.0, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ),
+            kind: TransformKind::Standard,
+        }),
+    );
+    envelope.commands.push(PaintCmd::PopTransform);
     envelope
 }
 
@@ -402,13 +493,14 @@ fn livery_dom_image_urls(document: &StaticDocument) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        isolate_image_keys, livery_dom_image_urls, livery_font_urls, livery_image_urls,
-        with_reftest_backdrop,
+        RenderViewport, isolate_image_keys, livery_dom_image_urls, livery_font_urls,
+        livery_image_urls, paint_info_for, scale_envelope_for_device, with_reftest_backdrop,
     };
     use genet_static_dom::StaticDocument;
     use paint_list_api::{
         AlphaType, ColorF, CommonPlacement, DeviceIntSize, EngineId, IdNamespace, ImageItem,
         ImageKey, ImageRendering, ImageResource, LayoutPoint, LayoutRect, PaintCmd, PaintEnvelope,
+        RectItem,
     };
     use paint_types::PipelineId;
 
@@ -502,15 +594,64 @@ mod tests {
         assert_eq!(rect.color, ColorF::WHITE);
         assert_eq!(rect.placement.bounds.max, LayoutPoint::new(20.0, 10.0));
     }
+
+    #[test]
+    fn device_scale_keeps_css_layout_and_scales_the_provider_target() {
+        let viewport = RenderViewport::new(800, 600, 2.0).unwrap();
+        assert_eq!(viewport.css_size(), (800, 600));
+        assert_eq!(viewport.device_size(), (1600, 1200));
+
+        let envelope = scale_envelope_for_device(
+            PaintEnvelope {
+                engine: EngineId::GENET,
+                viewport: DeviceIntSize::new(800, 600),
+                generation: 0,
+                commands: vec![PaintCmd::DrawRect(RectItem {
+                    placement: CommonPlacement::new(LayoutRect::new(
+                        LayoutPoint::new(0.0, 0.0),
+                        LayoutPoint::new(10.0, 10.0),
+                    )),
+                    color: ColorF::WHITE,
+                })],
+                fonts: Vec::new(),
+                images: Vec::new(),
+            },
+            viewport,
+        );
+        assert_eq!(envelope.viewport, DeviceIntSize::new(1600, 1200));
+        let [
+            PaintCmd::PushTransform(spec),
+            PaintCmd::DrawRect(_),
+            PaintCmd::PopTransform,
+        ] = envelope.commands.as_slice()
+        else {
+            panic!("device scale wraps the complete command stream");
+        };
+        assert_eq!(spec.transform.m11, 2.0);
+        assert_eq!(spec.transform.m22, 2.0);
+
+        let info = paint_info_for(PipelineId(1, 1), viewport);
+        assert_eq!(info.viewport_details.size.width, 800.0);
+        assert_eq!(info.viewport_details.size.height, 600.0);
+        assert_eq!(info.viewport_details.hidpi_scale_factor.0, 2.0);
+    }
+
+    #[test]
+    fn device_scale_rejects_non_positive_or_unrepresentable_targets() {
+        assert!(RenderViewport::new(800, 600, 0.0).is_err());
+        assert!(RenderViewport::new(800, 600, f32::NAN).is_err());
+        assert!(RenderViewport::new(800, 600, f32::MAX).is_err());
+    }
 }
 
-fn paint_info_for(pid: PipelineId, width: u32, height: u32) -> PaintDisplayListInfo {
+fn paint_info_for(pid: PipelineId, viewport: RenderViewport) -> PaintDisplayListInfo {
+    let (css_width, css_height) = viewport.css_size();
     PaintDisplayListInfo::new(
         ViewportDetails {
-            size: Size2D::new(width as f32, height as f32),
-            hidpi_scale_factor: Scale::new(1.0),
+            size: Size2D::new(css_width as f32, css_height as f32),
+            hidpi_scale_factor: Scale::new(viewport.device_scale()),
         },
-        LayoutSize::new(width as f32, height as f32),
+        LayoutSize::new(css_width as f32, css_height as f32),
         pid,
         servo_base::Epoch(0),
         AxesScrollSensitivity {

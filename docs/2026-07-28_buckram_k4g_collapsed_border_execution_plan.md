@@ -3,10 +3,12 @@
 **Date:** 2026-07-28
 
 **Status:** corrected 2026-08-09. K4g1 through K4g5 have implementation
-receipts in the serial completion lane. K4g5b repairs its two selected
-paint-phase regressions and records focused scale-1/WPT evidence; headed,
-scale-2, writing-mode, and complete WPT evidence remain unmeasured. K4g6 is
-not started.
+receipts in the serial completion lane. K4g5c adds a WPT renderer device-scale
+provider, with five selected scale-2 reftests passing and the known double
+border mismatch classifier still uncredited. K4g5 is explicitly scoped to its
+static and focused scale-provider receipt; headed, complete writing-mode,
+multi-way allocation, and full WPT maps remain K4g6 acceptance inputs. K4g6
+is not started.
 
 **Parent plan:** [Buckram K4 CSS tables execution plan](2026-07-28_buckram_k4_css_tables_execution_plan.md)
 
@@ -829,6 +831,28 @@ WPT renderer fixes its HiDPI scale at 1, so scale-2 verification requires a
 separate renderer scale-provider seam. K4g6 remains unopened and this receipt
 does not claim headed, scale-2, complete writing-mode, multi-way allocation,
 or complete-map conformance.
+
+### K4g5c renderer scale-provider receipt (2026-08-09)
+
+The runner now separates an 800 by 600 CSS viewport from its physical target:
+`--device-scale 2` sends a scale-two `ViewportDetails`, updates the envelope
+viewport to 1600 by 1200, and wraps all emitted commands in one root transform.
+No neutral paint API or NetRender source changed. This runner-local provider
+step is required because the current paint consumer stores viewport metadata
+but translates the envelope's device viewport and coordinates.
+
+Its two focused unit tests pass: scale two retains 800 by 600 CSS layout while
+producing the 1600 by 1200 target and root transform, and invalid scales are
+rejected. The named Livery reftest selection passes at scale 2 for both paint
+phase tests, subpixel borders, out-of-order elements, and rowspan. A
+`border-collapse-rowspan-cell` dump has equal 1600 by 1200 PNGs with zero
+pixel difference. `border-collapse-double-border` remains `mismatch-eq`, the
+existing sparse high-delta classifier boundary, and is not credited.
+
+This is an explicit scope boundary: K4g5 now has static geometry, focused
+paint-phase, and scale-provider evidence. Headed behavior, complete
+writing-mode and multi-way allocation coverage, and complete WPT maps remain
+unmeasured K4g6 acceptance inputs. It does not claim complete conformance.
 
 ## K4g6. Dynamic integration, cleanup, and closure
 

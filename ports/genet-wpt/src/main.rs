@@ -51,13 +51,16 @@ const REFTEST_H: u32 = 600;
 // sub-1% sliver of (anti-aliased edge) pixels. Exact-match scoring (0,0)
 // therefore flips borderline tests between runs, making the pass count
 // non-deterministic. This floor — at most `FUZZ_FLOOR_DIFF` per-channel
-// delta on at most `FUZZ_FLOOR_PIXELS` pixels — absorbs exactly that
+// delta on at most one two-hundredth of the physical raster pixels — absorbs exactly that
 // jitter and nothing near a real paint bug (those differ by 255 over a
 // localized region). Applied as a *lower bound* on every comparison: a
 // test's own `<meta name=fuzzy>` still wins where it is looser.
 const FUZZ_FLOOR_DIFF: u16 = 1;
-// 0.5% of the 800x600 render = 2400 px.
-const FUZZ_FLOOR_PIXELS: u64 = (REFTEST_W as u64 * REFTEST_H as u64) / 200;
+
+fn fuzz_floor_pixels(viewport: render::RenderViewport) -> u64 {
+    let (width, height) = viewport.device_size();
+    (width as u64 * height as u64) / 200
+}
 
 /// WPT test classification (convention-based; see the plan doc).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -410,6 +413,8 @@ struct Args {
     verbose: bool,
     engine: harness::Engine,
     renderer: ReftestRenderer,
+    /// Device pixels per CSS pixel for reftest and dump rasterization.
+    device_scale: f32,
     /// Connect to an already-running `wpt serve` at this origin (server mode).
     server_base: Option<String>,
     /// Spawn (and tear down) a `wpt serve` for the run (server mode).
@@ -454,6 +459,7 @@ fn parse_args() -> Result<Args, String> {
     let mut verbose = false;
     let mut engine = harness::Engine::default();
     let mut renderer = ReftestRenderer::Stylo;
+    let mut device_scale = 1.0f32;
     let mut server_base = None;
     let mut spawn_server = false;
     let mut timeout_secs = 30u64;
@@ -486,6 +492,19 @@ fn parse_args() -> Result<Args, String> {
                 renderer = ReftestRenderer::parse(&value).ok_or_else(|| {
                     format!("unknown renderer: {value} (expected stylo | livery)")
                 })?;
+            },
+            "--device-scale" => {
+                let value = it
+                    .next()
+                    .ok_or("--device-scale needs a positive finite number")?;
+                device_scale = value
+                    .parse()
+                    .map_err(|_| format!("invalid --device-scale: {value}"))?;
+                if !device_scale.is_finite() || device_scale <= 0.0 {
+                    return Err(format!(
+                        "invalid --device-scale: {value} (expected a positive finite number)"
+                    ));
+                }
             },
             "--server-base" => {
                 server_base = Some(it.next().ok_or("--server-base needs a URL")?);
@@ -549,6 +568,7 @@ fn parse_args() -> Result<Args, String> {
         verbose,
         engine,
         renderer,
+        device_scale,
         server_base,
         spawn_server,
         timeout_secs,
@@ -605,6 +625,7 @@ Options:
                          permit legacy result maps only in a diagnostic report
     --engine <name>      testharness JS engine: boa (default) | nova
     --renderer <name>    style/render route: stylo (default) | livery
+    --device-scale <n>   device pixels per CSS pixel for reftest/dump (default: 1)
     --server-base <url>  run testharness against a live `wpt serve` at <url>
                          (server mode; needs --features netfetch)
     --spawn-server       spawn + tear down a `wpt serve` for the run
@@ -2746,6 +2767,8 @@ fn reftest(tests: &[TestCase], args: &Args) {
             std::process::exit(1);
         },
     };
+    let viewport = render::RenderViewport::new(REFTEST_W, REFTEST_H, args.device_scale)
+        .expect("parse_args validates --device-scale");
     let tests_root = Path::new(&args.tests_root);
 
     let prev = panic::take_hook();
@@ -2814,7 +2837,7 @@ fn reftest(tests: &[TestCase], args: &Args) {
                 .fuzzy
                 .or_else(|| parse_fuzzy(&test_html))
                 .unwrap_or((0, 0));
-            Some((d.max(FUZZ_FLOOR_DIFF), p.max(FUZZ_FLOOR_PIXELS)))
+            Some((d.max(FUZZ_FLOOR_DIFF), p.max(fuzz_floor_pixels(viewport))))
         };
         let test_dir = test.path.parent().unwrap_or(tests_root);
         let ref_dir = ref_path.parent().unwrap_or(tests_root);
@@ -2823,12 +2846,12 @@ fn reftest(tests: &[TestCase], args: &Args) {
         let rendered = panic::catch_unwind(AssertUnwindSafe(|| {
             let render = |html: &str, dir: &Path, xml: bool| match args.renderer {
                 ReftestRenderer::Stylo => (
-                    renderer.render_html(html, dir, tests_root, REFTEST_W, REFTEST_H, xml),
+                    renderer.render_html(html, dir, tests_root, viewport, xml),
                     None,
                 ),
                 ReftestRenderer::Livery => {
-                    let rendered = renderer
-                        .render_html_livery(html, dir, tests_root, REFTEST_W, REFTEST_H, xml);
+                    let rendered =
+                        renderer.render_html_livery(html, dir, tests_root, viewport, xml);
                     (rendered.image, Some(rendered.table_ledger))
                 },
             };
@@ -2949,6 +2972,8 @@ fn dump(tests: &[TestCase], args: &Args) {
             std::process::exit(1);
         },
     };
+    let viewport = render::RenderViewport::new(REFTEST_W, REFTEST_H, args.device_scale)
+        .expect("parse_args validates --device-scale");
     let tests_root = Path::new(&args.tests_root);
     let out_dir = Path::new(".cargo-check-logs/dump");
     let _ = fs::create_dir_all(out_dir);
@@ -2981,12 +3006,10 @@ fn dump(tests: &[TestCase], args: &Args) {
         let test_dir = test.path.parent().unwrap_or(tests_root);
         let ref_dir = ref_path.parent().unwrap_or(tests_root);
         let render = |html: &str, dir: &Path, xml: bool| match args.renderer {
-            ReftestRenderer::Stylo => {
-                renderer.render_html(html, dir, tests_root, REFTEST_W, REFTEST_H, xml)
-            },
+            ReftestRenderer::Stylo => renderer.render_html(html, dir, tests_root, viewport, xml),
             ReftestRenderer::Livery => {
                 renderer
-                    .render_html_livery(html, dir, tests_root, REFTEST_W, REFTEST_H, xml)
+                    .render_html_livery(html, dir, tests_root, viewport, xml)
                     .image
             },
         };
@@ -2997,8 +3020,13 @@ fn dump(tests: &[TestCase], args: &Args) {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("dump");
-        let tp = out_dir.join(format!("{stem}.test.png"));
-        let rp = out_dir.join(format!("{stem}.ref.png"));
+        let scale_suffix = if viewport.device_scale() == 1.0 {
+            String::new()
+        } else {
+            format!("@{}x", viewport.device_scale())
+        };
+        let tp = out_dir.join(format!("{stem}{scale_suffix}.test.png"));
+        let rp = out_dir.join(format!("{stem}{scale_suffix}.ref.png"));
         let _ = t.save(&tp);
         let _ = r.save(&rp);
         let s = diff_stats(&t, &r);

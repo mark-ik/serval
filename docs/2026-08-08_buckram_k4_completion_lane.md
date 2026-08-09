@@ -2,11 +2,14 @@
 
 **Date:** 2026-08-08
 
-**Status:** B0 through B8 have implementation receipts. B8b has repaired and
-measured its two named paint-phase regressions, with five selected reftests
-passing. Its headed image, scale-2, writing-mode, and complete WPT matrix
-remain unmeasured. B9 is not started. The lane closes K4 and stops before K5
-implementation.
+**Status:** B0 through B8 have implementation receipts. B8c provides the
+WPT renderer's device-scale provider seam and has measured five selected
+reftests at scale 2; the known `border-collapse-double-border` mismatch
+classifier boundary remains uncredited. B8 is explicitly scoped to its static
+command, paint-phase, and focused scale-provider receipt. Headed, complete
+writing-mode, multi-way-allocation, and complete WPT maps are still
+unmeasured B9 inputs. B9 is not started. The lane closes K4 and stops before
+K5 implementation.
 
 **Architectural authority:** [Buckram CSS layout engine
 plan](2026-07-26_buckram_css_layout_engine_plan.md)
@@ -635,6 +638,42 @@ tiebreak. The WPT renderer still fixes its HiDPI scale at 1, so scale 2 needs
 a separate renderer scale-provider seam. No scale-2, headed, full
 writing-mode, multi-way-allocation, or complete-map claim is made here; B9
 remains unopened.
+
+### B8c renderer scale-provider receipt (2026-08-09)
+
+`ports/genet-wpt` now carries a `RenderViewport`: CSS layout retains the WPT
+800 by 600 viewport while `--device-scale <n>` selects a finite positive
+physical target. The renderer sends that same scale in `ViewportDetails`,
+changes the `PaintEnvelope` viewport to physical pixels, and wraps the complete
+paint command stream in one root scale transform. This is necessary because
+the present NetRender paint consumer retains `PaintDisplayListInfo` but draws
+from the envelope's viewport and coordinates. It is a runner-local provider
+seam, not a modification of the neutral paint API or NetRender.
+
+The provider rejects zero, non-finite, and unrepresentable targets. Dump
+filenames carry an `@<scale>x` suffix, preventing a scale-2 visual receipt
+from overwriting its scale-1 counterpart; the jitter floor scales with the
+physical comparison area.
+
+`cargo test -p genet-wpt --bin genet-wpt --release --offline -j 1
+device_scale` passes both focused tests. One proves that scale 2 keeps the CSS
+viewport at 800 by 600, supplies a 1600 by 1200 target, and wraps the stream
+once; the other proves invalid scales are rejected. The current runner also
+passes `border-collapse-rowspan-cell` at its default scale 1.
+
+At `--renderer livery --device-scale 2`, each of
+`collapsed-border-paint-phase-001`, `collapsed-border-paint-phase-002`,
+`subpixel-collapsed-borders-001`, `out-of-order-elements-collapsed-border`,
+and `border-collapse-rowspan-cell` passes. The scale-2 dump of the latter
+produces equal 1600 by 1200 test and reference PNGs with `diff=0%` and
+`maxdelta=0`. `border-collapse-double-border` still reports `mismatch-eq`, the
+same runner classifier boundary as B8b, so it is not counted as a pass or a
+paint regression.
+
+This explicitly scopes B8 to static collapsed-border geometry and focused
+scale-provider evidence. It does not claim headed behavior, complete
+writing-mode or multi-way allocation coverage, or complete WPT conformance;
+those remain B9 acceptance inputs alongside its dynamic mutation receipt.
 
 ## B9. Dynamic collapsed-border closure
 
