@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-10
 
-**Status:** Planned. Starts only after the K5a containing-block receipt is
-green and committed.
+**Status:** In progress. K5a is committed; this gate now has the Buckram
+record and output hooks, but not yet the owned out-of-flow static-placement
+pass.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5b. **Prerequisite:** [K5a containing-block graph](2026-08-10_buckram_k5a_containing_blocks_execution_plan.md).
@@ -59,6 +60,19 @@ paint.
 - No source cache or post-Taffy query is used to reconstruct static positions.
 - Paint, hit test, and accessibility continue to read ordinary fragments;
   K5d will turn this record into final positioned fragment geometry.
+
+## Current implementation boundary
+
+The first K5b patch establishes `StaticPosition` and
+`StaticPositionSource` in Buckram, and records the selected K5a containing
+block beside the formatting fragment that emitted an absolute or fixed box.
+Block, inline, atomic-inline, and table structural emission paths all use the
+same record API.
+
+Those hooks presently observe the current completed algorithm tree. They do
+not yet replace its out-of-flow placement with an owned static-position pass,
+so K5b remains open: its final receipt requires the source rectangle to be
+emitted before any backend absolute/fixed result can influence it.
 
 ## Stop rules
 

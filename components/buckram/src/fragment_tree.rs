@@ -2,7 +2,9 @@
 
 use std::{collections::HashMap, hash::Hash, ops::Deref};
 
-use crate::{BoxId, CssBoxTree, FlowAxes, LogicalRect, PhysicalRect, PhysicalSize};
+use crate::{
+    BoxId, ContainingBlock, CssBoxTree, FlowAxes, LogicalRect, PhysicalRect, PhysicalSize,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FragmentId(u32);
@@ -11,6 +13,30 @@ impl FragmentId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+}
+
+/// The formatting-coordinate source that produced an out-of-flow box's
+/// static-position rectangle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StaticPositionSource {
+    /// The box was generated at the initial formatting root.
+    InitialContainingBlock,
+    /// One emitted fragment supplied the local formatting coordinates.
+    Fragment(FragmentId),
+}
+
+/// A static-position rectangle captured while its source formatting context
+/// emits geometry.
+///
+/// This is deliberately separate from a final fragment: an absolute or fixed
+/// box can use a containing block other than the formatting context that
+/// supplied its static position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StaticPosition {
+    pub box_id: BoxId,
+    pub source: StaticPositionSource,
+    pub containing_block: ContainingBlock,
+    pub logical_rect: LogicalRect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -197,6 +223,7 @@ pub struct FragmentTree {
     roots: Vec<FragmentId>,
     fragments: Vec<Fragment>,
     by_box: HashMap<BoxId, Vec<FragmentId>>,
+    static_positions: HashMap<BoxId, StaticPosition>,
 }
 
 impl FragmentTree {
@@ -218,6 +245,31 @@ impl FragmentTree {
 
     pub fn fragment_ids_for_box(&self, box_id: BoxId) -> &[FragmentId] {
         self.by_box.get(&box_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The static position captured for an absolute or fixed box.
+    pub fn static_position_for_box(&self, box_id: BoxId) -> Option<&StaticPosition> {
+        self.static_positions.get(&box_id)
+    }
+
+    /// Attach the unique unfragmented static-position record for one box.
+    ///
+    /// K6 will generalize this to a one-to-many fragmentainer index. Until
+    /// then, conflicting duplicate records indicate a formatting integration
+    /// error rather than silently choosing one backend result.
+    pub fn record_static_position(&mut self, position: StaticPosition) {
+        match self.static_positions.entry(position.box_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(position);
+            },
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                assert_eq!(
+                    entry.get(),
+                    &position,
+                    "an unfragmented box produced two static-position records"
+                );
+            },
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -466,6 +518,82 @@ mod tests {
             Some(parent)
         );
         assert_eq!(fragments.roots(), &[parent]);
+    }
+
+    #[test]
+    fn static_position_keeps_its_source_separate_from_its_containing_block() {
+        let mut boxes = CssBoxTree::default();
+        let source_box = boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(1u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let containing_box = boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(2u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Relative,
+                false,
+                None,
+                ContainingBlock::Box(source_box),
+            ),
+            Some(source_box),
+            true,
+        );
+        let positioned_box = boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(3u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Absolute,
+                false,
+                None,
+                ContainingBlock::Box(containing_box),
+            ),
+            Some(source_box),
+            true,
+        );
+        let mut fragments = FragmentTree::default();
+        let source_fragment = fragments.push(
+            Fragment::from_horizontal_physical(source_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+        fragments.record_static_position(StaticPosition {
+            box_id: positioned_box,
+            source: StaticPositionSource::Fragment(source_fragment),
+            containing_block: ContainingBlock::Box(containing_box),
+            logical_rect: LogicalRect {
+                inline_start: 12.0,
+                block_start: 8.0,
+                inline_size: 0.0,
+                block_size: 0.0,
+            },
+        });
+
+        assert_eq!(
+            fragments.static_position_for_box(positioned_box),
+            Some(&StaticPosition {
+                box_id: positioned_box,
+                source: StaticPositionSource::Fragment(source_fragment),
+                containing_block: ContainingBlock::Box(containing_box),
+                logical_rect: LogicalRect {
+                    inline_start: 12.0,
+                    block_start: 8.0,
+                    inline_size: 0.0,
+                    block_size: 0.0,
+                },
+            })
+        );
     }
 
     #[test]

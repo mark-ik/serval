@@ -33,7 +33,8 @@ pub use flow::{
     PhysicalSide, PhysicalSides, PhysicalSize, WritingMode,
 };
 pub use fragment_tree::{
-    Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId, LayoutResult,
+    Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId,
+    LayoutResult, StaticPosition, StaticPositionSource,
 };
 pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,

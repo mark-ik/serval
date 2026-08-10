@@ -13,10 +13,10 @@ use buckram::{
     FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment,
     FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
     IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
-    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, TableCell,
-    TableCellInput, TableCellLayoutInput, TableCellLayoutOutput, TableCellLayoutPass,
-    TableFragmentRole, TableFragments, TableGrid, TableGridInputs, TableGridLines,
-    TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
+    StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
+    TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
+    TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
     resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -1364,7 +1364,7 @@ fn merge_atomic_subtrees<Id>(
                 y: grid_fragment.y,
             };
             let mut output = FragmentOutput { fragments };
-            commit_table_structure(emitted, origin, grid_id, &mut output);
+            commit_table_structure(emitted, origin, grid_id, boxes, &mut output);
         }
 
         // The second pass fills in ordinary descendants. Grid and cell boxes
@@ -1408,7 +1408,15 @@ fn append_atomic_fragment<Id>(
         .parent()
         .and_then(|parent_box| fragments.fragment_ids_for_box(parent_box).last().copied())
         .or(Some(root_id));
-    fragments.push(
+    let mut output = FragmentOutput { fragments };
+    record_static_position(
+        boxes,
+        box_id,
+        parent,
+        LogicalRect::from_horizontal_physical(local),
+        &mut output,
+    );
+    output.fragments.push(
         TreeFragment::from_horizontal_physical(box_id, rect)
             .with_baselines(Baselines::synthesized_from_block_end(rect.height)),
         parent,
@@ -2887,6 +2895,35 @@ struct FragmentOutput<'a> {
     fragments: &'a mut FragmentTree,
 }
 
+/// Publish a static-position rectangle at the formatting boundary that
+/// produced it. The selected absolute or fixed containing block comes from
+/// Buckram's K5a box graph; the backend never chooses it here.
+fn record_static_position<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    box_id: BoxId,
+    source_fragment: Option<FragmentId>,
+    logical_rect: LogicalRect,
+    output: &mut FragmentOutput<'_>,
+) where
+    Id: Copy + Eq + Hash,
+{
+    if !matches!(
+        boxes[box_id].positioning,
+        PositioningScheme::Absolute | PositioningScheme::Fixed
+    ) {
+        return;
+    }
+    output.fragments.record_static_position(StaticPosition {
+        box_id,
+        source: source_fragment.map_or(
+            StaticPositionSource::InitialContainingBlock,
+            StaticPositionSource::Fragment,
+        ),
+        containing_block: boxes[box_id].containing_block,
+        logical_rect,
+    });
+}
+
 fn fragment_baselines<Id, Context, Source>(
     tree: &AlgorithmTree<Style, Context, Source>,
     boxes: &GeneratedBoxTree<Id>,
@@ -3700,12 +3737,15 @@ where
 ///
 /// Rectangles are logical and the live path is horizontal LTR throughout, so
 /// inline maps to x and block to y.
-fn commit_table_structure(
+fn commit_table_structure<Id>(
     emitted: &TableFragments,
     grid_origin: Point<f32>,
     grid_fragment: FragmentId,
+    boxes: &GeneratedBoxTree<Id>,
     output: &mut FragmentOutput<'_>,
-) {
+) where
+    Id: Copy + Eq + Hash,
+{
     let mut ids: Vec<Option<FragmentId>> = vec![None; emitted.fragments().len()];
     for (index, fragment) in emitted.fragments().iter().enumerate() {
         // The walk already pushed the grid's own fragment; record it so
@@ -3738,6 +3778,7 @@ fn commit_table_structure(
             width: fragment.rect.inline_size,
             height: fragment.rect.block_size,
         };
+        record_static_position(boxes, box_id, Some(parent), fragment.rect, output);
         ids[index] = Some(output.fragments.push(
             TreeFragment::from_horizontal_physical(box_id, rect),
             Some(parent),
@@ -3790,6 +3831,18 @@ where
                     });
                     let parent = structural_parent.or(cursor.parent);
                     let flow = boxes[box_id].flow;
+                    let static_rect = flow.logical_rect(
+                        PhysicalRect {
+                            x: computed.x,
+                            y: computed.y,
+                            width: computed.width,
+                            height: computed.height,
+                        },
+                        PhysicalSize {
+                            width: cursor.containing.width,
+                            height: cursor.containing.height,
+                        },
+                    );
                     let fragment = if flow.is_horizontal() {
                         TreeFragment::from_horizontal_physical(box_id, rect)
                     } else {
@@ -3807,6 +3860,7 @@ where
                         );
                         TreeFragment::from_physical_with_logical(box_id, rect, logical_rect, flow)
                     };
+                    record_static_position(boxes, box_id, parent, static_rect, output);
                     let id = output.fragments.push(
                         fragment
                             .with_baselines(fragment_baselines(tree, boxes, node, box_id, rect)),
@@ -3815,7 +3869,7 @@ where
                     );
                     child_parent = Some(id);
                     if let Some(emitted) = tables.get(&box_id) {
-                        commit_table_structure(emitted, origin, id, output);
+                        commit_table_structure(emitted, origin, id, boxes, output);
                     }
                 }
                 legacy_origin_node(boxes, box_id)
@@ -3926,6 +3980,15 @@ where
                         width: line_fragment.width,
                         height: line_fragment.height,
                     };
+                    let flow = boxes[box_id].flow;
+                    let static_rect = flow.logical_rect(
+                        relative_line,
+                        PhysicalSize {
+                            width: cursor.containing.width,
+                            height: cursor.containing.height,
+                        },
+                    );
+                    record_static_position(boxes, box_id, parent, static_rect, output);
                     let fragment_id = output.fragments.push(
                         fragment_for_box(
                             boxes,
@@ -3947,6 +4010,15 @@ where
                     child_parent.get_or_insert(fragment_id);
                 }
             } else {
+                let flow = boxes[box_id].flow;
+                let static_rect = flow.logical_rect(
+                    relative_rect,
+                    PhysicalSize {
+                        width: cursor.containing.width,
+                        height: cursor.containing.height,
+                    },
+                );
+                record_static_position(boxes, box_id, parent, static_rect, output);
                 let fragment_id = output.fragments.push(
                     fragment_for_box(boxes, box_id, rect, relative_rect, cursor.containing)
                         .with_baselines(fragment_baselines(tree, boxes, node, box_id, rect)),
@@ -3954,7 +4026,7 @@ where
                     parent,
                 );
                 if let Some(emitted) = tables.get(&box_id) {
-                    commit_table_structure(emitted, origin, fragment_id, output);
+                    commit_table_structure(emitted, origin, fragment_id, boxes, output);
                 }
                 child_parent.get_or_insert(fragment_id);
             }
@@ -4999,6 +5071,58 @@ mod tests {
         assert!(
             ledger.skipped.is_empty() && ledger.block.skipped.is_empty(),
             "the basic table may not fall back to a backend route: {ledger:?}"
+        );
+    }
+
+    #[test]
+    fn absolute_static_position_keeps_its_formatting_source_and_k5a_containing_block() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=source><div id=positioned>item</div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#containing { position: relative; width: 200px; } #source { width: 120px; } \
+                 #positioned { position: absolute; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let by_id = |id| node_by_id(&dom, dom.document(), id).expect("node");
+        let source = layout
+            .boxes()
+            .principal_box(by_id("source"))
+            .expect("source box");
+        let containing = layout
+            .boxes()
+            .principal_box(by_id("containing"))
+            .expect("containing box");
+        let positioned = layout
+            .boxes()
+            .principal_box(by_id("positioned"))
+            .expect("positioned box");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("static-position record");
+
+        assert_eq!(
+            static_position.source,
+            StaticPositionSource::Fragment(source_fragment),
+            "the record must keep the source formatting fragment",
+        );
+        assert_eq!(
+            static_position.containing_block,
+            buckram::ContainingBlock::Box(containing),
+            "the absolute containing block comes from the K5a graph, not the source parent",
         );
     }
 
