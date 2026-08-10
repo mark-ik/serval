@@ -1588,6 +1588,12 @@ starts.
   rules to box-level relationships.
 - Retain separate absolute and fixed chains and the initial containing block.
 - Represent every implemented containing-block-establishing trigger explicitly.
+- **Receipt (2026-08-10):** Buckram now resolves the normal-flow, absolute,
+  and fixed chains during box-tree materialization. Livery lowers non-static
+  `position`, `transform`, and implemented layout/paint containment triggers;
+  the table root transfers its trigger to the existing wrapper. This is a
+  structural receipt only: K5a does not place a positioned box. See
+  `2026-08-10_buckram_k5a_containing_blocks_execution_plan.md`.
   An unimplemented trigger remains a named capability gap rather than being
   treated as an ordinary positioned ancestor.
 - Carry physical and logical inset values, margins, sizing constraints,

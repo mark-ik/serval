@@ -188,14 +188,39 @@ impl PositioningScheme {
 pub enum ContainingBlock {
     Initial,
     Box(BoxId),
-    Pending(ContainingBlockRule),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainingBlockRule {
-    NormalFlow,
-    AbsolutePositioned,
-    FixedPositioned,
+/// The containing-block triggers a generated box exposes to its descendants.
+///
+/// `absolute` and `fixed` are deliberately separate. A positioned box is an
+/// absolute containing block, but it does not by itself capture fixed
+/// descendants. Transforms and the implemented containment triggers capture
+/// both chains.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ContainingBlockEstablishment {
+    pub absolute: bool,
+    pub fixed: bool,
+}
+
+impl ContainingBlockEstablishment {
+    pub const NONE: Self = Self {
+        absolute: false,
+        fixed: false,
+    };
+
+    pub const fn positioned() -> Self {
+        Self {
+            absolute: true,
+            fixed: false,
+        }
+    }
+
+    pub const fn fixed_and_absolute() -> Self {
+        Self {
+            absolute: true,
+            fixed: true,
+        }
+    }
 }
 
 /// One generated CSS box.
@@ -209,6 +234,7 @@ pub struct CssBox<Id> {
     pub float_context: FloatContextProvenance,
     pub replaced: bool,
     pub formatting_context: Option<FormattingContextKind>,
+    pub containing_block_establishment: ContainingBlockEstablishment,
     pub containing_block: ContainingBlock,
     parent: Option<BoxId>,
     children: Vec<BoxId>,
@@ -233,6 +259,7 @@ impl<Id> CssBox<Id> {
             float_context: FloatContextProvenance::Block,
             replaced,
             formatting_context,
+            containing_block_establishment: ContainingBlockEstablishment::NONE,
             containing_block,
             parent: None,
             children: Vec::new(),
@@ -246,6 +273,14 @@ impl<Id> CssBox<Id> {
 
     pub fn with_float_context(mut self, float_context: FloatContextProvenance) -> Self {
         self.float_context = float_context;
+        self
+    }
+
+    pub fn with_containing_block_establishment(
+        mut self,
+        containing_block_establishment: ContainingBlockEstablishment,
+    ) -> Self {
+        self.containing_block_establishment = containing_block_establishment;
         self
     }
 
@@ -277,6 +312,7 @@ pub struct BoxTreeInput<Id> {
     pub display: DisplayRole,
     pub flow: FlowAxes,
     pub positioning: PositioningScheme,
+    pub containing_block_establishment: ContainingBlockEstablishment,
     pub float: FloatSide,
     pub replaced: bool,
     pub collapsible_whitespace: bool,
@@ -297,6 +333,13 @@ impl<Id> BoxTreeInput<Id> {
             display,
             flow,
             positioning,
+            containing_block_establishment: match positioning {
+                PositioningScheme::Static => ContainingBlockEstablishment::NONE,
+                PositioningScheme::Relative
+                | PositioningScheme::Absolute
+                | PositioningScheme::Fixed
+                | PositioningScheme::Sticky => ContainingBlockEstablishment::positioned(),
+            },
             float: FloatSide::None,
             replaced,
             collapsible_whitespace: false,
@@ -309,12 +352,21 @@ impl<Id> BoxTreeInput<Id> {
         self
     }
 
+    pub fn with_containing_block_establishment(
+        mut self,
+        containing_block_establishment: ContainingBlockEstablishment,
+    ) -> Self {
+        self.containing_block_establishment = containing_block_establishment;
+        self
+    }
+
     pub fn text(origin: BoxOrigin<Id>, flow: FlowAxes, collapsible_whitespace: bool) -> Self {
         Self {
             origin,
             display: DisplayRole::INLINE_FLOW,
             flow,
             positioning: PositioningScheme::Static,
+            containing_block_establishment: ContainingBlockEstablishment::NONE,
             float: FloatSide::None,
             replaced: false,
             collapsible_whitespace,
@@ -329,6 +381,7 @@ struct ProtoBox<Id> {
     display: DisplayRole,
     flow: FlowAxes,
     positioning: PositioningScheme,
+    containing_block_establishment: ContainingBlockEstablishment,
     float: FloatSide,
     float_context: FloatContextProvenance,
     replaced: bool,
@@ -355,6 +408,7 @@ impl<Id: Copy> ProtoBox<Id> {
             ),
             flow: input.flow,
             positioning: input.positioning,
+            containing_block_establishment: input.containing_block_establishment,
             float: input.float,
             float_context,
             replaced: input.replaced,
@@ -410,7 +464,7 @@ where
         .collect::<Vec<_>>();
     let mut tree = CssBoxTree::default();
     for root in normalized {
-        materialize(&mut tree, root, None);
+        materialize(&mut tree, root, None, ContainingBlockState::INITIAL);
     }
     tree
 }
@@ -927,6 +981,7 @@ where
         display: DisplayRole::INLINE_FLOW,
         flow,
         positioning: PositioningScheme::Static,
+        containing_block_establishment: ContainingBlockEstablishment::NONE,
         float: FloatSide::None,
         float_context: FloatContextProvenance::Block,
         replaced: false,
@@ -951,6 +1006,7 @@ where
         display: DisplayRole::BLOCK_FLOW,
         flow,
         positioning: PositioningScheme::Static,
+        containing_block_establishment: ContainingBlockEstablishment::NONE,
         float: FloatSide::None,
         float_context: FloatContextProvenance::Block,
         replaced: false,
@@ -982,6 +1038,7 @@ where
         },
         flow,
         positioning: PositioningScheme::Static,
+        containing_block_establishment: ContainingBlockEstablishment::NONE,
         float: FloatSide::None,
         float_context: FloatContextProvenance::Block,
         replaced: false,
@@ -1013,6 +1070,10 @@ where
         }
     });
     let positioning = std::mem::replace(&mut grid.positioning, PositioningScheme::Static);
+    let containing_block_establishment = std::mem::replace(
+        &mut grid.containing_block_establishment,
+        ContainingBlockEstablishment::NONE,
+    );
     let float = std::mem::replace(&mut grid.float, FloatSide::None);
     let float_context = grid.float_context;
     grid.float_context = FloatContextProvenance::Block;
@@ -1035,6 +1096,7 @@ where
             .map(|grid| grid.flow)
             .unwrap_or(FlowAxes::HORIZONTAL_LTR),
         positioning,
+        containing_block_establishment,
         float,
         float_context,
         replaced: false,
@@ -1045,7 +1107,49 @@ where
     }
 }
 
-fn materialize<Id>(tree: &mut CssBoxTree<Id>, proto: ProtoBox<Id>, parent: Option<BoxId>) -> BoxId
+#[derive(Clone, Copy)]
+struct ContainingBlockState {
+    normal_flow: Option<BoxId>,
+    absolute: Option<BoxId>,
+    fixed: Option<BoxId>,
+}
+
+impl ContainingBlockState {
+    const INITIAL: Self = Self {
+        normal_flow: None,
+        absolute: None,
+        fixed: None,
+    };
+
+    fn for_position(self, positioning: PositioningScheme) -> ContainingBlock {
+        let containing = match positioning {
+            PositioningScheme::Static | PositioningScheme::Relative | PositioningScheme::Sticky => {
+                self.normal_flow
+            },
+            PositioningScheme::Absolute => self.absolute,
+            PositioningScheme::Fixed => self.fixed,
+        };
+        containing.map_or(ContainingBlock::Initial, ContainingBlock::Box)
+    }
+
+    fn for_children(mut self, box_id: BoxId, establishment: ContainingBlockEstablishment) -> Self {
+        self.normal_flow = Some(box_id);
+        if establishment.absolute {
+            self.absolute = Some(box_id);
+        }
+        if establishment.fixed {
+            self.fixed = Some(box_id);
+        }
+        self
+    }
+}
+
+fn materialize<Id>(
+    tree: &mut CssBoxTree<Id>,
+    proto: ProtoBox<Id>,
+    parent: Option<BoxId>,
+    containing_blocks: ContainingBlockState,
+) -> BoxId
 where
     Id: Copy + Eq + Hash,
 {
@@ -1058,21 +1162,18 @@ where
             proto.positioning,
             proto.replaced,
             proto.formatting_context,
-            parent.map_or(ContainingBlock::Initial, |_| {
-                ContainingBlock::Pending(match proto.positioning {
-                    PositioningScheme::Absolute => ContainingBlockRule::AbsolutePositioned,
-                    PositioningScheme::Fixed => ContainingBlockRule::FixedPositioned,
-                    _ => ContainingBlockRule::NormalFlow,
-                })
-            }),
+            containing_blocks.for_position(proto.positioning),
         )
+        .with_containing_block_establishment(proto.containing_block_establishment)
         .with_float_context(proto.float_context)
         .with_float(proto.float),
         parent,
         proto.principal,
     );
+    let child_containing_blocks =
+        containing_blocks.for_children(id, proto.containing_block_establishment);
     for child in children {
-        materialize(tree, child, Some(id));
+        materialize(tree, child, Some(id), child_containing_blocks);
     }
     id
 }
@@ -1862,5 +1963,133 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn resolves_normal_absolute_and_fixed_containing_block_chains() {
+        let absolute = BoxTreeInput::new(
+            BoxOrigin::Element(3),
+            DisplayRole::BLOCK_FLOW,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Absolute,
+            false,
+            Vec::new(),
+        );
+        let fixed = BoxTreeInput::new(
+            BoxOrigin::Element(4),
+            DisplayRole::BLOCK_FLOW,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Fixed,
+            false,
+            Vec::new(),
+        );
+        let tree = generate_box_tree([BoxTreeInput::new(
+            BoxOrigin::Element(1),
+            DisplayRole::BLOCK_FLOW,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Relative,
+            false,
+            vec![input(
+                BoxOrigin::Element(2),
+                DisplayRole::BLOCK_FLOW,
+                vec![absolute, fixed],
+            )],
+        )]);
+
+        let positioned = tree.principal_box(1).expect("positioned ancestor");
+        let wrapper = tree.principal_box(2).expect("normal-flow wrapper");
+        let absolute = tree.principal_box(3).expect("absolute descendant");
+        let fixed = tree.principal_box(4).expect("fixed descendant");
+
+        assert_eq!(
+            tree[wrapper].containing_block,
+            ContainingBlock::Box(positioned)
+        );
+        assert_eq!(
+            tree[absolute].containing_block,
+            ContainingBlock::Box(positioned)
+        );
+        assert_eq!(tree[fixed].containing_block, ContainingBlock::Initial);
+    }
+
+    #[test]
+    fn transform_like_trigger_captures_absolute_and_fixed_descendants() {
+        let absolute = BoxTreeInput::new(
+            BoxOrigin::Element(2),
+            DisplayRole::BLOCK_FLOW,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Absolute,
+            false,
+            Vec::new(),
+        );
+        let fixed = BoxTreeInput::new(
+            BoxOrigin::Element(3),
+            DisplayRole::BLOCK_FLOW,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Fixed,
+            false,
+            Vec::new(),
+        );
+        let transformed = input(
+            BoxOrigin::Element(1),
+            DisplayRole::BLOCK_FLOW,
+            vec![absolute, fixed],
+        )
+        .with_containing_block_establishment(ContainingBlockEstablishment::fixed_and_absolute());
+        let tree = generate_box_tree([transformed]);
+
+        let transformed = tree.principal_box(1).expect("transform root");
+        assert_eq!(
+            tree[tree.principal_box(2).expect("absolute descendant")].containing_block,
+            ContainingBlock::Box(transformed)
+        );
+        assert_eq!(
+            tree[tree.principal_box(3).expect("fixed descendant")].containing_block,
+            ContainingBlock::Box(transformed)
+        );
+    }
+
+    #[test]
+    fn positioned_table_context_moves_to_the_wrapper_before_internal_resolution() {
+        let table = DisplayRole {
+            generation: BoxGeneration::Normal,
+            outside: Some(DisplayOutside::Block),
+            inside: Some(DisplayInside::Table),
+            list_item: false,
+            internal_table: None,
+        };
+        let cell = DisplayRole {
+            generation: BoxGeneration::Normal,
+            outside: None,
+            inside: None,
+            list_item: false,
+            internal_table: Some(InternalTableRole::Cell),
+        };
+        let positioned_cell = BoxTreeInput::new(
+            BoxOrigin::Element(2),
+            cell,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Absolute,
+            false,
+            Vec::new(),
+        );
+        let tree = generate_box_tree([BoxTreeInput::new(
+            BoxOrigin::Element(1),
+            table,
+            FlowAxes::HORIZONTAL_LTR,
+            PositioningScheme::Relative,
+            false,
+            vec![positioned_cell],
+        )]);
+
+        let grid = tree.principal_box(1).expect("table grid");
+        let wrapper = tree[grid].parent().expect("table wrapper");
+        let positioned_cell = tree.principal_box(2).expect("positioned cell");
+
+        assert!(tree[wrapper].containing_block_establishment.absolute);
+        assert_eq!(
+            tree[positioned_cell].containing_block,
+            ContainingBlock::Box(wrapper)
+        );
     }
 }

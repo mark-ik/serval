@@ -24,7 +24,7 @@ pub use block::{
 };
 pub use box_tree::{
     AnonymousBoxKind, BoxGeneration, BoxId, BoxOrigin, BoxTreeInput, ContainingBlock,
-    ContainingBlockRule, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
+    ContainingBlockEstablishment, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
     FloatContextProvenance, FormattingContextKind, InternalTableRole, PositioningScheme,
     PseudoElement, generate_box_tree,
 };

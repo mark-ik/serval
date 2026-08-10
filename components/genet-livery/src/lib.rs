@@ -27,7 +27,7 @@ mod text;
 
 pub use buckram::{
     AnonymousBoxKind, Baselines, BoxGeneration, BoxId, BoxOrigin, BreakToken, ContainingBlock,
-    ContainingBlockRule, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
+    ContainingBlockEstablishment, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
     FormattingContextKind, Fragment, FragmentId, FragmentTree, FragmentationContextId,
     InternalTableRole, LayoutResult, LogicalRect, PhysicalRect, PositioningScheme, PseudoElement,
 };
