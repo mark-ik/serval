@@ -33,7 +33,8 @@ use cambium::{
     focusable, on_pointer, on_wheel, text,
 };
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, read_frame, run,
+    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommands,
+    read_frame, run,
 };
 use genet_probe::{
     Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario,
@@ -43,6 +44,8 @@ use genet_probe::{
 
 #[derive(Default)]
 struct Smoke {
+    /// The window-verb seam. One field, not four bools.
+    window: WindowCommands,
     clicks: usize,
     /// 0..=1, driven by dragging the rail.
     level: f32,
@@ -61,12 +64,48 @@ impl Smoke {
 type Child = Box<dyn AnyView<Smoke, (), GenetCtx, GenetElement>>;
 type Logic = fn(&Smoke) -> Child;
 
+/// The client-side title bar.
+///
+/// The whole bar is `--app-region: drag` (see the sheet), so pressing it moves
+/// the window, double-clicking it maximizes, and right-clicking raises the
+/// system menu — none of which this file implements. The caption buttons
+/// declare `--app-region: no-drag` to carve themselves out, and each carries a
+/// role and an accessible name, because a hand-drawn frame is invisible to a
+/// screen reader unless the application says otherwise.
+fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -> Child {
+    Box::new(focusable(clickable(
+        el("button", text(label))
+            .attr("class", "caption")
+            .attr("aria-label", name),
+        move |s: &mut Smoke, _| {
+            verb(&s.window);
+            s.note(format!("window {name}"));
+        },
+    )))
+}
+
+fn title_bar() -> Child {
+    Box::new(
+        el(
+            "div",
+            (
+                el("div", text("host smoke")).attr("class", "caption-title"),
+                caption("–", "Minimize", WindowCommands::minimize),
+                caption("□", "Maximize", WindowCommands::toggle_maximize),
+                caption("×", "Close", WindowCommands::close),
+            ),
+        )
+        .attr("class", "bar"),
+    )
+}
+
 fn root(state: &Smoke) -> Child {
     let filled = (state.level * 240.0).round() as i32;
     Box::new(
         el(
             "div",
             (
+                title_bar(),
                 el("div", text("cambium-genet-winit-host smoke"))
                     .attr("class", "title"),
                 focusable(clickable(
@@ -142,6 +181,10 @@ fn root(state: &Smoke) -> Child {
 // still to reach the atomic-inline path. That is a sizing gap, not a reachability
 // one — the rect the driver gets is the rect that paints.
 const SHEET: &str = "
+.bar { --app-region: drag; background: #1d2733; padding: 6px 8px; margin-bottom: 12px; }
+.caption-title { color: #9fb0c4; }
+.caption { --app-region: no-drag; width: 32px; background: #29486b; color: #f0ebdd; }
+.caption:hover { background: #3a5d85; }
 .frame { padding: 24px; font-size: 16px; background: #14181f; color: #f0ebdd; }
 .title { margin-bottom: 12px; }
 .button { padding: 8px 12px; margin-bottom: 8px; background: #29486b; color: #f0ebdd; width: 240px; }
@@ -418,12 +461,20 @@ fn main() {
         title: "host smoke".into(),
         initial_logical_size: (420.0, 320.0),
         size_env: Some(("HOST_SMOKE_WIDTH".into(), "HOST_SMOKE_HEIGHT".into())),
+        // Client-side decorations: the frame below is ours, so the OS draws
+        // none. The host supplies edge resize and its cursors.
+        decorations: false,
         ..Default::default()
     };
     run(
         options,
-        |_window| Init {
-            state: Smoke::default(),
+        // The application takes its end of the window-verb seam and keeps it
+        // in state; the caption buttons call it from ordinary handlers.
+        |_window, commands| Init {
+            state: Smoke {
+                window: commands.clone(),
+                ..Smoke::default()
+            },
             logic: root as Logic,
             sheet: SHEET.to_string(),
         },

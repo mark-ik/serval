@@ -521,6 +521,16 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
         crate::computed_query::computed_value_string(&self.styles, node, property)
     }
 
+    /// The serialized computed value of a custom property (`name` without its
+    /// leading `--`) for `node`.
+    ///
+    /// Custom properties inherit, so this reports a value an ancestor set
+    /// unless the node overrode it. A desktop host reads `--app-region` this
+    /// way to decide whether a hit landed on a window-drag surface.
+    pub fn computed_custom_property(&self, node: Id, name: &str) -> Option<String> {
+        crate::computed_query::computed_custom_property(&self.styles, node, name)
+    }
+
     /// Evaluate a CSS media query string against this session's device — the
     /// engine side of `window.matchMedia`. Returns the serialized (normalized)
     /// query and whether it currently matches. See
@@ -2849,6 +2859,58 @@ mod tests {
     /// `InlineBoxItem` in its parent's inline content. It still answers
     /// `absolute_rect` — from the plane's inline-box table, per
     /// `two_sibling_inline_block_buttons_each_get_their_own_rect`.
+    /// `--app-region` is how a desktop host learns which surfaces drag the
+    /// window. It is read off the cascade rather than an ancestor walk, so
+    /// what has to hold is: a container's declaration reaches its descendants
+    /// (a title bar drags from anywhere inside it), a descendant can override
+    /// it (a close button inside the bar does not drag), and an unrelated
+    /// subtree sees nothing.
+    #[test]
+    fn app_region_inherits_and_a_descendant_can_carve_a_hole() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let h = dom.create_element(html("html"));
+        dom.append_child(root, h);
+        let body = dom.create_element(html("body"));
+        dom.append_child(h, body);
+
+        let bar = dom.create_element(html("div"));
+        dom.set_attribute(bar, attr("class"), "bar");
+        dom.append_child(body, bar);
+        // Nested, to prove it reaches past one level.
+        let label = dom.create_element(html("span"));
+        dom.append_child(bar, label);
+        let close = dom.create_element(html("button"));
+        dom.set_attribute(close, attr("class"), "close");
+        dom.append_child(bar, close);
+
+        let content = dom.create_element(html("div"));
+        dom.append_child(body, content);
+
+        let sheet = ".bar { --app-region: drag; } .close { --app-region: no-drag; }";
+        let layout = IncrementalLayout::new(&dom, &[sheet], W, H);
+
+        assert_eq!(
+            layout.computed_custom_property(bar, "app-region").as_deref(),
+            Some("drag"),
+        );
+        assert_eq!(
+            layout.computed_custom_property(label, "app-region").as_deref(),
+            Some("drag"),
+            "a nested label must drag with the bar it sits in",
+        );
+        assert_eq!(
+            layout.computed_custom_property(close, "app-region").as_deref(),
+            Some("no-drag"),
+            "a control inside the bar must carve a hole, not drag the window",
+        );
+        assert_eq!(
+            layout.computed_custom_property(content, "app-region"),
+            None,
+            "ordinary content is not a drag surface",
+        );
+    }
+
     #[test]
     fn form_controls_get_the_inline_block_ua_display() {
         fn display_of(tag: &str, ty: Option<&str>) -> Option<String> {

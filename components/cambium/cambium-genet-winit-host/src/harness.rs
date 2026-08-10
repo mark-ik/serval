@@ -28,7 +28,9 @@ use genet_scripted_dom::NodeId;
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
 use crate::meristem_bounds::RootView;
-use crate::{Host, HostHooks, HostOptions, HostState, Init, KeyPress, Runner};
+use crate::{
+    Host, HostHooks, HostOptions, HostState, Init, KeyPress, Runner, WindowCommands,
+};
 
 /// A windowless host for deterministic tests. See the module docs.
 pub struct Harness<State: 'static, Logic, V>
@@ -72,6 +74,37 @@ where
             },
             inert_hooks(),
         )
+    }
+
+    /// Build a harness whose state receives the window-verb handle, mirroring
+    /// what [`run`](crate::run) hands `init`.
+    ///
+    /// Without this an application that stores a [`WindowCommands`] in its
+    /// state would construct its own under test, orphaned from the host's —
+    /// so every window verb it queued would vanish and the test would prove
+    /// the opposite of the truth.
+    pub fn with_commands(
+        sheet: impl Into<String>,
+        logic: Logic,
+        make_state: impl FnOnce(&WindowCommands) -> State,
+    ) -> Self {
+        let commands = WindowCommands::new();
+        let state = make_state(&commands);
+        let mut harness = Self::with_hooks(
+            Init {
+                state,
+                logic,
+                sheet: sheet.into(),
+            },
+            inert_hooks(),
+        );
+        harness.host.s.commands = commands;
+        harness
+    }
+
+    /// The host's end of the window-verb seam.
+    pub fn commands(&self) -> WindowCommands {
+        self.host.s.commands.clone()
     }
 
     /// Build a harness with the application's own hooks — the form a consumer
@@ -231,7 +264,31 @@ where
     /// Press the left button at a point, through the host's real routing.
     pub fn press_at(&mut self, x: f32, y: f32) {
         self.host.s.cursor = (x, y);
-        self.host.click();
+        // The frame-aware path, not bare `click`: a press on a title bar has
+        // to reach the same drag/maximize logic the winit host runs, or a
+        // receipt proves something the shipping build does not do.
+        self.host.press_left();
+    }
+
+    /// Press the right button at a point — the system-menu gesture.
+    pub fn right_press_at(&mut self, x: f32, y: f32) {
+        self.host.s.cursor = (x, y);
+        self.host.press_right();
+    }
+
+    /// What the window frame makes of a point: whether pressing there drags
+    /// the window.
+    pub fn app_region_at(&self, x: f32, y: f32) -> crate::AppRegion {
+        self.host.app_region_at(x, y)
+    }
+
+    /// The window verbs the host has performed, oldest first.
+    ///
+    /// A windowless harness has no window to minimize, so the verbs are
+    /// recorded rather than enacted — which is exactly what a test wants to
+    /// assert against.
+    pub fn performed(&self) -> &[crate::WindowCommand] {
+        &self.host.s.performed
     }
 
     /// Release the left button at a point.

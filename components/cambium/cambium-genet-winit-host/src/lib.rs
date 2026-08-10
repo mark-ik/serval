@@ -41,14 +41,18 @@ use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 mod capture;
+mod decorations;
 mod frame;
 mod harness;
 mod input;
 mod spatial;
 
 pub use capture::{Frame, read_frame};
+pub use decorations::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 pub use harness::{Harness, inert_hooks};
 pub use spatial::Direction;
+
+use decorations::ClickCadence;
 
 /// The bound every root view satisfies. A module rather than a trait alias so
 /// the host's signatures stay readable: `V: RootView<State>` means
@@ -252,6 +256,13 @@ where
     /// Pointer events for the host to deliver to itself once this hook
     /// returns, in order. See [`HostPointer`].
     pub pointer: &'a mut Vec<HostPointer>,
+    /// The window-verb seam, for a hook that wants to minimize/maximize/close
+    /// without routing through application state. The same handle `init`
+    /// received.
+    pub window_commands: &'a WindowCommands,
+    /// Where the window is now, for persisting across launches. `None` under
+    /// [`Harness`], which has no window.
+    pub geometry: Option<WindowGeometry>,
 }
 
 /// A per-frame hook: return `true` to keep frames coming.
@@ -301,7 +312,8 @@ pub struct Init<State, Logic> {
     pub sheet: String,
 }
 
-type InitFn<State, Logic> = Box<dyn FnOnce(&Window) -> Init<State, Logic>>;
+type InitFn<State, Logic> =
+    Box<dyn FnOnce(&Window, &WindowCommands) -> Init<State, Logic>>;
 
 /// A logical window dimension from the environment.
 fn env_size(key: &str) -> Option<f64> {
@@ -335,6 +347,15 @@ where
     pub(crate) last_hover_hit: Option<NodeId>,
     /// Last resize-edge the cursor was over (CSD), to dedup cursor sets.
     pub(crate) resize_hint: Option<winit::window::ResizeDirection>,
+    /// The application's end of the window-verb seam; the host drains it
+    /// after every dispatch.
+    pub(crate) commands: WindowCommands,
+    /// Double-click detection for the title bar, which winit does not provide.
+    pub(crate) cadence: ClickCadence,
+    /// Every window verb performed this run, for tests. Cheap (a handful of
+    /// enum values over an application's lifetime) and the only way a
+    /// windowless harness can prove the frame did what the gesture asked.
+    pub(crate) performed: Vec<WindowCommand>,
     /// Monotonic base for the CSS-transition animation clock.
     pub(crate) anim_base: std::time::Instant,
     pub(crate) a11y: Option<A11yHost>,
@@ -374,6 +395,9 @@ where
             last_focus: None,
             last_hover_hit: None,
             resize_hint: None,
+            commands: WindowCommands::new(),
+            cadence: ClickCadence::new(),
+            performed: Vec::new(),
             anim_base: std::time::Instant::now(),
             a11y: None,
             a11y_wake: Arc::new(AtomicBool::new(false)),
@@ -416,7 +440,7 @@ pub enum IdlePolicy {
 /// Run a single-root Cambium application to completion.
 pub fn run<State, Logic, V>(
     options: HostOptions,
-    init: impl FnOnce(&Window) -> Init<State, Logic> + 'static,
+    init: impl FnOnce(&Window, &WindowCommands) -> Init<State, Logic> + 'static,
     hooks: HostHooks<State, Logic, V>,
 ) -> Result<(), winit::error::EventLoopError>
 where
@@ -467,6 +491,8 @@ where
     pub(crate) fn with_ctx(&mut self, which: Hook) {
         {
             let logical_size = self.logical_size();
+            let geometry = self.geometry();
+            let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return;
@@ -480,6 +506,8 @@ where
                 close: &mut self.s.close_requested,
                 capture: &mut self.s.pending_capture,
                 pointer: &mut self.s.pending_pointer,
+                window_commands: &commands,
+                geometry,
             };
             match which {
                 Hook::AfterDispatch => (self.hooks.after_dispatch)(&mut ctx),
@@ -533,6 +561,11 @@ where
     /// host-owned IME and repaint policy.
     pub(crate) fn after_dispatch(&mut self) {
         self.with_ctx(Hook::AfterDispatch);
+        // Window verbs an application queued from a click handler. Drained
+        // here rather than inside the hook so a verb runs after the state
+        // change that asked for it, and so `Drag` still happens while the
+        // press that requested it is down.
+        self.run_window_commands();
         let Some(window) = self.s.window.as_ref() else {
             return;
         };
@@ -764,7 +797,9 @@ where
         )
         .expect("boot genet host");
         let init = self.init.take().expect("resumed once");
-        let Init { state, logic, sheet } = init(&window);
+        // The application takes its end of the window-verb seam here, stores
+        // it in its own state, and calls it from ordinary click handlers.
+        let Init { state, logic, sheet } = init(&window, &self.s.commands.clone());
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let runner = Runner::new(dom, logic, state);
         self.s.a11y = Some(A11yHost::new(self.a11y_waker()));
@@ -845,9 +880,19 @@ where
                             let _ = w.drag_resize_window(dir);
                         }
                     }
-                    None => self.click(),
+                    // Then the window frame: a press on an `--app-region: drag`
+                    // surface moves the window, and a double-click there
+                    // toggles maximize. Both still dispatch into the DOM first,
+                    // so a drag surface can also be a focus target and a
+                    // `no-drag` control inside it keeps its click.
+                    None => self.press_left(),
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => self.press_right(),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,

@@ -18,6 +18,38 @@ use stylo_traits::ToCss;
 
 use crate::style::StylePlane;
 
+/// The serialized computed value of a **custom property** (`--name`) for
+/// `node`, or `None` when the node has no computed style or the property is
+/// not set on it.
+///
+/// `name` is given without the leading `--`.
+///
+/// Unregistered custom properties inherit, so a value set on an ancestor is
+/// readable here on every descendant that did not override it. That is what
+/// lets a single declaration on a container describe a whole region, and a
+/// descendant's own declaration carve a hole in it — the containment
+/// behaviour `app-region` needs, obtained from the cascade rather than from
+/// an ancestor walk.
+pub fn computed_custom_property<NodeId: Copy + Eq + Hash>(
+    styles: &StylePlane<NodeId>,
+    node: NodeId,
+    name: &str,
+) -> Option<String> {
+    let entry = styles.get(node)?;
+    let data = entry.borrow_data()?;
+    let cv = data.styles.primary();
+    let props = cv.custom_properties();
+    let wanted = style::custom_properties::Name::from(name);
+    // Unregistered properties land in `inherited`; a registered
+    // `@property { inherits: false }` lands in the other map. Check both so a
+    // registration does not silently change what the host can see.
+    let value = props
+        .inherited
+        .get(&wanted)
+        .or_else(|| props.non_inherited.get(&wanted))?;
+    Some(value.to_css_string().trim().to_string())
+}
+
 /// Serialize the computed value of `property` (a CSS longhand name) for `node`,
 /// or `None` if the node has no computed style or the property is unsupported.
 pub fn computed_value_string<NodeId: Copy + Eq + Hash>(

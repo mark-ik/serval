@@ -46,6 +46,8 @@ where
     fn frame_hook(&mut self) -> bool {
         let animating = {
             let logical_size = self.logical_size();
+            let geometry = self.geometry();
+            let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return false;
@@ -59,6 +61,8 @@ where
                 close: &mut self.s.close_requested,
                 capture: &mut self.s.pending_capture,
                 pointer: &mut self.s.pending_pointer,
+                window_commands: &commands,
+                geometry,
             };
             (self.hooks.frame)(&mut ctx)
         };
