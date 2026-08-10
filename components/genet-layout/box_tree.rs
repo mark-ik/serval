@@ -541,6 +541,19 @@ impl<Id: Copy + Eq + Hash> BoxTree<Id> {
         true
     }
 
+    /// Whether DOM `id` establishes a box of its **own** — as opposed to having
+    /// no box at all (it flows inline), or merely being the borrowed key an
+    /// anonymous wrapper is stored under ([`BoxSource::Anonymous`]). The
+    /// predicate behind the inline-fragment readback's disjointness rule: a node
+    /// that owns a box takes its rect from the plane, everything else from
+    /// [`crate::inline_fragment`].
+    pub(crate) fn owns_box(&self, id: Id) -> bool {
+        self.node_map
+            .get(&id)
+            .and_then(|&t| self.nodes.get(idx(t)))
+            .is_some_and(|n| matches!(n.source, BoxSource::Element(e) if e == id))
+    }
+
     /// Whether the box for DOM `id` is an anonymous box (paints no box
     /// decorations of its own — see [`BoxNode::anonymous`]). Paint emission
     /// reads this to skip background / border / shadow on anonymous wrappers.
@@ -924,6 +937,26 @@ fn apply_inline_cb_fixups<Id: Copy + Eq + Hash>(
         }
         let Some((px, py, pw, ph)) = placed else {
             continue;
+        };
+        // parley placed the inline-block's MARGIN box, but the containing block
+        // for an absolutely positioned descendant is its PADDING box (CSS 2.2
+        // §10.1), so peel the margin and the border off both origin and size
+        // before the insets resolve against it. Zero rings leave this identical
+        // to the pre-box-model behaviour.
+        let edges = tree.nodes[leaf]
+            .inline_content
+            .as_ref()
+            .and_then(|c| c.boxes.get(bi))
+            .and_then(|item| item.block.as_ref())
+            .map(|block| (block.margin, block.border));
+        let (px, py, pw, ph) = match edges {
+            Some((margin, border)) => (
+                px + margin.left + border.left,
+                py + margin.top + border.top,
+                (pw - margin.inline() - border.inline()).max(0.0),
+                (ph - margin.block() - border.block()).max(0.0),
+            ),
+            None => (px, py, pw, ph),
         };
         let (Some(leaf_abs), Some(cur)) = (origins[leaf], origins[b]) else {
             continue;
@@ -2336,6 +2369,10 @@ where
     for (dom_id, taffy_id) in tree.node_map.iter() {
         fragments.insert(*dom_id, tree.nodes[idx(*taffy_id)].final_layout);
     }
+    // Inline-level elements get no Taffy box, so their rects come from the leaf
+    // layouts parley just placed (see `crate::inline_fragment`). Read them back
+    // here, alongside the box fragments, so every rect consumer sees one plane.
+    crate::inline_fragment::harvest(dom, &tree, text_ctx, &mut fragments);
     // Hoisted out-of-flow boxes: record their absolute origins so DOM-driven
     // origin accumulation (hit walk, `absolute_origin`, a11y bounds) reads the
     // box tree's truth instead of double-counting DOM ancestors' offsets. One

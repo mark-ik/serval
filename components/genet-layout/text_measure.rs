@@ -188,9 +188,45 @@ pub struct InlineBoxItem<NodeId> {
     pub custom_leaf_key: Option<u64>,
 }
 
-/// An `inline-block`'s own content and box style. Its size is measured from
-/// `content` (shrink-to-fit, clamped by any definite CSS `width`/`height`) and
-/// its content Layout cached for paint.
+/// One box-model ring in px, per side. Used for an atomic inline's padding,
+/// border, and margin, which CSS 2.2 requires it to reserve in the line.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EdgeSizes {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl EdgeSizes {
+    /// `left + right`.
+    pub fn inline(&self) -> f32 {
+        self.left + self.right
+    }
+
+    /// `top + bottom`.
+    pub fn block(&self) -> f32 {
+        self.top + self.bottom
+    }
+}
+
+/// An `inline-block`'s own content and box. Its content size is measured from
+/// `content` (shrink-to-fit, clamped by any definite CSS `width`/`height`), its
+/// content Layout cached for paint, and its box-model rings carried here so the
+/// box parley reserves in the line is the **margin box**.
+///
+/// CSS 2.2 is exact about this and it differs from the non-atomic case, so the
+/// two must not be unified: `width` is the *content* width with padding and
+/// border added on top (§10.2, §10.3.9), and an inline-block contributes its
+/// margin box to line box height (§10.6.6, §10.8). A non-replaced **inline**
+/// box, by contrast, contributes only its `line-height`, with vertical padding
+/// and margin having no effect at all (§10.6.1) — that path is already correct
+/// and is deliberately untouched.
+///
+/// Percentage padding and margin resolve against the containing block's inline
+/// size, which is not known at construction; they currently contribute zero,
+/// the same residual [`inline_block_css_size`](crate::construct::inline_block_css_size)
+/// carries for percentage `width`.
 #[derive(Clone, Debug)]
 pub struct InlineBlockBox<NodeId> {
     /// The inline-block's own inline content (text runs / nested boxes).
@@ -200,6 +236,38 @@ pub struct InlineBlockBox<NodeId> {
     pub css_height: Option<f32>,
     /// Box background color (straight RGBA), painted behind the content.
     pub background: [f32; 4],
+    /// Resolved box-model rings. `padding` and `border` sit inside the border
+    /// box paint draws; `margin` is reserved in the line but painted through.
+    pub padding: EdgeSizes,
+    pub border: EdgeSizes,
+    pub margin: EdgeSizes,
+}
+
+impl<NodeId> InlineBlockBox<NodeId> {
+    /// The border box's size, given the resolved content size: content plus
+    /// padding plus border, excluding margin. This is the rect paint fills and
+    /// the rect the fragment plane records (`getClientRects`' border box).
+    pub fn border_box(&self, content_w: f32, content_h: f32) -> (f32, f32) {
+        (
+            content_w + self.padding.inline() + self.border.inline(),
+            content_h + self.padding.block() + self.border.block(),
+        )
+    }
+
+    /// Offset from the margin box's origin (what parley places) to the border
+    /// box's origin (what paints).
+    pub fn border_box_offset(&self) -> (f32, f32) {
+        (self.margin.left, self.margin.top)
+    }
+
+    /// Offset from the margin box's origin to the content box's origin, where
+    /// the inline-block's own glyphs sit.
+    pub fn content_box_offset(&self) -> (f32, f32) {
+        (
+            self.margin.left + self.border.left + self.padding.left,
+            self.margin.top + self.border.top + self.padding.top,
+        )
+    }
 }
 
 /// The inline content of a Taffy leaf — styled text runs plus replaced
@@ -626,7 +694,14 @@ pub fn measure_inline_content<NodeId>(
 /// Reserved size of one inline box, and (for an inline-block) its shaped
 /// content `Layout`. `<img>` reports its intrinsic/CSS size; an inline-block is
 /// shrink-to-fit-measured from its content, clamped by any definite CSS
-/// `width`/`height`.
+/// `width`/`height`, and then grown by its box model.
+///
+/// The size returned is the box parley reserves in the line, which for an
+/// atomic inline-level box is its **margin** box: `width` names the content
+/// only (CSS 2.2 §10.2, §10.3.9), and line box height counts the margin box
+/// (§10.6.6, §10.8). Paint and the fragment plane recover the border and
+/// content boxes from the offsets on [`InlineBlockBox`], so one measurement
+/// serves all three and they cannot drift apart.
 fn measure_inline_box<NodeId>(
     font_ctx: &mut FontContext,
     layout_ctx: &mut LayoutContext<ColorBrush>,
@@ -648,9 +723,14 @@ fn measure_inline_box<NodeId>(
         .collect();
     let mut layout = shape_inline_layout(font_ctx, layout_ctx, &ib.content, &inner_sizes);
     break_and_align(&mut layout, ib.css_width, ib.content.align);
-    let w = ib.css_width.unwrap_or_else(|| layout.width());
-    let h = ib.css_height.unwrap_or_else(|| layout.height());
-    (w, h, Some(layout))
+    let content_w = ib.css_width.unwrap_or_else(|| layout.width());
+    let content_h = ib.css_height.unwrap_or_else(|| layout.height());
+    let (border_w, border_h) = ib.border_box(content_w, content_h);
+    (
+        border_w + ib.margin.inline(),
+        border_h + ib.margin.block(),
+        Some(layout),
+    )
 }
 
 /// Shape a leaf's inline content into its (unbroken) `Layout` plus the shaped

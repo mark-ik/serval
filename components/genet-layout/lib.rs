@@ -43,6 +43,7 @@ mod highlights;
 mod host_loader;
 mod image_decode;
 mod incremental;
+mod inline_fragment;
 mod inline_hit;
 mod invalidate;
 mod layout;
@@ -81,7 +82,7 @@ pub use cascade::{
 pub use cell::ArcRefCell;
 pub use engine_observables_api::{InteractionState, SourceNodeId};
 pub use forest::{ForestDom, WINDOW_ROOT_CLASS, WindowRootId};
-pub use fragment::FragmentPlane;
+pub use fragment::{FragmentPlane, InlineFragment};
 pub use genet_lane::{
     GenetLaneView, absolute_origin, accumulate_origins, accumulate_painted_origins,
     accumulated_translate,

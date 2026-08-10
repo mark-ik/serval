@@ -1858,11 +1858,27 @@ fn emit_inline_content<NodeId: Copy + Eq + Hash>(
                         LayoutPoint::new(ox + pbox.width, oy + pbox.height),
                     );
                     if let Some(block) = &item.block {
+                        // parley reserved the MARGIN box (an atomic inline
+                        // contributes its margin box to the line, CSS 2.2 §10.6.6);
+                        // the background fills the BORDER box inside it, and the
+                        // content sits inside border + padding. Both offsets come
+                        // off the same record the measure grew the box with, so
+                        // paint cannot drift from what was reserved.
+                        let (bx, by) = block.border_box_offset();
+                        let (cox, coy) = block.content_box_offset();
+                        let (bw, bh) = (
+                            pbox.width - block.margin.inline(),
+                            pbox.height - block.margin.block(),
+                        );
+                        let border_rect = LayoutRect::new(
+                            LayoutPoint::new(ox + bx, oy + by),
+                            LayoutPoint::new(ox + bx + bw, oy + by + bh),
+                        );
                         // Background box.
                         let [r, g, b, a] = block.background;
                         if a > 0.0 {
                             commands.push(PaintCmd::DrawRect(RectItem {
-                                placement: CommonPlacement::new(rect),
+                                placement: CommonPlacement::new(border_rect),
                                 color: ColorF::new(r, g, b, a),
                             }));
                         }
@@ -1885,8 +1901,8 @@ fn emit_inline_content<NodeId: Copy + Eq + Hash>(
                                         .map(|gl| GlyphInstance {
                                             index: gl.id,
                                             point: LayoutPoint::new(
-                                                content_offset.0 + pbox.x + gl.x,
-                                                content_offset.1 + pbox.y + gl.y,
+                                                content_offset.0 + pbox.x + cox + gl.x,
+                                                content_offset.1 + pbox.y + coy + gl.y,
                                             ),
                                         })
                                         .collect();
@@ -4435,10 +4451,18 @@ mod tests {
     }
 
     /// The payoff of the `inline-block` UA display for form controls: an authored
-    /// `width`/`height` on an `<input>` reaches layout and paint. An `inline-block`
-    /// paints its background at its used rect, so a sized, colored input must
-    /// produce a rect of exactly that size. As an `inline` element (genet's
-    /// behavior before 2026-07-09) the size was ignored and nothing painted.
+    /// `width`/`height` on an `<input>` reaches layout and paint. As an `inline`
+    /// element (genet's behavior before 2026-07-09) the size was ignored and
+    /// nothing painted.
+    ///
+    /// The painted rect is the **border box**, not the authored 200x30. `width`
+    /// names the content box under the default `box-sizing` (CSS 2.2 §10.2), and
+    /// the UA sheet gives controls `padding: 2px 6px; border: 1px solid`
+    /// (`ua_defaults.rs`), so 7px per side horizontally and 3px vertically ride on
+    /// top: 214x36. Backgrounds paint over the border box, so that is the rect to
+    /// look for. Before 2026-08-10 this asserted a flat 200x30, which only held
+    /// because the atomic-inline measure discarded the box model entirely; the
+    /// block path had always added it, so the two paths disagreed.
     #[test]
     fn a_sized_input_paints_at_its_css_size() {
         let document = StaticDocument::parse(
@@ -4470,17 +4494,22 @@ mod tests {
             &StubLeaves(Vec::new()),
         );
 
+        // Authored content box 200x30, plus the UA `padding: 2px 6px` and
+        // `border: 1px solid` on every side.
+        const BORDER_W: f32 = 200.0 + 2.0 * (6.0 + 1.0);
+        const BORDER_H: f32 = 30.0 + 2.0 * (2.0 + 1.0);
         let sized = plist.commands().iter().any(|c| {
             matches!(c, PaintCmd::DrawRect(r)
                 if (r.color.r - 0.1).abs() < 0.05
                     && (r.color.g - 0.9).abs() < 0.05
                     && (r.color.b - 0.2).abs() < 0.05
-                    && ((r.placement.bounds.max.x - r.placement.bounds.min.x) - 200.0).abs() < 0.5
-                    && ((r.placement.bounds.max.y - r.placement.bounds.min.y) - 30.0).abs() < 0.5)
+                    && ((r.placement.bounds.max.x - r.placement.bounds.min.x) - BORDER_W).abs() < 0.5
+                    && ((r.placement.bounds.max.y - r.placement.bounds.min.y) - BORDER_H).abs() < 0.5)
         });
         assert!(
             sized,
-            "the input's background should paint at its authored 200x30 size; commands: {:?}",
+            "the input's background should paint at its 214x36 border box (200x30 content \
+             plus the UA padding and border); commands: {:?}",
             plist.commands()
         );
     }

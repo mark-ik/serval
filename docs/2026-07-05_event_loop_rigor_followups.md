@@ -44,6 +44,21 @@ event-loop/task-source surface of `components/script-runtime-api/lib.rs`
    plan's atomic rendering tick (clock -> rAF -> restyle -> layout -> paint as
    one task) once it exists. Do one protocol at a time; the harness cost is
    already sunk.
+   **Fourth candidate (recorded 2026-08-10, not scheduled):** the cambium host
+   frame loop — `IdlePolicy::{Wait, Animate, A11yWake}`
+   (`components/cambium/cambium-genet-winit-host/src/lib.rs:405`),
+   `request_redraw` from five sites across three files, and capture arming
+   through a thread-local. Its distinguishing claim is **liveness**: `A11yWake`
+   asserts that an accessibility action queued while idle is *eventually*
+   drained, which a test cannot check because the failure is an infinite path
+   where nothing bad and nothing good happens. Caveat on the "cost is already
+   sunk" line above: it is sunk for `components/script-runtime-api`, whose
+   `Runtime::scheduler_trace_ndjson()` feeds `scheduler_trace_to_tla.py`. A
+   host witness needs a new tracer in another crate, so this candidate is
+   *more* expensive than the three named, not less. Trigger: a real
+   dropped-frame or stuck-reader report, or the transitions tick landing and
+   leaving the host side the remaining unmodelled half. Rationale:
+   [Layout verification ladder V1](2026-08-10_layout_verification_ladder_plan.md).
 3. **Shared rAF callback queue** — *done 2026-07-05.* The `setTimeout(cb, 0)`
    stub is replaced by a real AnimationFrameProvider realization in
    `SHELL_GLOBALS_BOOTSTRAP` (`components/script-runtime-api/lib.rs`): callback

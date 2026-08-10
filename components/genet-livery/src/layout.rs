@@ -3666,23 +3666,20 @@ fn commit_table_structure(
 ) {
     let mut ids: Vec<Option<FragmentId>> = vec![None; emitted.fragments().len()];
     for (index, fragment) in emitted.fragments().iter().enumerate() {
-        match fragment.role {
-            // The walk already pushed the grid's own fragment; record it so
-            // children can hang from it.
-            TableFragmentRole::Grid => {
-                ids[index] = Some(grid_fragment);
-                output.fragments.set_overflow(
-                    grid_fragment,
-                    LogicalRect {
-                        inline_start: grid_origin.x + fragment.overflow.inline_start,
-                        block_start: grid_origin.y + fragment.overflow.block_start,
-                        inline_size: fragment.overflow.inline_size,
-                        block_size: fragment.overflow.block_size,
-                    },
-                );
-                continue;
-            },
-            _ => {},
+        // The walk already pushed the grid's own fragment; record it so
+        // children can hang from it.
+        if fragment.role == TableFragmentRole::Grid {
+            ids[index] = Some(grid_fragment);
+            output.fragments.set_overflow(
+                grid_fragment,
+                LogicalRect {
+                    inline_start: grid_origin.x + fragment.overflow.inline_start,
+                    block_start: grid_origin.y + fragment.overflow.block_start,
+                    inline_size: fragment.overflow.inline_size,
+                    block_size: fragment.overflow.block_size,
+                },
+            );
+            continue;
         }
         // A track created implicitly by placement has no CSS box, so there is
         // no identity to attribute a fragment to.

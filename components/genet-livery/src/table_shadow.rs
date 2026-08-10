@@ -474,11 +474,10 @@ where
         }
         states
     };
-    let visibility = TableTrackVisibility {
+    TableTrackVisibility {
         rows: mask(&grid.rows, &grid.row_groups),
         columns: mask(&grid.columns, &grid.column_groups),
-    };
-    visibility
+    }
 }
 
 /// Lower the table box's own geometry into the shared sizing input.

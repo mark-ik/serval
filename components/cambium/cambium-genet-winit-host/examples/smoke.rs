@@ -130,17 +130,21 @@ fn root(state: &Smoke) -> Child {
     )
 }
 
-// `display: block` on the controls is load-bearing, not decoration. Genet's UA
-// default makes `button` / `input` `inline-block`, and inline-level boxes share
-// their line's fragment rather than getting one each — so an inline `<button>`
-// has no rect of its own, and neither `painted_rect` nor a `genet-probe`
-// selector can locate it. Any app that wants its controls reachable
-// semantically gives them a block-level display. (An engine-side fix would be
-// per-inline-box fragments; that is not this scope.)
+// The controls keep genet's UA `display: inline-block`, the standards-correct
+// display for a form control. They used to need `display: block`: an inline-level
+// box got no fragment of its own, so neither `painted_rect` nor a `genet-probe`
+// selector could locate one, and an app had to style its controls to suit the
+// driver. The engine now reads a rect back per inline box, so the scenario below
+// drives these buttons by role and label with nothing arranged for it.
+//
+// Their `padding` / `margin` do not show yet: genet measures an inline-block from
+// its content and any definite width/height, so the rest of the box model has
+// still to reach the atomic-inline path. That is a sizing gap, not a reachability
+// one — the rect the driver gets is the rect that paints.
 const SHEET: &str = "
 .frame { padding: 24px; font-size: 16px; background: #14181f; color: #f0ebdd; }
 .title { margin-bottom: 12px; }
-.button { display: block; padding: 8px 12px; margin-bottom: 8px; background: #29486b; color: #f0ebdd; width: 240px; }
+.button { padding: 8px 12px; margin-bottom: 8px; background: #29486b; color: #f0ebdd; width: 240px; }
 .button:hover { background: #3a5d85; }
 .button:focus { background: #4c76a4; }
 .rail { width: 240px; height: 20px; background: #22303f; margin-bottom: 12px; }

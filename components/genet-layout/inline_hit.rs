@@ -26,9 +26,46 @@
 
 use std::ops::Range;
 
-use parley::{Cluster, Layout};
+use parley::{Cluster, Layout, PositionedLayoutItem};
 
-use crate::text_measure::ColorBrush;
+use crate::text_measure::{ColorBrush, InlineBoxItem};
+
+/// Resolve content-local point `(x, y)` within an inline-formatting leaf to the
+/// **atomic inline** box under it — an `inline-block` (every genet form control,
+/// per the UA sheet), an inline replaced `<img>`, an inline `<custom-leaf>` —
+/// or `None` when the point misses every one of them.
+///
+/// The atomic twin of [`inline_source_at`]. An atomic inline reserves its own
+/// rectangle in the line and flows as a unit, so it is resolved by plain
+/// containment against its parley-placed box rather than by a cluster descent:
+/// it carries no glyph runs of its own in this layout (its content is a separate
+/// sublayout) and contributes no byte range to the leaf's source map, so the
+/// cluster path cannot see it at all. That is why an unstyled `<button>` used to
+/// hit as its containing block — a probe could aim at the control and the click
+/// would land on the page behind it.
+///
+/// `boxes` is the leaf's `InlineContent::boxes`, indexed by the positioned box's
+/// `id`. `(x, y)` is content-box relative, the space parley places boxes in — the
+/// same rect [`crate::paint_emit`] draws the box at and
+/// [`crate::inline_fragment`] records, so hit, paint, and rect queries mirror.
+pub(crate) fn inline_box_at<NodeId: Copy>(
+    layout: &Layout<ColorBrush>,
+    boxes: &[InlineBoxItem<NodeId>],
+    x: f32,
+    y: f32,
+) -> Option<NodeId> {
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::InlineBox(pbox) = item else {
+                continue;
+            };
+            if x >= pbox.x && x < pbox.x + pbox.width && y >= pbox.y && y < pbox.y + pbox.height {
+                return boxes.get(pbox.id as usize).map(|b| b.source);
+            }
+        }
+    }
+    None
+}
 
 /// Resolve content-local point `(x, y)` within an inline-formatting leaf to the
 /// source element of the glyph **cluster** it lands on, or `None` when it lands in

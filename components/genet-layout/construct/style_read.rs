@@ -110,6 +110,92 @@ pub(crate) fn inline_block_css_size<NodeId: Copy + Eq + Hash>(
     (definite_px(&pos.width), definite_px(&pos.height))
 }
 
+/// An inline-block's cascaded box-model rings as `(padding, border, margin)` in
+/// px. An atomic inline-level box reserves its **margin** box in the line (CSS
+/// 2.2 §10.6.6, §10.8), and `width` names only its content (§10.2, §10.3.9), so
+/// these rings are what turn a content measurement into the box parley places.
+///
+/// Definite lengths only. Percentage padding and margin resolve against the
+/// containing block's inline size, which construction does not have; they read
+/// as zero here, the same residual [`inline_block_css_size`] carries for a
+/// percentage `width`. `auto` margins compute to zero on an atomic inline (there
+/// is no free inline space to distribute, so no centring). A side whose
+/// `border-style` is `none` or `hidden` contributes no border width whatever the
+/// specified width (CSS 2.1 §8.5.1), matching `stylo_taffy::convert::border` and
+/// the paint path's own clamp.
+pub(crate) fn inline_block_box_edges<NodeId: Copy + Eq + Hash>(
+    styles: &StylePlane<NodeId>,
+    id: NodeId,
+) -> (EdgeSizes, EdgeSizes, EdgeSizes) {
+    let zero = (
+        EdgeSizes::default(),
+        EdgeSizes::default(),
+        EdgeSizes::default(),
+    );
+    let Some(entry) = styles.get(id) else {
+        return zero;
+    };
+    let Some(data) = entry.borrow_data() else {
+        return zero;
+    };
+    let cv = data.styles.primary();
+
+    let p = cv.get_padding();
+    let padding = EdgeSizes {
+        top: definite_lp_px(&p.padding_top.0),
+        right: definite_lp_px(&p.padding_right.0),
+        bottom: definite_lp_px(&p.padding_bottom.0),
+        left: definite_lp_px(&p.padding_left.0),
+    };
+
+    let b = cv.get_border();
+    let border = EdgeSizes {
+        top: border_side_px(&b.border_top_width, b.border_top_style),
+        right: border_side_px(&b.border_right_width, b.border_right_style),
+        bottom: border_side_px(&b.border_bottom_width, b.border_bottom_style),
+        left: border_side_px(&b.border_left_width, b.border_left_style),
+    };
+
+    let m = cv.get_margin();
+    let margin = EdgeSizes {
+        top: definite_margin_px(&m.margin_top),
+        right: definite_margin_px(&m.margin_right),
+        bottom: definite_margin_px(&m.margin_bottom),
+        left: definite_margin_px(&m.margin_left),
+    };
+
+    (padding, border, margin)
+}
+
+/// A computed `LengthPercentage` as px, with percentages (no containing-block
+/// basis here) and calc reading as zero.
+fn definite_lp_px(lp: &style::values::computed::LengthPercentage) -> f32 {
+    lp.to_length().map(|l| l.px()).unwrap_or(0.0)
+}
+
+/// A computed margin as px; `auto` and percentages read as zero (see
+/// [`inline_block_box_edges`]). The catch-all covers `auto` and the
+/// anchor-positioning variants, which are flagged off.
+fn definite_margin_px(m: &style::values::computed::Margin) -> f32 {
+    use style::values::generics::length::GenericMargin as Gm;
+    match m {
+        Gm::LengthPercentage(lp) => definite_lp_px(lp),
+        _ => 0.0,
+    }
+}
+
+/// One border side's used width: zero when the side's style is `none` or
+/// `hidden`, whatever width was specified (CSS 2.1 §8.5.1).
+fn border_side_px(
+    width: &style::values::computed::BorderSideWidth,
+    border_style: style::values::computed::BorderStyle,
+) -> f32 {
+    if border_style.none_or_hidden() {
+        return 0.0;
+    }
+    width.0.to_f32_px()
+}
+
 /// An inline-block's cascaded `background-color` as straight RGBA, resolving
 /// `currentColor` against its own `color`. Transparent when no cascade data.
 pub(crate) fn inline_block_bg_of<NodeId: Copy + Eq + Hash>(

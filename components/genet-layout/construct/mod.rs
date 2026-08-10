@@ -29,8 +29,8 @@ use crate::box_tree::PseudoKind;
 use crate::image_decode::ImagePlane;
 use crate::style::StylePlane;
 use crate::text_measure::{
-    FontFamilySpec, GenericFamilyKind, InlineBlockBox, InlineBoxItem, InlineContent, InlineRun,
-    InlineTextAlign, LineHeightSpec,
+    EdgeSizes, FontFamilySpec, GenericFamilyKind, InlineBlockBox, InlineBoxItem, InlineContent,
+    InlineRun, InlineTextAlign, LineHeightSpec,
 };
 
 /// Default font size used for runs whose element has no cascaded

@@ -19,9 +19,10 @@ use inker::{Engine, EngineDocument, EngineInput};
 use netrender::Scene;
 
 /// How an engine-native smolweb document is colored.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SmolwebTheme {
     /// A stable palette derived from the capsule host.
+    #[default]
     Site,
     /// A neutral light palette.
     Plain,
@@ -33,12 +34,6 @@ pub enum SmolwebTheme {
     App(SmolwebPalette),
     /// Host-resolved system theme. Light is the fallback.
     System,
-}
-
-impl Default for SmolwebTheme {
-    fn default() -> Self {
-        Self::Site
-    }
 }
 
 /// Compatibility palette used by current Pelt and Mere hosts.

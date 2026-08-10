@@ -168,10 +168,10 @@ fn file_url_to_path(after_scheme: &str) -> String {
         _ => after_scheme.to_string(),
     };
     #[cfg(windows)]
-    if let Some(rest) = path.strip_prefix('/') {
-        if rest.as_bytes().get(1) == Some(&b':') {
-            return rest.to_string();
-        }
+    if let Some(rest) = path.strip_prefix('/')
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return rest.to_string();
     }
     path
 }
@@ -197,8 +197,8 @@ pub struct LoadedDocument {
     resources: ResourceCache,
     /// The retained cascade + layout session, owner of the document viewport (size
     /// + propagated overflow + scroll). Built lazily at the first render size and
-    /// rebuilt on a resize (which re-resolves `%`-height and viewport units);
-    /// `None` before the first frame.
+    ///   rebuilt on a resize (which re-resolves `%`-height and viewport units);
+    ///   `None` before the first frame.
     session: Option<IncrementalLayout<StaticNodeId>>,
     /// The size `session` was laid out at, to detect a resize.
     size: (u32, u32),
@@ -370,10 +370,10 @@ impl LoadedDocument {
         self.ensure_session(width, height);
         // One-shot anchor-fragment scroll: now that the session / layout exists, bring
         // a `url#id` target into view so the document opens scrolled to it.
-        if let Some(fragment) = self.pending_fragment.take() {
-            if let Some(session) = self.session.as_mut() {
-                session.scroll_to_id(&self.doc, &fragment);
-            }
+        if let Some(fragment) = self.pending_fragment.take()
+            && let Some(session) = self.session.as_mut()
+        {
+            session.scroll_to_id(&self.doc, &fragment);
         }
         let session = self
             .session

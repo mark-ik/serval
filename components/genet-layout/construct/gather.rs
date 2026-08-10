@@ -360,6 +360,7 @@ pub(crate) fn gather_child<'a, D>(
                 // fragment; resolving links *inside* an inline-block is a follow-on.)
                 let (content, _inner_sources) = gather_inline_content(dom, styles, images, child);
                 let (css_width, css_height) = inline_block_css_size(styles, child.id());
+                let (padding, border, margin) = inline_block_box_edges(styles, child.id());
                 boxes.push(InlineBoxItem {
                     index: *offset,
                     width: 0.0,
@@ -370,6 +371,9 @@ pub(crate) fn gather_child<'a, D>(
                         css_width,
                         css_height,
                         background: inline_block_bg_of(styles, child.id()),
+                        padding,
+                        border,
+                        margin,
                     })),
                     // An inline-block is not replaced, so it never carries a leaf key;
                     // a `<custom-leaf>` nested inside it is gathered into its own

@@ -926,16 +926,18 @@ impl TextSystem {
                         let vertical_shift = if inline_box.edge {
                             0.0
                         } else {
-                            let baseline_shift = (inline_box.exported_baseline
+                            let baseline_shift = if inline_box.exported_baseline
                                 && matches!(
                                     inline_box.vertical_align,
                                     VerticalAlign::Baseline
                                         | VerticalAlign::Sub
                                         | VerticalAlign::Super
                                         | VerticalAlign::Length(_)
-                                ))
-                            .then_some(metrics.baseline - (base_y + inline_box.baseline))
-                            .unwrap_or(0.0);
+                                ) {
+                                metrics.baseline - (base_y + inline_box.baseline)
+                            } else {
+                                0.0
+                            };
                             baseline_shift
                                 + vertical_align_shift(
                                     inline_box.vertical_align,

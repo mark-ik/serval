@@ -199,19 +199,16 @@ where
                     if let Some(text) = dom.text(child) {
                         out.push_str(text);
                     }
-                }
+                },
                 NodeKind::Element => {
                     let is_control = dom.element_name(child).is_some_and(|q| {
-                        matches!(
-                            q.local.as_ref(),
-                            "input" | "textarea" | "select" | "button"
-                        )
+                        matches!(q.local.as_ref(), "input" | "textarea" | "select" | "button")
                     });
                     if !is_control {
                         collect(dom, child, out);
                     }
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     }
@@ -357,14 +354,27 @@ where
         // counts exactly like a `<button>` that got `Click` from its role.
     }
 
-    if let (Some(&(x0, y0)), Some(layout)) = (origins.get(&node), fragments.rect_of(node)) {
+    // Bounds. An inline-level element (the UA sheet makes every form control
+    // `inline-block`) establishes no Taffy box, so it takes its rect from the
+    // plane's inline-box table — an offset from its formatting leaf's origin,
+    // which `origins` already holds. Without it a screen reader's virtual cursor
+    // had nothing to land on for an unstyled `<button>`, and where an anonymous
+    // wrapper borrowed the control's key for its own entry the announced bounds
+    // were the whole line box. See `crate::inline_fragment`.
+    let bounds = match fragments.inline_box_of(node) {
+        Some(f) => origins
+            .get(&f.leaf)
+            .map(|&(lx, ly)| (lx + f.x, ly + f.y, f.width, f.height)),
+        None => match (origins.get(&node), fragments.rect_of(node)) {
+            (Some(&(x0, y0)), Some(layout)) => {
+                Some((x0, y0, layout.size.width, layout.size.height))
+            },
+            _ => None,
+        },
+    };
+    if let Some((x0, y0, w, h)) = bounds {
         let (x0, y0) = (x0 as f64, y0 as f64);
-        access.set_bounds(Rect::new(
-            x0,
-            y0,
-            x0 + layout.size.width as f64,
-            y0 + layout.size.height as f64,
-        ));
+        access.set_bounds(Rect::new(x0, y0, x0 + w as f64, y0 + h as f64));
     }
 
     // Entering a `<label>` names everything it wraps; otherwise the context
@@ -373,7 +383,11 @@ where
     let is_label = dom
         .element_name(node)
         .is_some_and(|q| q.local.as_ref() == "label");
-    let own_text = if is_label { label_text(dom, node) } else { String::new() };
+    let own_text = if is_label {
+        label_text(dom, node)
+    } else {
+        String::new()
+    };
     let child_label: Option<&str> = if is_label && !own_text.is_empty() {
         Some(own_text.as_str())
     } else {
@@ -825,6 +839,81 @@ mod tests {
                 .iter()
                 .all(|(id, _)| *id != access_id(&dom, plus)),
             "text nodes are folded into element labels"
+        );
+    }
+
+    /// A screen reader's virtual cursor needs a box to land on, and an
+    /// **inline-level** control — which, per the UA sheet, is every unstyled
+    /// `<button>` and `<input>` — establishes no Taffy box. Its bounds come from
+    /// the plane's inline-box table instead (`crate::inline_fragment`).
+    ///
+    /// Before that table the two buttons here announced badly in different ways:
+    /// the second had no bounds at all, and the first inherited the whole line box
+    /// — the anonymous wrapper's rect, which the plane keys under its borrowed
+    /// first member. A reader would have reported one full-width control where
+    /// there are two side by side.
+    ///
+    /// Note this fixture does NOT use the module's block-display sheet: the point
+    /// is that a control reachable to a reader no longer has to be styled for it.
+    #[test]
+    fn inline_level_controls_announce_their_own_bounds() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let div = dom.create_element(html("div"));
+        dom.append_child(root, div);
+        // A block sibling ahead of the buttons is what makes the box tree wrap
+        // the button run in an anonymous block box.
+        let title = dom.create_element(html("p"));
+        let title_text = dom.create_text("Controls");
+        dom.append_child(title, title_text);
+        dom.append_child(div, title);
+        let mut buttons = Vec::new();
+        for label in ["Alpha", "Bravo"] {
+            let b = dom.create_element(html("button"));
+            let t = dom.create_text(label);
+            dom.append_child(b, t);
+            dom.append_child(div, b);
+            buttons.push(b);
+        }
+
+        let mut styles = StylePlane::new();
+        run_cascade(
+            &dom,
+            &mut styles,
+            euclid::Size2D::new(800.0, 600.0),
+            // Only the container is blockified; the buttons keep the UA
+            // `inline-block`.
+            &["div, p { display: block; }"],
+            None,
+        );
+        let viewport = taffy::Size {
+            width: taffy::AvailableSpace::Definite(800.0),
+            height: taffy::AvailableSpace::Definite(600.0),
+        };
+        let fragments = layout(&dom, &styles, &ImagePlane::new(), viewport).0;
+        let tree = accesskit_tree(&dom, &fragments, None);
+
+        let bounds = |n: NodeId| {
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == access_id(&dom, n))
+                .and_then(|(_, node)| node.bounds())
+                .unwrap_or_else(|| panic!("an inline-level control needs bounds to be reachable"))
+        };
+        let (a, b) = (bounds(buttons[0]), bounds(buttons[1]));
+        for (name, r) in [("Alpha", a), ("Bravo", b)] {
+            assert!(
+                r.width() > 0.0 && r.height() > 0.0,
+                "{name} has positive area, got {r:?}"
+            );
+            assert!(
+                r.width() < 400.0,
+                "{name}'s box is its own, not the 800px line box, got {r:?}"
+            );
+        }
+        assert!(
+            b.x0 >= a.x1,
+            "the two controls occupy separate boxes on the line, got {a:?} then {b:?}"
         );
     }
 

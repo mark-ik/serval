@@ -410,6 +410,11 @@ mod tests {
         // Two node buttons sharing a display label ("Example Domain"), each with
         // a unique `data-key` (its url) — the ambiguous-label case that forces
         // attribute targeting.
+        //
+        // These are `<button>`s, so the UA sheet's `padding: 2px 6px` and
+        // `border: 1px solid` apply and `width`/`height` name the CONTENT box
+        // (CSS 2.2 §10.2). Their border boxes are therefore 34x26, not 20x20, and
+        // the centres below account for it. See `SWATCH_*` next to the assertions.
         for (i, url) in ["https://example.com/", "https://example.org/"]
             .iter()
             .enumerate()
@@ -452,6 +457,20 @@ mod tests {
         assert_eq!(hit.point, (620.0, 22.0));
     }
 
+    /// A swatch button's border box: the authored 20x20 content box plus the UA
+    /// control ring (`padding: 2px 6px`, `border: 1px solid`), so 7px per side
+    /// horizontally and 3px vertically. `width` names the content box under the
+    /// default `box-sizing` (CSS 2.2 §10.2).
+    const SWATCH_W: f32 = 20.0 + 2.0 * 7.0;
+    const SWATCH_H: f32 = 20.0 + 2.0 * 3.0;
+
+    /// The window-space centre of the swatch whose content box starts at
+    /// `left`, given the surface origin (500, 10). The border box starts at the
+    /// authored inset, since padding and border grow it rightward and downward.
+    fn swatch_centre(left: f32) -> (f32, f32) {
+        (500.0 + left + SWATCH_W / 2.0, 10.0 + 40.0 + SWATCH_H / 2.0)
+    }
+
     #[test]
     fn resolves_an_aria_labelled_node_by_its_shared_label() {
         let dom = strip_dom();
@@ -462,8 +481,7 @@ mod tests {
             &Selector::class("graph-canvas-swatch-node").containing("Example Domain"),
         )
         .expect("the aria-labelled node must resolve by the same selector shape");
-        // First node: left 200..220 centre 210 + 500 = 710; top 40..60 centre 50 + 10 = 60.
-        assert_eq!(hit.point, (710.0, 60.0));
+        assert_eq!(hit.point, swatch_centre(200.0));
     }
 
     #[test]
@@ -477,8 +495,7 @@ mod tests {
             &Selector::class("graph-canvas-swatch-node").with_attr("data-key", "example.org"),
         )
         .expect("the org node must resolve by its data-key");
-        // Second node: left 230..250 centre 240 + 500 = 740.
-        assert_eq!(hit.point.0, 740.0);
+        assert_eq!(hit.point.0, swatch_centre(230.0).0);
     }
 
     #[test]
@@ -495,7 +512,7 @@ mod tests {
         let s = surfaces(&dom);
         let hit = resolve(&s, &Selector::role("button").containing("Example Domain"))
             .expect("a native button has the button role without a redundant role attribute");
-        assert_eq!(hit.point, (710.0, 60.0));
+        assert_eq!(hit.point, swatch_centre(200.0));
     }
 
     #[test]

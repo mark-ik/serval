@@ -400,16 +400,15 @@ where
                 // would wrongly cover the captions.
                 .principal_fragment(id)
                 .filter(|fragment| paintable_fragment(fragment))
+                && !fragments.table_paint_manages_node(id)
             {
-                if !fragments.table_paint_manages_node(id) {
-                    emit_shadow(list, style, fragment);
-                    if !background_propagated {
-                        emit_background(list, style, fragment);
-                    }
-                    emit_replaced_image(dom, list, id, style, fragment);
-                    if !fragments.table_paint_uses_collapsed_borders(id) {
-                        emit_border(list, style, fragment);
-                    }
+                emit_shadow(list, style, fragment);
+                if !background_propagated {
+                    emit_background(list, style, fragment);
+                }
+                emit_replaced_image(dom, list, id, style, fragment);
+                if !fragments.table_paint_uses_collapsed_borders(id) {
+                    emit_border(list, style, fragment);
                 }
             }
             // The overflow clip stays on the outer box: CSS Tables 3 section
@@ -1173,10 +1172,10 @@ fn emit_children_in_stacking_order<D>(
     items.sort_by_key(|item| item.level);
     let roots = items.iter().map(|item| item.id).collect::<HashSet<_>>();
 
-    if !items.is_empty() {
-        if let Some(deferred) = deferred_collapsed.as_deref_mut() {
-            deferred.flush(styles, fragments, list);
-        }
+    if !items.is_empty()
+        && let Some(deferred) = deferred_collapsed.as_deref_mut()
+    {
+        deferred.flush(styles, fragments, list);
     }
     for item in items.iter().filter(|item| item.level < 0) {
         emit_stacking_item(
@@ -1208,7 +1207,7 @@ fn emit_children_in_stacking_order<D>(
         text,
         list,
         scroll_offsets,
-        deferred_collapsed.as_deref_mut(),
+        deferred_collapsed,
     );
 
     for item in items.iter().filter(|item| item.level >= 0) {
@@ -1383,7 +1382,7 @@ fn emit_normal_node<'a, D>(
             text,
             list,
             scroll_offsets,
-            deferred_collapsed.as_deref_mut(),
+            deferred_collapsed,
         );
     }
     if scroll_transform.is_some() {
@@ -1459,7 +1458,7 @@ fn emit_normal_children<'a, D>(
         text,
         list,
         scroll_offsets,
-        deferred_collapsed.as_deref_mut(),
+        deferred_collapsed,
     );
 }
 

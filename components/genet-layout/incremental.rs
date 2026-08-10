@@ -416,10 +416,22 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
     /// (via [`genet_lane::absolute_origin`](crate::genet_lane::absolute_origin)) so hosts
     /// and overlay producers stop re-rolling the accumulation off the parent-relative
     /// [`rect_of`](FragmentPlane::rect_of). Pairs with [`scroll_extent`](Self::scroll_extent).
+    ///
+    /// An **inline-level** element (an `inline-block` `<button>`, a `display:inline`
+    /// `<a>`) establishes no Taffy box, so it answers from the plane's inline-box
+    /// table instead — see [`inline_fragment`](crate::inline_fragment) for how that
+    /// geometry is read back, and why the inline entry has to win over the alias an
+    /// anonymous wrapper leaves under its first member's key. The single rect is the
+    /// union of the element's boxes, matching `getBoundingClientRect` (CSSOM View);
+    /// for the per-fragment list see [`crate::caret::selection_rects`].
     pub fn absolute_rect<D>(&self, dom: &D, node: Id) -> Option<(f32, f32, f32, f32)>
     where
         D: LayoutDom<NodeId = Id>,
     {
+        if let Some(f) = self.fragments.inline_box_of(node) {
+            let origin = crate::genet_lane::absolute_origin(dom, &self.fragments, f.leaf)?;
+            return Some((origin.x + f.x, origin.y + f.y, f.width, f.height));
+        }
         let origin = crate::genet_lane::absolute_origin(dom, &self.fragments, node)?;
         let r = self.fragments.rect_of(node)?;
         Some((origin.x, origin.y, r.size.width, r.size.height))
@@ -436,19 +448,42 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
     /// box *would* be unscrolled, so a drag in a scrolled list would read a stale offset.
     /// A `position: fixed` box (and its subtree) is pinned, so the document scroll is not
     /// applied to it, mirroring the hit walk's own fixed branch.
+    ///
+    /// Answers for inline-level elements on the same terms as
+    /// [`absolute_rect`](Self::absolute_rect): the inline box's offset rides on its
+    /// leaf's painted origin, so a control in a scrolled list tracks the scroll like
+    /// any boxed sibling.
     pub fn painted_rect<D>(&self, dom: &D, node: Id) -> Option<(f32, f32, f32, f32)>
     where
         D: LayoutDom<NodeId = Id>,
     {
-        let origin =
-            crate::genet_lane::painted_origin(dom, &self.fragments, &self.element_scroll, node)?;
-        let r = self.fragments.rect_of(node)?;
+        let (x, y, w, h) = match self.fragments.inline_box_of(node) {
+            Some(f) => {
+                let origin = crate::genet_lane::painted_origin(
+                    dom,
+                    &self.fragments,
+                    &self.element_scroll,
+                    f.leaf,
+                )?;
+                (origin.x + f.x, origin.y + f.y, f.width, f.height)
+            },
+            None => {
+                let origin = crate::genet_lane::painted_origin(
+                    dom,
+                    &self.fragments,
+                    &self.element_scroll,
+                    node,
+                )?;
+                let r = self.fragments.rect_of(node)?;
+                (origin.x, origin.y, r.size.width, r.size.height)
+            },
+        };
         let (sx, sy) = if self.in_fixed_subtree(dom, node) {
             (0.0, 0.0)
         } else {
             self.viewport.scroll
         };
-        Some((origin.x - sx, origin.y - sy, r.size.width, r.size.height))
+        Some((x - sx, y - sy, w, h))
     }
 
     /// Whether `node` or any DOM ancestor is `position: fixed` — i.e. whether it paints
@@ -532,9 +567,10 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
         if !dom.is_live(node) {
             return None;
         }
-        // Inline refinement: a `display:inline` element (`<a>`, `<span>`, …)
+        // Inline refinement: an inline-level element — `display:inline` (`<a>`,
+        // `<span>`, …) or an atomic `inline-block` (every UA-styled form control) —
         // establishes no box, so the block walk above can only resolve its
-        // containing inline-formatting leaf. Descend into that leaf's cached text to
+        // containing inline-formatting leaf. Descend into that leaf's cached layout to
         // recover the inline element under the point — the `elementFromPoint`
         // granularity links and inline interactivity need. Over the leaf's
         // inter-run / empty space this yields `None` and the block leaf stands.
@@ -545,18 +581,30 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
 
     /// Resolve a point inside inline-formatting leaf `node` to the inline element
     /// under it (the standards [`elementFromPoint`] descent), or `None` when `node`
-    /// is not an inline-formatting leaf or the point misses every run. `local` is the
-    /// point relative to `node`'s border-box origin, as [`hit_test`](Self::hit_test)'s
-    /// `FragmentHit::local_point` reports it; inline layout is content-box relative,
-    /// so border + padding come off first.
+    /// is not an inline-formatting leaf or the point misses every box and run.
+    /// `local` is the point relative to `node`'s border-box origin, as
+    /// [`hit_test`](Self::hit_test)'s `FragmentHit::local_point` reports it; inline
+    /// layout is content-box relative, so border + padding come off first.
+    ///
+    /// Atomic inlines are tested first. CSS 2.2 §9.2.2 makes one a single opaque box,
+    /// so plain containment resolves it — and it is invisible to the cluster descent
+    /// anyway, carrying neither glyph runs nor a byte range in this layout. Text
+    /// resolution then handles the `display:inline` case, which is genuinely N boxes
+    /// and so stays per-line rather than testing a union.
     fn inline_hit_at(&self, node: Id, local: Point) -> Option<Id> {
         let taffy_id = self.built.node_map.get(&node)?;
         let layout = self.text_ctx.layouts.get(taffy_id)?;
-        let sources = self.built.inline_sources(node)?;
         let frame = self.fragments.rect_of(node)?;
         let cx = local.x - (frame.border.left + frame.padding.left);
         let cy = local.y - (frame.border.top + frame.padding.top);
-        let el = crate::inline_hit::inline_source_at(layout, sources, cx, cy)?;
+        let el = self
+            .built
+            .get_node_context(*taffy_id)
+            .and_then(|c| crate::inline_hit::inline_box_at(layout, &c.boxes, cx, cy))
+            .or_else(|| {
+                let sources = self.built.inline_sources(node)?;
+                crate::inline_hit::inline_source_at(layout, sources, cx, cy)
+            })?;
         // `pointer-events: none` on the resolved inline element makes it fall through
         // to the block leaf (already resolved per its own pointer-events). A nested
         // `auto` descendant resolves to itself (innermost wins), so a click on it
@@ -2174,6 +2222,29 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
                 },
             }
         }
+        // A splice walks the ATTACHED DOM, so a node the batch removed is never
+        // visited and its entry would stay in the plane. The box-tree graft
+        // already purged the departed subtree from its own side tables; purge
+        // the plane to match, or it is the one table that drifts, and it grows
+        // without bound across a session's churn. Found by the splice
+        // differential harness (`tests/splice_differential.rs`), which is what
+        // that rung is for.
+        //
+        // Attachment, not `is_live`: a removed node stays live so it can be
+        // re-inserted, so liveness would keep exactly the entries this must
+        // drop. Swept only when the batch actually detached something, since the
+        // sweep is a whole-document walk and the splice exists to avoid those.
+        if mutations.iter().any(|m| {
+            matches!(
+                m,
+                DomMutation::Removed { .. } | DomMutation::SubtreeReplaced { .. }
+            )
+        }) {
+            let mut attached = Vec::new();
+            collect_subtree(dom, dom.document(), &mut attached);
+            let attached: FxHashSet<Id> = attached.into_iter().collect();
+            result.retain_live(|id| attached.contains(&id));
+        }
         self.fragments = result;
         // The graft above kept the box-tree side-table + text caches in step
         // with the spliced fragments, so the session stays on the emittable
@@ -2303,6 +2374,15 @@ impl<Id: Copy + Eq + Hash + Send + Sync + 'static> IncrementalLayout<Id> {
                     placed.location = prior_root.location;
                 }
                 result.insert(node, placed);
+            }
+            // Inline-box entries splice as-is: they are offsets from their own
+            // leaf's border-box origin, so — like the parent-relative locations
+            // above — they are already context-independent. Clear first, or a node
+            // that stopped flowing inline (restyled block-level, its text removed)
+            // would keep a stale inline rect that outranks its real fragment.
+            result.remove_inline_box(node);
+            if let Some(inline) = scoped.inline_box_of(node) {
+                result.insert_inline_box(node, inline);
             }
         }
         // A spliced-in `<img>` needs its decode in the session plane (the
@@ -2765,8 +2845,10 @@ mod tests {
     /// outright. This pins the UA rule; the used size it unlocks is asserted
     /// end-to-end in `paint_emit`'s `a_sized_input_paints_at_its_css_size`.
     ///
-    /// Note the control itself has no fragment: an `inline-block` gets no
-    /// `BoxNode`, it rides as an `InlineBoxItem` in its parent's inline content.
+    /// Note the control itself has no `BoxNode`: an `inline-block` rides as an
+    /// `InlineBoxItem` in its parent's inline content. It still answers
+    /// `absolute_rect` — from the plane's inline-box table, per
+    /// `two_sibling_inline_block_buttons_each_get_their_own_rect`.
     #[test]
     fn form_controls_get_the_inline_block_ua_display() {
         fn display_of(tag: &str, ty: Option<&str>) -> Option<String> {
@@ -2800,6 +2882,276 @@ mod tests {
         assert_eq!(
             display_of("input", Some("text")).as_deref(),
             Some("inline-block")
+        );
+    }
+
+    /// Every inline-level element gets its own rect — the fragment plane's
+    /// inline-box table (`crate::inline_fragment`).
+    ///
+    /// CSS 2.2 §9.2.2 makes an `inline-block` an ATOMIC inline-level box: it
+    /// participates in its line as a single opaque box, so a `<button>` at genet's
+    /// UA display is one box and always had a rect to report. It just established
+    /// no Taffy box, so before the table `absolute_rect` answered `None` for both
+    /// buttons in the pure-inline shape; with a block sibling forcing an anonymous
+    /// wrapper it was worse, because that wrapper is keyed by its borrowed first
+    /// member — so the FIRST button reported the whole line box (full content
+    /// width) and the second still reported `None`. `genet_probe::resolve` could
+    /// therefore not locate any control by role or label, and AccessKit had no
+    /// bounds to hand a screen reader's virtual cursor; every consumer worked
+    /// around it by styling controls `display: block`.
+    ///
+    /// Both shapes are pinned here: the anonymous-wrapper one is the app shape
+    /// (`cambium-genet-winit-host`'s smoke example — a title above a column of
+    /// buttons), and it is the one that used to answer wrongly rather than not at
+    /// all.
+    #[test]
+    fn two_sibling_inline_block_buttons_each_get_their_own_rect() {
+        const SHEET: &[&str] = &[
+            "html, body, .title { display: block; margin: 0; padding: 0; }",
+            "button { padding: 4px 8px; }",
+        ];
+        // `titled` adds a block sibling ahead of the buttons, which is what makes
+        // the box tree wrap the button run in an anonymous block box.
+        fn buttons(titled: bool) -> (ScriptedDom, [<ScriptedDom as LayoutDom>::NodeId; 2]) {
+            let mut dom = ScriptedDom::new();
+            let root = dom.document();
+            let h = dom.create_element(html("html"));
+            dom.append_child(root, h);
+            let body = dom.create_element(html("body"));
+            dom.append_child(h, body);
+            if titled {
+                let title = dom.create_element(html("div"));
+                dom.set_attribute(title, attr("class"), "title");
+                let t = dom.create_text("Title");
+                dom.append_child(title, t);
+                dom.append_child(body, title);
+            }
+            let mut ids = Vec::new();
+            for label in ["Alpha", "Bravo"] {
+                let b = dom.create_element(html("button"));
+                let t = dom.create_text(label);
+                dom.append_child(b, t);
+                dom.append_child(body, b);
+                ids.push(b);
+            }
+            (dom, [ids[0], ids[1]])
+        }
+
+        for titled in [false, true] {
+            let shape = if titled { "anonymous-wrapped" } else { "bare" };
+            let (dom, [alpha, bravo]) = buttons(titled);
+            let layout = IncrementalLayout::new(&dom, SHEET, W, H);
+
+            let a = layout
+                .absolute_rect(&dom, alpha)
+                .unwrap_or_else(|| panic!("{shape}: the first button has a rect"));
+            let b = layout
+                .absolute_rect(&dom, bravo)
+                .unwrap_or_else(|| panic!("{shape}: the SECOND button has a rect too"));
+
+            // Each is its own shrink-to-fit box, not the line box they share.
+            for (name, r) in [("Alpha", a), ("Bravo", b)] {
+                assert!(
+                    r.2 > 0.0 && r.3 > 0.0,
+                    "{shape}: {name} has positive area, got {r:?}"
+                );
+                assert!(
+                    r.2 < W / 2.0,
+                    "{shape}: {name} shrink-to-fits its label, not the {W}px line, got w={}",
+                    r.2
+                );
+            }
+            // Both flow on one line, `Bravo` after `Alpha` and clear of it — the
+            // check that would still pass if both merely reported the same box.
+            assert!(
+                b.0 >= a.0 + a.2,
+                "{shape}: Bravo starts after Alpha ends, got {a:?} then {b:?}"
+            );
+            assert!(
+                (a.1 - b.1).abs() < 1.0,
+                "{shape}: both sit on the same line, got y {} and {}",
+                a.1,
+                b.1
+            );
+            // Unscrolled, the painted rect is the absolute rect. (It reads the
+            // inline offset off a *painted* leaf origin, so this also pins that the
+            // two lanes agree rather than one of them silently dropping the offset.)
+            for (name, id, r) in [("Alpha", alpha, a), ("Bravo", bravo, b)] {
+                assert_eq!(
+                    layout.painted_rect(&dom, id),
+                    Some(r),
+                    "{shape}: {name}'s painted rect matches its absolute rect unscrolled",
+                );
+            }
+            // The hit walk and the rect query name the same box.
+            assert_eq!(
+                layout.hit_test(&dom, b.0 + b.2 / 2.0, b.1 + b.3 / 2.0, &Default::default()),
+                Some(bravo),
+                "{shape}: Bravo's own rect centre hits Bravo",
+            );
+        }
+    }
+
+    /// An atomic inline reserves its **margin box** in the line, and reports its
+    /// **border box** as its rect.
+    ///
+    /// CSS 2.2 is precise and the two axes come from different sections. `width`
+    /// names the content box, so padding and border ride on top (§10.2, §10.3.9);
+    /// and an inline-block contributes its margin box to line box height (§10.6.6,
+    /// §10.8). genet measured an inline-block from its content alone until
+    /// 2026-08-10, so a `width: 240px; padding: 8px 12px` button reserved 240px of
+    /// inline advance where the spec requires 264, and consumers had to style
+    /// around it. The block path had always added the box model, so the two
+    /// disagreed on the same declaration.
+    #[test]
+    fn an_atomic_inline_reserves_its_margin_box_and_reports_its_border_box() {
+        // No UA control padding/border in play: the sheet zeroes them so the
+        // arithmetic below is exactly the authored numbers.
+        const SHEET: &[&str] = &[
+            "html, body { display: block; margin: 0; padding: 0; }",
+            "button { padding: 8px 12px; border: 0; margin: 0 5px; width: 240px; height: 20px; }",
+        ];
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let h = dom.create_element(html("html"));
+        dom.append_child(root, h);
+        let body = dom.create_element(html("body"));
+        dom.append_child(h, body);
+        let mut ids = Vec::new();
+        for label in ["Alpha", "Bravo"] {
+            let b = dom.create_element(html("button"));
+            let t = dom.create_text(label);
+            dom.append_child(b, t);
+            dom.append_child(body, b);
+            ids.push(b);
+        }
+        let (alpha, bravo) = (ids[0], ids[1]);
+
+        let layout = IncrementalLayout::new(&dom, SHEET, W, H);
+        let a = layout.absolute_rect(&dom, alpha).expect("Alpha's rect");
+        let b = layout.absolute_rect(&dom, bravo).expect("Bravo's rect");
+
+        // Border box: content 240x20 plus padding 8px 12px, no border.
+        assert!(
+            (a.2 - 264.0).abs() < 0.5,
+            "border-box width is 240 content + 2x12 padding, got {}",
+            a.2
+        );
+        assert!(
+            (a.3 - 36.0).abs() < 0.5,
+            "border-box height is 20 content + 2x8 padding, got {}",
+            a.3
+        );
+        // Margin box is what the line reserves, so the next button starts a full
+        // 264 + 5 + 5 further along. This is the assertion that fails if the
+        // measure reserves the border box and quietly loses the margin.
+        assert!(
+            (b.0 - a.0 - 274.0).abs() < 1.0,
+            "the line advanced by the 274px MARGIN box, got {} (rects {a:?} then {b:?})",
+            b.0 - a.0,
+        );
+        // The reported rect excludes the margin, so it starts 5px inside the
+        // margin box's own origin: consecutive border boxes leave a 10px gap.
+        assert!(
+            (b.0 - (a.0 + a.2) - 10.0).abs() < 1.0,
+            "adjacent border boxes are separated by both margins, got {}",
+            b.0 - (a.0 + a.2),
+        );
+        // The hit walk agrees with the reported rect.
+        assert_eq!(
+            layout.hit_test(&dom, b.0 + 2.0, b.1 + b.3 / 2.0, &Default::default()),
+            Some(bravo),
+            "a point just inside Bravo's border box hits Bravo",
+        );
+    }
+
+    /// The rule one section away, which must NOT move: for a non-replaced
+    /// **inline** box, vertical padding, border, and margin have no effect on line
+    /// box height at all (CSS 2.2 §10.6.1) — only `line-height` does. Pinned
+    /// alongside the atomic-inline change above, because "inline layout ignores the
+    /// box model" reads like one bug and is really one bug plus one correct
+    /// behaviour.
+    #[test]
+    fn vertical_padding_on_an_inline_box_does_not_change_line_box_height() {
+        fn paragraph_height(anchor_style: &str) -> f32 {
+            let sheet = format!(
+                "html, body, p {{ display: block; margin: 0; padding: 0; font-size: 20px; }} \
+                 a {{ {anchor_style} }}"
+            );
+            let mut dom = ScriptedDom::new();
+            let root = dom.document();
+            let h = dom.create_element(html("html"));
+            dom.append_child(root, h);
+            let body = dom.create_element(html("body"));
+            dom.append_child(h, body);
+            let p = dom.create_element(html("p"));
+            dom.append_child(body, p);
+            let a = dom.create_element(html("a"));
+            let at = dom.create_text("the spec");
+            dom.append_child(a, at);
+            dom.append_child(p, a);
+            let layout = IncrementalLayout::new(&dom, &[sheet.as_str()], W, H);
+            layout.absolute_rect(&dom, p).expect("paragraph rect").3
+        }
+
+        let plain = paragraph_height("");
+        let padded = paragraph_height("padding: 20px 0; margin: 20px 0;");
+        assert!(
+            (plain - padded).abs() < 0.5,
+            "§10.6.1: vertical padding and margin on an inline box leave the line box \
+             height alone, got {plain} then {padded}",
+        );
+    }
+
+    /// The non-atomic half of the same table. A `display:inline` `<a>` is not one
+    /// box but one per line box its text occupies (CSS 2.2 §9.4.2), so the single
+    /// rect it reports is their union — `getBoundingClientRect`'s answer (CSSOM
+    /// View), where `getClientRects`' per-fragment list stays with
+    /// [`crate::caret::selection_rects`] and [`crate::link_harvest`].
+    ///
+    /// Known deviation, pinned so it is not mistaken for intent: the union is built
+    /// from parley's per-line geometry, which is the full LINE box, where a border
+    /// box is the font's content area. With `line-height: 2` the anchor therefore
+    /// reports 40px tall against a browser's ~23px. Horizontal geometry is exact,
+    /// which is what a probe's centre-point and a virtual cursor need.
+    #[test]
+    fn an_inline_anchor_reports_its_own_text_box_not_its_paragraph() {
+        const SHEET: &[&str] =
+            &["html, body, p { display: block; margin: 0; padding: 0; font-size: 20px; }"];
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let h = dom.create_element(html("html"));
+        dom.append_child(root, h);
+        let body = dom.create_element(html("body"));
+        dom.append_child(h, body);
+        let p = dom.create_element(html("p"));
+        dom.append_child(body, p);
+        let lead = dom.create_text("see ");
+        dom.append_child(p, lead);
+        let a = dom.create_element(html("a"));
+        dom.set_attribute(a, attr("href"), "https://example.test/spec");
+        let at = dom.create_text("the spec");
+        dom.append_child(a, at);
+        dom.append_child(p, a);
+        let tail = dom.create_text(" now");
+        dom.append_child(p, tail);
+
+        let layout = IncrementalLayout::new(&dom, SHEET, W, H);
+        let (px, _, pw, ph) = layout.absolute_rect(&dom, p).expect("the paragraph's box");
+        let (ax, _, aw, ah) = layout.absolute_rect(&dom, a).expect("the anchor's box");
+        assert!(
+            ax > px,
+            "the anchor starts after the leading text, got {ax} vs the paragraph's {px}",
+        );
+        assert!(
+            aw > 0.0 && aw < pw,
+            "the anchor spans its own text, not the {pw}px paragraph, got {aw}",
+        );
+        // One line: the anchor's band is the paragraph's single line box. (The
+        // deviation noted above — a border box would be the shorter content area.)
+        assert!(
+            (ah - ph).abs() < 1.0,
+            "one line box tall, got {ah} against the paragraph's {ph}",
         );
     }
 
