@@ -254,6 +254,25 @@ orphaned `WindowCommands` and prove the exact opposite of the truth. The
 host also records performed verbs, which is how a windowless harness can
 assert the whole matrix.
 
+**The remote-receipt lane exists** (`scripts/remote-receipt.ps1`), so the
+staged items below are one command each once a machine is reachable. It runs
+an app's existing `.scn` scenario on the remote machine's *own* screen and
+brings the receipt, the captures, and a provenance manifest back into
+`testing/<repo>/<host>-<stamp>/`.
+
+SSH drives; it does not render. `ssh -X` would draw against the *local*
+window manager, which for decoration work would confidently report the wrong
+answer, and Wayland has no equivalent worth trusting. So the script attaches
+the run to the graphical session already logged in there — `systemd-run
+--user` on Linux, `launchctl asuser` on macOS — and refuses to start if there
+is no such session, because a headed run with no display draws nothing and
+still exits 0. The manifest records the remote OS, the session type, the
+remote commit and whether the checkout was dirty, the exact environment, the
+exit code, and a SHA-256 per artifact; a capture without that provenance is
+not evidence six months later. Authentication is ordinary SSH, so
+`personae-agent` serves the vault's SSH slots over the OpenSSH pipe and no key
+sits on disk in the clear.
+
 **Staged, with reasons rather than intentions:**
 
 - **W1's macOS half** (`fullSizeContentView`, reserving the traffic lights'
