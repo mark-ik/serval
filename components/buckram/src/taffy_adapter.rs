@@ -443,6 +443,19 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         }
     }
 
+    /// The formatting coordinate assigned before CSS positioning applies
+    /// insets. This carries a formatter output into Buckram's K5 positioning
+    /// pass; it does not expose backend node identity or parent selection.
+    pub fn static_layout(&self, id: AlgorithmNodeId) -> AlgorithmLayout {
+        let layout = self.nodes[id.index()].final_layout;
+        AlgorithmLayout {
+            x: layout.static_location.x,
+            y: layout.static_location.y,
+            width: layout.size.width,
+            height: layout.size.height,
+        }
+    }
+
     /// The rectangle an algorithm wrote, before the backend's rounding pass.
     ///
     /// An owned formatting context that adjusts its own subtree after writing
@@ -2266,7 +2279,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use taffy::prelude::{Dimension, Display, Style, fr, length};
+    use taffy::{
+        geometry::Rect,
+        prelude::{Dimension, Display, Position, Style, fr, length},
+        style::{AlignItems, JustifyContent},
+    };
 
     use super::*;
 
@@ -2332,6 +2349,150 @@ mod tests {
                 height: 20.0,
                 ..AlgorithmLayout::default()
             }
+        );
+    }
+
+    #[test]
+    fn static_layout_survives_an_absolute_inset() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                inset: Rect {
+                    left: length(40.0_f32),
+                    top: length(12.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Block,
+            Style {
+                display: Display::Block,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!(tree.layout(positioned).x, 40.0);
+        assert_eq!(tree.layout(positioned).y, 12.0);
+        assert_eq!(tree.static_layout(positioned).x, 0.0);
+        assert_eq!(tree.static_layout(positioned).y, 0.0);
+    }
+
+    #[test]
+    fn grid_static_layout_uses_the_item_area_before_insets() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                inset: Rect {
+                    left: length(18.0_f32),
+                    top: length(9.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!(tree.layout(positioned).x, 18.0);
+        assert_eq!(tree.layout(positioned).y, 9.0);
+        assert_eq!(tree.static_layout(positioned).x, 0.0);
+        assert_eq!(tree.static_layout(positioned).y, 0.0);
+    }
+
+    #[test]
+    fn flex_static_layout_keeps_alignment_when_insets_place_the_item() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                inset: Rect {
+                    left: length(18.0_f32),
+                    top: length(9.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Flex,
+            Style {
+                display: Display::Flex,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                justify_content: Some(JustifyContent::CENTER),
+                align_items: Some(AlignItems::END),
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!((tree.layout(positioned).x, tree.layout(positioned).y), (18.0, 9.0));
+        assert_eq!(
+            (tree.static_layout(positioned).x, tree.static_layout(positioned).y),
+            (85.0, 80.0)
         );
     }
 

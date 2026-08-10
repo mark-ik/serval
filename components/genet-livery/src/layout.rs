@@ -3799,6 +3799,7 @@ where
     Id: Copy + Eq + Hash,
 {
     let computed = tree.layout(node);
+    let static_computed = tree.static_layout(node);
     let origin = Point {
         x: cursor.origin.x + computed.x,
         y: cursor.origin.y + computed.y,
@@ -3833,10 +3834,10 @@ where
                     let flow = boxes[box_id].flow;
                     let static_rect = flow.logical_rect(
                         PhysicalRect {
-                            x: computed.x,
-                            y: computed.y,
-                            width: computed.width,
-                            height: computed.height,
+                            x: static_computed.x,
+                            y: static_computed.y,
+                            width: static_computed.width,
+                            height: static_computed.height,
                         },
                         PhysicalSize {
                             width: cursor.containing.width,
@@ -3913,6 +3914,7 @@ where
     Id: Copy + Eq + Hash,
 {
     let computed = tree.layout(node);
+    let static_computed = tree.static_layout(node);
     let origin = Point {
         x: cursor.origin.x + computed.x,
         y: cursor.origin.y + computed.y,
@@ -4012,7 +4014,12 @@ where
             } else {
                 let flow = boxes[box_id].flow;
                 let static_rect = flow.logical_rect(
-                    relative_rect,
+                    Fragment {
+                        x: static_computed.x,
+                        y: static_computed.y,
+                        width: static_computed.width,
+                        height: static_computed.height,
+                    },
                     PhysicalSize {
                         width: cursor.containing.width,
                         height: cursor.containing.height,
@@ -5083,7 +5090,7 @@ mod tests {
             &dom,
             &StyleSet::cambium(&[
                 "#containing { position: relative; width: 200px; } #source { width: 120px; } \
-                 #positioned { position: absolute; }",
+                 #positioned { position: absolute; left: 36px; top: 11px; }",
             ]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
@@ -5123,6 +5130,14 @@ mod tests {
             static_position.containing_block,
             buckram::ContainingBlock::Box(containing),
             "the absolute containing block comes from the K5a graph, not the source parent",
+        );
+        assert_eq!(
+            (
+                static_position.logical_rect.inline_start,
+                static_position.logical_rect.block_start
+            ),
+            (0.0, 0.0),
+            "the K5b record is the pre-inset static position, not the final absolute location",
         );
     }
 

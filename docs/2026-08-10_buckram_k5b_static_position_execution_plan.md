@@ -69,10 +69,14 @@ block beside the formatting fragment that emitted an absolute or fixed box.
 Block, inline, atomic-inline, and table structural emission paths all use the
 same record API.
 
-Those hooks presently observe the current completed algorithm tree. They do
-not yet replace its out-of-flow placement with an owned static-position pass,
-so K5b remains open: its final receipt requires the source rectangle to be
-emitted before any backend absolute/fixed result can influence it.
+Buckram's private algorithm adapter now carries a formatter-provided
+pre-inset location separately from final layout. Block, flex, and grid routes
+publish that location before an explicit inset changes final placement. The
+flex receipt uses center/end alignment plus explicit insets, proving the
+record preserves the aligned static coordinate rather than copying the final
+inset coordinate. The record remains open until inline and table sources
+publish their corresponding pre-inset coordinate without inheriting a backend
+containing-block decision.
 
 ## Stop rules
 
