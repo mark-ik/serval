@@ -3032,14 +3032,14 @@ fn apply_absolute_and_fixed_positioning<Id>(
             if !matches!(
                 css_box.positioning,
                 PositioningScheme::Absolute | PositioningScheme::Fixed
-            ) || css_box.display.internal_table.is_some()
-                || !css_box.flow.is_horizontal()
+            ) || matches!(
+                css_box.display.internal_table,
+                Some(role) if role != InternalTableRole::Wrapper
+            ) || !css_box.flow.is_horizontal()
             {
                 return None;
             }
-            let BoxOrigin::Element(node) = css_box.origin else {
-                return None;
-            };
+            let node = css_box.origin.node()?;
             styles.get(node)?;
             let root = fragments.fragment_ids_for_box(box_id).first().copied()?;
             let static_position = *fragments.static_position_for_box(box_id)?;
@@ -3094,9 +3094,14 @@ fn apply_absolute_and_fixed_positioning<Id>(
         };
         let computed = styles
             .get(node)
-            .expect("a generated element box keeps its computed style");
+            .expect("a generated positioned box keeps its computed style");
+        let computed = if boxes[box_id].display.internal_table == Some(InternalTableRole::Wrapper) {
+            wrapper_style(computed)
+        } else {
+            computed.clone()
+        };
         let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
-        let style = to_block_style(boxes, box_id, computed, font_size);
+        let style = to_block_style(boxes, box_id, &computed, font_size);
         let containing_size = containing_flow.logical_size(PhysicalSize {
             width: containing_rect.width,
             height: containing_rect.height,
@@ -3848,6 +3853,10 @@ fn apply_relative_table_part_offsets<Id>(
             continue;
         };
         let gap = match computed.position {
+            // CSS Tables transfers root positioning to the wrapper. K5d
+            // resolves that wrapper through the shared positioned-fragment
+            // path, so the grid itself must not retain a duplicate table gap.
+            CssPosition::Absolute | CssPosition::Fixed if part == table => None,
             CssPosition::Absolute => Some(TablePositioningGap::Absolute),
             CssPosition::Fixed => Some(TablePositioningGap::Fixed),
             CssPosition::Sticky => Some(TablePositioningGap::Sticky),
@@ -5568,13 +5577,13 @@ mod tests {
     }
 
     #[test]
-    fn absolute_table_geometry_is_a_named_k5_gap_without_backend_dispatch() {
+    fn absolute_table_root_uses_shared_k5d_wrapper_geometry() {
         let dom =
             StaticDocument::parse("<table id=table><tbody><tr><td>one</td></tr></tbody></table>");
         let styles = resolve_styles(
             &dom,
             &StyleSet::cambium(&[
-                "table { display: table; position: absolute; border-spacing: 0; } \
+                "table { display: table; position: absolute; left: 31px; top: 14px; border-spacing: 0; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 40px; height: 20px; }",
             ]),
@@ -5592,23 +5601,20 @@ mod tests {
             .copied()
             .find(|box_id| layout.boxes()[*box_id].positioning == PositioningScheme::Absolute)
             .expect("the table wrapper carries the table root's positioning");
-        assert!(
-            layout
-                .fragments()
-                .static_position_for_box(positioned_wrapper)
-                .is_some(),
-            "K5b records the wrapper's static source before K5d replaces the named table geometry gap",
-        );
+        let wrapper_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned_wrapper)
+            .next()
+            .expect("positioned wrapper fragment");
+        assert_eq!((wrapper_fragment.x, wrapper_fragment.y), (31.0, 14.0));
         let ledger = layout.table_shadow_ledger();
         assert!(
-            ledger
-                .positioning_gaps
-                .contains(&crate::table_shadow::TablePositioningGapRecord {
-                    table: table_box,
-                    part: table_box,
-                    gap: crate::table_shadow::TablePositioningGap::Absolute,
-                }),
-            "absolute table positioning must remain a named K5 gap: {ledger:?}"
+            !ledger.positioning_gaps.contains(&crate::table_shadow::TablePositioningGapRecord {
+                table: table_box,
+                part: table_box,
+                gap: crate::table_shadow::TablePositioningGap::Absolute,
+            }),
+            "the shared wrapper route replaces the root-only table positioning gap: {ledger:?}"
         );
         assert_eq!(
             ledger.block.laid_out, 1,

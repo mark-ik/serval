@@ -41,12 +41,14 @@ rectangle, measured border-box fallback, auto margins, and min/max bounds.
 Livery gives the scratch formatter auto insets for absolute and fixed boxes,
 then translates the emitted ordinary horizontal fragment subtree from this
 Buckram result and rewires its containing-fragment link to K5a's selection.
-The fixed receipt uses a transform-established fixed containing block.
+The same path now handles a table root at its K4h wrapper; its grid no longer
+carries a duplicate root-only absolute/fixed gap. The fixed receipt uses a
+transform-established fixed containing block.
 
 The formatter still excludes the out-of-flow box and supplies its measured
 fallback size. K5d remains open until Buckram owns shrink-to-fit, replaced and
-aspect-ratio sizing, vertical writing modes, and the table wrapper/internal
-part route. Those gaps are not treated as final K5 behavior.
+aspect-ratio sizing, vertical writing modes, and internal table-part route.
+Those gaps are not treated as final K5 behavior.
 
 ## Work
 
