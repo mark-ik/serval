@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-10
 
-**Status:** Planned. Requires the settled K5 positioning records and K5d final
-positioned fragment path.
+**Status:** In progress. K5a through K5d expose the records needed for
+retained identity; K5g has replaced dense box and fragment identity with a
+reconciled allocation layer. Dirty-root replacement remains K5h.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5g.
@@ -15,6 +16,26 @@ The current Livery route regenerates `CssBoxTree` and appends a new dense
 unfragmented continuous-media relayout. K5h will decide damage, select a root,
 and prove incremental equivalence; K5g supplies the storage and invariants
 that make that possible.
+
+## Current implementation boundary
+
+`BoxId` and `FragmentId` now name allocation slots independently from their
+fresh construction order. A rebuilt `LayoutResult` reconciles compatible
+generation contexts against its immediately preceding result, then repairs
+parent, containing-fragment, by-box, by-node, principal-box, and
+static-position source indices before that result is exposed. New contexts
+allocate above the previous high-water mark, so a detached identity cannot be
+resurrected by a later insertion.
+
+`LiveryDocument` keeps an invalidated layout only as an internal identity
+source. Its next frame still recomputes complete geometry, reconciles the new
+Buckram result, and drops the prior generation. A sibling-insertion receipt
+proves ordinary content and the table wrapper/grid retain their box and
+fragment identities despite changed dense construction order.
+
+This is persistent storage, not K5h incremental layout. It does not select a
+dirty formatting-context root, reuse a prior geometric result, or yet name
+intrinsic and formatting-cache invalidation dependencies.
 
 ## Model
 
@@ -31,10 +52,11 @@ that make that possible.
 
 ## Work
 
-1. Replace dense-index identity assumptions in Buckram's box and fragment
-   stores with stable allocation and checked lookup.
-2. Introduce a retained Livery layout state that owns the Buckram stores and
-   can rebuild one generation context against prior identities.
+1. Complete: replace dense-index identity assumptions in Buckram's box and
+   fragment stores with stable allocation, checked lookup, and executable
+   index invariants.
+2. Complete for full-generation reconciliation: introduce retained Livery
+   identity state that rebuilds a fresh generation against prior identities.
 3. Implement subtree insert, replacement, and removal with index repair and
    cache invalidation.
 4. Preserve table wrapper, grid, caption, row-group, row, and cell identity

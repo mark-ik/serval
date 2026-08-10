@@ -1,19 +1,22 @@
 //! CSS box identity, roles, tree position, and source provenance.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::Hash,
     ops::{Index, IndexMut},
 };
 
 use crate::{FloatSide, FlowAxes};
 
-/// Stable identity within one generated [`CssBoxTree`].
+/// Stable identity within a retained generated [`CssBoxTree`].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BoxId(u32);
 
 impl BoxId {
-    /// Dense index used by diagnostics and side tables scoped to this tree.
+    /// Opaque allocation number used by diagnostics and side tables.
+    ///
+    /// A `BoxId` is not a storage index: K5g preserves it through a retained
+    /// relayout even when the tree's dense construction order changes.
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -297,6 +300,8 @@ impl<Id> CssBox<Id> {
 #[derive(Clone, Debug)]
 pub struct CssBoxTree<Id> {
     boxes: Vec<CssBox<Id>>,
+    ids: Vec<BoxId>,
+    slots: HashMap<BoxId, usize>,
     roots: Vec<BoxId>,
     principal_boxes: HashMap<Id, BoxId>,
     boxes_by_node: HashMap<Id, Vec<BoxId>>,
@@ -1182,6 +1187,8 @@ impl<Id> Default for CssBoxTree<Id> {
     fn default() -> Self {
         Self {
             boxes: Vec::new(),
+            ids: Vec::new(),
+            slots: HashMap::new(),
             roots: Vec::new(),
             principal_boxes: HashMap::new(),
             boxes_by_node: HashMap::new(),
@@ -1223,8 +1230,8 @@ where
     pub fn iter(&self) -> impl Iterator<Item = (BoxId, &CssBox<Id>)> {
         self.boxes
             .iter()
-            .enumerate()
-            .map(|(index, css_box)| (BoxId(index as u32), css_box))
+            .zip(self.ids.iter().copied())
+            .map(|(css_box, id)| (id, css_box))
     }
 
     /// Add one generated box.
@@ -1245,6 +1252,9 @@ where
         );
         css_box.parent = parent;
         self.boxes.push(css_box);
+        self.ids.push(id);
+        let previous = self.slots.insert(id, self.boxes.len() - 1);
+        assert!(previous.is_none(), "a generated box id cannot occupy two slots");
 
         if let Some(parent) = parent {
             self[parent].children.push(id);
@@ -1266,19 +1276,163 @@ where
         }
         id
     }
+
+    /// Reuse identifiers whose generated-box provenance and direct generation
+    /// context survived a relayout. Newly generated contexts receive fresh
+    /// identifiers above the previous allocation range, so an old detached
+    /// identity cannot be resurrected by a later dense construction order.
+    pub fn reconcile_identifiers(&mut self, previous: &Self) -> HashMap<BoxId, BoxId> {
+        let mut mapping = HashMap::new();
+        let mut consumed = HashSet::new();
+
+        for current in self.roots.clone() {
+            let candidate = previous
+                .roots
+                .iter()
+                .copied()
+                .find(|candidate| {
+                    !consumed.contains(candidate)
+                        && same_generation_context(&self[current], &previous[*candidate])
+                });
+            if let Some(candidate) = candidate {
+                self.match_retained_subtree(previous, current, candidate, &mut mapping, &mut consumed);
+            }
+        }
+
+        let mut next = previous
+            .ids
+            .iter()
+            .map(|id| id.0)
+            .max()
+            .map_or(0, |id| id.checked_add(1).expect("a CSS box tree exceeded u32::MAX boxes"));
+        for current in self.ids.clone() {
+            mapping.entry(current).or_insert_with(|| {
+                let allocated = BoxId(next);
+                next = next
+                    .checked_add(1)
+                    .expect("a CSS box tree exceeded u32::MAX boxes");
+                allocated
+            });
+        }
+
+        self.remap_identifiers(&mapping);
+        #[cfg(any(debug_assertions, test))]
+        self.assert_invariants();
+        mapping
+    }
+
+    fn match_retained_subtree(
+        &self,
+        previous: &Self,
+        current: BoxId,
+        prior: BoxId,
+        mapping: &mut HashMap<BoxId, BoxId>,
+        consumed: &mut HashSet<BoxId>,
+    ) {
+        if !same_generation_context(&self[current], &previous[prior]) {
+            return;
+        }
+        mapping.insert(current, prior);
+        consumed.insert(prior);
+
+        for current_child in self[current].children.clone() {
+            let candidate = previous[prior].children.iter().copied().find(|candidate| {
+                !consumed.contains(candidate)
+                    && same_generation_context(&self[current_child], &previous[*candidate])
+            });
+            if let Some(candidate) = candidate {
+                self.match_retained_subtree(previous, current_child, candidate, mapping, consumed);
+            }
+        }
+    }
+
+    fn remap_identifiers(&mut self, mapping: &HashMap<BoxId, BoxId>) {
+        for css_box in &mut self.boxes {
+            css_box.parent = css_box.parent.map(|id| mapping[&id]);
+            css_box.children = css_box
+                .children
+                .iter()
+                .map(|id| mapping[id])
+                .collect();
+            css_box.containing_block = match css_box.containing_block {
+                ContainingBlock::Initial => ContainingBlock::Initial,
+                ContainingBlock::Box(id) => ContainingBlock::Box(mapping[&id]),
+            };
+        }
+        self.ids = self.ids.iter().map(|id| mapping[id]).collect();
+        self.slots = self
+            .ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(slot, id)| (id, slot))
+            .collect();
+        self.roots = self.roots.iter().map(|id| mapping[id]).collect();
+        for id in self.principal_boxes.values_mut() {
+            *id = mapping[id];
+        }
+        for ids in self.boxes_by_node.values_mut() {
+            for id in ids {
+                *id = mapping[id];
+            }
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn assert_invariants(&self) {
+        assert_eq!(self.boxes.len(), self.ids.len());
+        assert_eq!(self.boxes.len(), self.slots.len());
+        for (slot, id) in self.ids.iter().copied().enumerate() {
+            assert_eq!(self.slots.get(&id), Some(&slot));
+        }
+        for root in &self.roots {
+            assert!(self.slots.contains_key(root));
+            assert_eq!(self[*root].parent(), None);
+        }
+        for id in self.ids.iter().copied() {
+            for child in self[id].children() {
+                assert!(self.slots.contains_key(child));
+                assert_eq!(self[*child].parent(), Some(id));
+            }
+        }
+        for (node, ids) in &self.boxes_by_node {
+            for id in ids {
+                assert!(self.origin_node(*id) == Some(*node));
+            }
+        }
+        for (node, id) in &self.principal_boxes {
+            assert!(self.origin_node(*id) == Some(*node));
+        }
+    }
+}
+
+fn same_generation_context<Id>(current: &CssBox<Id>, previous: &CssBox<Id>) -> bool
+where
+    Id: Eq,
+{
+    current.origin == previous.origin
+        && current.display == previous.display
+        && current.flow == previous.flow
+        && current.positioning == previous.positioning
+        && current.float == previous.float
+        && current.float_context == previous.float_context
+        && current.replaced == previous.replaced
+        && current.formatting_context == previous.formatting_context
+        && current.containing_block_establishment == previous.containing_block_establishment
 }
 
 impl<Id> Index<BoxId> for CssBoxTree<Id> {
     type Output = CssBox<Id>;
 
     fn index(&self, id: BoxId) -> &Self::Output {
-        &self.boxes[id.index()]
+        &self.boxes[self.slots[&id]]
     }
 }
 
 impl<Id> IndexMut<BoxId> for CssBoxTree<Id> {
     fn index_mut(&mut self, id: BoxId) -> &mut Self::Output {
-        &mut self.boxes[id.index()]
+        let slot = self.slots[&id];
+        &mut self.boxes[slot]
     }
 }
 
@@ -1394,6 +1548,68 @@ mod tests {
         assert_eq!(tree[wrapper].children(), &[row]);
         assert_eq!(tree.boxes_for_node(7), &[wrapper, row]);
         assert_eq!(tree.origin_node(row), Some(7));
+    }
+
+    #[test]
+    fn retained_relayout_keeps_box_ids_when_dense_construction_order_changes() {
+        let mut previous = CssBoxTree::default();
+        let first = previous.push(
+            box_for(
+                BoxOrigin::Element(1),
+                DisplayRole::BLOCK_FLOW,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let second = previous.push(
+            box_for(
+                BoxOrigin::Element(2),
+                DisplayRole::BLOCK_FLOW,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+
+        let mut next = CssBoxTree::default();
+        let inserted = next.push(
+            box_for(
+                BoxOrigin::Element(3),
+                DisplayRole::BLOCK_FLOW,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        next.push(
+            box_for(
+                BoxOrigin::Element(1),
+                DisplayRole::BLOCK_FLOW,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        next.push(
+            box_for(
+                BoxOrigin::Element(2),
+                DisplayRole::BLOCK_FLOW,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+
+        let mapping = next.reconcile_identifiers(&previous);
+
+        assert_eq!(next.principal_box(1), Some(first));
+        assert_eq!(next.principal_box(2), Some(second));
+        let inserted = mapping[&inserted];
+        assert_ne!(inserted, first);
+        assert_ne!(inserted, second);
+        assert_eq!(next.origin_node(inserted), Some(3));
+        assert_eq!(next.roots(), &[inserted, first, second]);
     }
 
     #[test]

@@ -138,6 +138,20 @@ impl TableShadowLedger {
         self.block.merge(other.block);
     }
 
+    pub(crate) fn remap_box_ids(&mut self, mut id_of: impl FnMut(BoxId) -> BoxId) {
+        for divergence in &mut self.divergences {
+            divergence.table = id_of(divergence.table);
+        }
+        for (table, _) in &mut self.skipped {
+            *table = id_of(*table);
+        }
+        for gap in &mut self.positioning_gaps {
+            gap.table = id_of(gap.table);
+            gap.part = id_of(gap.part);
+        }
+        self.block.remap_box_ids(id_of);
+    }
+
     pub(crate) fn skip(&mut self, table: BoxId, reason: TableShadowSkip) {
         self.skipped.push((table, reason));
     }

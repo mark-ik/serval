@@ -35,7 +35,7 @@ pub use flow::{
 };
 pub use fragment_tree::{
     Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId,
-    LayoutResult, StaticPosition, StaticPositionSource,
+    LayoutIdentityMap, LayoutResult, StaticPosition, StaticPositionSource,
 };
 pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,

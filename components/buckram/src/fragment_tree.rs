@@ -1,6 +1,10 @@
 //! One-to-many CSS layout fragments and their tree relationships.
 
-use std::{collections::HashMap, hash::Hash, ops::Deref};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    ops::Deref,
+};
 
 use crate::{
     BoxId, ContainingBlock, CssBoxTree, FlowAxes, LogicalRect, PhysicalOffset, PhysicalRect,
@@ -11,6 +15,8 @@ use crate::{
 pub struct FragmentId(u32);
 
 impl FragmentId {
+    /// Opaque allocation number. Fragment identifiers are retained across a
+    /// K5g relayout and do not name a dense storage position.
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -223,6 +229,8 @@ impl Deref for Fragment {
 pub struct FragmentTree {
     roots: Vec<FragmentId>,
     fragments: Vec<Fragment>,
+    ids: Vec<FragmentId>,
+    slots: HashMap<FragmentId, usize>,
     by_box: HashMap<BoxId, Vec<FragmentId>>,
     static_positions: HashMap<BoxId, StaticPosition>,
 }
@@ -233,7 +241,9 @@ impl FragmentTree {
     }
 
     pub fn get(&self, id: FragmentId) -> Option<&Fragment> {
-        self.fragments.get(id.index())
+        self.slots
+            .get(&id)
+            .and_then(|slot| self.fragments.get(*slot))
     }
 
     pub fn fragments_for_box(&self, box_id: BoxId) -> impl Iterator<Item = &Fragment> {
@@ -298,6 +308,9 @@ impl FragmentTree {
         fragment.containing_fragment = containing_fragment;
         let box_id = fragment.box_id;
         self.fragments.push(fragment);
+        self.ids.push(id);
+        let previous = self.slots.insert(id, self.fragments.len() - 1);
+        assert!(previous.is_none(), "a fragment id cannot occupy two slots");
         self.by_box.entry(box_id).or_default().push(id);
         if parent.is_none() {
             self.roots.push(id);
@@ -313,7 +326,9 @@ impl FragmentTree {
         id: FragmentId,
         containing_fragment: Option<FragmentId>,
     ) {
-        if let Some(fragment) = self.fragments.get_mut(id.index()) {
+        if let Some(slot) = self.slots.get(&id).copied()
+            && let Some(fragment) = self.fragments.get_mut(slot)
+        {
             fragment.containing_fragment = containing_fragment;
         }
     }
@@ -323,14 +338,21 @@ impl FragmentTree {
     /// this after their fragment exists; the fragment tree, not a paint
     /// consumer, remains the owner of the propagated geometry.
     pub fn set_overflow(&mut self, id: FragmentId, overflow: LogicalRect) {
-        let Some(fragment) = self.fragments.get_mut(id.index()) else {
+        let Some(slot) = self.slots.get(&id).copied() else {
+            return;
+        };
+        let Some(fragment) = self.fragments.get_mut(slot) else {
             return;
         };
         fragment.overflow = overflow;
         let mut child = id;
-        while let Some(parent) = self.fragments[child.index()].parent {
-            let child_overflow = self.fragments[child.index()].overflow;
-            let parent_fragment = &mut self.fragments[parent.index()];
+        while let Some(parent) = self.get(child).and_then(Fragment::parent) {
+            let child_overflow = self
+                .get(child)
+                .expect("a fragment parent keeps its child")
+                .overflow;
+            let parent_slot = self.slots[&parent];
+            let parent_fragment = &mut self.fragments[parent_slot];
             parent_fragment.overflow =
                 union_logical_rects(parent_fragment.overflow, child_overflow);
             child = parent;
@@ -350,24 +372,23 @@ impl FragmentTree {
         }
 
         let descendants = self
-            .fragments
+            .ids
             .iter()
-            .enumerate()
-            .filter_map(|(index, fragment)| {
-                let id = FragmentId(index as u32);
-                let mut cursor = Some(fragment.id);
+            .copied()
+            .filter(|id| {
+                let mut cursor = Some(*id);
                 while let Some(candidate) = cursor {
                     if candidate == root {
-                        return Some(id);
+                        return true;
                     }
-                    cursor = self.fragments[candidate.index()].parent;
+                    cursor = self.get(candidate).and_then(Fragment::parent);
                 }
-                None
+                false
             })
             .collect::<Vec<_>>();
 
         for id in descendants {
-            let fragment = &mut self.fragments[id.index()];
+            let fragment = &mut self.fragments[self.slots[&id]];
             let logical = fragment.flow.logical_offset(offset);
             fragment.logical_rect.inline_start += logical.inline;
             fragment.logical_rect.block_start += logical.block;
@@ -380,16 +401,199 @@ impl FragmentTree {
         // A relative box can add a new scrollable extent outside the normal
         // flow position. Preserve the existing extent and union each moved
         // fragment into its structural ancestors.
-        for index in (0..self.fragments.len()).rev() {
-            let child = FragmentId(index as u32);
-            let Some(parent) = self.fragments[index].parent else {
+        for child in self.ids.clone().into_iter().rev() {
+            let Some(parent) = self.get(child).and_then(Fragment::parent) else {
                 continue;
             };
-            let overflow = self.fragments[child.index()].overflow;
-            let parent_fragment = &mut self.fragments[parent.index()];
+            let overflow = self
+                .get(child)
+                .expect("a live fragment has overflow")
+                .overflow;
+            let parent_fragment = &mut self.fragments[self.slots[&parent]];
             parent_fragment.overflow = union_logical_rects(parent_fragment.overflow, overflow);
         }
     }
+
+    /// Rekey dense construction identifiers against retained fragments after
+    /// the owning box tree has already reconciled its own identities.
+    pub fn reconcile_identifiers(
+        &mut self,
+        previous: &Self,
+        box_ids: &HashMap<BoxId, BoxId>,
+    ) {
+        self.remap_box_identifiers(box_ids);
+
+        let mut mapping = HashMap::new();
+        let mut consumed = HashSet::new();
+        for current in self.roots.clone() {
+            let candidate = previous.roots.iter().copied().find(|candidate| {
+                !consumed.contains(candidate)
+                    && same_fragment_context(
+                        self.get(current).expect("a root fragment is live"),
+                        previous.get(*candidate).expect("a retained root fragment is live"),
+                    )
+            });
+            if let Some(candidate) = candidate {
+                self.match_retained_subtree(previous, current, candidate, &mut mapping, &mut consumed);
+            }
+        }
+
+        let mut next = previous
+            .ids
+            .iter()
+            .map(|id| id.0)
+            .max()
+            .map_or(0, |id| id.checked_add(1).expect("a fragment tree exceeded u32::MAX fragments"));
+        for current in self.ids.clone() {
+            mapping.entry(current).or_insert_with(|| {
+                let allocated = FragmentId(next);
+                next = next
+                    .checked_add(1)
+                    .expect("a fragment tree exceeded u32::MAX fragments");
+                allocated
+            });
+        }
+        self.remap_fragment_identifiers(&mapping);
+        #[cfg(any(debug_assertions, test))]
+        self.assert_invariants();
+    }
+
+    fn match_retained_subtree(
+        &self,
+        previous: &Self,
+        current: FragmentId,
+        prior: FragmentId,
+        mapping: &mut HashMap<FragmentId, FragmentId>,
+        consumed: &mut HashSet<FragmentId>,
+    ) {
+        let current_fragment = self.get(current).expect("a retained candidate is live");
+        let previous_fragment = previous.get(prior).expect("a retained source is live");
+        if !same_fragment_context(current_fragment, previous_fragment) {
+            return;
+        }
+        mapping.insert(current, prior);
+        consumed.insert(prior);
+
+        let current_children = self.structural_children(current);
+        let previous_children = previous.structural_children(prior);
+        for current_child in current_children {
+            let candidate = previous_children.iter().copied().find(|candidate| {
+                !consumed.contains(candidate)
+                    && same_fragment_context(
+                        self.get(current_child).expect("a child fragment is live"),
+                        previous.get(*candidate).expect("a retained child fragment is live"),
+                    )
+            });
+            if let Some(candidate) = candidate {
+                self.match_retained_subtree(previous, current_child, candidate, mapping, consumed);
+            }
+        }
+    }
+
+    fn structural_children(&self, parent: FragmentId) -> Vec<FragmentId> {
+        self.ids
+            .iter()
+            .copied()
+            .filter(|id| self.get(*id).and_then(Fragment::parent) == Some(parent))
+            .collect()
+    }
+
+    fn remap_box_identifiers(&mut self, box_ids: &HashMap<BoxId, BoxId>) {
+        for fragment in &mut self.fragments {
+            fragment.box_id = box_ids[&fragment.box_id];
+        }
+        self.by_box.clear();
+        for (slot, id) in self.ids.iter().copied().enumerate() {
+            self.by_box
+                .entry(self.fragments[slot].box_id)
+                .or_default()
+                .push(id);
+        }
+        let positions = std::mem::take(&mut self.static_positions);
+        self.static_positions = positions
+            .into_values()
+            .map(|mut position| {
+                position.box_id = box_ids[&position.box_id];
+                (
+                    position.box_id,
+                    position,
+                )
+            })
+            .collect();
+    }
+
+    fn remap_fragment_identifiers(&mut self, mapping: &HashMap<FragmentId, FragmentId>) {
+        for fragment in &mut self.fragments {
+            fragment.id = mapping[&fragment.id];
+            fragment.parent = fragment.parent.map(|id| mapping[&id]);
+            fragment.containing_fragment = fragment.containing_fragment.map(|id| mapping[&id]);
+        }
+        self.ids = self.ids.iter().map(|id| mapping[id]).collect();
+        self.slots = self
+            .ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(slot, id)| (id, slot))
+            .collect();
+        self.roots = self.roots.iter().map(|id| mapping[id]).collect();
+        for ids in self.by_box.values_mut() {
+            for id in ids {
+                *id = mapping[id];
+            }
+        }
+        for position in self.static_positions.values_mut() {
+            if let StaticPositionSource::Fragment(source) = position.source {
+                position.source = StaticPositionSource::Fragment(mapping[&source]);
+            }
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn assert_invariants(&self) {
+        assert_eq!(self.fragments.len(), self.ids.len());
+        assert_eq!(self.fragments.len(), self.slots.len());
+        for (slot, id) in self.ids.iter().copied().enumerate() {
+            assert_eq!(self.slots.get(&id), Some(&slot));
+            assert_eq!(self.fragments[slot].id(), id);
+        }
+        for root in &self.roots {
+            assert!(self.slots.contains_key(root));
+            assert_eq!(self.get(*root).and_then(Fragment::parent), None);
+        }
+        for id in self.ids.iter().copied() {
+            let fragment = self.get(id).expect("a live fragment has storage");
+            if let Some(parent) = fragment.parent() {
+                assert!(self.slots.contains_key(&parent));
+            }
+            if let Some(containing) = fragment.containing_fragment() {
+                assert!(self.slots.contains_key(&containing));
+            }
+            assert!(self
+                .by_box
+                .get(&fragment.box_id())
+                .is_some_and(|ids| ids.contains(&id)));
+        }
+        for (box_id, ids) in &self.by_box {
+            let mut seen = HashSet::new();
+            for id in ids {
+                assert!(seen.insert(*id));
+                assert_eq!(self.get(*id).map(Fragment::box_id), Some(*box_id));
+            }
+        }
+        for position in self.static_positions.values() {
+            assert!(self.by_box.contains_key(&position.box_id));
+            if let StaticPositionSource::Fragment(source) = position.source {
+                assert!(self.slots.contains_key(&source));
+            }
+        }
+    }
+}
+
+fn same_fragment_context(current: &Fragment, previous: &Fragment) -> bool {
+    current.box_id == previous.box_id
+        && current.flow == previous.flow
+        && current.fragmentation_context == previous.fragmentation_context
 }
 
 fn union_logical_rects(one: LogicalRect, other: LogicalRect) -> LogicalRect {
@@ -413,6 +617,20 @@ pub struct LayoutResult<Id> {
     fragments: FragmentTree,
 }
 
+/// The identifier translation produced while reconciling one newly computed
+/// layout against its retained predecessor. Consumers that retain side data
+/// keyed by generated boxes use this to repair those keys before publication.
+#[derive(Clone, Debug)]
+pub struct LayoutIdentityMap {
+    box_ids: HashMap<BoxId, BoxId>,
+}
+
+impl LayoutIdentityMap {
+    pub fn box_id(&self, id: BoxId) -> BoxId {
+        self.box_ids[&id]
+    }
+}
+
 impl<Id> LayoutResult<Id>
 where
     Id: Copy + Eq + Hash,
@@ -427,6 +645,16 @@ where
 
     pub fn fragments(&self) -> &FragmentTree {
         &self.fragments
+    }
+
+    /// Reconcile this freshly constructed layout against the previous
+    /// continuous-media generation. The geometry is new; only identities with
+    /// unchanged generated-box and fragment context are retained.
+    pub fn reconcile_identifiers(&mut self, previous: &Self) -> LayoutIdentityMap {
+        let box_ids = self.boxes.reconcile_identifiers(&previous.boxes);
+        self.fragments
+            .reconcile_identifiers(&previous.fragments, &box_ids);
+        LayoutIdentityMap { box_ids }
     }
 
     pub fn fragment_ids_for_node(&self, node: Id) -> Vec<FragmentId> {
@@ -586,6 +814,133 @@ mod tests {
             Some(parent)
         );
         assert_eq!(fragments.roots(), &[parent]);
+    }
+
+    #[test]
+    fn retained_relayout_keeps_fragment_ids_after_an_inserted_sibling() {
+        let mut previous_boxes = CssBoxTree::default();
+        let previous_root = previous_boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(1u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let previous_child = previous_boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(2u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            Some(previous_root),
+            true,
+        );
+        let mut previous = FragmentTree::default();
+        let previous_root_fragment = previous.push(
+            Fragment::from_horizontal_physical(previous_root, PhysicalRect::default()),
+            None,
+            None,
+        );
+        let previous_child_fragment = previous.push(
+            Fragment::from_horizontal_physical(previous_child, PhysicalRect::default()),
+            Some(previous_root_fragment),
+            Some(previous_root_fragment),
+        );
+
+        let mut next_boxes = CssBoxTree::default();
+        let inserted_box = next_boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(3u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let next_root = next_boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(1u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let next_child = next_boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(2u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            Some(next_root),
+            true,
+        );
+        let box_ids = next_boxes.reconcile_identifiers(&previous_boxes);
+
+        let mut next = FragmentTree::default();
+        let inserted_fragment = next.push(
+            Fragment::from_horizontal_physical(inserted_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+        let next_root_fragment = next.push(
+            Fragment::from_horizontal_physical(next_root, PhysicalRect::default()),
+            None,
+            None,
+        );
+        let next_child_fragment = next.push(
+            Fragment::from_horizontal_physical(next_child, PhysicalRect::default()),
+            Some(next_root_fragment),
+            Some(next_root_fragment),
+        );
+
+        next.reconcile_identifiers(&previous, &box_ids);
+
+        let inserted = next
+            .fragment_ids_for_box(box_ids[&inserted_box])
+            .first()
+            .copied()
+            .expect("inserted fragment");
+        assert_ne!(inserted, previous_root_fragment);
+        assert_ne!(inserted, previous_child_fragment);
+        assert_eq!(
+            next.fragment_ids_for_box(previous_root),
+            &[previous_root_fragment],
+        );
+        assert_eq!(
+            next.fragment_ids_for_box(previous_child),
+            &[previous_child_fragment],
+        );
+        assert_eq!(
+            next.get(previous_child_fragment)
+                .and_then(Fragment::parent),
+            Some(previous_root_fragment),
+        );
+        assert_eq!(next.roots(), &[inserted, previous_root_fragment]);
+        assert_eq!(inserted_fragment.index(), 0, "the test starts dense before reconciliation");
+        assert_eq!(next_child_fragment.index(), 2, "the test starts dense before reconciliation");
     }
 
     #[test]

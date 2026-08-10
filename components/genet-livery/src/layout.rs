@@ -166,6 +166,15 @@ where
         self.buckram.fragments()
     }
 
+    /// Retain stable Buckram identities across a freshly recomputed layout.
+    /// Geometry, text shaping, and paint inputs remain from the new pass.
+    pub(crate) fn reconcile_identifiers(&mut self, previous: &Self) {
+        let identities = self.buckram.reconcile_identifiers(&previous.buckram);
+        self.table_paint.remap_box_ids(&identities);
+        self.table_shadow
+            .remap_box_ids(|box_id| identities.box_id(box_id));
+    }
+
     pub fn fragments_for_node(&self, node: Id) -> impl Iterator<Item = &TreeFragment> {
         self.buckram.fragments_for_node(node)
     }
@@ -3788,6 +3797,22 @@ impl TablePaintModel {
     fn clips_cell(&self, box_id: BoxId) -> bool {
         self.clipped_cells.contains(&box_id)
     }
+
+    fn remap_box_ids(&mut self, identities: &buckram::LayoutIdentityMap) {
+        self.fragments
+            .remap_box_ids(|box_id| identities.box_id(box_id));
+        if let Some(geometry) = &mut self.collapsed_geometry {
+            geometry.table = identities.box_id(geometry.table);
+            for segment in &mut geometry.segments {
+                segment.table = identities.box_id(segment.table);
+                segment.winner = identities.box_id(segment.winner);
+            }
+        }
+        self.clipped_cells = std::mem::take(&mut self.clipped_cells)
+            .into_iter()
+            .map(|box_id| identities.box_id(box_id))
+            .collect();
+    }
 }
 
 /// The paint-side index of every table that completed Buckram's block phase.
@@ -3818,6 +3843,16 @@ impl TablePaintPlane {
 
     fn merge(&mut self, other: Self) {
         self.tables.extend(other.tables);
+    }
+
+    fn remap_box_ids(&mut self, identities: &buckram::LayoutIdentityMap) {
+        self.tables = std::mem::take(&mut self.tables)
+            .into_iter()
+            .map(|(grid, mut table)| {
+                table.remap_box_ids(identities);
+                (identities.box_id(grid), table)
+            })
+            .collect();
     }
 }
 

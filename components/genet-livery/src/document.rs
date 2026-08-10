@@ -92,6 +92,7 @@ where
     generation: u64,
     cached: Option<((u32, u32), LiveryPaintList)>,
     layout: Option<LayoutState<D::NodeId>>,
+    identity_source: Option<LayoutState<D::NodeId>>,
     viewport: (u32, u32),
     scroll: (f32, f32),
     focused_chain: Vec<D::NodeId>,
@@ -125,6 +126,7 @@ where
             generation: 0,
             cached: None,
             layout: None,
+            identity_source: None,
             viewport,
             scroll: (0.0, 0.0),
             focused_chain: Vec::new(),
@@ -152,14 +154,23 @@ where
     }
 
     pub fn interactions_mut(&mut self) -> &mut InteractionStates<D::NodeId> {
-        self.cached = None;
+        self.retain_layout_identity();
         &mut self.interactions
     }
 
     pub fn invalidate(&mut self) {
-        self.cached = None;
-        self.layout = None;
+        self.retain_layout_identity();
         self.style_session.invalidate();
+    }
+
+    /// Discard visible derived output while retaining the immediately prior
+    /// layout as K5g's identity source. The next frame recomputes geometry and
+    /// reconciles only compatible generated boxes and fragments against it.
+    fn retain_layout_identity(&mut self) {
+        self.cached = None;
+        if let Some(layout) = self.layout.take() {
+            self.identity_source = Some(layout);
+        }
     }
 
     /// Apply one exact DOM-mutation batch before the next frame.
@@ -169,16 +180,16 @@ where
     /// collapsed-border paint, so any nonempty batch discards every derived
     /// frame artifact and updates the retained style plane first. The next
     /// [`Self::frame`] then rebuilds layout and paint from that same style
-    /// generation. The current correctness path deliberately rebuilds the
-    /// whole layout; callers must not infer incremental table geometry from
-    /// `RestyleStats`.
+    /// generation. The current correctness path deliberately rebuilds
+    /// geometry; K5g reconciles only compatible identities from the retained
+    /// prior generation, and callers must not infer incremental table geometry
+    /// from `RestyleStats`.
     pub fn apply_dom_mutations(&mut self, mutations: &[DomMutation<D::NodeId>]) -> RestyleStats {
         if mutations.is_empty() {
             return self.style_session.last_stats();
         }
 
-        self.cached = None;
-        self.layout = None;
+        self.retain_layout_identity();
         self.transitions.clear();
         self.keyframe_animation = None;
         self.style_session.update(
@@ -314,6 +325,7 @@ where
             return Ok(list.clone().translated(-self.scroll.0, -self.scroll.1));
         }
 
+        self.retain_layout_identity();
         self.viewport = (width, height);
         self.device.set_viewport_size(width as f32, height as f32);
         self.finish_completed_transitions();
@@ -336,7 +348,7 @@ where
         self.schedule_keyframe_animation(&styles);
         self.apply_transitions(&mut styles);
         self.apply_keyframe_animation(&mut styles);
-        let (styles, fragments) = layout_with_text_system(
+        let (styles, mut fragments) = layout_with_text_system(
             &self.dom,
             &styles,
             width as f32,
@@ -345,6 +357,9 @@ where
             &mut self.text,
             &self.image_sources,
         )?;
+        if let Some(previous) = self.identity_source.as_ref() {
+            fragments.reconcile_identifiers(&previous.fragments);
+        }
         let (content_width, content_height) = self.document_content_extent(&styles, &fragments);
         self.layout = Some(LayoutState {
             viewport: (width, height),
@@ -353,6 +368,7 @@ where
             content_width,
             content_height,
         });
+        self.identity_source = None;
         self.clamp_scroll();
         self.clamp_nested_scroll();
         self.generation = self.generation.saturating_add(1);
@@ -384,8 +400,7 @@ where
         index: usize,
     ) -> Result<usize, livery::stylesheet::RuleMutationError> {
         let inserted = self.style_set.insert_author_rule(sheet, rule, index)?;
-        self.cached = None;
-        self.layout = None;
+        self.retain_layout_identity();
         Ok(inserted)
     }
 
@@ -396,8 +411,7 @@ where
         index: usize,
     ) -> Result<(), livery::stylesheet::RuleMutationError> {
         self.style_set.delete_author_rule(sheet, index)?;
-        self.cached = None;
-        self.layout = None;
+        self.retain_layout_identity();
         Ok(())
     }
 
@@ -1314,4 +1328,112 @@ fn find_id<D: LayoutDom>(dom: &D, id: D::NodeId, target: &str) -> Option<D::Node
     }
     dom.dom_children(id)
         .find_map(|child| find_id(dom, child, target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genet_scripted_dom::{NodeId, ScriptedDom};
+    use layout_dom_api::QualName;
+
+    fn attr(name: &str) -> QualName {
+        QualName::new(None, Namespace::from(""), LocalName::from(name))
+    }
+
+    fn by_id(dom: &ScriptedDom, id: &str) -> NodeId {
+        find_id(dom, dom.document(), id).expect("fixture node")
+    }
+
+    fn generated_ids(
+        document: &LiveryDocument<ScriptedDom>,
+        node: NodeId,
+    ) -> Vec<(buckram::BoxId, Vec<buckram::FragmentId>)> {
+        let layout = document.layout.as_ref().expect("completed frame");
+        layout
+            .fragments
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .map(|box_id| {
+                (
+                    box_id,
+                    layout
+                        .fragments
+                        .fragments()
+                        .fragment_ids_for_box(box_id)
+                        .to_vec(),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_table_paint_sources_are_live(document: &LiveryDocument<ScriptedDom>, node: NodeId) {
+        let layout = document.layout.as_ref().expect("completed frame");
+        let paint = layout
+            .fragments
+            .table_paint_for_node(node)
+            .expect("retained table paint model");
+        for source in paint.fragments().iter().filter_map(|fragment| fragment.box_id) {
+            assert!(
+                !layout
+                    .fragments
+                    .fragments()
+                    .fragment_ids_for_box(source)
+                    .is_empty(),
+                "each retained table paint source names a live reconciled box",
+            );
+        }
+    }
+
+    #[test]
+    fn retained_relayout_keeps_unrelated_and_table_generated_ids_after_sibling_insertion() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body id=body><div id=changed>changed</div><table id=table><tbody><tr><td>cell</td></tr></tbody></table><div id=outside>outside</div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "body { margin: 0; } table { display: table; border-spacing: 0; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 40px; height: 20px; }",
+            ]),
+            Device::screen(240.0, 160.0),
+        );
+        document.frame(240, 160).expect("initial frame");
+        let table = by_id(document.dom(), "table");
+        let outside = by_id(document.dom(), "outside");
+        let table_before = generated_ids(&document, table);
+        let outside_before = generated_ids(&document, outside);
+        assert_table_paint_sources_are_live(&document, table);
+        assert!(
+            table_before.len() >= 2,
+            "the table receipt includes its retained wrapper and grid boxes",
+        );
+
+        document.mutate_dom(|dom| {
+            let body = by_id(dom, "body");
+            let changed = by_id(dom, "changed");
+            let inserted = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("div"),
+            ));
+            dom.set_attribute(inserted, attr("id"), "inserted");
+            let text = dom.create_text("inserted");
+            dom.append_child(inserted, text);
+            dom.insert_before(body, inserted, Some(changed));
+        });
+        document.frame(240, 160).expect("inserted-sibling frame");
+
+        assert_eq!(generated_ids(&document, table), table_before);
+        assert_eq!(generated_ids(&document, outside), outside_before);
+        assert_table_paint_sources_are_live(&document, table);
+        assert!(
+            !generated_ids(&document, by_id(document.dom(), "inserted")).is_empty(),
+            "the inserted sibling receives separate live identities",
+        );
+    }
 }
