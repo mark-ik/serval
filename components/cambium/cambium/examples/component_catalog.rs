@@ -17,10 +17,13 @@ use cambium::{
     PointerPhase, RadioGroup, ReorderItem, ReorderMove, ReorderState, SelectState, SelectionItem,
     SelectionState, Slider, StyleRange, SummaryBody, TabActivation, TextInput, TreeItem, TreeState,
     accordion_with, button, button_with, checkbox, command_menu, command_palette, command_picker,
-    custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, graph_canvas_swatch,
-    graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer, overlay_surface,
-    radio_group, reorderable_list, segmented_control, select, slider, styled_textarea,
-    summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
+    custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, frisket,
+    graph_canvas_swatch, graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer,
+    overlay_surface, radio_group, reorderable_list, segmented_control, select, slider,
+    styled_textarea, summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
+};
+use genet_host_api::tile::{
+    ContentSource, DocumentRef, TabStack, Tile, TileBranch, TileEvent, TileId, TileTree,
 };
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
@@ -101,6 +104,12 @@ struct CatalogState {
     text: TextInput,
     multiline: TextInput,
     styled: TextInput,
+    settings_theme: TextInput,
+    settings_zoom: Slider,
+    settings_shellbar_visible: bool,
+    settings_shellbar_edge: RadioGroup,
+    settings_saves: usize,
+    pane_events: Vec<TileEvent>,
     actions: CommandState,
     last_action: String,
     picker_commands: CommandState,
@@ -163,6 +172,14 @@ impl Default for CatalogState {
             text: TextInput::new("turnstone"),
             multiline: TextInput::new("First line\nSecond line"),
             styled: TextInput::new("let answer = 42;"),
+            settings_theme: TextInput::new("theme:night"),
+            settings_zoom: Slider::new(0.24)
+                .with_steps(0.02, 0.1)
+                .with_label("UI zoom"),
+            settings_shellbar_visible: true,
+            settings_shellbar_edge: RadioGroup::new(0).with_label("Shellbar edge"),
+            settings_saves: 0,
+            pane_events: Vec::new(),
             actions: CommandState::default()
                 .with_label("Catalog actions")
                 .with_id("catalog-actions"),
@@ -425,6 +442,37 @@ fn catalog_summary(id: impl Into<String>, title: impl Into<String>) -> SummaryBo
         .with_fact("Updated", "Today")
 }
 
+/// A deliberately small nested pane tree. It exercises the same framed
+/// furniture a mixed-surface host uses, while keeping content ownership in
+/// the catalog rather than pretending the frame owns a document runtime.
+fn catalog_pane_tree() -> TileTree {
+    let tile = |id: u64, title: &str| Tile {
+        id: TileId(id),
+        title: title.into(),
+        content: ContentSource::Document(DocumentRef(format!("catalog:{id}"))),
+        accent: None,
+    };
+    TileTree::Split {
+        axis: genet_host_api::tile::SplitAxis::Row,
+        children: vec![
+            TileBranch {
+                fraction: 0.6,
+                tree: TileTree::Stack(TabStack {
+                    tabs: vec![tile(1, "Settings"), tile(2, "Preview")],
+                    active: 0,
+                }),
+            },
+            TileBranch {
+                fraction: 0.4,
+                tree: TileTree::Stack(TabStack {
+                    tabs: vec![tile(3, "Activity")],
+                    active: 0,
+                }),
+            },
+        ],
+    }
+}
+
 fn command_result(event: CommandEvent) -> String {
     match event {
         CommandEvent::Activate(path) => format!(
@@ -561,6 +609,118 @@ fn catalog(state: &CatalogState) -> CatalogView {
     )
     .attr("id", "controls-section")
     .attr("class", "catalog-section");
+
+    let shellbar_edges = [
+        "Left".to_string(),
+        "Right".to_string(),
+        "Top".to_string(),
+        "Bottom".to_string(),
+    ];
+    let pane_tree = catalog_pane_tree();
+    let settings_form = el::<_, CatalogState, ()>(
+        "section",
+        (
+            el::<_, CatalogState, ()>(
+                "header",
+                (
+                    el::<_, CatalogState, ()>("h2", "Settings").attr("class", "catalog-pane-title"),
+                    el::<_, CatalogState, ()>("span", "Application")
+                        .attr("class", "catalog-pane-context"),
+                ),
+            )
+            .attr("class", "catalog-pane-header"),
+            el::<_, CatalogState, ()>(
+                "div",
+                (
+                    el(
+                        "label",
+                        (
+                            el::<_, CatalogState, ()>("span", "Theme")
+                                .attr("class", "catalog-setting-label"),
+                            lens(
+                                |input: &mut TextInput| text_field_typed(input),
+                                |state: &mut CatalogState| &mut state.settings_theme,
+                            ),
+                        ),
+                    )
+                    .attr("class", "catalog-setting-row"),
+                    el(
+                        "div",
+                        (
+                            el::<_, CatalogState, ()>("span", "UI zoom")
+                                .attr("class", "catalog-setting-label"),
+                            lens(
+                                |slider_state: &mut Slider| slider(slider_state),
+                                |state: &mut CatalogState| &mut state.settings_zoom,
+                            ),
+                        ),
+                    )
+                    .attr("class", "catalog-setting-row"),
+                    el(
+                        "div",
+                        (
+                            el::<_, CatalogState, ()>("span", "Show shellbar")
+                                .attr("class", "catalog-setting-label"),
+                            lens(
+                                |visible: &mut bool| toggle(*visible),
+                                |state: &mut CatalogState| &mut state.settings_shellbar_visible,
+                            ),
+                        ),
+                    )
+                    .attr("class", "catalog-setting-row"),
+                    el(
+                        "div",
+                        (
+                            el::<_, CatalogState, ()>("span", "Shellbar edge")
+                                .attr("class", "catalog-setting-label"),
+                            lens(
+                                move |edge: &mut RadioGroup| radio_group(edge, &shellbar_edges),
+                                |state: &mut CatalogState| &mut state.settings_shellbar_edge,
+                            ),
+                        ),
+                    )
+                    .attr("class", "catalog-setting-row"),
+                    button(
+                        "Apply settings",
+                        |state: &mut CatalogState, _: PointerClick| {
+                            state.settings_saves += 1;
+                        },
+                    )
+                    .attr("id", "catalog-settings-apply")
+                    .attr("class", "catalog-button"),
+                    el::<_, CatalogState, ()>(
+                        "output",
+                        format!("{} saved changes", state.settings_saves),
+                    )
+                    .attr("id", "catalog-settings-status")
+                    .attr("role", "status"),
+                ),
+            )
+            .attr("class", "catalog-settings-form"),
+            el::<_, CatalogState, ()>("div", "No settings are available for this source.")
+                .attr("class", "catalog-pane-state catalog-pane-empty")
+                .attr("data-pane-state", "empty")
+                .attr("role", "status"),
+            el::<_, CatalogState, ()>("div", "The settings provider could not be reached.")
+                .attr("class", "catalog-pane-state catalog-pane-error")
+                .attr("data-pane-state", "error")
+                .attr("role", "alert"),
+            el::<_, CatalogState, ()>("div", "Settings are unavailable in this space.")
+                .attr("class", "catalog-pane-state catalog-pane-unavailable")
+                .attr("data-pane-state", "unavailable")
+                .attr("aria-disabled", "true"),
+            el(
+                "div",
+                frisket(&pane_tree, |state: &mut CatalogState, event| {
+                    state.pane_events.push(event);
+                }),
+            )
+            .attr("id", "catalog-frisket")
+            .attr("class", "catalog-frisket"),
+        ),
+    )
+    .attr("id", "pane-settings-section")
+    .attr("class", "catalog-section catalog-pane-shell");
 
     let selected_tab = state.tabs.selected.first().copied().unwrap_or(0);
     let mut overview_panel = el::<_, CatalogState, ()>("div", "Overview of the selected node")
@@ -1034,6 +1194,7 @@ fn catalog(state: &CatalogState) -> CatalogView {
                 )
                 .attr("class", "catalog-intro"),
                 controls,
+                settings_form,
                 selection,
                 reorder_section,
                 disclosure_section,
@@ -1205,6 +1366,7 @@ fn assert_initial_surface(dom: &ScriptedDom, root: NodeId, width: CatalogWidth) 
     );
     for section in [
         "controls-section",
+        "pane-settings-section",
         "selection-section",
         "reorder-section",
         "disclosure-section",
@@ -1225,6 +1387,44 @@ fn assert_initial_surface(dom: &ScriptedDom, root: NodeId, width: CatalogWidth) 
             CatalogWidth::Regular => "catalog-width-regular",
         }
     ));
+
+    let pane_shell = find_id(dom, root, "pane-settings-section");
+    let pane_title = find_class(dom, pane_shell, "catalog-pane-title");
+    assert_eq!(node_text(dom, pane_title), "Settings");
+    let pane_status = find_id(dom, pane_shell, "catalog-settings-status");
+    assert_attr(dom, pane_status, "role", "status");
+    let settings_radio = find_where(dom, pane_shell, &|dom, node| {
+        attr(dom, node, "role") == Some("radiogroup")
+            && attr(dom, node, "aria-label") == Some("Shellbar edge")
+    })
+    .expect("settings choice control");
+    assert_attr(dom, settings_radio, "aria-label", "Shellbar edge");
+    for state in ["empty", "error", "unavailable"] {
+        find_where(dom, pane_shell, &|dom, node| {
+            attr(dom, node, "data-pane-state") == Some(state)
+        })
+        .unwrap_or_else(|| panic!("pane state specimen {state} is missing"));
+    }
+    assert_attr(
+        dom,
+        find_where(dom, pane_shell, &|dom, node| {
+            attr(dom, node, "data-pane-state") == Some("error")
+        })
+        .expect("pane error specimen"),
+        "role",
+        "alert",
+    );
+    let pane_frame = find_id(dom, pane_shell, "catalog-frisket");
+    let mut pane_tabs = Vec::new();
+    collect_class(dom, pane_frame, "frisket-tab", &mut pane_tabs);
+    assert_eq!(pane_tabs.len(), 3, "the pane frame has every tab");
+    let mut pane_dividers = Vec::new();
+    collect_class(dom, pane_frame, "frisket-divider", &mut pane_dividers);
+    assert_eq!(
+        pane_dividers.len(),
+        1,
+        "the pane frame has one split divider"
+    );
 
     let checkbox = find_id(dom, root, "catalog-checkbox");
     assert_attr(dom, checkbox, "role", "checkbox");
@@ -1493,7 +1693,8 @@ fn run_interactions(runner: &mut CatalogRunner) {
     runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::ArrowRight)));
     assert_eq!(runner.state().radio.selected, 1);
 
-    let selected_tab = find_where(&runner.dom().borrow(), root, &|dom, node| {
+    let selection_section = find_id(&runner.dom().borrow(), root, "selection-section");
+    let selected_tab = find_where(&runner.dom().borrow(), selection_section, &|dom, node| {
         attr(dom, node, "role") == Some("tab") && attr(dom, node, "aria-selected") == Some("true")
     })
     .expect("selected tab");
@@ -1688,6 +1889,27 @@ fn run_interactions(runner: &mut CatalogRunner) {
     let apply = find_id(&runner.dom().borrow(), root, "catalog-apply");
     runner.dispatch_click(apply, PointerClick::at((4.0, 4.0)));
     assert_eq!(runner.state().presses, 1);
+
+    let settings_apply = find_id(&runner.dom().borrow(), root, "catalog-settings-apply");
+    runner.dispatch_click(settings_apply, PointerClick::at((4.0, 4.0)));
+    assert_eq!(runner.state().settings_saves, 1);
+    assert_eq!(
+        node_text(
+            &runner.dom().borrow(),
+            find_id(&runner.dom().borrow(), root, "catalog-settings-status")
+        ),
+        "1 saved changes"
+    );
+    let pane_preview = find_where(&runner.dom().borrow(), root, &|dom, node| {
+        attr(dom, node, "aria-label") == Some("Preview")
+    })
+    .expect("pane preview tab");
+    runner.dispatch_click(pane_preview, PointerClick::at((4.0, 4.0)));
+    assert_eq!(
+        runner.state().pane_events,
+        [TileEvent::Activated(TileId(2))],
+        "frisket reports, while the caller remains the tree owner"
+    );
 
     let disabled_command = find_where(&runner.dom().borrow(), root, &|dom, node| {
         attr(dom, node, "aria-description") == Some("Connect a writable graph first")

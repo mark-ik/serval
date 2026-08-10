@@ -17,6 +17,7 @@ The ordered expansion and promotion rules live in
 | Select | Combobox state, End selection, Escape dismissal |
 | Slider | Accessible value and configurable PageUp step |
 | Text fields | Single-line editing, multiline structure, styled runs |
+| Pane shell and settings form | Header/context, text/number/toggle/choice settings controls, empty/error/unavailable states, and a nested Frisket frame whose events leave the tree authoritative |
 | Command surfaces | One model rendered as palette, picker, and positioned context menu; pattern-specific roles, disabled reasons, shared navigation, and depth-one submenus |
 | Action list compatibility | Existing API delegates to the command palette engine |
 | Selection bars | Shared roving focus rendered as linked tabs, a single-select segmented control, and multi-select filter chips |

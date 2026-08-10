@@ -71,6 +71,88 @@
     margin: 0.75rem 0;
 }
 
+.catalog-pane-shell {
+    overflow: hidden;
+    padding: 0;
+}
+
+.catalog-pane-header {
+    align-items: baseline;
+    background-color: var(--catalog-hover);
+    border-bottom: 1px solid var(--catalog-border);
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+}
+
+.catalog-pane-title {
+    font-size: 1rem;
+    margin: 0;
+}
+
+.catalog-pane-context,
+.catalog-setting-label {
+    color: var(--catalog-muted);
+    font-size: 0.85rem;
+}
+
+.catalog-settings-form {
+    display: grid;
+    gap: 0.75rem;
+    padding: 1rem;
+}
+
+.catalog-setting-row {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.catalog-pane-state {
+    border-top: 1px solid var(--catalog-border);
+    padding: 0.75rem 1rem;
+}
+
+.catalog-pane-empty {
+    color: var(--catalog-muted);
+}
+
+.catalog-pane-error {
+    background-color: #fff0f0;
+    color: #7f2525;
+}
+
+.catalog-pane-unavailable {
+    color: var(--catalog-disabled);
+}
+
+.catalog-frisket {
+    height: 13rem;
+    margin: 1rem;
+}
+
+.catalog-frisket .frisket-tabbar {
+    background-color: var(--catalog-hover);
+}
+
+.catalog-frisket .frisket-tab {
+    background-color: var(--catalog-panel);
+    color: var(--catalog-text);
+}
+
+.catalog-frisket .frisket-tab.active {
+    background-color: var(--catalog-accent);
+    color: white;
+}
+
+.catalog-frisket .frisket-content {
+    background-color: var(--catalog-bg);
+}
+
+.catalog-frisket .frisket-divider {
+    background-color: var(--catalog-border);
+}
+
 .catalog-row > input,
 .catalog-row > textarea {
     display: block;
