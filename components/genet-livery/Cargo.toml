@@ -25,3 +25,6 @@ taffy = { version = "0.12.1", default-features = false, features = ["std", "bloc
 base64.workspace = true
 genet-scripted-dom = { path = "../genet-scripted-dom" }
 genet-static-dom = { version = "0.1.0", path = "../genet-static-dom" }
+# examples/capture_paint_corpus.rs — same encoding netrender's paint-list
+# corpus stores fixtures in. Already in the lock via other members.
+postcard = { version = "1", features = ["alloc"] }
