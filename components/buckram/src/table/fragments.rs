@@ -84,6 +84,57 @@ impl TableFragments {
             .iter()
             .filter(move |fragment| fragment.role == role)
     }
+
+    /// Apply each table part's relative-position offset to its whole emitted
+    /// subtree. Returns the cumulative offset for every sourced fragment so
+    /// the embedding layout tree can move its corresponding cell contents.
+    ///
+    /// Relative positioning changes painted geometry but never table sizing.
+    /// The table pipeline therefore emits its unshifted track geometry first;
+    /// this late pass retains that geometry while moving the affected part and
+    /// all of its structural descendants together.
+    pub fn apply_relative_offsets(
+        &mut self,
+        mut offset_of: impl FnMut(BoxId) -> (f32, f32),
+    ) -> Vec<(BoxId, (f32, f32))> {
+        let mut cumulative = vec![(0.0, 0.0); self.fragments.len()];
+        for index in 0..self.fragments.len() {
+            let parent_offset = self.fragments[index]
+                .parent
+                .and_then(|parent| cumulative.get(parent).copied())
+                .unwrap_or((0.0, 0.0));
+            let own_offset = self.fragments[index]
+                .box_id
+                .map(&mut offset_of)
+                .unwrap_or((0.0, 0.0));
+            let offset = (
+                parent_offset.0 + own_offset.0,
+                parent_offset.1 + own_offset.1,
+            );
+            cumulative[index] = offset;
+            let fragment = &mut self.fragments[index];
+            fragment.rect.inline_start += offset.0;
+            fragment.rect.block_start += offset.1;
+            fragment.overflow.inline_start += offset.0;
+            fragment.overflow.block_start += offset.1;
+        }
+
+        // Relative descendants may now spill outside their former ancestors.
+        // Rebuild the overflow unions from the translated rectangles, while
+        // retaining pre-existing cell and border overflow.
+        for index in (1..self.fragments.len()).rev() {
+            let (overflow, parent) = (self.fragments[index].overflow, self.fragments[index].parent);
+            if let Some(parent) = parent {
+                self.fragments[parent].overflow = union(self.fragments[parent].overflow, overflow);
+            }
+        }
+
+        self.fragments
+            .iter()
+            .zip(cumulative)
+            .filter_map(|(fragment, offset)| fragment.box_id.map(|box_id| (box_id, offset)))
+            .collect()
+    }
 }
 
 fn union(one: LogicalRect, other: LogicalRect) -> LogicalRect {

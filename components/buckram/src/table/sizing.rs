@@ -267,7 +267,6 @@ pub enum TableInlineBorderMetrics {
 pub enum CaptionMinContribution {
     NoCaption,
     Measured(f32),
-    PendingK4e,
 }
 
 impl CaptionMinContribution {
@@ -276,9 +275,6 @@ impl CaptionMinContribution {
             Self::NoCaption => Ok(None),
             Self::Measured(value) if value.is_finite() && value >= 0.0 => Ok(Some(value)),
             Self::Measured(_) => Err(TableInlineSizingError::InvalidCaptionMinimum),
-            Self::PendingK4e => Err(TableInlineSizingError::Deferral(
-                TableDeferral::CaptionMinPendingK4e,
-            )),
         }
     }
 }
@@ -377,12 +373,10 @@ pub fn collapse_columns(
     *used_table_inline_size = (*used_table_inline_size - removed).max(0.0);
 }
 
-/// Named distinctions deferred to later K4 gates. These names describe CSS
-/// work, never a DOM tag pattern or a backend limitation.
+/// The one foundational table-sizing cycle not closed by K4. Its basis is
+/// owned by K7; it never re-enters a backend table algorithm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TableDeferral {
-    CaptionMinPendingK4e,
-    TrackVisibilityPendingK4f,
     /// A padding percentage whose containing-block basis is not yet available.
     /// Automatic sizing measures cells before the table width exists, so the
     /// dependency is genuinely circular there and stays explicit.
@@ -1103,23 +1097,8 @@ mod tests {
     }
 
     #[test]
-    fn pending_caption_and_invalid_sizes_are_explicit() {
+    fn invalid_sizes_are_explicit() {
         let (grid, cell) = sample_grid();
-        let mut sizing_input = input(&grid);
-        sizing_input.caption_min = CaptionMinContribution::PendingK4e;
-        let mut cache = IntrinsicSizeCache::default();
-        let mut provider = RecordingProvider {
-            result: IntrinsicSizes::new(1.0, 1.0),
-            ..Default::default()
-        };
-        assert_eq!(
-            collect_table_cell_inline_measures(&sizing_input, &mut cache, &mut provider, |_| Ok(
-                style()
-            ),),
-            Err(TableInlineSizingError::Deferral(
-                TableDeferral::CaptionMinPendingK4e
-            ))
-        );
         assert_eq!(AffineLengthPercentage::new(f32::NAN, 0.0), None);
         assert_eq!(
             CellInlineOffsets {

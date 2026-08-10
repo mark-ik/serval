@@ -31,9 +31,9 @@ pub enum AlgorithmKind {
     Block,
     Flex,
     Grid,
-    /// A Buckram table formatting context. K4d1 reserves the dispatch tag;
-    /// K4d6 routes live tables through `buckram::table` row layout instead of
-    /// the Grid/Flex bridge. Nothing constructs it until then.
+    /// A Buckram table formatting context. K4h selects it for every table
+    /// grid before layout; K4d6 supplies final geometry when the table
+    /// pipeline accepts its sizing input.
     Table,
 }
 
@@ -458,14 +458,10 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         }
     }
 
-    /// Hand one node's dispatch to a Buckram algorithm after the fact.
-    ///
-    /// Almost every node's algorithm follows from its computed style and is
-    /// fixed when the node is built. A table is the exception: whether
-    /// Buckram can lay it out is only known once the algorithm has run, and a
-    /// table it defers has to keep the backend dispatch it was built with.
-    /// Deciding at build time would mean either guessing or giving up the
-    /// fallback.
+    /// Hand one node's dispatch to a Buckram algorithm after the table's
+    /// block pipeline has written its final geometry. Table grids begin on
+    /// the Buckram dispatcher too, so a named sizing deferral never revives a
+    /// backend table route.
     pub fn set_kind(&mut self, id: AlgorithmNodeId, kind: AlgorithmKind) {
         self.nodes[id.index()].kind = kind;
     }

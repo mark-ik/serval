@@ -1,8 +1,8 @@
 //! Livery's non-live lowering into Buckram's table inline-sizing contracts.
 //!
-//! The temporary Grid/Flex bridge does not consume this module yet. Keeping the
-//! lowering separate makes its CSS inputs reviewable and proves that Buckram
-//! receives logical edges and box identity rather than backend layout state.
+//! Keeping the lowering separate makes its CSS inputs reviewable and proves
+//! that Buckram receives logical edges and box identity rather than backend
+//! layout state.
 
 use buckram::{
     AffineLengthPercentage, CellBlockOffsets, CellInlineOffsets, CollapsedBorderMetricError,
@@ -551,7 +551,7 @@ pub(crate) fn fixed_table_track_inputs(
 
 /// Lower explicit K4b column and column-group boxes for K4c3's automatic
 /// measures. This is a model-only seam: intrinsic aggregation remains in
-/// Buckram, and no Grid/Flex bridge state enters the result.
+/// Buckram, and no backend layout state enters the result.
 pub(crate) fn automatic_table_track_inputs(
     grid: &TableGrid,
     mut constraints_for: impl FnMut(buckram::BoxId) -> TableInlineConstraints,

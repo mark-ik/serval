@@ -399,7 +399,8 @@ fn cell_constraint(
             TableBoxSizing::ContentBox => {
                 // Automatic measures run before a table width exists, so a
                 // padding percentage has no basis and must not be sampled at
-                // zero. K4c5 routes these tables to the compatibility bridge.
+                // zero. K4h retains the named K7 cycle without a backend
+                // table route.
                 if measure.offsets.needs_percentage_basis() {
                     return Err(TableInlineSizingError::Deferral(
                         TableDeferral::PercentagePaddingPendingBasis,

@@ -1935,9 +1935,7 @@ fn inline_blocks_occupy_atomic_space_in_the_text_line() {
 
 /// K4d6: a table row's background reaches the paint list.
 ///
-/// The Grid bridge flattened rows, row groups, and columns away before the
-/// backend saw them, so none of them produced a fragment and a `<tr>`
-/// background could not paint at all. Buckram emits the whole structural
+/// Buckram emits the whole structural
 /// K4e4: a table's background paints on the grid, not on the wrapper.
 ///
 /// CSS 2.1 section 17.4 leaves `background` on the table grid box, and the

@@ -795,6 +795,46 @@ Work:
 
 **Stop after B10.** Do not begin K5 implementation in the same task.
 
+### B10a accepted K4h closure (2026-08-10)
+
+`place_table_cell`, `table_is_flattenable`, `TableBridgeCounts`, table Grid
+tracks, and row Flex selection are deleted. Every generated table grid now
+starts on `AlgorithmKind::Table`, including a table whose sizing input is
+still incomplete, so a named K7 gap cannot restore a backend table route.
+The live table model exposes only Buckram fragments and algorithm nodes;
+flex/grid content inside a cell remains ordinary local content, not table
+layout.
+
+`TableFragments::apply_relative_offsets` moves a positioned row-group, row,
+or cell fragment with its structural descendants and rebuilds overflow. The
+same cumulative cell offset reaches the algorithm tree before table dispatch.
+The Livery receipt covers a relative row group plus row. Absolute, fixed, and
+sticky table parts are retained as `TablePositioningGap` records for K5 while
+their table continues through Buckram; K4 does not claim their containing
+block or static-position behavior. Fragmentation, repeated headers, and split
+rowspans remain K6 work.
+
+`CaptionMinPendingK4e` and `TrackVisibilityPendingK4f` are deleted. The sole
+surviving `TableDeferral` is `PercentagePaddingPendingBasis`, a genuine K7
+cycle. No source-level `table-layout` partial marker remains.
+
+Focused receipts:
+
+```powershell
+cargo test -p buckram --lib --offline -j1      # 185 passed
+cargo test -p genet-livery --lib --offline -j1 # 85 passed
+cargo test -p genet-livery --all-targets --offline -j1 # passed
+cargo test -p livery --offline -j1             # passed
+```
+
+Strict Clippy passed for the touched `buckram` and `genet-livery` packages.
+The combined command is blocked by 146 existing `livery` warnings in files
+unchanged by this gate, chiefly deliberate precision constants.
+
+The fresh complete WPT maps, all-nine comparison, headed behavior, and K5/K6
+positioning and fragmentation behavior remain unmeasured. This closes the K4
+bridge slice only and stops before K5.
+
 ## Verification ladder
 
 Every behavior-changing gate runs the smallest owning tests first, then the

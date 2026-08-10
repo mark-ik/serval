@@ -1,17 +1,15 @@
 //! K4c5b: Buckram owns live table inline sizing.
 //!
-//! Every flattenable table is noted at box-build time. Before the main
+//! Every table is noted at box-build time. Before the main
 //! compute, [`buckram_table_columns`] lowers the table once, runs Buckram's
-//! fixed or automatic algorithm, and the caller pins the resulting columns
-//! as explicit grid tracks. The temporary Grid/Flex bridge is a placement
-//! consumer only: it may place cells, it may not infer a track.
+//! fixed or automatic algorithm, and the block pipeline commits the resulting
+//! table geometry before backend dispatch.
 //!
-//! A table Buckram cannot size yet defers under a named skip and falls back
-//! to Taffy inference, counted, never silent. After fragment collection,
+//! A table Buckram cannot size yet defers under a named skip, counted, never
+//! silent. It remains on the Buckram table dispatcher. After fragment collection,
 //! [`verify_assigned_columns`] asserts the painted single-span cell widths
-//! match what Buckram assigned; a divergence there means the bridge failed
-//! to honor an explicit track, which is an invariant violation rather than
-//! a sizing disagreement.
+//! match what Buckram assigned; a divergence there is an invariant violation
+//! rather than a sizing disagreement.
 
 use std::hash::Hash;
 
@@ -50,7 +48,7 @@ use crate::{
 pub enum TableSizingQuantity {
     ColumnCount,
     /// A painted single-span cell's width differs from the Buckram column it
-    /// was pinned to: the bridge failed to honor an explicit track.
+    /// was assigned.
     ColumnSize(usize),
 }
 
@@ -64,7 +62,7 @@ pub struct TableSizingDivergence {
     pub livery: f32,
 }
 
-/// Why a table received no Buckram columns and fell back to Taffy inference.
+/// Why a table received no Buckram columns.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TableShadowSkip {
     /// A named K4 gap. Never a silent fallback.
@@ -78,6 +76,24 @@ pub enum TableShadowSkip {
     /// from a normal sizing deferral and is never silent.
     CollapsedBorder(CollapsedBorderLoweringError),
     Error(TableInlineSizingError),
+}
+
+/// A positioned table part whose containing-block and static-position rules
+/// belong to K5. K4h keeps the table on Buckram dispatch and records the gap
+/// instead of letting a backend table algorithm stand in for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TablePositioningGap {
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
+/// One table part deferred to K5 positioning work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TablePositioningGapRecord {
+    pub table: BoxId,
+    pub part: BoxId,
+    pub gap: TablePositioningGap,
 }
 
 /// Deferral counters and the honoring-verification record for one layout.
@@ -94,6 +110,9 @@ pub struct TableShadowLedger {
     pub honored: usize,
     pub divergences: Vec<TableSizingDivergence>,
     pub skipped: Vec<(BoxId, TableShadowSkip)>,
+    /// Positioned table parts that remain a K5 containing-block and
+    /// static-positioning concern.
+    pub positioning_gaps: Vec<TablePositioningGapRecord>,
     /// K4d6b's block-axis counters. Nested rather than parallel: a table's
     /// two axes are one dispatch decision, and two ledgers threaded through
     /// three routes would drift apart.
@@ -115,6 +134,7 @@ impl TableShadowLedger {
         self.honored += other.honored;
         self.divergences.extend(other.divergences);
         self.skipped.extend(other.skipped);
+        self.positioning_gaps.extend(other.positioning_gaps);
         self.block.merge(other.block);
     }
 
@@ -153,7 +173,7 @@ pub(crate) const LIVE_ROOT_FONT_SIZE: f32 = 16.0;
 pub struct PendingTable<Id> {
     pub table: BoxId,
     pub node: Id,
-    pub taffy_table: AlgorithmNodeId,
+    pub table_node: AlgorithmNodeId,
     /// The table wrapper box's node, once K4e1's wrapper has been built. It is
     /// built after the grid, so it registers itself here rather than arriving
     /// with the rest.
@@ -163,8 +183,8 @@ pub struct PendingTable<Id> {
     /// get the floor a caption puts under the table's inline size.
     pub captions: Vec<(AlgorithmNodeId, f32)>,
     pub grid: TableGrid,
-    /// K4g2's logical atomic winners. The existing Grid/Flex bridge does not
-    /// inspect them; K4g3 turns them into metrics before sizing consumes them.
+    /// K4g2's logical atomic winners. K4g3 turns them into metrics before
+    /// sizing consumes them.
     pub collapsed_borders: Option<ResolvedTableBorderGrid<ComputedColor>>,
     /// K4g3's exact segment-backed metric projection. K4g4 is its first
     /// sizing consumer; retaining it beside the winner grid prevents either
@@ -525,18 +545,17 @@ where
         },
     };
 
-    // K4e3 measures the caption through the live intrinsic machinery and hands
-    // the result in. The DOM check stays as the safety net it always was: a
-    // table that has a caption but arrived without a measurement still defers,
-    // because inventing zero here would look like support.
+    // K4e3 measures every caption through the live intrinsic machinery before
+    // table sizing. A missing value violates that completed provider contract;
+    // K4h intentionally has no caption-sizing deferral left to revive.
     let caption_min = if dom.dom_children(table_node).into_iter().any(|child| {
         styles
             .get(child)
             .is_some_and(|style| style.display == CssDisplay::TableCaption)
     }) {
-        caption_min.map_or(CaptionMinContribution::PendingK4e, |minimum| {
-            CaptionMinContribution::Measured(minimum)
-        })
+        CaptionMinContribution::Measured(
+            caption_min.expect("K4e supplies a caption minimum before Buckram table sizing"),
+        )
     } else {
         CaptionMinContribution::NoCaption
     };

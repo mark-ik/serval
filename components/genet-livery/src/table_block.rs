@@ -573,10 +573,8 @@ const FRAGMENT_TOLERANCE: f32 = 1.0;
 /// would report the table's position in the page as a table-layout
 /// disagreement.
 ///
-/// While the Grid bridge still places cells, a divergence here is information
-/// rather than a failure: it is the measured distance between the two
-/// engines, and the set of tables where they already agree is what makes the
-/// cutover's movement attributable.
+/// The emitted structural fragments are authoritative. A divergence therefore
+/// records a failure to preserve the table pipeline's committed geometry.
 pub(crate) fn verify_table_block(
     table: BoxId,
     layout: &TableBlockLayout,

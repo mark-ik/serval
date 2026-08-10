@@ -59,8 +59,8 @@ use crate::{
         commit_table_block, table_block_inputs, verify_table_block,
     },
     table_shadow::{
-        LIVE_ROOT_FONT_SIZE, PendingTable, TableShadowLedger, buckram_table_columns,
-        verify_assigned_columns,
+        LIVE_ROOT_FONT_SIZE, PendingTable, TablePositioningGap, TablePositioningGapRecord,
+        TableShadowLedger, buckram_table_columns, verify_assigned_columns,
     },
     table_sizing::collapsed_table_borders,
     table_wrapper::{grid_style, wrapper_style},
@@ -85,8 +85,7 @@ struct AtomicLayoutPlane {
     // this map; other atomic boxes retain the existing block-end fallback.
     inline_baselines: HashMap<BoxId, f32>,
     subtrees: Vec<AtomicSubtree>,
-    // Accumulated K4c5a shadow ledgers from each atomic root's BuildState,
-    // which are otherwise dropped exactly as table_bridge_count still is.
+    // Accumulated K4c5a shadow ledgers from each atomic root's BuildState.
     table_shadow: TableShadowLedger,
     table_paint: TablePaintPlane,
 }
@@ -124,7 +123,6 @@ pub struct LiveryLayout<Id> {
     buckram: LayoutResult<Id>,
     text_frame: Option<TextFrame<Id>>,
     block_algorithms: BlockAlgorithmCounts,
-    table_bridges: TableBridgeCounts,
     table_paint: TablePaintPlane,
     table_shadow: TableShadowLedger,
 }
@@ -135,14 +133,6 @@ pub struct BlockAlgorithmCounts {
     pub taffy: usize,
 }
 
-/// Live tables still routed through Livery's temporary Grid/Flex bridge.
-/// K4c5 replaces this count with Buckram table dispatch and removes the
-/// compatibility route.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct TableBridgeCounts {
-    pub grids: usize,
-}
-
 impl<Id> LiveryLayout<Id>
 where
     Id: Copy + Eq + Hash,
@@ -151,7 +141,6 @@ where
         buckram: LayoutResult<Id>,
         text_frame: Option<TextFrame<Id>>,
         block_algorithms: BlockAlgorithmCounts,
-        table_bridges: TableBridgeCounts,
         table_paint: TablePaintPlane,
         table_shadow: TableShadowLedger,
     ) -> Self {
@@ -159,7 +148,6 @@ where
             buckram,
             text_frame,
             block_algorithms,
-            table_bridges,
             table_paint,
             table_shadow,
         }
@@ -203,10 +191,6 @@ where
 
     pub fn block_algorithm_counts(&self) -> BlockAlgorithmCounts {
         self.block_algorithms
-    }
-
-    pub fn table_bridge_counts(&self) -> TableBridgeCounts {
-        self.table_bridges
     }
 
     /// K4f's retained table paint model. Structural table boxes are emitted by
@@ -285,7 +269,6 @@ struct BuildState<'a, D: LayoutDom> {
     boxes: &'a GeneratedBoxTree<D::NodeId>,
     tree: AlgorithmTree<Style, TextMeasure, Option<BoxId>>,
     image_sources: &'a ImageSources,
-    table_bridge_count: usize,
     table_shadow: TableShadowLedger,
     pending_tables: Vec<PendingTable<D::NodeId>>,
 }
@@ -543,7 +526,6 @@ struct InlineBuildState<'a, D: LayoutDom> {
     atomic: &'a AtomicLayoutPlane,
     tree: AlgorithmTree<Style, InlineMeasure, Vec<BoxId>>,
     image_sources: &'a ImageSources,
-    table_bridge_count: usize,
     table_shadow: TableShadowLedger,
     pending_tables: Vec<PendingTable<D::NodeId>>,
     /// The grid and cell nodes for the table `build_children` just processed,
@@ -975,7 +957,6 @@ where
         boxes: &boxes,
         tree: AlgorithmTree::new(),
         image_sources,
-        table_bridge_count: 0,
         table_shadow: TableShadowLedger::default(),
         pending_tables: Vec::new(),
     };
@@ -1043,10 +1024,6 @@ where
         },
     );
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
-    let table_bridges = TableBridgeCounts {
-        grids: state.table_bridge_count,
-    };
-
     let table_paint = state.table_paint_plane();
     let tables = table_paint.fragments();
     let mut fragments = FragmentTree::default();
@@ -1090,7 +1067,6 @@ where
             buckram: buckram_blocks,
             taffy: taffy_blocks,
         },
-        table_bridges,
         table_paint,
         table_shadow,
     ))
@@ -1146,7 +1122,6 @@ where
             tree: AlgorithmTree::new(),
             image_sources,
             table_shadow: TableShadowLedger::default(),
-            table_bridge_count: 0,
             pending_tables: Vec::new(),
         };
         let built = state.build_box(
@@ -1258,7 +1233,7 @@ where
             else {
                 continue;
             };
-            let Some(first) = state.tree.baselines(pending.taffy_table).first else {
+            let Some(first) = state.tree.baselines(pending.table_node).first else {
                 continue;
             };
             let baseline = grid_rect.y - root_rect.y + first;
@@ -1462,7 +1437,6 @@ where
         atomic,
         tree: AlgorithmTree::new(),
         image_sources,
-        table_bridge_count: 0,
         table_shadow: TableShadowLedger::default(),
         pending_tables: Vec::new(),
         pending_table_handoff: None,
@@ -1590,10 +1564,6 @@ where
     );
     populate_inline_baselines(&mut state.tree);
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
-    let table_bridges = TableBridgeCounts {
-        grids: state.table_bridge_count,
-    };
-
     let mut table_paint = state.table_paint_plane();
     let tables = table_paint.fragments();
     let mut text_frame = TextFrame::default();
@@ -1645,7 +1615,6 @@ where
             buckram: buckram_blocks,
             taffy: taffy_blocks,
         },
-        table_bridges,
         table_paint,
         table_shadow,
     ))
@@ -1666,12 +1635,6 @@ where
         match self.boxes[box_id].origin {
             BoxOrigin::Element(node) => {
                 let computed = self.styles.get(node).cloned().unwrap_or_default();
-                if matches!(
-                    computed.display,
-                    CssDisplay::Table | CssDisplay::InlineTable
-                ) {
-                    self.table_bridge_count += 1;
-                }
                 // K4e1: the wrapper above this grid took the properties
                 // CSS 2.1 section 17.4 assigns to it; the grid sees them unset.
                 let computed =
@@ -1727,7 +1690,7 @@ where
                     self.pending_tables.push(PendingTable {
                         table: box_id,
                         node: dom_node,
-                        taffy_table: node,
+                        table_node: node,
                         wrapper: None,
                         captions: Vec::new(),
                         grid,
@@ -2048,12 +2011,6 @@ where
                 &intrinsics,
                 &mut self.table_shadow,
             );
-            if let Some(inline) = &columns {
-                self.tree
-                    .style_mut(pending.taffy_table)
-                    .grid_template_columns =
-                    inline.column_sizes.iter().copied().map(length).collect();
-            }
             pending.assigned = columns;
             self.size_wrapper_from_grid(pending);
         }
@@ -2108,6 +2065,7 @@ where
             styles,
             boxes,
             atomic,
+            table_shadow,
             ..
         } = self;
         for pending in pendings {
@@ -2162,8 +2120,17 @@ where
                 &mut formatter,
                 &mut ledger,
             );
-            if let Some(block) = &pending.block {
-                commit_table_block(tree, pending.taffy_table, block, inline, |box_id| {
+            if let Some(block) = &mut pending.block {
+                apply_relative_table_part_offsets(
+                    block,
+                    pending.table,
+                    boxes,
+                    styles,
+                    pending.font_size,
+                    inline.used_grid_inline_size,
+                    &mut table_shadow.positioning_gaps,
+                );
+                commit_table_block(tree, pending.table_node, block, inline, |box_id| {
                     pending
                         .grid
                         .cells
@@ -2173,7 +2140,7 @@ where
                 });
             }
         }
-        self.table_shadow.block = ledger;
+        table_shadow.block = ledger;
     }
 
     /// The retained structural paint model for every table Buckram laid out.
@@ -2202,11 +2169,7 @@ where
         if matches!(
             parent_style.display,
             CssDisplay::Table | CssDisplay::InlineTable
-        ) && self
-            .boxes
-            .origin_node(parent)
-            .is_some_and(|node| table_is_flattenable(self.dom, self.styles, node))
-        {
+        ) {
             let table = build_table_grid(self.boxes, self.dom, parent);
             let mut cell_nodes = Vec::with_capacity(table.cells.len());
             let mut children = Vec::with_capacity(table.cells.len());
@@ -2221,7 +2184,6 @@ where
                 let Some(node) = built else {
                     continue;
                 };
-                place_table_cell(self.tree.style_mut(node), cell);
                 children.push(node);
             }
             // K4c5b: hand the grid to build_box, which creates the table's
@@ -2485,12 +2447,6 @@ where
                 &intrinsics,
                 &mut self.table_shadow,
             );
-            if let Some(inline) = &columns {
-                self.tree
-                    .style_mut(pending.taffy_table)
-                    .grid_template_columns =
-                    inline.column_sizes.iter().copied().map(length).collect();
-            }
             pending.assigned = columns;
             self.size_wrapper_from_grid(pending);
         }
@@ -2536,6 +2492,7 @@ where
             tree,
             styles,
             boxes,
+            table_shadow,
             ..
         } = self;
         for pending in pendings {
@@ -2593,8 +2550,17 @@ where
                 &mut formatter,
                 &mut ledger,
             );
-            if let Some(block) = &pending.block {
-                commit_table_block(tree, pending.taffy_table, block, inline, |box_id| {
+            if let Some(block) = &mut pending.block {
+                apply_relative_table_part_offsets(
+                    block,
+                    pending.table,
+                    boxes,
+                    styles,
+                    pending.font_size,
+                    inline.used_grid_inline_size,
+                    &mut table_shadow.positioning_gaps,
+                );
+                commit_table_block(tree, pending.table_node, block, inline, |box_id| {
                     pending
                         .grid
                         .cells
@@ -2604,7 +2570,7 @@ where
                 });
             }
         }
-        self.table_shadow.block = ledger;
+        table_shadow.block = ledger;
     }
 
     /// The retained structural paint model for every table Buckram laid out.
@@ -2632,12 +2598,6 @@ where
         match self.boxes[box_id].origin {
             BoxOrigin::Element(node) => {
                 let computed = self.styles.get(node).cloned().unwrap_or_default();
-                if matches!(
-                    computed.display,
-                    CssDisplay::Table | CssDisplay::InlineTable
-                ) {
-                    self.table_bridge_count += 1;
-                }
                 // K4e1: the wrapper above this grid took the properties
                 // CSS 2.1 section 17.4 assigns to it; the grid sees them unset.
                 let computed =
@@ -2665,7 +2625,7 @@ where
                 let table = (matches!(
                     computed.display,
                     CssDisplay::Table | CssDisplay::InlineTable
-                ) && table_is_flattenable(self.dom, self.styles, node))
+                ))
                 .then(|| build_table_grid(self.boxes, self.dom, box_id));
                 let mut table_cell_nodes = Vec::new();
                 let children = if let Some(table) = table.as_ref() {
@@ -2681,7 +2641,6 @@ where
                         let Some(taffy_node) = built else {
                             continue;
                         };
-                        place_table_cell(self.tree.style_mut(taffy_node), cell);
                         children.push(taffy_node);
                     }
                     children
@@ -2738,7 +2697,7 @@ where
                     self.pending_tables.push(PendingTable {
                         table: box_id,
                         node: dom_node,
-                        taffy_table: node,
+                        table_node: node,
                         wrapper: None,
                         captions: Vec::new(),
                         grid,
@@ -3289,11 +3248,9 @@ fn algorithm_kind<Id>(css_box: &CssBox<Id>, leaf: bool) -> AlgorithmKind {
         return AlgorithmKind::Leaf;
     }
     match (css_box.formatting_context, css_box.display.internal_table) {
-        (_, Some(InternalTableRole::Row)) => AlgorithmKind::Flex,
+        (_, Some(InternalTableRole::Grid)) => AlgorithmKind::Table,
         (Some(FormattingContextKind::Flex), _) => AlgorithmKind::Flex,
-        (Some(FormattingContextKind::Grid | FormattingContextKind::Table), _) => {
-            AlgorithmKind::Grid
-        },
+        (Some(FormattingContextKind::Grid), _) => AlgorithmKind::Grid,
         _ => AlgorithmKind::Block,
     }
 }
@@ -3436,9 +3393,8 @@ where
 
 fn anonymous_taffy_style<Id>(css_box: &CssBox<Id>) -> Style {
     let display = match (css_box.formatting_context, css_box.display.internal_table) {
-        (_, Some(InternalTableRole::Row)) => Display::Flex,
         (Some(FormattingContextKind::Flex), _) => Display::Flex,
-        (Some(FormattingContextKind::Grid | FormattingContextKind::Table), _) => Display::Grid,
+        (Some(FormattingContextKind::Grid), _) => Display::Grid,
         _ => Display::Block,
     };
     Style {
@@ -3588,6 +3544,92 @@ fn table_cell_spans_collapsed_track(visibility: &TableTrackVisibility, cell: &Ta
         cell.row,
         cell.row_span,
     )
+}
+
+/// Resolve a table part's CSS relative-position offset against the table
+/// grid's final inline size. CSS 2.1 resolves vertical percentage insets from
+/// the containing block's width too, so both axes use that basis here.
+fn relative_table_part_offset(
+    computed: &ComputedValues,
+    font_size: f32,
+    inline_basis: f32,
+) -> (f32, f32) {
+    if computed.position != CssPosition::Relative {
+        return (0.0, 0.0);
+    }
+    let inset = |value: Inset| match value {
+        Inset::Auto => None,
+        Inset::Value(value) => Some(signed_length_percentage_px(value, font_size, inline_basis)),
+    };
+    let inline = inset(computed.left).or_else(|| inset(computed.right).map(|value| -value));
+    let block = inset(computed.top).or_else(|| inset(computed.bottom).map(|value| -value));
+    (inline.unwrap_or(0.0), block.unwrap_or(0.0))
+}
+
+/// Preserve relative positioning after table row and row-group boxes have
+/// been flattened from the algorithm tree. Buckram owns their structural
+/// fragments; the backend still owns a cell's contents, so the same cumulative
+/// offsets must be applied to both representations before table dispatch.
+fn apply_relative_table_part_offsets<Id>(
+    block: &mut buckram::TableBlockLayout,
+    table: BoxId,
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    table_font_size: f32,
+    inline_basis: f32,
+    positioning_gaps: &mut Vec<TablePositioningGapRecord>,
+) where
+    Id: Copy + Eq + Hash,
+{
+    for fragment in block.fragments.fragments() {
+        let Some(part) = fragment.box_id else {
+            continue;
+        };
+        let BoxOrigin::Element(node) = boxes[part].origin else {
+            continue;
+        };
+        let Some(computed) = styles.get(node) else {
+            continue;
+        };
+        let gap = match computed.position {
+            CssPosition::Absolute => Some(TablePositioningGap::Absolute),
+            CssPosition::Fixed => Some(TablePositioningGap::Fixed),
+            CssPosition::Sticky => Some(TablePositioningGap::Sticky),
+            CssPosition::Static | CssPosition::Relative => None,
+        };
+        if let Some(gap) = gap {
+            let record = TablePositioningGapRecord { table, part, gap };
+            if !positioning_gaps.contains(&record) {
+                positioning_gaps.push(record);
+            }
+        }
+    }
+    let offsets = block.fragments.apply_relative_offsets(|box_id| {
+        // The table grid remains in the ordinary tree, where its own
+        // relative position is handled at the containing-block boundary.
+        if box_id == table {
+            return (0.0, 0.0);
+        }
+        let BoxOrigin::Element(node) = boxes[box_id].origin else {
+            return (0.0, 0.0);
+        };
+        let Some(computed) = styles.get(node) else {
+            return (0.0, 0.0);
+        };
+        let font_size = font_size_px(&computed.font_size, table_font_size);
+        relative_table_part_offset(computed, font_size, inline_basis)
+    });
+
+    for placement in &mut block.alignment.cells {
+        let Some((_, (inline, block))) = offsets
+            .iter()
+            .find(|(box_id, _)| *box_id == placement.box_id)
+        else {
+            continue;
+        };
+        placement.rect.inline_start += inline;
+        placement.rect.block_start += block;
+    }
 }
 
 fn table_paint_plane<Id>(
@@ -4032,75 +4074,6 @@ where
     }
 }
 
-/// Whether a table's row-group and row boxes may be flattened away.
-///
-/// Flattening drops those boxes from the layout tree, which is fine while
-/// they only carry structure. A `position: relative` row or row group also
-/// carries an offset that its cells must inherit, and with the box gone there
-/// is nothing left to apply it. The incumbent lane keeps a side list of
-/// "cells owed a row-relative shift" for exactly this; Livery does not
-/// resolve those offsets yet, so a positioned row or group turns flattening
-/// off for that table and it falls back to the previous nesting.
-///
-/// Measured 2026-07-26: without this guard the sixteen
-/// `css-position/position-relative-table-*` files regress. Resolving the
-/// shift onto the cells is the real fix and is deferred, not unknown.
-fn table_is_flattenable<D>(dom: &D, styles: &StylePlane<D::NodeId>, table: D::NodeId) -> bool
-where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
-{
-    fn positioned<D>(styles: &StylePlane<D::NodeId>, id: D::NodeId) -> bool
-    where
-        D: LayoutDom,
-        D::NodeId: Copy + Eq + Hash,
-    {
-        styles
-            .get(id)
-            .is_some_and(|style| style.position != CssPosition::Static)
-    }
-
-    fn walk<D>(dom: &D, styles: &StylePlane<D::NodeId>, container: D::NodeId) -> bool
-    where
-        D: LayoutDom,
-        D::NodeId: Copy + Eq + Hash,
-    {
-        for child in dom.dom_children(container) {
-            match styles.get(child).map(|style| style.display) {
-                Some(CssDisplay::TableRow) => {
-                    if positioned::<D>(styles, child) {
-                        return false;
-                    }
-                },
-                Some(
-                    CssDisplay::TableRowGroup
-                    | CssDisplay::TableHeaderGroup
-                    | CssDisplay::TableFooterGroup,
-                ) if positioned::<D>(styles, child) || !walk(dom, styles, child) => {
-                    return false;
-                },
-                _ => {},
-            }
-        }
-        true
-    }
-
-    walk(dom, styles, table)
-}
-
-/// Pin a cell's temporary bridge style to its TableGrid start slot. Buckram
-/// retains the spans; K4d replaces this Grid bridge before span layout runs.
-fn place_table_cell(style: &mut Style, cell: &TableCell) {
-    style.grid_row = Line {
-        start: line(cell.row as i16 + 1),
-        end: GridPlacement::Auto,
-    };
-    style.grid_column = Line {
-        start: line(cell.column as i16 + 1),
-        end: GridPlacement::Auto,
-    };
-}
-
 /// Whether every character is CSS collapsible white space.
 ///
 /// CSS collapsible white space is exactly space, tab, line feed, carriage
@@ -4507,29 +4480,21 @@ fn collapsed_text_width(text: &str) -> usize {
 }
 
 fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
-    let table_row = computed.display == CssDisplay::TableRow;
-    let _ = table_row;
     let display = match computed.display {
         CssDisplay::None => Display::None,
         CssDisplay::Flex => Display::Flex,
         CssDisplay::Grid => Display::Grid,
-        // A table box is laid out as a grid whose children are its
-        // TableGrid starts; K4d replaces this compatibility bridge. An
-        // inline-table's grid is the same box - inline-ness lives on the
-        // wrapper (K4e4).
-        CssDisplay::Table | CssDisplay::InlineTable => Display::Grid,
-        CssDisplay::TableRow => Display::Flex,
+        // Buckram commits the table grid before backend dispatch. Its table
+        // parts are structural fragments, while cell contents keep their
+        // ordinary local formatting contexts.
+        CssDisplay::Table | CssDisplay::InlineTable | CssDisplay::TableRow => Display::Block,
         _ => Display::Block,
     };
-    let flex_direction = if table_row {
-        FlexDirection::Row
-    } else {
-        match computed.flex_direction {
-            CssFlexDirection::Row => FlexDirection::Row,
-            CssFlexDirection::RowReverse => FlexDirection::RowReverse,
-            CssFlexDirection::Column => FlexDirection::Column,
-            CssFlexDirection::ColumnReverse => FlexDirection::ColumnReverse,
-        }
+    let flex_direction = match computed.flex_direction {
+        CssFlexDirection::Row => FlexDirection::Row,
+        CssFlexDirection::RowReverse => FlexDirection::RowReverse,
+        CssFlexDirection::Column => FlexDirection::Column,
+        CssFlexDirection::ColumnReverse => FlexDirection::ColumnReverse,
     };
     let float = match computed.float {
         CssFloat::None => TaffyFloat::None,
@@ -5004,7 +4969,7 @@ mod tests {
     }
 
     #[test]
-    fn live_table_bridge_count_reports_each_grid_route_once() {
+    fn tables_dispatch_through_buckram_without_a_grid_bridge() {
         let dom = StaticDocument::parse(
             "<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>",
         );
@@ -5018,10 +4983,86 @@ mod tests {
         );
 
         let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let ledger = layout.table_shadow_ledger();
         assert_eq!(
-            layout.table_bridge_counts(),
-            TableBridgeCounts { grids: 1 },
-            "the table's Grid/Flex compatibility route is counted once at its grid"
+            ledger.assigned, 1,
+            "Buckram must assign the table: {ledger:?}"
+        );
+        assert_eq!(
+            ledger.honored, 1,
+            "the committed table must honor Buckram columns: {ledger:?}"
+        );
+        assert_eq!(
+            ledger.block.laid_out, 1,
+            "Buckram must commit the table block axis: {ledger:?}"
+        );
+        assert!(
+            ledger.skipped.is_empty() && ledger.block.skipped.is_empty(),
+            "the basic table may not fall back to a backend route: {ledger:?}"
+        );
+    }
+
+    #[test]
+    fn relative_table_parts_move_their_retained_fragment_subtree() {
+        let dom = StaticDocument::parse(
+            "<table id=table><tbody id=group><tr id=row><td id=cell>one</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["table { display: table; border-spacing: 0; } \
+                 tbody { display: table-row-group; position: relative; left: 12px; top: 8px; } \
+                 tr { display: table-row; position: relative; left: 7px; top: 3px; } \
+                 td { display: table-cell; width: 40px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let by_id = |id| node_by_id(&dom, dom.document(), id).expect("node");
+        let group = layout.get(by_id("group")).expect("row-group fragment");
+        let row = layout.get(by_id("row")).expect("row fragment");
+        let cell = layout.get(by_id("cell")).expect("cell fragment");
+
+        assert_eq!((row.x - group.x, row.y - group.y), (7.0, 3.0));
+        assert_eq!((cell.x, cell.y), (row.x, row.y));
+        assert!(
+            group.x > layout.principal_fragment(by_id("table")).expect("grid").x,
+            "the row-group's offset must survive flattening"
+        );
+    }
+
+    #[test]
+    fn absolute_table_geometry_is_a_named_k5_gap_without_backend_dispatch() {
+        let dom =
+            StaticDocument::parse("<table id=table><tbody><tr><td>one</td></tr></tbody></table>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "table { display: table; position: absolute; border-spacing: 0; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 40px; height: 20px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let table_box = layout.boxes().principal_box(table).expect("table grid");
+        let ledger = layout.table_shadow_ledger();
+        assert!(
+            ledger
+                .positioning_gaps
+                .contains(&crate::table_shadow::TablePositioningGapRecord {
+                    table: table_box,
+                    part: table_box,
+                    gap: crate::table_shadow::TablePositioningGap::Absolute,
+                }),
+            "absolute table positioning must remain a named K5 gap: {ledger:?}"
+        );
+        assert_eq!(
+            ledger.block.laid_out, 1,
+            "the table stays on Buckram: {ledger:?}"
         );
     }
 
@@ -5184,10 +5225,8 @@ mod tests {
 
     /// K4d6b: a `height` on a `<tr>` reaches the painted rows.
     ///
-    /// It is a row minimum under CSS 2.1 section 17.5.3. The Grid bridge
-    /// flattened rows away before the backend saw them, so that declaration
-    /// reached no track and the table painted content-height rows: 18 and 19
-    /// for these two. Buckram computes 40 and 60, and now writes them.
+    /// It is a row minimum under CSS 2.1 section 17.5.3. Buckram computes 40
+    /// and 60 and writes the retained row fragments at those sizes.
     ///
     /// The painted rectangles are asserted directly rather than through the
     /// ledger. A ledger that agreed with itself would prove nothing.
@@ -5566,11 +5605,6 @@ mod tests {
         .expect("layout");
 
         let ledger = layout.table_shadow_ledger();
-        assert_eq!(
-            ledger.deferral_count(buckram::TableDeferral::CaptionMinPendingK4e),
-            0,
-            "a measured caption must not defer: {ledger:?}"
-        );
         assert_assigned_and_honored(ledger);
     }
 
@@ -5924,11 +5958,8 @@ mod tests {
 
     /// K4d6: a table row now has a fragment of its own.
     ///
-    /// The Grid bridge flattened rows, row groups, and columns away before
-    /// the backend saw them, so none of them had any box to paint into: a
-    /// `<tr>` background could not render at all. Buckram emits the whole
-    /// structural subtree from the track model, so each one gets its exact
-    /// rectangle whether or not a cell happens to cover it.
+    /// Buckram emits the whole structural subtree from the track model, so
+    /// each part gets its exact rectangle whether or not a cell covers it.
     #[test]
     fn k4d6_rows_groups_and_columns_have_their_own_fragments() {
         let dom = StaticDocument::parse(
@@ -6086,9 +6117,8 @@ mod tests {
 
     /// The second K4c5a divergence, resolved by authority: an automatic table
     /// explicitly wider than its max-content distributes the extra space over
-    /// its columns (CSS 2.1 17.5.2.2). Taffy inference left the tracks at
-    /// max-content; Buckram's 100px columns now paint, verified against the
-    /// fragments.
+    /// its columns (CSS 2.1 17.5.2.2). Buckram's 100px columns paint,
+    /// verified against the fragments.
     #[test]
     fn k4c5b_automatic_explicit_width_is_distributed_and_painted() {
         assert_assigned_and_honored(&automatic_table_ledger("width: 300px;"));

@@ -17,8 +17,8 @@ mod style;
 // owns; a table it cannot lay out defers under a named gap.
 pub mod table_block;
 mod table_sizing;
-// K4c5b: Buckram owns live table inline sizing on every route; deferred
-// tables fall back to grid inference under named counters.
+// K4h: Buckram owns live table inline sizing and dispatch on every route;
+// unresolved sizing input remains a named counter, never a backend route.
 pub mod table_shadow;
 // K4e1: the table wrapper box carries the properties CSS 2.1 section 17.4
 // and CSS Tables 3 section 3.6.1 take off the grid.
@@ -36,8 +36,8 @@ pub use dom::{ElementRef, InteractionStates, SelectorTree};
 pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, RestyleStats};
 pub(crate) use layout::hit_test_with_scroll;
 pub use layout::{
-    BlockAlgorithmCounts, LayoutError, LiveryLayout, TableBridgeCounts, content_box_size, hit_test,
-    layout, resolve_container_query_styles, resolve_container_relative_styles, used_value_context,
+    BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test, layout,
+    resolve_container_query_styles, resolve_container_relative_styles, used_value_context,
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
 pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};

@@ -447,10 +447,9 @@ mod tests {
     use super::*;
     use crate::{
         AffineLengthPercentage, BoxGeneration, BoxOrigin, BoxTreeInput, CssBoxTree, Direction,
-        DisplayInside, DisplayOutside, DisplayRole, FlowAxes, InternalTableRole, IntrinsicSizeKind,
-        IntrinsicSizeQuery, PositioningScheme, TableCollapsedBorderMetrics, TableDeferral,
-        TableGrid, TableGridInputs, TableSeparatedBorderMetrics, TableTrackVisibility, WritingMode,
-        generate_box_tree,
+        DisplayInside, DisplayOutside, DisplayRole, FlowAxes, InternalTableRole, PositioningScheme,
+        TableCollapsedBorderMetrics, TableGrid, TableGridInputs, TableSeparatedBorderMetrics,
+        TableTrackVisibility, WritingMode, generate_box_tree,
     };
 
     fn table_role(role: InternalTableRole) -> DisplayRole {
@@ -852,34 +851,6 @@ mod tests {
         assert_eq!(result.used_table_inline_size, 100.0);
         assert_eq!(result.used_grid_inline_size, 100.0);
         assert!(result.column_sizes.is_empty());
-    }
-
-    #[test]
-    fn grid_intrinsic_sizes_cache_by_grid_identity_while_caption_defers_wrapper_work() {
-        let grid = grid(FlowAxes::HORIZONTAL_LTR);
-        let measures = measures();
-        let mut input = input(&grid, &measures);
-        input.sizing.caption_min = super::super::CaptionMinContribution::PendingK4e;
-        let mut cache = IntrinsicSizeCache::default();
-
-        assert_eq!(
-            cache_automatic_table_grid_intrinsic_sizes(&input, &mut cache),
-            Ok(IntrinsicSizes::new(150.0, 600.0).expect("intrinsic pair"))
-        );
-        assert_eq!(
-            cache.get(IntrinsicSizeQuery::new(
-                grid.grid,
-                LogicalAxis::Inline,
-                IntrinsicSizeKind::MinContent,
-            )),
-            Some(150.0)
-        );
-        assert_eq!(
-            size_automatic_table_inline(&input),
-            Err(TableInlineSizingError::Deferral(
-                TableDeferral::CaptionMinPendingK4e,
-            ))
-        );
     }
 
     #[test]

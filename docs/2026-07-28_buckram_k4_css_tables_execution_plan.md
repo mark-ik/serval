@@ -1182,9 +1182,27 @@ surviving gap is owned, and close K4.
   `css/css-position`, and all-nine comparisons have zero unexplained
   regressions.
 
-K4 closure does not claim table fragmentation or complete positioning.
-Those gaps are named K6 and K5 work, and the table remains on Buckram's engine
-path while they are open.
+### K4h receipt (2026-08-10)
+
+The Grid/Flex table bridge, positioned-row flatten guard, bridge counter, and
+the caption/track-visibility K4 deferrals are deleted. Every table grid begins
+on Buckram table dispatch; the one remaining foundational sizing deferral,
+percentage padding without a basis, is a named K7 cycle and does not select a
+backend route. Row-group, row, and cell relative offsets now move the retained
+fragment subtree and matching cell geometry. Absolute, fixed, and sticky table
+parts record a `TablePositioningGap` for K5; table fragmentation, repeated
+headers, and split rowspans remain K6.
+
+`cargo test -p buckram --lib --offline -j1` passed 185 tests, `cargo test -p
+genet-livery --lib --offline -j1` passed 85, and `cargo test -p livery
+--offline -j1` passed; `genet-livery --all-targets` also passed. Strict Clippy
+passed for the touched packages. The combined command remains blocked by 146
+pre-existing warnings in unchanged `livery` files. Fresh complete WPT maps,
+all-nine comparisons, and headed behavior were not measured here.
+
+K4 closure does not claim table fragmentation or complete positioning. Those
+gaps are named K6 and K5 work, and the table remains on Buckram's engine path
+while they are open.
 
 ## Corpus census correction - 2026-08-06
 

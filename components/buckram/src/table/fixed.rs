@@ -1,9 +1,8 @@
 //! CSS 2 fixed-table inline sizing over K4b's normalized grid.
 //!
 //! This is deliberately a model-only algorithm. It receives only the K4b
-//! topology and K4c1 logical sizing inputs. Livery's Grid/Flex bridge remains
-//! the live renderer until K4c5, so no Taffy track or completed fragment may
-//! enter here.
+//! topology and K4c1 logical sizing inputs. No backend track or completed
+//! fragment may enter here.
 
 use crate::BoxId;
 
@@ -632,8 +631,7 @@ mod tests {
 
     /// K4e4: a measured caption floors a fixed table's size the same way it
     /// floors an automatic one - C3 of the K4e1 interop matrix shows the
-    /// floor overriding even an authored width. An unmeasured caption still
-    /// defers under the named gap.
+    /// floor overriding even an authored width.
     #[test]
     fn a_measured_caption_floors_a_fixed_tables_size() {
         let grid = grid(false);
@@ -642,15 +640,6 @@ mod tests {
         let result = fixed(&with_floor);
         assert_eq!(result.used_table_inline_size, 240.0);
         assert_eq!(result.column_sizes.iter().sum::<f32>(), 240.0);
-
-        let mut pending = input(&grid, 90.0);
-        pending.sizing.caption_min = super::super::CaptionMinContribution::PendingK4e;
-        assert_eq!(
-            size_fixed_table_inline(&pending),
-            Err(TableInlineSizingError::Deferral(
-                super::super::TableDeferral::CaptionMinPendingK4e,
-            ))
-        );
     }
 
     #[test]
