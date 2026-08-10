@@ -1,8 +1,9 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** Research brief. No code proposed; names the shape, the platform
-matrix, and the standards-correct seam.
+**Status:** W0 and W1's seam landed, W2 landed, plus window-geometry
+validation from §6. W1's macOS half, W3, and W4 are staged with reasons; see
+§8. Originally a research brief, kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -210,3 +211,64 @@ calls, the platform quirks), not the pixels.
 
 W0 and W1 are the ones that pay for themselves immediately; W4 is optional
 until a Windows-first product ships.
+
+## 8. Progress
+
+**2026-08-10 — W0 landed** (genet `dc7122fc5`, woodshed `45358e0`).
+
+`genet-layout::computed_custom_property` reads a custom property off the
+retained cascade, and a cascade test pins the three behaviours the frame
+depends on: a declaration on a container reaches a nested descendant, a
+descendant overrides it, and unrelated content sees nothing. That is the
+containment `app-region` needs, obtained from inheritance rather than an
+ancestor walk. `app_region_of` prefers the real longhand and falls back to
+the custom property, so the livery cutover is a no-op for stylesheets.
+
+The host gained `decorations.rs`: `AppRegion`, the cloneable
+`WindowCommands` handle, `WindowGeometry` with monitor-reachability
+validation, and `ClickCadence` (winit reports presses, not clicks). A press
+on a drag surface moves the window, a double-click maximizes, a right-click
+raises the system menu, and `prevent_default` in a handler vetoes all three.
+The DOM always sees the press first, so a drag surface can still take focus
+and a `no-drag` control keeps its click.
+
+Woodshed is migrated and is the receipt: `--app-region` in its sheet, the
+four `chrome_*` bools deleted from `UiState` (which matters because that
+state is the browser host's too), `sync::window_chrome` deleted, and the
+drag element demoted to a plain spacer. Its `Logic` became a boxed closure
+so the caption handlers can capture the handle instead of setting flags.
+377 woodshed tests green; 39 host tests green including eight new frame
+tests driven through the real press path.
+
+**W2 landed with it.** Double-click-to-maximize and the right-click system
+menu are host-side and free once regions are known. Accessible caption
+buttons turned out to be already done in woodshed (role + `aria-label`, with
+the spacer `aria-hidden`), and the smoke now demonstrates the same, so the
+pattern is documented in two places rather than enforced by a component.
+
+**Two testability gaps closed on the way**, both found by writing the tests:
+`Harness::press_at` was calling bare `click` and so bypassed the frame path
+entirely (a receipt proving something the shipping build does not do), and
+`Harness::with_commands` now exists because a test could otherwise build an
+orphaned `WindowCommands` and prove the exact opposite of the truth. The
+host also records performed verbs, which is how a windowless harness can
+assert the whole matrix.
+
+**Staged, with reasons rather than intentions:**
+
+- **W1's macOS half** (`fullSizeContentView`, reserving the traffic lights'
+  rect, publishing `titlebar-area-*`). The seam is in place and the env
+  variables want `env()` support in the cascade, but the *point* of this
+  work is that the same stylesheet lays out correctly on macOS, and that
+  cannot be claimed from a Windows laptop. It wants the iMac.
+- **W3's platform quirks.** The maximized-overflow inset is Windows
+  `WM_NCCALCSIZE` work behind winit; `_GTK_FRAME_EXTENTS` and the
+  libdecor fallback need X11 and Wayland sessions. Each is a receipt on a
+  machine, not a refactor.
+- **W4 Snap Layouts.** Still gated on winit#3884 or the `tauri-plugin-frame`
+  child-HWND route, and worth its cost only for a Windows-first product.
+- **Window-state persistence** has its host half (`AppCtx::geometry` plus
+  `WindowGeometry::is_reachable_on`, unit-tested against the
+  unplugged-monitor and dragged-off-the-bottom cases). The storing half is
+  an application's, and woodshed's next session can wire it to muniment in
+  a few lines.
