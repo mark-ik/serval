@@ -29,8 +29,8 @@ pub use box_tree::{
     PseudoElement, generate_box_tree,
 };
 pub use flow::{
-    Direction, FlowAxes, LogicalAxis, LogicalRect, LogicalSides, LogicalSize, PhysicalRect,
-    PhysicalSide, PhysicalSides, PhysicalSize, WritingMode,
+    Direction, FlowAxes, LogicalAxis, LogicalOffset, LogicalRect, LogicalSides, LogicalSize,
+    PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, WritingMode,
 };
 pub use fragment_tree::{
     Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId,

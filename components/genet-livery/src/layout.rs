@@ -13,11 +13,11 @@ use buckram::{
     FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment,
     FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
     IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
-    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
-    StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
-    TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
-    TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
-    resolve_collapsed_border_geometry,
+    PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme,
+    StaticPosition, StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput,
+    TableCellLayoutOutput, TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid,
+    TableGridInputs, TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput,
+    TableTrackVisibility, resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
@@ -1060,6 +1060,7 @@ where
     });
     let table_shadow = std::mem::take(&mut state.table_shadow);
     drop(state);
+    apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
     Ok(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         None,
@@ -1616,6 +1617,7 @@ where
     drop(state);
     merge_atomic_subtrees(atomic, &boxes, &mut fragments);
     table_paint.merge(atomic.table_paint.clone());
+    apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
     Ok(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         Some(text_frame),
@@ -2924,6 +2926,73 @@ fn record_static_position<Id>(
     });
 }
 
+/// Apply relative positioning only after every normal-flow fragment exists.
+///
+/// Taffy receives auto insets for `position: relative`; it determines the
+/// unshifted flow rectangle, while Buckram resolves the retained CSS inputs
+/// and moves the emitted fragment subtree. Internal table parts keep the K4h
+/// table traversal for now, because it owns their structural fragment draft
+/// and cell-content offset together. The table wrapper itself is ordinary
+/// flow geometry and uses this route.
+fn apply_relative_positioning<Id>(
+    fragments: &mut FragmentTree,
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    initial_containing_inline_size: f32,
+) where
+    Id: Copy + Eq + Hash,
+{
+    let placements = boxes
+        .iter()
+        .filter_map(|(box_id, css_box)| {
+            if css_box.positioning != PositioningScheme::Relative
+                || matches!(
+                    css_box.display.internal_table,
+                    Some(role) if role != InternalTableRole::Wrapper
+                )
+            {
+                return None;
+            }
+            let node = css_box.origin.node()?;
+            let computed = styles.get(node)?;
+            let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+            let style = to_block_style(boxes, box_id, computed, font_size);
+            let roots = fragments
+                .fragment_ids_for_box(box_id)
+                .iter()
+                .copied()
+                .filter(|fragment_id| {
+                    fragments
+                        .get(*fragment_id)
+                        .and_then(TreeFragment::parent)
+                        .and_then(|parent| fragments.get(parent))
+                        .is_none_or(|parent| parent.box_id() != box_id)
+                })
+                .collect::<Vec<_>>();
+            (!roots.is_empty()).then_some((box_id, style, roots))
+        })
+        .collect::<Vec<_>>();
+
+    for (_box_id, style, roots) in placements {
+        for root in roots {
+            let containing_inline_size = fragments
+                .get(root)
+                .and_then(TreeFragment::containing_fragment)
+                .and_then(|containing| fragments.get(containing))
+                .map_or(initial_containing_inline_size, |fragment| {
+                    style.containing_flow.logical_size(PhysicalSize {
+                        width: fragment.width,
+                        height: fragment.height,
+                    })
+                    .inline
+                });
+            let logical = style.relative_offset(containing_inline_size);
+            let physical: PhysicalOffset = style.containing_flow.physical_offset(logical);
+            fragments.translate_subtree(root, physical);
+        }
+    }
+}
+
 fn fragment_baselines<Id, Context, Source>(
     tree: &AlgorithmTree<Style, Context, Source>,
     boxes: &GeneratedBoxTree<Id>,
@@ -3075,6 +3144,12 @@ where
             bottom: block_margin(computed.margin_bottom, font_size),
             left: block_margin(computed.margin_left, font_size),
         },
+        inset: PhysicalSides {
+            top: block_inset(computed.top, font_size),
+            right: block_inset(computed.right, font_size),
+            bottom: block_inset(computed.bottom, font_size),
+            left: block_inset(computed.left, font_size),
+        },
         padding: PhysicalSides {
             top: flow_length(computed.padding_top.0, font_size),
             right: flow_length(computed.padding_right.0, font_size),
@@ -3155,6 +3230,13 @@ fn block_margin(value: Margin, em: f32) -> FlowLengthAuto {
     match value {
         Margin::Auto => FlowLengthAuto::Auto,
         Margin::Value(value) => FlowLengthAuto::Value(flow_length(value, em)),
+    }
+}
+
+fn block_inset(value: Inset, em: f32) -> FlowLengthAuto {
+    match value {
+        Inset::Auto => FlowLengthAuto::Auto,
+        Inset::Value(value) => FlowLengthAuto::Value(flow_length(value, em)),
     }
 }
 
@@ -4595,15 +4677,18 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             CssPosition::Absolute | CssPosition::Fixed => Position::Absolute,
             _ => Position::Relative,
         },
-        inset: if matches!(computed.position, CssPosition::Static) {
-            Rect::auto()
-        } else {
+        inset: if matches!(
+            computed.position,
+            CssPosition::Absolute | CssPosition::Fixed | CssPosition::Sticky
+        ) {
             Rect {
                 left: inset(computed.left, font_size),
                 right: inset(computed.right, font_size),
                 top: inset(computed.top, font_size),
                 bottom: inset(computed.bottom, font_size),
             }
+        } else {
+            Rect::auto()
         },
         size: Size {
             width: dimension(computed.width, font_size),
@@ -5142,6 +5227,110 @@ mod tests {
     }
 
     #[test]
+    fn relative_position_moves_its_fragment_subtree_without_reflowing_siblings() {
+        let dom = StaticDocument::parse(
+            "<div id=relative><div id=child>child</div></div><div id=following>following</div>",
+        );
+        let static_styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#relative { width: 120px; } #child { width: 40px; } #following { width: 80px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let relative_styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#relative { position: relative; left: 21px; top: 13px; width: 120px; } \
+                 #child { width: 40px; } #following { width: 80px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let static_layout = layout(&dom, &static_styles, 320.0, 240.0).expect("static layout");
+        let relative_layout =
+            layout(&dom, &relative_styles, 320.0, 240.0).expect("relative layout");
+        let box_for = |layout: &LiveryLayout<_>, id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect("node"))
+                .expect("principal box")
+        };
+        let rect_for = |layout: &LiveryLayout<_>, id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_for(layout, id))
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+
+        let static_relative = rect_for(&static_layout, "relative");
+        let static_child = rect_for(&static_layout, "child");
+        let static_following = rect_for(&static_layout, "following");
+        let positioned_relative = rect_for(&relative_layout, "relative");
+        let positioned_child = rect_for(&relative_layout, "child");
+        let positioned_following = rect_for(&relative_layout, "following");
+
+        assert_eq!(
+            (positioned_relative.x, positioned_relative.y),
+            (static_relative.x + 21.0, static_relative.y + 13.0),
+        );
+        assert_eq!(
+            (positioned_child.x, positioned_child.y),
+            (static_child.x + 21.0, static_child.y + 13.0),
+            "the containing-block subtree moves with the relative box",
+        );
+        assert_eq!(
+            positioned_following, static_following,
+            "relative positioning does not change following normal-flow geometry",
+        );
+    }
+
+    #[test]
+    fn inline_origin_absolute_position_uses_the_line_fragment_as_its_static_source() {
+        let dom = StaticDocument::parse(
+            "<div id=container>before <span id=source>source <span id=positioned>item</span></span> after</div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#container { position: relative; width: 160px; } #source { display: inline; } \
+                 #positioned { position: absolute; left: 34px; top: 8px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let source = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "source").expect("source"))
+            .expect("source box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source line fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("static position");
+
+        assert_eq!(
+            static_position.source,
+            StaticPositionSource::Fragment(source_fragment),
+            "an inline-origin positioned child uses its line fragment, not a leaf fallback",
+        );
+    }
+
+    #[test]
     fn relative_table_parts_move_their_retained_fragment_subtree() {
         let dom = StaticDocument::parse(
             "<table id=table><tbody id=group><tr id=row><td id=cell>one</td></tr></tbody></table>",
@@ -5188,6 +5377,20 @@ mod tests {
         let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
         let table = node_by_id(&dom, dom.document(), "table").expect("table");
         let table_box = layout.boxes().principal_box(table).expect("table grid");
+        let positioned_wrapper = layout
+            .boxes()
+            .boxes_for_node(table)
+            .iter()
+            .copied()
+            .find(|box_id| layout.boxes()[*box_id].positioning == PositioningScheme::Absolute)
+            .expect("the table wrapper carries the table root's positioning");
+        assert!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned_wrapper)
+                .is_some(),
+            "K5b records the wrapper's static source before K5d replaces the named table geometry gap",
+        );
         let ledger = layout.table_shadow_ledger();
         assert!(
             ledger

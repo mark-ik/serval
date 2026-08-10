@@ -3,7 +3,8 @@
 use std::{collections::HashMap, hash::Hash, ops::Deref};
 
 use crate::{
-    BoxId, ContainingBlock, CssBoxTree, FlowAxes, LogicalRect, PhysicalRect, PhysicalSize,
+    BoxId, ContainingBlock, CssBoxTree, FlowAxes, LogicalRect, PhysicalOffset, PhysicalRect,
+    PhysicalSize,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -322,6 +323,60 @@ impl FragmentTree {
             child = parent;
         }
     }
+
+    /// Translate one emitted fragment and every structural descendant.
+    ///
+    /// Relative positioning runs after normal-flow geometry exists. The
+    /// fragment tree therefore owns the translation: descendants, baselines,
+    /// paint, hit testing, and containing-fragment lookup continue to name
+    /// the same fragment identities while their physical and logical geometry
+    /// move together.
+    pub fn translate_subtree(&mut self, root: FragmentId, offset: PhysicalOffset) {
+        if self.get(root).is_none() || (offset.x == 0.0 && offset.y == 0.0) {
+            return;
+        }
+
+        let descendants = self
+            .fragments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fragment)| {
+                let id = FragmentId(index as u32);
+                let mut cursor = Some(fragment.id);
+                while let Some(candidate) = cursor {
+                    if candidate == root {
+                        return Some(id);
+                    }
+                    cursor = self.fragments[candidate.index()].parent;
+                }
+                None
+            })
+            .collect::<Vec<_>>();
+
+        for id in descendants {
+            let fragment = &mut self.fragments[id.index()];
+            let logical = fragment.flow.logical_offset(offset);
+            fragment.logical_rect.inline_start += logical.inline;
+            fragment.logical_rect.block_start += logical.block;
+            fragment.overflow.inline_start += logical.inline;
+            fragment.overflow.block_start += logical.block;
+            fragment.physical_rect.x += offset.x;
+            fragment.physical_rect.y += offset.y;
+        }
+
+        // A relative box can add a new scrollable extent outside the normal
+        // flow position. Preserve the existing extent and union each moved
+        // fragment into its structural ancestors.
+        for index in (0..self.fragments.len()).rev() {
+            let child = FragmentId(index as u32);
+            let Some(parent) = self.fragments[index].parent else {
+                continue;
+            };
+            let overflow = self.fragments[child.index()].overflow;
+            let parent_fragment = &mut self.fragments[parent.index()];
+            parent_fragment.overflow = union_logical_rects(parent_fragment.overflow, overflow);
+        }
+    }
 }
 
 fn union_logical_rects(one: LogicalRect, other: LogicalRect) -> LogicalRect {
@@ -518,6 +573,87 @@ mod tests {
             Some(parent)
         );
         assert_eq!(fragments.roots(), &[parent]);
+    }
+
+    #[test]
+    fn translating_a_subtree_keeps_identities_and_moves_descendants() {
+        let mut boxes = CssBoxTree::default();
+        let parent_box = boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(1u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Relative,
+                false,
+                None,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let child_box = boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(2u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                ContainingBlock::Box(parent_box),
+            ),
+            Some(parent_box),
+            true,
+        );
+        let mut fragments = FragmentTree::default();
+        let parent = fragments.push(
+            Fragment::from_horizontal_physical(
+                parent_box,
+                PhysicalRect {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 30.0,
+                    height: 40.0,
+                },
+            ),
+            None,
+            None,
+        );
+        let child = fragments.push(
+            Fragment::from_horizontal_physical(
+                child_box,
+                PhysicalRect {
+                    x: 15.0,
+                    y: 25.0,
+                    width: 10.0,
+                    height: 12.0,
+                },
+            ),
+            Some(parent),
+            Some(parent),
+        );
+
+        fragments.translate_subtree(parent, PhysicalOffset { x: 7.0, y: -4.0 });
+
+        assert_eq!(fragments.fragment_ids_for_box(parent_box), &[parent]);
+        assert_eq!(fragments.fragment_ids_for_box(child_box), &[child]);
+        assert_eq!(
+            fragments.get(parent).map(Fragment::physical_rect),
+            Some(PhysicalRect {
+                x: 17.0,
+                y: 16.0,
+                width: 30.0,
+                height: 40.0,
+            })
+        );
+        assert_eq!(
+            fragments.get(child).map(Fragment::physical_rect),
+            Some(PhysicalRect {
+                x: 22.0,
+                y: 21.0,
+                width: 10.0,
+                height: 12.0,
+            })
+        );
     }
 
     #[test]

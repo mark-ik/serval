@@ -2,9 +2,8 @@
 
 **Date:** 2026-08-10
 
-**Status:** In progress. K5a is committed; this gate now has the Buckram
-record and output hooks, but not yet the owned out-of-flow static-placement
-pass.
+**Status:** Accepted. K5a supplies the containing-block graph; K5b supplies
+the distinct static rectangle and source fragment that K5d will consume.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5b. **Prerequisite:** [K5a containing-block graph](2026-08-10_buckram_k5a_containing_blocks_execution_plan.md).
@@ -74,9 +73,13 @@ pre-inset location separately from final layout. Block, flex, and grid routes
 publish that location before an explicit inset changes final placement. The
 flex receipt uses center/end alignment plus explicit insets, proving the
 record preserves the aligned static coordinate rather than copying the final
-inset coordinate. The record remains open until inline and table sources
-publish their corresponding pre-inset coordinate without inheriting a backend
-containing-block decision.
+inset coordinate. The retained inline formatter emits an inline-origin
+positioned child against its owning line fragment, and K4h table structural
+fragments emit wrapper and part records from their own logical rectangles.
+
+K5b does not calculate final absolute or fixed geometry. In particular, the
+existing positioned-table geometry gap remains named until K5d consumes these
+records through the shared used-geometry path.
 
 ## Stop rules
 
