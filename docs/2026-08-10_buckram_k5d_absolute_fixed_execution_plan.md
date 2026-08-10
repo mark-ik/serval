@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-10
 
-**Status:** Planned. Requires the committed K5a containing-block graph and K5b
-static-position records.
+**Status:** In progress. K5a and K5b are committed. The first live route owns
+ordinary horizontal non-table placement; the remaining sizing and table work
+stays explicit below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5d.
@@ -31,6 +32,21 @@ The initial absolute and initial fixed containing rectangles remain separate
 inputs even when continuous media makes their initial geometry equal. A later
 fixed-position trigger can therefore change only the fixed chain without
 silently changing an absolute result.
+
+## Current implementation boundary
+
+`buckram::solve_positioned_box` now resolves the implemented non-replaced
+logical inset equation from a selected containing rectangle, K5b static
+rectangle, measured border-box fallback, auto margins, and min/max bounds.
+Livery gives the scratch formatter auto insets for absolute and fixed boxes,
+then translates the emitted ordinary horizontal fragment subtree from this
+Buckram result and rewires its containing-fragment link to K5a's selection.
+The fixed receipt uses a transform-established fixed containing block.
+
+The formatter still excludes the out-of-flow box and supplies its measured
+fallback size. K5d remains open until Buckram owns shrink-to-fit, replaced and
+aspect-ratio sizing, vertical writing modes, and the table wrapper/internal
+part route. Those gaps are not treated as final K5 behavior.
 
 ## Work
 

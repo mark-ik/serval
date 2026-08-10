@@ -11,6 +11,7 @@ mod box_tree;
 mod flow;
 mod fragment_tree;
 mod intrinsic;
+mod positioning;
 mod table;
 mod taffy_adapter;
 
@@ -40,6 +41,7 @@ pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,
     IntrinsicSizeQuery, IntrinsicSizes, block_intrinsic_sizes_for_definite_inline,
 };
+pub use positioning::{PositionedBoxGeometry, PositionedBoxInput, solve_positioned_box};
 pub use table::{
     AffineLengthPercentage, CaptionMinContribution, CellBlockOffsets, CellCollapsedBorderMetrics,
     CellInlineOffsets, CollapsedBorderGeometry, CollapsedBorderGeometryError,

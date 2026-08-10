@@ -305,6 +305,19 @@ impl FragmentTree {
         id
     }
 
+    /// Attach a positioned fragment to the fragment selected by the K5a
+    /// containing-block graph. A `None` value names the initial containing
+    /// block, which has no ordinary generated fragment.
+    pub fn set_containing_fragment(
+        &mut self,
+        id: FragmentId,
+        containing_fragment: Option<FragmentId>,
+    ) {
+        if let Some(fragment) = self.fragments.get_mut(id.index()) {
+            fragment.containing_fragment = containing_fragment;
+        }
+    }
+
     /// Replace one fragment's overflow and union it into every structural
     /// ancestor. Layout phases that add a real out-of-border-box extent use
     /// this after their fragment exists; the fragment tree, not a paint

@@ -8,9 +8,10 @@ use std::{
 use buckram::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmNodeId, AlgorithmSize, AlgorithmTree,
     Baselines, BlockBoxSizing, BlockDimensions, BlockPosition as BuckramBlockPosition,
-    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry, CssBox,
-    DisplayInside, DisplayOutside, FloatContextProvenance, FloatLineConstraints, FloatSide,
-    FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment,
+    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry,
+    ContainingBlock, CssBox, DisplayInside, DisplayOutside, FloatContextProvenance,
+    FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto,
+    FormattingContextKind, Fragment as TreeFragment,
     FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
     IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
     PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme,
@@ -1061,6 +1062,13 @@ where
     let table_shadow = std::mem::take(&mut state.table_shadow);
     drop(state);
     apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
+    apply_absolute_and_fixed_positioning(
+        &mut fragments,
+        &boxes,
+        styles,
+        viewport_width,
+        viewport_height,
+    );
     Ok(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         None,
@@ -1618,6 +1626,13 @@ where
     merge_atomic_subtrees(atomic, &boxes, &mut fragments);
     table_paint.merge(atomic.table_paint.clone());
     apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
+    apply_absolute_and_fixed_positioning(
+        &mut fragments,
+        &boxes,
+        styles,
+        viewport_width,
+        viewport_height,
+    );
     Ok(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         Some(text_frame),
@@ -2990,6 +3005,128 @@ fn apply_relative_positioning<Id>(
             let physical: PhysicalOffset = style.containing_flow.physical_offset(logical);
             fragments.translate_subtree(root, physical);
         }
+    }
+}
+
+/// Resolve absolute and fixed offsets from K5a/K5b inputs after normal-flow
+/// and relative fragment geometry are available.
+///
+/// This first live K5d route owns non-table horizontal placement. The scratch
+/// formatter still supplies the measured border-box size and excludes the
+/// out-of-flow box; it receives auto insets, so no final browser position is
+/// selected there. Table roots and internal table parts remain on the named
+/// K5d table boundary until their measured table geometry can enter the same
+/// input path.
+fn apply_absolute_and_fixed_positioning<Id>(
+    fragments: &mut FragmentTree,
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    viewport_width: f32,
+    viewport_height: f32,
+) where
+    Id: Copy + Eq + Hash,
+{
+    let placements = boxes
+        .iter()
+        .filter_map(|(box_id, css_box)| {
+            if !matches!(
+                css_box.positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            ) || css_box.display.internal_table.is_some()
+                || !css_box.flow.is_horizontal()
+            {
+                return None;
+            }
+            let BoxOrigin::Element(node) = css_box.origin else {
+                return None;
+            };
+            styles.get(node)?;
+            let root = fragments.fragment_ids_for_box(box_id).first().copied()?;
+            let static_position = *fragments.static_position_for_box(box_id)?;
+            Some((box_id, node, root, static_position))
+        })
+        .collect::<Vec<_>>();
+
+    for (box_id, node, root, static_position) in placements {
+        let Some(current) = fragments.get(root).map(TreeFragment::physical_rect) else {
+            continue;
+        };
+        let (containing_fragment, containing_rect, containing_flow) = match static_position.containing_block {
+            ContainingBlock::Initial => (
+                None,
+                Fragment {
+                    x: 0.0,
+                    y: 0.0,
+                    width: viewport_width,
+                    height: viewport_height,
+                },
+                FlowAxes::HORIZONTAL_LTR,
+            ),
+            ContainingBlock::Box(containing_box) => {
+                let Some(fragment_id) = fragments
+                    .fragment_ids_for_box(containing_box)
+                    .first()
+                    .copied()
+                else {
+                    continue;
+                };
+                let Some(rect) = fragments.get(fragment_id).map(TreeFragment::physical_rect) else {
+                    continue;
+                };
+                (Some(fragment_id), rect, boxes[containing_box].flow)
+            },
+        };
+        if !containing_flow.is_horizontal() {
+            continue;
+        }
+        let source_origin = match static_position.source {
+            StaticPositionSource::InitialContainingBlock => (0.0, 0.0),
+            StaticPositionSource::Fragment(source) => fragments
+                .get(source)
+                .map(TreeFragment::physical_rect)
+                .map_or((0.0, 0.0), |rect| (rect.x, rect.y)),
+        };
+        let static_rect = LogicalRect {
+            inline_start: source_origin.0 + static_position.logical_rect.inline_start - containing_rect.x,
+            block_start: source_origin.1 + static_position.logical_rect.block_start - containing_rect.y,
+            inline_size: static_position.logical_rect.inline_size,
+            block_size: static_position.logical_rect.block_size,
+        };
+        let computed = styles
+            .get(node)
+            .expect("a generated element box keeps its computed style");
+        let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+        let style = to_block_style(boxes, box_id, computed, font_size);
+        let containing_size = containing_flow.logical_size(PhysicalSize {
+            width: containing_rect.width,
+            height: containing_rect.height,
+        });
+        let geometry = buckram::solve_positioned_box(
+            style,
+            buckram::PositionedBoxInput {
+                containing_size,
+                static_rect,
+                measured_size: containing_flow.logical_size(PhysicalSize {
+                    width: current.width,
+                    height: current.height,
+                }),
+            },
+        );
+        let target = containing_flow.physical_rect(
+            geometry.logical_rect,
+            PhysicalSize {
+                width: containing_rect.width,
+                height: containing_rect.height,
+            },
+        );
+        fragments.translate_subtree(
+            root,
+            PhysicalOffset {
+                x: containing_rect.x + target.x - current.x,
+                y: containing_rect.y + target.y - current.y,
+            },
+        );
+        fragments.set_containing_fragment(root, containing_fragment);
     }
 }
 
@@ -4677,10 +4814,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             CssPosition::Absolute | CssPosition::Fixed => Position::Absolute,
             _ => Position::Relative,
         },
-        inset: if matches!(
-            computed.position,
-            CssPosition::Absolute | CssPosition::Fixed | CssPosition::Sticky
-        ) {
+        inset: if matches!(computed.position, CssPosition::Sticky) {
             Rect {
                 left: inset(computed.left, font_size),
                 right: inset(computed.right, font_size),
@@ -5224,6 +5358,32 @@ mod tests {
             (0.0, 0.0),
             "the K5b record is the pre-inset static position, not the final absolute location",
         );
+        let containing_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(containing)
+            .first()
+            .copied()
+            .expect("containing fragment");
+        let containing_fragment_rect = layout
+            .fragments()
+            .get(containing_fragment)
+            .map(TreeFragment::physical_rect)
+            .expect("containing fragment geometry");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (containing_fragment_rect.x + 36.0, containing_fragment_rect.y + 11.0),
+            "K5d resolves final insets after K5b records the static rectangle",
+        );
+        assert_eq!(
+            positioned_fragment.containing_fragment(),
+            Some(containing_fragment),
+            "the final fragment attaches to K5a's selected containing fragment",
+        );
     }
 
     #[test]
@@ -5327,6 +5487,54 @@ mod tests {
             static_position.source,
             StaticPositionSource::Fragment(source_fragment),
             "an inline-origin positioned child uses its line fragment, not a leaf fallback",
+        );
+    }
+
+    #[test]
+    fn fixed_position_uses_a_transform_fixed_containing_block() {
+        let dom = StaticDocument::parse("<div id=trigger><div id=fixed>item</div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#trigger { transform: translateX(0px); margin-left: 40px; margin-top: 20px; \
+                 width: 120px; height: 60px; } \
+                 #fixed { position: fixed; left: 17px; top: 9px; width: 30px; height: 10px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let trigger = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "trigger").expect("trigger"))
+            .expect("trigger box");
+        let fixed = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "fixed").expect("fixed"))
+            .expect("fixed box");
+        let trigger_fragment = layout
+            .fragments()
+            .fragments_for_box(trigger)
+            .next()
+            .expect("trigger fragment");
+        let fixed_fragment = layout
+            .fragments()
+            .fragments_for_box(fixed)
+            .next()
+            .expect("fixed fragment");
+
+        assert_eq!(
+            (fixed_fragment.x, fixed_fragment.y),
+            (trigger_fragment.x + 17.0, trigger_fragment.y + 9.0),
+        );
+        assert_eq!(
+            fixed_fragment.containing_fragment(),
+            layout
+                .fragments()
+                .fragment_ids_for_box(trigger)
+                .first()
+                .copied(),
         );
     }
 
