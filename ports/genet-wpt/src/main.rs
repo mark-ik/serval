@@ -2620,6 +2620,9 @@ fn final_ref(start: PathBuf, kind: MatchKind, tests_root: &Path) -> Option<(Path
     for _ in 0..10 {
         match reftest_ref(&html) {
             Some((MatchKind::Match, next_href)) => {
+                if let Some(reference) = about_blank_reference(&next_href, tests_root) {
+                    return Some(reference);
+                }
                 let Some(next) = resolve_ref(&ref_path, &next_href, tests_root) else {
                     break;
                 };
@@ -2631,6 +2634,37 @@ fn final_ref(start: PathBuf, kind: MatchKind, tests_root: &Path) -> Option<(Path
         }
     }
     Some((ref_path, html))
+}
+
+const ABOUT_BLANK_DOCUMENT: &str = "<!doctype html><meta charset=\"utf-8\">";
+
+/// Represent WPT's built-in empty document without treating it as a file under
+/// the test root. The synthetic path gives the renderer the test root as its
+/// resource directory and keeps it on the ordinary HTML path.
+fn about_blank_reference(href: &str, tests_root: &Path) -> Option<(PathBuf, String)> {
+    let href = href.split(['#', '?']).next().unwrap_or(href);
+    href.eq_ignore_ascii_case("about:blank").then(|| {
+        (
+            tests_root.join("__genet_wpt_about_blank__.html"),
+            ABOUT_BLANK_DOCUMENT.into(),
+        )
+    })
+}
+
+/// Resolve a reftest reference, including WPT's built-in empty document.
+fn resolve_reftest_reference(
+    test_path: &Path,
+    href: &str,
+    kind: MatchKind,
+    tests_root: &Path,
+) -> Result<Option<(PathBuf, String)>, ()> {
+    if let Some(reference) = about_blank_reference(href, tests_root) {
+        return Ok(Some(reference));
+    }
+    let Some(direct_ref) = resolve_ref(test_path, href, tests_root) else {
+        return Err(());
+    };
+    Ok(final_ref(direct_ref, kind, tests_root))
 }
 
 /// Resolve a reftest `href` to a file: `/`-absolute against the tests
@@ -2809,17 +2843,21 @@ fn reftest(tests: &[TestCase], args: &Args) {
             };
             (kind, href)
         };
-        let Some(direct_ref) = resolve_ref(&test.path, &href, tests_root) else {
-            skipped += 1;
-            actuals.push(ActualRecord::with_reason(test, "skip", "ref-unresolved"));
-            continue;
+        let reference = match resolve_reftest_reference(&test.path, &href, kind, tests_root) {
+            Ok(Some(reference)) => reference,
+            Ok(None) => {
+                errored += 1;
+                actuals.push(ActualRecord::with_reason(test, "error", "ref-missing"));
+                println!("ERROR ref-missing {}", test.name());
+                continue;
+            },
+            Err(()) => {
+                skipped += 1;
+                actuals.push(ActualRecord::with_reason(test, "skip", "ref-unresolved"));
+                continue;
+            },
         };
-        let Some((ref_path, ref_html)) = final_ref(direct_ref, kind, tests_root) else {
-            errored += 1;
-            actuals.push(ActualRecord::with_reason(test, "error", "ref-missing"));
-            println!("ERROR ref-missing {}", test.name());
-            continue;
-        };
+        let (ref_path, ref_html) = reference;
         if needs_script(&test_html) || needs_script(&ref_html) {
             skipped += 1;
             actuals.push(ActualRecord::with_reason(test, "skip", "needs-script"));
@@ -2997,10 +3035,9 @@ fn dump(tests: &[TestCase], args: &Args) {
             };
             (kind, href)
         };
-        let Some(direct_ref) = resolve_ref(&test.path, &href, tests_root) else {
-            continue;
-        };
-        let Some((ref_path, ref_html)) = final_ref(direct_ref, kind, tests_root) else {
+        let Ok(Some((ref_path, ref_html))) =
+            resolve_reftest_reference(&test.path, &href, kind, tests_root)
+        else {
             continue;
         };
         let test_dir = test.path.parent().unwrap_or(tests_root);
@@ -3044,6 +3081,23 @@ fn dump(tests: &[TestCase], args: &Args) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn about_blank_reference_is_an_empty_html_document() {
+        let tests_root = Path::new("tests/wpt/tests");
+        let (path, html) = resolve_reftest_reference(
+            Path::new("tests/wpt/tests/css/example.html"),
+            "about:blank#fragment",
+            MatchKind::Match,
+            tests_root,
+        )
+        .expect("about:blank is resolvable")
+        .expect("about:blank is a built-in reference");
+
+        assert_eq!(path.parent(), Some(tests_root));
+        assert_eq!(html, ABOUT_BLANK_DOCUMENT);
+        assert!(about_blank_reference("refs/blank.html", tests_root).is_none());
+    }
 
     fn temp_expectations_path(name: &str) -> String {
         std::env::temp_dir()
