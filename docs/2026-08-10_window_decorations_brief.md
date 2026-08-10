@@ -1,0 +1,212 @@
+# Window decorations: generalizing woodshed's CSD across the stack
+
+**Date:** 2026-08-10
+**Status:** Research brief. No code proposed; names the shape, the platform
+matrix, and the standards-correct seam.
+**Scope:** the window frame itself — title bar, caption buttons, resize
+borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
+Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
+
+**Related:**
+
+- `components/cambium/cambium-genet-winit-host` — the extracted host, which
+  already owns half of this.
+- Woodshed's [genet host cross-platform plan](https://github.com/merely-made/woodshed)
+  (`design_docs/2026-07-04_genet_host_cross_platform_plan.md`), whose 2026-07-05
+  slice 8 and 2026-07-08 polish tail built the CSD this brief generalizes.
+- Retinue's `2026-08-09_signalman_cambium_desktop_scope.md` — the consumer
+  that will want a frame next.
+- The W3C standards review (mere, 2026-07-05) — "WPT subsets as done-condition
+  currency" applies directly; see §5.
+
+---
+
+## 1. The term
+
+"Window chrome" is fine colloquially, but the precise term for what woodshed
+does is **client-side decorations (CSD)**: the application paints its own
+non-client area instead of the window manager painting one for it. The
+opposite is **server-side decorations (SSD)**, which is what produces the
+candy-apple-red Windows title bar that started this.
+
+The pieces have their own names, and they matter because the platforms treat
+them differently:
+
+- **caption buttons** (Win32) / **traffic lights** (macOS) — the
+  minimize/maximize/close trio.
+- **non-client area** (Win32 `WM_NC*`) — everything outside the client
+  rectangle: title bar, borders, resize grips.
+- **decorations** (winit, Wayland `xdg-decoration`) — the whole frame.
+
+## 2. What is already general, and what is not
+
+The host extraction on 2026-08-09 quietly generalized the *harder* half.
+`cambium-genet-winit-host` already owns, for every consumer:
+
+- `HostOptions::decorations`, so an app opts into CSD by construction;
+- eight-direction edge resize with an 8px grab margin (`resize_edge`);
+- the resize cursors an undecorated window gets from nobody
+  (`edge_cursor` + `update_resize_cursor`, deduped on transition);
+- monitor-clamped initial sizing and position.
+
+What did **not** generalize, and is still woodshed-local:
+
+- **the title bar view itself** (`desktop_chrome`: title text, drag surface,
+  three buttons, `.chrome-*` CSS);
+- **the drag/minimize/maximize/close plumbing**, which is four `bool` flags on
+  `UiState` that the host drains after every dispatch;
+- **the theming** that makes it match the app rather than the OS.
+
+The flags are the part worth replacing rather than lifting. They work, but
+they mean every app that wants a frame must add four fields to its state and
+a drain block to its `after_dispatch`, and the host must know a product's
+state shape. §5 proposes the seam that removes both.
+
+## 3. The cross-platform matrix (where CSD has teeth)
+
+CSD is not one feature; it is three different negotiations with three window
+systems. The honest per-platform picture:
+
+| Concern | Windows 10/11 | macOS | Linux/Wayland | Linux/X11 |
+|---|---|---|---|---|
+| Who draws the frame | app, once undecorated | **OS, always** (traffic lights are not ours to draw) | app on GNOME/Mutter (SSD unsupported); compositor on KDE if asked | app, or WM |
+| Protocol | `WM_NCCALCSIZE` / `WM_NCHITTEST` | `NSWindow` style masks | `xdg-decoration` (optional; GNOME refuses SSD) | `_MOTIF_WM_HINTS` |
+| Shadow when undecorated | DWM keeps it if the frame is extended, loses it if simply removed | OS | compositor | **lost**; needs `_GTK_FRAME_EXTENTS` |
+| Snap/tiling affordance | Snap Layouts on hover-maximize, **requires returning `HTMAXBUTTON`** | green button menu (OS) | compositor gesture | WM |
+| Fallback library | — | — | `libdecor` | — |
+
+Three findings shape any design here:
+
+**macOS is not a CSD platform in the way the other two are.** The correct
+macOS pattern is *not* to draw three buttons; it is `fullSizeContentView` +
+`titlebarAppearsTransparent`, letting content extend under the real traffic
+lights, which keep their hover glyphs and the green button's window-arrangement
+menu. Apps that draw their own controls on macOS read as wrong to Mac users,
+and Tauri's own issue tracker is full of the resulting traffic-light
+repositioning bugs. **So the portable abstraction cannot be "our three
+buttons everywhere."** It has to be "reserve a region; the platform fills it
+where it has controls, we fill it where it does not."
+
+**Windows 11 Snap Layouts need a native answer we do not have.** Hovering the
+maximize button should raise the layout picker; that requires returning
+`HTMAXBUTTON` from `WM_NCHITTEST`, which winit has not exposed
+([winit#3884](https://github.com/rust-windowing/winit/issues/3884), open since
+2024). The known-good workaround, from `tauri-plugin-frame`, is a small native
+child `HWND` over the custom maximize button that answers `HTMAXBUTTON`. Until
+that exists, an undecorated Windows app silently loses a feature users have.
+
+**The undecorated-maximize overflow is the classic Windows CSD bug.** A
+frameless window, maximized, extends past the work area by the resize-border
+width, so its edges spill onto adjacent monitors and it can cover the taskbar.
+The fix is handling `WM_NCCALCSIZE` and insetting when maximized. Worth a test
+in the matrix rather than a later bug report.
+
+**GNOME/Wayland is the easy case** and the reason to bother: Mutter supports
+only CSD, so an app that draws its own frame is *more* native there, not less.
+
+## 4. Prior art worth reading
+
+| Source | What to take |
+|---|---|
+| [Window Controls Overlay](https://wicg.github.io/window-controls-overlay/) (WICG) | The model itself, and the CSS vocabulary — see §5 |
+| [`tauri-plugin-frame`](https://crates.io/crates/tauri-plugin-frame) | The child-HWND trick for Snap Layouts; the only shipping Rust answer |
+| [libdecor](https://xeechou.net/posts/libdecor/) | The Wayland fallback when a compositor wants SSD and we have no frame |
+| [NSWindowStyles](https://github.com/lukakerr/NSWindowStyles) | The catalogue of what `NSWindow` masks actually produce |
+| [Microsoft's Snap Layout guidance](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/ui/apply-snap-layout-menu) | The `HTMAXBUTTON` contract, from the platform owner |
+| Woodshed's own polish tail | The bugs already paid for: content-box overflow clipping the ×, the off-screen × stealing clicks from another window, the 8px grab margin, the taskbar-clearing default height |
+
+## 5. The recommendation: express it in CSS, not in host flags
+
+The stack already has a doctrine for this — standards-correct over host hacks
+— and the standard exists. The Window Controls Overlay spec standardizes
+Chromium's proprietary `-webkit-app-region` as the **`app-region`** CSS
+property (`drag` / `no-drag`), and defines four CSS environment variables
+(`titlebar-area-x/y/width/height`) describing the region left over beside the
+platform's own controls.
+
+That is exactly the abstraction §3 demanded, and it is already a spec.
+
+**The proposal in one line:** teach livery `app-region`, teach the host to
+read drag regions out of the laid-out DOM instead of a `chrome_drag` bool, and
+publish the reserved title-bar rect to app CSS as the standard env variables.
+
+What that buys:
+
+- **The four `UiState` flags disappear.** A drag surface becomes
+  `app-region: drag` in the app's stylesheet; the host hit-tests it like any
+  other region. No product state, no drain block, no host knowledge of an
+  app's shape.
+- **macOS becomes correct for free.** On macOS the host reserves the traffic
+  lights' rect and reports the remainder through `titlebar-area-*`; the app's
+  own CSS lays its title and controls out in whatever is left. The same
+  stylesheet that draws three buttons on Windows draws none on macOS, because
+  the env variables told it the region was smaller.
+- **The browser/PWA lane gets it at no extra cost.** A woodshed or turnstone
+  PWA installed with `display_override: ["window-controls-overlay"]` gets the
+  same layout from the same CSS. Genet is a browser engine; this is a
+  capability it should have anyway.
+- **The done-condition currency already exists in-tree.** Genet's vendored WPT
+  suite *already carries the WCO tests*, unrun:
+  `tests/wpt/tests/appmanifest/display-override-member/` holds both
+  `...app-region-window-controls-overlay.webmanifest` and
+  `...css-environment-variables-window-controls-overlay-manual.tentative.html`.
+  The conformance target is sitting in the repository waiting for an
+  implementation.
+
+The host keeps only what genuinely cannot be CSS: the native calls
+(`drag_window`, `drag_resize_window`, `set_minimized`, `set_maximized`), the
+platform quirks in §3, and the reserved-rect computation it feeds back in.
+
+## 6. Features worth having beyond parity
+
+Ordered by value per unit of work, and each one is a thing woodshed's current
+frame does not do:
+
+1. **Accessible window controls.** The host already syncs an AccessKit tree,
+   but hand-drawn caption buttons carry no roles or names unless the app
+   supplies them. A shared frame can guarantee `button` + "Minimize" /
+   "Maximize" / "Close" everywhere, plus keyboard reachability. This is the
+   one that turns a nicety into a correctness fix.
+2. **Double-click to maximize, and the system menu.** Double-clicking a title
+   bar toggles maximize on every platform; right-click (or Alt+Space) opens
+   the system menu on Windows. Both are muscle memory, both are missing.
+3. **Snap Layouts** (§3), once the child-HWND route is worth its cost.
+4. **Window state persistence.** Position, size, and maximized-ness restored
+   across launches, monitor-validated so a window on a since-unplugged
+   display does not open off-screen. The host already clamps to the primary
+   monitor at boot; this is the memory half.
+5. **Chrome that follows the theme, including the OS accent.** Tinct already
+   derives palettes from a seed; reading the system accent colour as an
+   optional seed would make the frame feel native without being native. Also
+   the honest place to respect high-contrast and reduced-motion.
+6. **Drag-to-edge and multi-monitor DPI**, mostly free via `drag_window`, but
+   worth an explicit receipt because DPI-change-mid-drag is a classic
+   crasher.
+7. **A titlebar that can host content.** Once the region is expressed as CSS,
+   an app can put a search field or tab strip up there (the reason WCO exists).
+   Turnstone wants this; woodshed does not.
+
+Deliberately *not* recommended: a shared "titlebar component" with a fixed
+look. The frame is per-product identity, and the stack's rule is that a
+component earns promotion from a second real consumer, not from anticipation.
+What generalizes is the *seam* (`app-region`, the env variables, the native
+calls, the platform quirks), not the pixels.
+
+## 7. Suggested phasing
+
+- **W0 — the seam.** `app-region` in livery + the host reading drag regions
+  from layout; woodshed's four flags deleted. Done when woodshed drags,
+  maximizes, and closes with no chrome fields in `UiState`.
+- **W1 — the reserved region.** `titlebar-area-*` env variables published by
+  the host, and the macOS `fullSizeContentView` path that makes them nonzero
+  there. Done when one stylesheet lays out correctly on Windows and macOS.
+- **W2 — accessibility and the muscle memory.** Roles/names on the controls,
+  double-click maximize, the system menu. Done when the frame is keyboard- and
+  screen-reader-complete on the Windows route.
+- **W3 — the platform quirks.** Maximized overflow, X11 `_GTK_FRAME_EXTENTS`
+  shadow, the Wayland SSD-preferring compositor fallback. Done when the four
+  desktop targets each have a receipt.
+- **W4 — Snap Layouts**, and the WPT WCO subset as the browser-lane receipt.
+
+W0 and W1 are the ones that pay for themselves immediately; W4 is optional
+until a Windows-first product ships.
