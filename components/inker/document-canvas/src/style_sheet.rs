@@ -72,18 +72,31 @@ pub enum ColorToken {
 pub enum LinkAdornment {
     /// No prefix; the link text renders as-is.
     None,
-    /// `⇒ ` (U+21D2) for in-protocol / relative links, `⇗ ` (U+21D7) for
+    /// `⇒ ` (U+21D2) for in-protocol / relative links, `→ ` (U+2192) for
     /// links that leave the document's protocol.
     SchemeArrow,
 }
 
 impl LinkAdornment {
     /// The prefix string for a link, or `None` if no adornment applies.
+    ///
+    /// The external marker was `⇗` (U+21D7), `⇒` turned diagonal, and it
+    /// rendered as a .notdef box on every capsule. Times New Roman is what a
+    /// Windows host resolves generic `serif` to, and it covers only the
+    /// straight arrows -- U+2190..U+2195 and U+21D0..U+21D5. It has no
+    /// diagonal arrow at either weight, so `↗` fares no better: asking for it
+    /// with text presentation gives the same box, and asking without gives the
+    /// colour emoji face painting a blue badge mid-sentence (U+2197 is
+    /// Emoji=Yes, Emoji_Presentation=No, and parley's per-cluster fallback
+    /// reaches the emoji font but not another text face).
+    ///
+    /// So the distinction is carried by weight rather than direction, in the
+    /// one arrow family the body face actually has.
     pub fn prefix_for(self, url: &str, base_scheme: Option<&str>) -> Option<&'static str> {
         match self {
             LinkAdornment::None => None,
             LinkAdornment::SchemeArrow => Some(if link_is_external(url, base_scheme) {
-                "\u{21d7} " // ⇗ leaves the document's protocol
+                "\u{2192} " // → leaves the document's protocol
             } else {
                 "\u{21d2} " // ⇒ stays in-protocol (or relative)
             }),
@@ -224,7 +237,7 @@ pub struct DocumentStyleSheet {
     pub vertical_padding: f32,
     /// Palette the [`ColorToken`]s resolve against.
     pub colors: ColorVocabulary,
-    /// How inline links are adorned (the `⇒` / `⇗` scheme arrows).
+    /// How inline links are adorned (the `⇒` / `→` scheme arrows).
     pub link_adornment: LinkAdornment,
     /// Per-role style descriptors.
     pub roles: RoleStyles,

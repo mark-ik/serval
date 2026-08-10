@@ -63,7 +63,7 @@ impl Default for TextBaseStyle {
 /// Flatten a span tree into a single text string plus ranged styles plus
 /// link annotations. Returned ranges are byte offsets into the text string.
 ///
-/// `adornment` + `base_scheme` drive the per-link prefix glyph (the `⇒` / `⇗`
+/// `adornment` + `base_scheme` drive the per-link prefix glyph (the `⇒` / `→`
 /// scheme arrows): when adornment applies, the prefix is prepended to the
 /// link's display text, styled as part of the link and covered by its byte
 /// range (so it colors + hit-tests as the link).
@@ -437,13 +437,13 @@ mod tests {
     }
 
     #[test]
-    fn external_link_gets_northeast_double_arrow() {
+    fn external_link_gets_single_rightwards_arrow() {
         let f = flatten_inline(
             &[link("https://x/")],
             LinkAdornment::SchemeArrow,
             Some("gemini"),
         );
-        assert!(f.text.starts_with("\u{21d7} "), "got {:?}", f.text);
+        assert!(f.text.starts_with("\u{2192} "), "got {:?}", f.text);
     }
 
     #[test]

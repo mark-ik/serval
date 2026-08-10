@@ -44,7 +44,7 @@ pub fn layout_document(
 ) -> LaidOutDocument {
     let mut env = LayoutEnvironment::new();
     // The document's own scheme classifies its links as in-protocol vs
-    // external for the `⇒` / `⇗` adornment.
+    // external for the `⇒` / `→` adornment.
     let base_scheme = crate::style_sheet::url_scheme(&document.address).map(str::to_string);
     let mut layouter = DocumentLayouter::new(viewport, style, &mut env, base_scheme);
 
