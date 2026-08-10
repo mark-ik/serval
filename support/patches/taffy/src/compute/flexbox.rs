@@ -2027,6 +2027,7 @@ fn calculate_flex_item(
             content_size,
             scrollbar_size,
             location,
+            static_location: location,
             padding: item.padding,
             border: item.border,
             margin: item.margin,
@@ -2346,8 +2347,72 @@ fn perform_absolute_layout_on_absolute_children(
         let cross_end_scrollbar_offset =
             if cross_is_rtl { 0.0 } else { constants.scrollbar_gutter.cross(constants.dir) };
 
-        // Apply main-axis alignment
-        // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);
+        // The static position is the flex-aligned position with all inset
+        // properties treated as auto. Keep it distinct from the final used
+        // position: an explicit inset replaces this position, but does not
+        // rewrite the formatter's static-position result.
+        //
+        // Stretch is an invalid value for justify_content in the flexbox
+        // algorithm, so we treat it as if it wasn't set (and thus we default
+        // to FlexStart behaviour).
+        //
+        // The `safe` overflow-position keyword is intentionally NOT applied
+        // here, even when the abs-positioned item would overflow the main
+        // axis: Chrome does not apply safe fallback to `justify-content` on
+        // absolutely-positioned flex items (only the cross-axis `align-self`
+        // does so). Matching the layout authority over a strict spec read
+        // keeps gentest fixtures green; reconsider if Chromium changes
+        // behavior.
+        let static_offset_main = match (
+            constants.justify_content.unwrap_or(JustifyContent::START).keyword(),
+            main_axis_flex_start_reversed,
+        ) {
+            (AlignContentKeyword::SpaceBetween, _)
+            | (AlignContentKeyword::Stretch, false)
+            | (AlignContentKeyword::FlexStart, false)
+            | (AlignContentKeyword::FlexEnd, true) => {
+                constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
+            }
+            (AlignContentKeyword::Start, false) => {
+                constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
+            }
+            (AlignContentKeyword::Start, true) => {
+                constants.container_size.main(constants.dir)
+                    - constants.content_box_inset.main_end(constants.dir)
+                    - final_size.main(constants.dir)
+                    - resolved_margin.main_end(constants.dir)
+            }
+            (AlignContentKeyword::End, false) => {
+                constants.container_size.main(constants.dir)
+                    - constants.content_box_inset.main_end(constants.dir)
+                    - final_size.main(constants.dir)
+                    - resolved_margin.main_end(constants.dir)
+            }
+            (AlignContentKeyword::End, true) => {
+                constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
+            }
+            (AlignContentKeyword::FlexEnd, false)
+            | (AlignContentKeyword::FlexStart, true)
+            | (AlignContentKeyword::Stretch, true) => {
+                constants.container_size.main(constants.dir)
+                    - constants.content_box_inset.main_end(constants.dir)
+                    - final_size.main(constants.dir)
+                    - resolved_margin.main_end(constants.dir)
+            }
+            (AlignContentKeyword::SpaceEvenly, _)
+            | (AlignContentKeyword::SpaceAround, _)
+            | (AlignContentKeyword::Center, _) => {
+                (constants.container_size.main(constants.dir)
+                    + constants.content_box_inset.main_start(constants.dir)
+                    - constants.content_box_inset.main_end(constants.dir)
+                    - final_size.main(constants.dir)
+                    + resolved_margin.main_start(constants.dir)
+                    - resolved_margin.main_end(constants.dir))
+                    / 2.0
+            }
+        };
+
+        // Apply main-axis insets after preserving the static flex alignment.
         let offset_main = if start_main.is_some() || end_main.is_some() {
             if main_is_rtl && end_main.is_some() {
                 constants.container_size.main(constants.dir)
@@ -2370,64 +2435,59 @@ fn perform_absolute_layout_on_absolute_children(
                     - resolved_margin.main_end(constants.dir)
             }
         } else {
-            // Stretch is an invalid value for justify_content in the flexbox algorithm, so we
-            // treat it as if it wasn't set (and thus we default to FlexStart behaviour).
-            //
-            // The `safe` overflow-position keyword is intentionally NOT applied here, even when
-            // the abs-positioned item would overflow the main axis: Chrome does not apply safe
-            // fallback to `justify-content` on absolutely-positioned flex items (only the
-            // cross-axis `align-self` does so). Matching the layout authority over a strict
-            // spec read keeps gentest fixtures green; reconsider if Chromium changes behavior.
-            match (constants.justify_content.unwrap_or(JustifyContent::START).keyword(), main_axis_flex_start_reversed)
-            {
-                (AlignContentKeyword::SpaceBetween, _)
-                | (AlignContentKeyword::Stretch, false)
-                | (AlignContentKeyword::FlexStart, false)
-                | (AlignContentKeyword::FlexEnd, true) => {
-                    constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
-                }
-                (AlignContentKeyword::Start, false) => {
-                    constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
-                }
-                (AlignContentKeyword::Start, true) => {
-                    constants.container_size.main(constants.dir)
-                        - constants.content_box_inset.main_end(constants.dir)
-                        - final_size.main(constants.dir)
-                        - resolved_margin.main_end(constants.dir)
-                }
-                (AlignContentKeyword::End, false) => {
-                    constants.container_size.main(constants.dir)
-                        - constants.content_box_inset.main_end(constants.dir)
-                        - final_size.main(constants.dir)
-                        - resolved_margin.main_end(constants.dir)
-                }
-                (AlignContentKeyword::End, true) => {
-                    constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
-                }
-                (AlignContentKeyword::FlexEnd, false)
-                | (AlignContentKeyword::FlexStart, true)
-                | (AlignContentKeyword::Stretch, true) => {
-                    constants.container_size.main(constants.dir)
-                        - constants.content_box_inset.main_end(constants.dir)
-                        - final_size.main(constants.dir)
-                        - resolved_margin.main_end(constants.dir)
-                }
-                (AlignContentKeyword::SpaceEvenly, _)
-                | (AlignContentKeyword::SpaceAround, _)
-                | (AlignContentKeyword::Center, _) => {
-                    (constants.container_size.main(constants.dir)
-                        + constants.content_box_inset.main_start(constants.dir)
-                        - constants.content_box_inset.main_end(constants.dir)
-                        - final_size.main(constants.dir)
-                        + resolved_margin.main_start(constants.dir)
-                        - resolved_margin.main_end(constants.dir))
-                        / 2.0
-                }
+            static_offset_main
+        };
+
+        // The cross-axis static position follows the same rule: alignment
+        // with auto insets, before final inset placement.
+        let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
+            > constants.container_size.cross(constants.dir) - constants.content_box_inset.cross_axis_sum(constants.dir);
+        let cross_keyword = resolve_self_alignment_safety(align_self, cross_overflows);
+        let static_offset_cross = match (cross_keyword, cross_axis_flex_start_reversed) {
+            // Stretch alignment does not apply to absolutely positioned items
+            // See "Example 3" at https://www.w3.org/TR/css-flexbox-1/#abspos-items
+            // Note: Stretch should be FlexStart not Start when we support both
+            (AlignItemsKeyword::Start, false) => {
+                constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
+            }
+            (AlignItemsKeyword::Start, true) => {
+                constants.container_size.cross(constants.dir)
+                    - constants.content_box_inset.cross_end(constants.dir)
+                    - final_size.cross(constants.dir)
+                    - resolved_margin.cross_end(constants.dir)
+            }
+            (AlignItemsKeyword::End, false) => {
+                constants.container_size.cross(constants.dir)
+                    - constants.content_box_inset.cross_end(constants.dir)
+                    - final_size.cross(constants.dir)
+                    - resolved_margin.cross_end(constants.dir)
+            }
+            (AlignItemsKeyword::End, true) => {
+                constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
+            }
+            (AlignItemsKeyword::Baseline | AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, false)
+            | (AlignItemsKeyword::FlexEnd, true) => {
+                constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
+            }
+            (AlignItemsKeyword::Baseline | AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, true)
+            | (AlignItemsKeyword::FlexEnd, false) => {
+                constants.container_size.cross(constants.dir)
+                    - constants.content_box_inset.cross_end(constants.dir)
+                    - final_size.cross(constants.dir)
+                    - resolved_margin.cross_end(constants.dir)
+            }
+            (AlignItemsKeyword::Center, _) => {
+                (constants.container_size.cross(constants.dir)
+                    + constants.content_box_inset.cross_start(constants.dir)
+                    - constants.content_box_inset.cross_end(constants.dir)
+                    - final_size.cross(constants.dir)
+                    + resolved_margin.cross_start(constants.dir)
+                    - resolved_margin.cross_end(constants.dir))
+                    / 2.0
             }
         };
 
-        // Apply cross-axis alignment
-        // let free_cross_space = free_space.cross(constants.dir) - resolved_margin.cross_axis_sum(constants.dir);
+        // Apply cross-axis insets after preserving the static flex alignment.
         let offset_cross = if start_cross.is_some() || end_cross.is_some() {
             if cross_is_rtl && end_cross.is_some() {
                 constants.container_size.cross(constants.dir)
@@ -2450,53 +2510,7 @@ fn perform_absolute_layout_on_absolute_children(
                     - resolved_margin.cross_end(constants.dir)
             }
         } else {
-            let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
-                > constants.container_size.cross(constants.dir)
-                    - constants.content_box_inset.cross_axis_sum(constants.dir);
-            let cross_keyword = resolve_self_alignment_safety(align_self, cross_overflows);
-            match (cross_keyword, cross_axis_flex_start_reversed) {
-                // Stretch alignment does not apply to absolutely positioned items
-                // See "Example 3" at https://www.w3.org/TR/css-flexbox-1/#abspos-items
-                // Note: Stretch should be FlexStart not Start when we support both
-                (AlignItemsKeyword::Start, false) => {
-                    constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
-                }
-                (AlignItemsKeyword::Start, true) => {
-                    constants.container_size.cross(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        - resolved_margin.cross_end(constants.dir)
-                }
-                (AlignItemsKeyword::End, false) => {
-                    constants.container_size.cross(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        - resolved_margin.cross_end(constants.dir)
-                }
-                (AlignItemsKeyword::End, true) => {
-                    constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
-                }
-                (AlignItemsKeyword::Baseline | AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, false)
-                | (AlignItemsKeyword::FlexEnd, true) => {
-                    constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
-                }
-                (AlignItemsKeyword::Baseline | AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, true)
-                | (AlignItemsKeyword::FlexEnd, false) => {
-                    constants.container_size.cross(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        - resolved_margin.cross_end(constants.dir)
-                }
-                (AlignItemsKeyword::Center, _) => {
-                    (constants.container_size.cross(constants.dir)
-                        + constants.content_box_inset.cross_start(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        + resolved_margin.cross_start(constants.dir)
-                        - resolved_margin.cross_end(constants.dir))
-                        / 2.0
-                }
-            }
+            static_offset_cross
         };
 
         let location = match constants.is_row {
@@ -2516,6 +2530,10 @@ fn perform_absolute_layout_on_absolute_children(
                 content_size: layout_output.content_size,
                 scrollbar_size,
                 location,
+                static_location: match constants.is_row {
+                    true => Point { x: static_offset_main, y: static_offset_cross },
+                    false => Point { x: static_offset_cross, y: static_offset_main },
+                },
                 padding,
                 border,
                 margin: resolved_margin,

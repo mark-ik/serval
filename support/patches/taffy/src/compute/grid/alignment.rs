@@ -258,6 +258,26 @@ pub(super) fn align_and_position_item(
         baseline_shim,
         Direction::Ltr,
     );
+    let (static_x, _) = align_item_within_area(
+        Line { start: grid_area.left, end: grid_area.right },
+        justify_self.unwrap_or(alignment_styles.horizontal),
+        width,
+        position,
+        Line { start: None, end: None },
+        margin.horizontal_components(),
+        0.0,
+        direction,
+    );
+    let (static_y, _) = align_item_within_area(
+        Line { start: grid_area.top, end: grid_area.bottom },
+        align_self.unwrap_or(alignment_styles.vertical),
+        height,
+        position,
+        Line { start: None, end: None },
+        margin.vertical_components(),
+        baseline_shim,
+        Direction::Ltr,
+    );
 
     let scrollbar_size = Size {
         width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
@@ -271,6 +291,7 @@ pub(super) fn align_and_position_item(
         &Layout {
             order,
             location: Point { x, y },
+            static_location: Point { x: static_x, y: static_y },
             size: Size { width, height },
             #[cfg(feature = "content_size")]
             content_size: layout_output.content_size,

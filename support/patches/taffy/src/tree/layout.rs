@@ -231,6 +231,8 @@ pub struct Layout {
     pub order: u32,
     /// The top-left corner of the node
     pub location: Point<f32>,
+    /// The pre-inset coordinate produced by the formatting algorithm.
+    pub static_location: Point<f32>,
     /// The width and height of the node
     pub size: Size<f32>,
     #[cfg(feature = "content_size")]
@@ -264,6 +266,7 @@ impl Layout {
         Self {
             order: 0,
             location: Point::ZERO,
+            static_location: Point::ZERO,
             size: Size::zero(),
             #[cfg(feature = "content_size")]
             content_size: Size::zero(),
@@ -284,6 +287,7 @@ impl Layout {
             order,
             size: Size::zero(),
             location: Point::ZERO,
+            static_location: Point::ZERO,
             #[cfg(feature = "content_size")]
             content_size: Size::zero(),
             scrollbar_size: Size::zero(),

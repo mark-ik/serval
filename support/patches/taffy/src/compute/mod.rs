@@ -155,6 +155,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         &Layout {
             order: 0,
             location,
+            static_location: location,
             size: output.size,
             #[cfg(feature = "content_size")]
             content_size: output.content_size,
