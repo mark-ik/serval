@@ -3035,7 +3035,7 @@ fn apply_absolute_and_fixed_positioning<Id>(
             ) || matches!(
                 css_box.display.internal_table,
                 Some(role) if role != InternalTableRole::Wrapper
-            ) || !css_box.flow.is_horizontal()
+            )
             {
                 return None;
             }
@@ -3076,21 +3076,44 @@ fn apply_absolute_and_fixed_positioning<Id>(
                 (Some(fragment_id), rect, boxes[containing_box].flow)
             },
         };
-        if !containing_flow.is_horizontal() {
-            continue;
-        }
-        let source_origin = match static_position.source {
-            StaticPositionSource::InitialContainingBlock => (0.0, 0.0),
+        let (source_origin, source_size) = match static_position.source {
+            StaticPositionSource::InitialContainingBlock => (
+                (0.0, 0.0),
+                PhysicalSize {
+                    width: viewport_width,
+                    height: viewport_height,
+                },
+            ),
             StaticPositionSource::Fragment(source) => fragments
                 .get(source)
                 .map(TreeFragment::physical_rect)
-                .map_or((0.0, 0.0), |rect| (rect.x, rect.y)),
+                .map_or(
+                    (
+                        (0.0, 0.0),
+                        PhysicalSize {
+                            width: viewport_width,
+                            height: viewport_height,
+                        },
+                    ),
+                    |rect| {
+                        (
+                            (rect.x, rect.y),
+                            PhysicalSize {
+                                width: rect.width,
+                                height: rect.height,
+                            },
+                        )
+                    },
+                ),
         };
-        let static_rect = LogicalRect {
-            inline_start: source_origin.0 + static_position.logical_rect.inline_start - containing_rect.x,
-            block_start: source_origin.1 + static_position.logical_rect.block_start - containing_rect.y,
-            inline_size: static_position.logical_rect.inline_size,
-            block_size: static_position.logical_rect.block_size,
+        let static_in_source = boxes[box_id]
+            .flow
+            .physical_rect(static_position.logical_rect, source_size);
+        let static_in_containing = PhysicalRect {
+            x: source_origin.0 + static_in_source.x - containing_rect.x,
+            y: source_origin.1 + static_in_source.y - containing_rect.y,
+            width: static_in_source.width,
+            height: static_in_source.height,
         };
         let computed = styles
             .get(node)
@@ -3106,6 +3129,13 @@ fn apply_absolute_and_fixed_positioning<Id>(
             width: containing_rect.width,
             height: containing_rect.height,
         });
+        let static_rect = containing_flow.logical_rect(
+            static_in_containing,
+            PhysicalSize {
+                width: containing_rect.width,
+                height: containing_rect.height,
+            },
+        );
         let geometry = buckram::solve_positioned_box(
             style,
             buckram::PositionedBoxInput {
@@ -5542,6 +5572,58 @@ mod tests {
             layout
                 .fragments()
                 .fragment_ids_for_box(trigger)
+                .first()
+                .copied(),
+        );
+    }
+
+    #[test]
+    fn absolute_position_converts_between_vertical_static_and_containing_flows() {
+        let dom = StaticDocument::parse(
+            "<div id=container><div id=positioned>item</div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#container { position: relative; writing-mode: vertical-rl; \
+                 width: 120px; height: 100px; } \
+                 #positioned { position: absolute; left: 13px; top: 8px; \
+                 width: 20px; height: 30px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let container = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "container").expect("container"))
+            .expect("container box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let container_fragment = layout
+            .fragments()
+            .fragments_for_box(container)
+            .next()
+            .expect("container fragment");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (container_fragment.x + 13.0, container_fragment.y + 8.0),
+            "physical insets retain their sides while K5d changes coordinate systems",
+        );
+        assert_eq!(
+            positioned_fragment.containing_fragment(),
+            layout
+                .fragments()
+                .fragment_ids_for_box(container)
                 .first()
                 .copied(),
         );

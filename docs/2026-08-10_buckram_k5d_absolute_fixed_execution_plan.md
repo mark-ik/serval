@@ -3,8 +3,8 @@
 **Date:** 2026-08-10
 
 **Status:** In progress. K5a and K5b are committed. The first live route owns
-ordinary horizontal non-table placement; the remaining sizing and table work
-stays explicit below.
+ordinary non-table placement across the implemented writing modes; the
+remaining sizing and table work stays explicit below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5d.
@@ -17,8 +17,8 @@ conversion, inset resolution, auto margins, min/max constraints,
 shrink-to-fit contributions, percentage bases, and the CSS over-constraint
 rules for the implemented non-replaced and replaced/aspect-ratio subset.
 
-It replaces Livery's current lowering of both `absolute` and `fixed` to
-Taffy's `Position::Absolute`.
+Its closure replaces Livery's current temporary lowering of both `absolute`
+and `fixed` to Taffy's `Position::Absolute`.
 
 ## Data boundary
 
@@ -39,16 +39,18 @@ silently changing an absolute result.
 logical inset equation from a selected containing rectangle, K5b static
 rectangle, measured border-box fallback, auto margins, and min/max bounds.
 Livery gives the scratch formatter auto insets for absolute and fixed boxes,
-then translates the emitted ordinary horizontal fragment subtree from this
-Buckram result and rewires its containing-fragment link to K5a's selection.
+then translates the emitted fragment subtree from this Buckram result and
+rewires its containing-fragment link to K5a's selection. The bridge converts
+the static source rectangle through physical space into the selected containing
+flow, so vertical writing modes keep the same logical used-inset equation.
 The same path now handles a table root at its K4h wrapper; its grid no longer
 carries a duplicate root-only absolute/fixed gap. The fixed receipt uses a
 transform-established fixed containing block.
 
 The formatter still excludes the out-of-flow box and supplies its measured
 fallback size. K5d remains open until Buckram owns shrink-to-fit, replaced and
-aspect-ratio sizing, vertical writing modes, and internal table-part route.
-Those gaps are not treated as final K5 behavior.
+aspect-ratio sizing, and the internal table-part route. Those gaps are not
+treated as final K5 behavior.
 
 ## Work
 
