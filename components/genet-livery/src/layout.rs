@@ -10,15 +10,15 @@ use buckram::{
     Baselines, BlockBoxSizing, BlockDimensions, BlockPosition as BuckramBlockPosition,
     BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry,
     ContainingBlock, CssBox, DisplayInside, DisplayOutside, FloatContextProvenance,
-    FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto,
-    FormattingContextKind, Fragment as TreeFragment,
-    FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
-    IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
-    PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme,
-    StaticPosition, StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput,
-    TableCellLayoutOutput, TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid,
-    TableGridInputs, TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput,
-    TableTrackVisibility, resolve_collapsed_border_geometry,
+    FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind,
+    Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole,
+    IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult,
+    LogicalAxis, LogicalRect, PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides,
+    PhysicalSize, PositioningScheme, StaticPosition, StaticPositionSource, TableCell,
+    TableCellInput, TableCellLayoutInput, TableCellLayoutOutput, TableCellLayoutPass,
+    TableFragmentRole, TableFragments, TableGrid, TableGridInputs, TableGridLines,
+    TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
@@ -401,6 +401,27 @@ struct TextMeasure {
     height: f32,
 }
 
+fn measure_text_algorithm_node(
+    known: AlgorithmSize<Option<f32>>,
+    available: AlgorithmSize<AlgorithmAvailableSpace>,
+    context: Option<&mut TextMeasure>,
+) -> AlgorithmSize<f32> {
+    let Some(context) = context else {
+        return AlgorithmSize::new(0.0, 0.0);
+    };
+    let available_width = match available.width {
+        AlgorithmAvailableSpace::Definite(width) => width,
+        AlgorithmAvailableSpace::MinContent => context.min_width,
+        AlgorithmAvailableSpace::MaxContent => context.max_width,
+    };
+    AlgorithmSize::new(
+        known
+            .width
+            .unwrap_or(context.max_width.min(available_width.max(0.0))),
+        known.height.unwrap_or(context.height),
+    )
+}
+
 struct BuildState<'a, D: LayoutDom> {
     dom: &'a D,
     styles: &'a StylePlane<D::NodeId>,
@@ -512,6 +533,101 @@ where
             context.remember(width, constraints, layout)
         })
     })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the measured inline context needs its formatter, DOM, style, box, and atomic inputs"
+)]
+fn measure_inline_algorithm_node<D>(
+    text: &mut TextSystem,
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    boxes: &GeneratedBoxTree<D::NodeId>,
+    atomic: &AtomicLayoutPlane,
+    intrinsic_sizes: &mut IntrinsicSizeCache,
+    known: AlgorithmSize<Option<f32>>,
+    available: AlgorithmSize<AlgorithmAvailableSpace>,
+    context: Option<&mut InlineMeasure>,
+    line_constraints: Option<&FloatLineConstraints>,
+) -> AlgorithmSize<f32>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(context) = context else {
+        return AlgorithmSize::new(0.0, 0.0);
+    };
+    let (query_width, definite_cap, intrinsic_kind) = match available.width {
+        AlgorithmAvailableSpace::Definite(width) => (width, Some(width), None),
+        // A nearly-zero line asks Parley to break at every legal
+        // opportunity while retaining each unbreakable item's width.
+        AlgorithmAvailableSpace::MinContent => (0.01, None, Some(IntrinsicSizeKind::MinContent)),
+        // An infinite line suppresses wrapping and yields max-content.
+        AlgorithmAvailableSpace::MaxContent => {
+            (f32::INFINITY, None, Some(IntrinsicSizeKind::MaxContent))
+        },
+    };
+    let intrinsic_width = intrinsic_kind.and_then(|kind| {
+        let owner = context.owner?;
+        let query = IntrinsicSizeQuery::new(owner, LogicalAxis::Inline, kind);
+        intrinsic_sizes.get(query).or_else(|| {
+            let min_content = measure_inline_context(
+                text,
+                dom,
+                styles,
+                boxes,
+                atomic,
+                context,
+                InlineMeasureGeometry {
+                    width: 0.01,
+                    line_constraints: None,
+                },
+            )
+            .0;
+            let max_content = measure_inline_context(
+                text,
+                dom,
+                styles,
+                boxes,
+                atomic,
+                context,
+                InlineMeasureGeometry {
+                    width: f32::INFINITY,
+                    line_constraints: None,
+                },
+            )
+            .0;
+            let sizes = IntrinsicSizes::new(min_content, max_content)?;
+            let result = sizes.get(kind);
+            intrinsic_sizes.insert(owner, LogicalAxis::Inline, sizes);
+            Some(result)
+        })
+    });
+    let requested_width = known.width.or(intrinsic_width).unwrap_or(query_width);
+    let (measured_width, measured_height) = measure_inline_context(
+        text,
+        dom,
+        styles,
+        boxes,
+        atomic,
+        context,
+        InlineMeasureGeometry {
+            width: requested_width,
+            line_constraints: intrinsic_kind
+                .is_none()
+                .then_some(line_constraints)
+                .flatten(),
+        },
+    );
+    AlgorithmSize::new(
+        known.width.unwrap_or_else(|| {
+            intrinsic_width.unwrap_or_else(|| {
+                definite_cap.map_or(measured_width, |cap| measured_width.min(cap.max(0.0)))
+            })
+        }),
+        known.height.unwrap_or(measured_height),
+    )
 }
 
 /// Compare one table's Buckram result against its painted fragments, in both
@@ -655,6 +771,34 @@ fn populate_inline_baselines(tree: &mut AlgorithmTree<Style, InlineMeasure, Vec<
         tree.set_baselines(node, baselines);
     }
     tree.propagate_declared_baselines();
+}
+
+/// Ask the formatter for the admitted intrinsic pair of each positioned
+/// root. The map is keyed by Buckram box identity, never a backend node or a
+/// completed normal-flow rectangle.
+fn positioned_intrinsic_sizes<Context, Source>(
+    tree: &mut AlgorithmTree<Style, Context, Source>,
+    candidates: &[(BoxId, AlgorithmNodeId)],
+    mut measure: impl FnMut(
+        AlgorithmSize<Option<f32>>,
+        AlgorithmSize<AlgorithmAvailableSpace>,
+        AlgorithmNodeId,
+        Option<&mut Context>,
+        Option<&FloatLineConstraints>,
+    ) -> AlgorithmSize<f32>,
+) -> HashMap<BoxId, IntrinsicSizes> {
+    candidates
+        .iter()
+        .filter_map(|(box_id, node)| {
+            tree.positioned_intrinsic_inline_sizes(
+                *node,
+                |known, available, node, context, lines| {
+                    measure(known, available, node, context, lines)
+                },
+            )
+            .map(|sizes| (*box_id, sizes))
+        })
+        .collect()
 }
 
 struct InlineBuildState<'a, D: LayoutDom> {
@@ -1144,22 +1288,7 @@ where
             AlgorithmAvailableSpace::Definite(viewport_width),
             AlgorithmAvailableSpace::Definite(viewport_height),
         ),
-        |known, available, _, context, _| {
-            let Some(context) = context else {
-                return AlgorithmSize::new(0.0, 0.0);
-            };
-            let available_width = match available.width {
-                AlgorithmAvailableSpace::Definite(width) => width,
-                AlgorithmAvailableSpace::MinContent => context.min_width,
-                AlgorithmAvailableSpace::MaxContent => context.max_width,
-            };
-            AlgorithmSize::new(
-                known
-                    .width
-                    .unwrap_or(context.max_width.min(available_width.max(0.0))),
-                known.height.unwrap_or(context.height),
-            )
-        },
+        |known, available, _, context, _| measure_text_algorithm_node(known, available, context),
     );
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
     let table_paint = state.table_paint_plane();
@@ -1185,6 +1314,68 @@ where
         &tables,
         &mut output,
     )?;
+    let positioned = state
+        .tree
+        .node_ids()
+        .filter_map(|node| state.tree.source(node).map(|box_id| (box_id, node)))
+        .filter(|(box_id, _)| {
+            matches!(
+                boxes[*box_id].positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            )
+        })
+        .collect::<Vec<_>>();
+    let positioned_intrinsics = positioned_intrinsic_sizes(
+        &mut state.tree,
+        &positioned,
+        |known, available, _, context, _| measure_text_algorithm_node(known, available, context),
+    );
+    let placements = positioned_placements(
+        &fragments,
+        &boxes,
+        styles,
+        &positioned_intrinsics,
+        viewport_width,
+        viewport_height,
+    );
+    if apply_admitted_positioned_inline_sizes(
+        &mut state.tree,
+        &positioned,
+        &placements,
+        &positioned_intrinsics,
+    ) {
+        state.tree.compute_layout_with_measure(
+            root,
+            AlgorithmSize::new(
+                AlgorithmAvailableSpace::Definite(viewport_width),
+                AlgorithmAvailableSpace::Definite(viewport_height),
+            ),
+            |known, available, _, context, _| {
+                measure_text_algorithm_node(known, available, context)
+            },
+        );
+        fragments = FragmentTree::default();
+        let mut output = FragmentOutput {
+            fragments: &mut fragments,
+        };
+        collect_fragments(
+            &state.tree,
+            &boxes,
+            root,
+            FragmentCursor {
+                origin: Point { x: 0.0, y: 0.0 },
+                containing: Fragment {
+                    x: 0.0,
+                    y: 0.0,
+                    width: viewport_width,
+                    height: viewport_height,
+                },
+                parent: None,
+            },
+            &tables,
+            &mut output,
+        )?;
+    }
     state.verify_table_layout(|box_id| {
         fragments
             .fragments_for_box(box_id)
@@ -1203,6 +1394,7 @@ where
         &mut fragments,
         &boxes,
         styles,
+        &positioned_intrinsics,
         viewport_width,
         viewport_height,
     );
@@ -1639,80 +1831,17 @@ where
             AlgorithmAvailableSpace::Definite(viewport_height),
         ),
         |known, available, _, context, line_constraints| {
-            let Some(context) = context else {
-                return AlgorithmSize::new(0.0, 0.0);
-            };
-            let (query_width, definite_cap, intrinsic_kind) = match available.width {
-                AlgorithmAvailableSpace::Definite(width) => (width, Some(width), None),
-                // A nearly-zero line asks Parley to break at every legal
-                // opportunity while retaining each unbreakable item's width.
-                AlgorithmAvailableSpace::MinContent => {
-                    (0.01, None, Some(IntrinsicSizeKind::MinContent))
-                },
-                // An infinite line suppresses wrapping and yields max-content.
-                AlgorithmAvailableSpace::MaxContent => {
-                    (f32::INFINITY, None, Some(IntrinsicSizeKind::MaxContent))
-                },
-            };
-            let intrinsic_width = intrinsic_kind.and_then(|kind| {
-                let owner = context.owner?;
-                let query = IntrinsicSizeQuery::new(owner, LogicalAxis::Inline, kind);
-                intrinsic_sizes.get(query).or_else(|| {
-                    let min_content = measure_inline_context(
-                        text,
-                        dom,
-                        styles,
-                        &boxes,
-                        atomic,
-                        context,
-                        InlineMeasureGeometry {
-                            width: 0.01,
-                            line_constraints: None,
-                        },
-                    )
-                    .0;
-                    let max_content = measure_inline_context(
-                        text,
-                        dom,
-                        styles,
-                        &boxes,
-                        atomic,
-                        context,
-                        InlineMeasureGeometry {
-                            width: f32::INFINITY,
-                            line_constraints: None,
-                        },
-                    )
-                    .0;
-                    let sizes = IntrinsicSizes::new(min_content, max_content)?;
-                    let result = sizes.get(kind);
-                    intrinsic_sizes.insert(owner, LogicalAxis::Inline, sizes);
-                    Some(result)
-                })
-            });
-            let requested_width = known.width.or(intrinsic_width).unwrap_or(query_width);
-            let (measured_width, measured_height) = measure_inline_context(
+            measure_inline_algorithm_node(
                 text,
                 dom,
                 styles,
                 &boxes,
                 atomic,
+                &mut intrinsic_sizes,
+                known,
+                available,
                 context,
-                InlineMeasureGeometry {
-                    width: requested_width,
-                    line_constraints: intrinsic_kind
-                        .is_none()
-                        .then_some(line_constraints)
-                        .flatten(),
-                },
-            );
-            AlgorithmSize::new(
-                known.width.unwrap_or_else(|| {
-                    intrinsic_width.unwrap_or_else(|| {
-                        definite_cap.map_or(measured_width, |cap| measured_width.min(cap.max(0.0)))
-                    })
-                }),
-                known.height.unwrap_or(measured_height),
+                line_constraints,
             )
         },
     );
@@ -1744,6 +1873,109 @@ where
         &mut text_frame,
         styles,
     )?;
+    let positioned = state
+        .tree
+        .node_ids()
+        .filter_map(|node| match state.tree.source(node).as_slice() {
+            [box_id] => Some((*box_id, node)),
+            _ => None,
+        })
+        .filter(|(box_id, _)| {
+            matches!(
+                boxes[*box_id].positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            )
+        })
+        .collect::<Vec<_>>();
+    let positioned_intrinsics = {
+        let InlineBuildState {
+            tree,
+            dom,
+            styles,
+            boxes,
+            atomic,
+            ..
+        } = &mut state;
+        positioned_intrinsic_sizes(
+            tree,
+            &positioned,
+            |known, available, _, context, line_constraints| {
+                measure_inline_algorithm_node(
+                    text,
+                    *dom,
+                    *styles,
+                    *boxes,
+                    atomic,
+                    &mut intrinsic_sizes,
+                    known,
+                    available,
+                    context,
+                    line_constraints,
+                )
+            },
+        )
+    };
+    let placements = positioned_placements(
+        &fragments,
+        &boxes,
+        styles,
+        &positioned_intrinsics,
+        viewport_width,
+        viewport_height,
+    );
+    if apply_admitted_positioned_inline_sizes(
+        &mut state.tree,
+        &positioned,
+        &placements,
+        &positioned_intrinsics,
+    ) {
+        state.tree.compute_layout_with_measure(
+            root,
+            AlgorithmSize::new(
+                AlgorithmAvailableSpace::Definite(viewport_width),
+                AlgorithmAvailableSpace::Definite(viewport_height),
+            ),
+            |known, available, _, context, line_constraints| {
+                measure_inline_algorithm_node(
+                    text,
+                    dom,
+                    styles,
+                    &boxes,
+                    atomic,
+                    &mut intrinsic_sizes,
+                    known,
+                    available,
+                    context,
+                    line_constraints,
+                )
+            },
+        );
+        populate_inline_baselines(&mut state.tree);
+        fragments = FragmentTree::default();
+        text_frame = TextFrame::default();
+        let mut output = FragmentOutput {
+            fragments: &mut fragments,
+        };
+        collect_inline_fragments(
+            &state.tree,
+            &boxes,
+            root,
+            FragmentCursor {
+                origin: Point { x: 0.0, y: 0.0 },
+                containing: Fragment {
+                    x: 0.0,
+                    y: 0.0,
+                    width: viewport_width,
+                    height: viewport_height,
+                },
+                parent: None,
+            },
+            &tables,
+            &mut output,
+            &mut text_frame,
+            styles,
+        )?;
+    }
     state.verify_table_layout(|box_id| {
         fragments
             .fragments_for_box(box_id)
@@ -1767,6 +1999,7 @@ where
         &mut fragments,
         &boxes,
         styles,
+        &positioned_intrinsics,
         viewport_width,
         viewport_height,
     );
@@ -3132,11 +3365,13 @@ fn apply_relative_positioning<Id>(
                 .and_then(TreeFragment::containing_fragment)
                 .and_then(|containing| fragments.get(containing))
                 .map_or(initial_containing_inline_size, |fragment| {
-                    style.containing_flow.logical_size(PhysicalSize {
-                        width: fragment.width,
-                        height: fragment.height,
-                    })
-                    .inline
+                    style
+                        .containing_flow
+                        .logical_size(PhysicalSize {
+                            width: fragment.width,
+                            height: fragment.height,
+                        })
+                        .inline
                 });
             let logical = style.relative_offset(containing_inline_size);
             let physical: PhysicalOffset = style.containing_flow.physical_offset(logical);
@@ -3145,25 +3380,75 @@ fn apply_relative_positioning<Id>(
     }
 }
 
-/// Resolve absolute and fixed offsets from K5a/K5b inputs after normal-flow
-/// and relative fragment geometry are available.
-///
-/// This first live K5d route owns non-table horizontal placement. The scratch
-/// formatter still supplies the measured border-box size and excludes the
-/// out-of-flow box; it receives auto insets, so no final browser position is
-/// selected there. Table roots and internal table parts remain on the named
-/// K5d table boundary until their measured table geometry can enter the same
-/// input path.
-fn apply_absolute_and_fixed_positioning<Id>(
-    fragments: &mut FragmentTree,
+#[derive(Clone, Copy)]
+struct PositionedPlacement {
+    box_id: BoxId,
+    root: FragmentId,
+    containing_fragment: Option<FragmentId>,
+    current: PhysicalRect,
+    containing_rect: PhysicalRect,
+    containing_flow: FlowAxes,
+    containing_size: buckram::LogicalSize,
+    style: BlockStyle,
+    geometry: buckram::PositionedBoxGeometry,
+}
+
+impl PositionedPlacement {
+    fn target_rect(self) -> PhysicalRect {
+        self.containing_flow.physical_rect(
+            self.geometry.logical_rect,
+            PhysicalSize {
+                width: self.containing_rect.width,
+                height: self.containing_rect.height,
+            },
+        )
+    }
+
+    /// Convert Buckram's border-box answer back into the formatter's CSS
+    /// `width` input. This is only admitted for horizontal roots whose
+    /// intrinsic query was accepted above.
+    fn formatter_inline_size(self) -> Option<f32> {
+        if !self.style.flow.is_horizontal() || !self.style.containing_flow.is_horizontal() {
+            return None;
+        }
+        if !matches!(
+            self.style.size.width,
+            BlockSizeValue::Auto
+                | BlockSizeValue::MinContent
+                | BlockSizeValue::MaxContent
+                | BlockSizeValue::FitContent(_)
+        ) {
+            return None;
+        }
+        let padding_border = self
+            .style
+            .logical_padding_border(self.containing_size.inline);
+        let border_box = self.geometry.logical_rect.inline_size;
+        Some(match self.style.box_sizing {
+            BlockBoxSizing::ContentBox => {
+                (border_box - padding_border.inline_start - padding_border.inline_end).max(0.0)
+            },
+            BlockBoxSizing::BorderBox => border_box,
+        })
+    }
+}
+
+/// Resolve absolute and fixed used geometry from K5a/K5b inputs after a
+/// formatting pass has supplied static rectangles and admitted intrinsic
+/// contributions. The returned record keeps positioning separate from the
+/// later fragment translation and possible constrained reformat.
+fn positioned_placements<Id>(
+    fragments: &FragmentTree,
     boxes: &GeneratedBoxTree<Id>,
     styles: &StylePlane<Id>,
+    intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
     viewport_width: f32,
     viewport_height: f32,
-) where
+) -> Vec<PositionedPlacement>
+where
     Id: Copy + Eq + Hash,
 {
-    let placements = boxes
+    let candidates = boxes
         .iter()
         .filter_map(|(box_id, css_box)| {
             if !matches!(
@@ -3172,8 +3457,7 @@ fn apply_absolute_and_fixed_positioning<Id>(
             ) || matches!(
                 css_box.display.internal_table,
                 Some(role) if role != InternalTableRole::Wrapper
-            )
-            {
+            ) {
                 return None;
             }
             let node = css_box.origin.node()?;
@@ -3184,121 +3468,181 @@ fn apply_absolute_and_fixed_positioning<Id>(
         })
         .collect::<Vec<_>>();
 
-    for (box_id, node, root, static_position) in placements {
-        let Some(current) = fragments.get(root).map(TreeFragment::physical_rect) else {
-            continue;
-        };
-        let (containing_fragment, containing_rect, containing_flow) = match static_position.containing_block {
-            ContainingBlock::Initial => (
-                None,
-                Fragment {
-                    x: 0.0,
-                    y: 0.0,
-                    width: viewport_width,
-                    height: viewport_height,
-                },
-                FlowAxes::HORIZONTAL_LTR,
-            ),
-            ContainingBlock::Box(containing_box) => {
-                let Some(fragment_id) = fragments
-                    .fragment_ids_for_box(containing_box)
-                    .first()
-                    .copied()
-                else {
-                    continue;
-                };
-                let Some(rect) = fragments.get(fragment_id).map(TreeFragment::physical_rect) else {
-                    continue;
-                };
-                (Some(fragment_id), rect, boxes[containing_box].flow)
-            },
-        };
-        let (source_origin, source_size) = match static_position.source {
-            StaticPositionSource::InitialContainingBlock => (
-                (0.0, 0.0),
-                PhysicalSize {
-                    width: viewport_width,
-                    height: viewport_height,
-                },
-            ),
-            StaticPositionSource::Fragment(source) => fragments
-                .get(source)
-                .map(TreeFragment::physical_rect)
-                .map_or(
-                    (
-                        (0.0, 0.0),
-                        PhysicalSize {
+    candidates
+        .into_iter()
+        .filter_map(|(box_id, node, root, static_position)| {
+            let current = fragments.get(root).map(TreeFragment::physical_rect)?;
+            let (containing_fragment, containing_rect, containing_flow) =
+                match static_position.containing_block {
+                    ContainingBlock::Initial => (
+                        None,
+                        Fragment {
+                            x: 0.0,
+                            y: 0.0,
                             width: viewport_width,
                             height: viewport_height,
                         },
+                        FlowAxes::HORIZONTAL_LTR,
                     ),
-                    |rect| {
-                        (
-                            (rect.x, rect.y),
-                            PhysicalSize {
-                                width: rect.width,
-                                height: rect.height,
-                            },
-                        )
+                    ContainingBlock::Box(containing_box) => {
+                        let fragment_id = fragments
+                            .fragment_ids_for_box(containing_box)
+                            .first()
+                            .copied()?;
+                        let rect = fragments
+                            .get(fragment_id)
+                            .map(TreeFragment::physical_rect)?;
+                        (Some(fragment_id), rect, boxes[containing_box].flow)
+                    },
+                };
+            let (source_origin, source_size) = match static_position.source {
+                StaticPositionSource::InitialContainingBlock => (
+                    (0.0, 0.0),
+                    PhysicalSize {
+                        width: viewport_width,
+                        height: viewport_height,
                     },
                 ),
-        };
-        let static_in_source = boxes[box_id]
-            .flow
-            .physical_rect(static_position.logical_rect, source_size);
-        let static_in_containing = PhysicalRect {
-            x: source_origin.0 + static_in_source.x - containing_rect.x,
-            y: source_origin.1 + static_in_source.y - containing_rect.y,
-            width: static_in_source.width,
-            height: static_in_source.height,
-        };
-        let computed = styles
-            .get(node)
-            .expect("a generated positioned box keeps its computed style");
-        let computed = if boxes[box_id].display.internal_table == Some(InternalTableRole::Wrapper) {
-            wrapper_style(computed)
-        } else {
-            computed.clone()
-        };
-        let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
-        let style = to_block_style(boxes, box_id, &computed, font_size);
-        let containing_size = containing_flow.logical_size(PhysicalSize {
-            width: containing_rect.width,
-            height: containing_rect.height,
-        });
-        let static_rect = containing_flow.logical_rect(
-            static_in_containing,
-            PhysicalSize {
+                StaticPositionSource::Fragment(source) => fragments
+                    .get(source)
+                    .map(TreeFragment::physical_rect)
+                    .map_or(
+                        (
+                            (0.0, 0.0),
+                            PhysicalSize {
+                                width: viewport_width,
+                                height: viewport_height,
+                            },
+                        ),
+                        |rect| {
+                            (
+                                (rect.x, rect.y),
+                                PhysicalSize {
+                                    width: rect.width,
+                                    height: rect.height,
+                                },
+                            )
+                        },
+                    ),
+            };
+            let static_in_source = boxes[box_id]
+                .flow
+                .physical_rect(static_position.logical_rect, source_size);
+            let static_in_containing = PhysicalRect {
+                x: source_origin.0 + static_in_source.x - containing_rect.x,
+                y: source_origin.1 + static_in_source.y - containing_rect.y,
+                width: static_in_source.width,
+                height: static_in_source.height,
+            };
+            let computed = styles
+                .get(node)
+                .expect("a generated positioned box keeps its computed style");
+            let computed =
+                if boxes[box_id].display.internal_table == Some(InternalTableRole::Wrapper) {
+                    wrapper_style(computed)
+                } else {
+                    computed.clone()
+                };
+            let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+            let style = to_block_style(boxes, box_id, &computed, font_size);
+            let containing_size = containing_flow.logical_size(PhysicalSize {
                 width: containing_rect.width,
                 height: containing_rect.height,
-            },
-        );
-        let geometry = buckram::solve_positioned_box(
-            style,
-            buckram::PositionedBoxInput {
+            });
+            let static_rect = containing_flow.logical_rect(
+                static_in_containing,
+                PhysicalSize {
+                    width: containing_rect.width,
+                    height: containing_rect.height,
+                },
+            );
+            let geometry = buckram::solve_positioned_box(
+                style,
+                buckram::PositionedBoxInput {
+                    containing_size,
+                    static_rect,
+                    measured_size: containing_flow.logical_size(PhysicalSize {
+                        width: current.width,
+                        height: current.height,
+                    }),
+                    intrinsic_inline: intrinsic_sizes.get(&box_id).copied(),
+                },
+            );
+            Some(PositionedPlacement {
+                box_id,
+                root,
+                containing_fragment,
+                current,
+                containing_rect,
+                containing_flow,
                 containing_size,
-                static_rect,
-                measured_size: containing_flow.logical_size(PhysicalSize {
-                    width: current.width,
-                    height: current.height,
-                }),
-            },
-        );
-        let target = containing_flow.physical_rect(
-            geometry.logical_rect,
-            PhysicalSize {
-                width: containing_rect.width,
-                height: containing_rect.height,
-            },
-        );
+                style,
+                geometry,
+            })
+        })
+        .collect()
+}
+
+/// Reformat an admitted auto-sized positioned root at Buckram's resolved
+/// inline size. Other positioned subtrees retain the formatter fallback
+/// until their own K5d sizing route is implemented.
+fn apply_admitted_positioned_inline_sizes<Context, Source>(
+    tree: &mut AlgorithmTree<Style, Context, Source>,
+    candidates: &[(BoxId, AlgorithmNodeId)],
+    placements: &[PositionedPlacement],
+    intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
+) -> bool {
+    let mut changed = false;
+    for (box_id, node) in candidates {
+        if !intrinsic_sizes.contains_key(box_id) {
+            continue;
+        }
+        let Some(size) = placements
+            .iter()
+            .find(|placement| placement.box_id == *box_id)
+            .and_then(|placement| placement.formatter_inline_size())
+        else {
+            continue;
+        };
+        tree.style_mut(*node).size.width = Dimension::length(size);
+        changed = true;
+    }
+    if changed {
+        tree.clear_layout_cache();
+    }
+    changed
+}
+
+/// Apply final absolute and fixed offsets from Buckram's resolved used
+/// geometry. The formatter supplies content fragments only; this bridge never
+/// lets it select the CSS containing block or final inset origin.
+fn apply_absolute_and_fixed_positioning<Id>(
+    fragments: &mut FragmentTree,
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
+    viewport_width: f32,
+    viewport_height: f32,
+) where
+    Id: Copy + Eq + Hash,
+{
+    for placement in positioned_placements(
+        fragments,
+        boxes,
+        styles,
+        intrinsic_sizes,
+        viewport_width,
+        viewport_height,
+    ) {
+        let target = placement.target_rect();
         fragments.translate_subtree(
-            root,
+            placement.root,
             PhysicalOffset {
-                x: containing_rect.x + target.x - current.x,
-                y: containing_rect.y + target.y - current.y,
+                x: placement.containing_rect.x + target.x - placement.current.x,
+                y: placement.containing_rect.y + target.y - placement.current.y,
             },
         );
-        fragments.set_containing_fragment(root, containing_fragment);
+        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
     }
 }
 
@@ -5568,7 +5912,10 @@ mod tests {
             .expect("positioned fragment");
         assert_eq!(
             (positioned_fragment.x, positioned_fragment.y),
-            (containing_fragment_rect.x + 36.0, containing_fragment_rect.y + 11.0),
+            (
+                containing_fragment_rect.x + 36.0,
+                containing_fragment_rect.y + 11.0
+            ),
             "K5d resolves final insets after K5b records the static rectangle",
         );
         assert_eq!(
@@ -5576,6 +5923,35 @@ mod tests {
             Some(containing_fragment),
             "the final fragment attaches to K5a's selected containing fragment",
         );
+    }
+
+    #[test]
+    fn absolute_auto_inline_size_fills_between_definite_insets_from_buckram_inputs() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=positioned>unconstrained content</div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(fragment.width, 170.0);
+        assert_eq!(fragment.x, 10.0);
     }
 
     #[test]
@@ -5810,9 +6186,7 @@ mod tests {
 
     #[test]
     fn absolute_position_converts_between_vertical_static_and_containing_flows() {
-        let dom = StaticDocument::parse(
-            "<div id=container><div id=positioned>item</div></div>",
-        );
+        let dom = StaticDocument::parse("<div id=container><div id=positioned>item</div></div>");
         let styles = resolve_styles(
             &dom,
             &StyleSet::cambium(&[
@@ -5922,11 +6296,13 @@ mod tests {
         assert_eq!((wrapper_fragment.x, wrapper_fragment.y), (31.0, 14.0));
         let ledger = layout.table_shadow_ledger();
         assert!(
-            !ledger.positioning_gaps.contains(&crate::table_shadow::TablePositioningGapRecord {
-                table: table_box,
-                part: table_box,
-                gap: crate::table_shadow::TablePositioningGap::Absolute,
-            }),
+            !ledger
+                .positioning_gaps
+                .contains(&crate::table_shadow::TablePositioningGapRecord {
+                    table: table_box,
+                    part: table_box,
+                    gap: crate::table_shadow::TablePositioningGap::Absolute,
+                }),
             "the shared wrapper route replaces the root-only table positioning gap: {ledger:?}"
         );
         assert_eq!(

@@ -5,8 +5,8 @@
 //! scratch layout adapter: browser positioning is not a backend-node query.
 
 use crate::{
-    BlockBoxSizing, BlockDimensions, BlockSizeValue, BlockStyle, LogicalRect, LogicalSize,
-    LogicalSides,
+    BlockBoxSizing, BlockDimensions, BlockSizeValue, BlockStyle, IntrinsicSizes, LogicalRect,
+    LogicalSides, LogicalSize,
 };
 
 /// Inputs that remain after a formatting context has supplied a static
@@ -20,6 +20,12 @@ pub struct PositionedBoxInput {
     pub static_rect: LogicalRect,
     /// The measured border-box fallback for automatic dimensions.
     pub measured_size: LogicalSize,
+    /// The positioned box's admitted content-based inline contributions.
+    ///
+    /// A caller supplies this only when it has a formatting-context query
+    /// rather than a completed normal-flow rectangle. The measured fallback
+    /// stays available for unsupported descendants and the block axis.
+    pub intrinsic_inline: Option<IntrinsicSizes>,
 }
 
 /// The resolved border-box rectangle and margins for a positioned box.
@@ -37,11 +43,9 @@ pub struct PositionedBoxGeometry {
 /// their own contributions without changing the inset equation.
 pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> PositionedBoxGeometry {
     let containing_inline = input.containing_size.inline;
-    let insets = style.containing_flow.logical_sides(
-        style
-            .inset
-            .map(|value| value.resolve(containing_inline)),
-    );
+    let insets = style
+        .containing_flow
+        .logical_sides(style.inset.map(|value| value.resolve(containing_inline)));
     let margins = style.logical_margin(containing_inline);
     let padding_border = style.logical_padding_border(containing_inline);
     let dimensions = logical_dimensions(style.containing_flow, style.size);
@@ -61,6 +65,7 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         maximums.inline,
         padding_border.inline_start + padding_border.inline_end,
         style.box_sizing,
+        input.intrinsic_inline,
     );
     let block = solve_axis(
         input.containing_size.block,
@@ -75,6 +80,7 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         maximums.block,
         padding_border.block_start + padding_border.block_end,
         style.box_sizing,
+        None,
     );
 
     PositionedBoxGeometry {
@@ -118,17 +124,53 @@ fn solve_axis(
     maximum: BlockSizeValue,
     padding_border: f32,
     box_sizing: BlockBoxSizing,
+    intrinsic: Option<IntrinsicSizes>,
 ) -> AxisGeometry {
-    let mut size = specified_border_box(preferred, containing, padding_border, box_sizing)
-        .unwrap_or(measured_size.max(padding_border));
-    size = clamp_border_box(size, minimum, maximum, containing, padding_border, box_sizing);
-
     let start_auto = margin_start.is_none();
     let end_auto = margin_end.is_none();
     let mut margin_start = margin_start.unwrap_or(0.0);
     let mut margin_end = margin_end.unwrap_or(0.0);
     let resolved_start = inset_start;
     let resolved_end = inset_end;
+
+    let mut size = specified_border_box(preferred, containing, padding_border, box_sizing)
+        .or_else(|| {
+            intrinsic.and_then(|intrinsic| {
+                intrinsic_border_box(preferred, containing, padding_border, box_sizing, intrinsic)
+            })
+        })
+        .unwrap_or_else(|| {
+            if let Some(intrinsic) = intrinsic {
+                let available = (containing
+                    - resolved_start.unwrap_or(0.0)
+                    - resolved_end.unwrap_or(0.0)
+                    - margin_start
+                    - margin_end
+                    - padding_border)
+                    .max(0.0);
+                if resolved_start.is_some() && resolved_end.is_some() {
+                    // CSS2 10.3.7 gives the auto inline size the remaining
+                    // space when both inline insets are definite.
+                    available + padding_border
+                } else {
+                    intrinsic
+                        .min_content
+                        .max(available)
+                        .min(intrinsic.max_content)
+                        + padding_border
+                }
+            } else {
+                measured_size.max(padding_border)
+            }
+        });
+    size = clamp_border_box(
+        size,
+        minimum,
+        maximum,
+        containing,
+        padding_border,
+        box_sizing,
+    );
 
     let remaining = containing
         - resolved_start.unwrap_or(0.0)
@@ -163,6 +205,28 @@ fn solve_axis(
     }
 }
 
+fn intrinsic_border_box(
+    preferred: BlockSizeValue,
+    containing: f32,
+    padding_border: f32,
+    box_sizing: BlockBoxSizing,
+    intrinsic: IntrinsicSizes,
+) -> Option<f32> {
+    let content = match preferred {
+        BlockSizeValue::MinContent => intrinsic.min_content,
+        BlockSizeValue::MaxContent => intrinsic.max_content,
+        BlockSizeValue::FitContent(limit) => intrinsic
+            .min_content
+            .max(limit.resolve(containing))
+            .min(intrinsic.max_content),
+        BlockSizeValue::Auto | BlockSizeValue::None | BlockSizeValue::Length(_) => return None,
+    };
+    Some(match box_sizing {
+        BlockBoxSizing::ContentBox => content + padding_border,
+        BlockBoxSizing::BorderBox => content.max(padding_border),
+    })
+}
+
 fn specified_border_box(
     value: BlockSizeValue,
     containing: f32,
@@ -188,10 +252,15 @@ fn clamp_border_box(
     let minimum = specified_border_box(minimum, containing, padding_border, box_sizing)
         .unwrap_or(padding_border);
     let maximum = specified_border_box(maximum, containing, padding_border, box_sizing);
-    maximum.map_or(size.max(minimum), |maximum| size.max(minimum).min(maximum.max(minimum)))
+    maximum.map_or(size.max(minimum), |maximum| {
+        size.max(minimum).min(maximum.max(minimum))
+    })
 }
 
-fn logical_dimensions<T: Copy>(flow: crate::FlowAxes, dimensions: BlockDimensions<T>) -> LogicalSizeOf<T> {
+fn logical_dimensions<T: Copy>(
+    flow: crate::FlowAxes,
+    dimensions: BlockDimensions<T>,
+) -> LogicalSizeOf<T> {
     if flow.is_horizontal() {
         LogicalSizeOf {
             inline: dimensions.width,
@@ -232,6 +301,7 @@ mod tests {
                 inline: 30.0,
                 block: 20.0,
             },
+            intrinsic_inline: None,
         }
     }
 
@@ -315,5 +385,32 @@ mod tests {
         assert_eq!(geometry.logical_rect.inline_start, 24.0);
         assert_eq!(geometry.margin.inline_start, 0.0);
         assert_eq!(geometry.margin.inline_end, 0.0);
+    }
+
+    #[test]
+    fn automatic_inline_size_uses_admitted_intrinsics_not_the_measured_fallback() {
+        let mut style = positioned();
+        style.inset.left = FlowLengthAuto::Value(FlowLength::px(10.0));
+        let mut input = input();
+        input.intrinsic_inline = IntrinsicSizes::new(40.0, 120.0);
+
+        let geometry = solve_positioned_box(style, input);
+
+        assert_eq!(geometry.logical_rect.inline_size, 120.0);
+        assert_eq!(geometry.logical_rect.inline_start, 10.0);
+    }
+
+    #[test]
+    fn automatic_inline_size_fills_between_definite_insets() {
+        let mut style = positioned();
+        style.inset.left = FlowLengthAuto::Value(FlowLength::px(10.0));
+        style.inset.right = FlowLengthAuto::Value(FlowLength::px(20.0));
+        let mut input = input();
+        input.intrinsic_inline = IntrinsicSizes::new(40.0, 120.0);
+
+        let geometry = solve_positioned_box(style, input);
+
+        assert_eq!(geometry.logical_rect.inline_size, 170.0);
+        assert_eq!(geometry.logical_rect.inline_start, 10.0);
     }
 }

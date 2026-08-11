@@ -1880,6 +1880,37 @@ mod tests {
     }
 
     #[test]
+    fn retained_document_uses_intrinsic_positioned_width_between_insets() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=containing><div id=positioned>MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM</div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; }"]),
+            Device::screen(320.0, 240.0),
+        );
+
+        document.frame(320, 240).expect("positioned frame");
+        let positioned = by_id(document.dom(), "positioned");
+        let rect = document
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.get(positioned))
+            .map(|fragment| fragment.physical_rect())
+            .expect("positioned fragment");
+
+        assert_eq!((rect.x, rect.width), (10.0, 170.0));
+        assert!(
+            rect.height > 20.0,
+            "the second formatter pass rewraps content at Buckram's used width"
+        );
+    }
+
+    #[test]
     fn sticky_scrolls_its_retained_fragment_without_relayout() {
         let mut dom = ScriptedDom::from_serialized_document(
             "<html><body><div id=spacer></div><div id=sticky>sticky</div><div id=tail></div></body></html>",

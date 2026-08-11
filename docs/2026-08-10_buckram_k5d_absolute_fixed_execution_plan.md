@@ -37,7 +37,19 @@ silently changing an absolute result.
 
 `buckram::solve_positioned_box` now resolves the implemented non-replaced
 logical inset equation from a selected containing rectangle, K5b static
-rectangle, measured border-box fallback, auto margins, and min/max bounds.
+rectangle, admitted intrinsic inline contributions, measured border-box
+fallback, auto margins, and min/max bounds. An admitted horizontal block
+formatting root gets its min-content and max-content pair through Buckram's
+formatter query, never by reading a completed normal-flow rectangle. For that
+subset, an automatic inline size shrink-wraps when an inset is automatic and
+fills the remaining inline space when both insets are definite.
+
+When this query changes an admitted root's used inline size, Livery feeds that
+CSS width back to the formatter, clears its scratch cache, and collects a
+second content pass before final positioning. Wrapping and block-size output
+therefore follow Buckram's used inline size instead of retaining the first
+auto-width fragment.
+
 Livery gives the scratch formatter auto insets for absolute and fixed boxes,
 then translates the emitted fragment subtree from this Buckram result and
 rewires its containing-fragment link to K5a's selection. The bridge converts
@@ -47,10 +59,11 @@ The same path now handles a table root at its K4h wrapper; its grid no longer
 carries a duplicate root-only absolute/fixed gap. The fixed receipt uses a
 transform-established fixed containing block.
 
-The formatter still excludes the out-of-flow box and supplies its measured
-fallback size. K5d remains open until Buckram owns shrink-to-fit, replaced and
-aspect-ratio sizing, and the internal table-part route. Those gaps are not
-treated as final K5 behavior.
+Taffy still excludes the out-of-flow box, and remains the measured fallback
+for unadmitted descendants, the block axis, flex/grid roots, replaced content,
+and internal table parts. K5d remains open until those routes and out-of-flow
+participation itself are Buckram-owned. Those gaps are not treated as final K5
+behavior.
 
 ## Work
 

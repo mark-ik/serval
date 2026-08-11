@@ -303,6 +303,16 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         &mut self.nodes[id.index()].style
     }
 
+    /// Clear formatter state after a standards-owned used size changes a
+    /// detached formatting root. The next tree walk must visit that root and
+    /// its ancestors rather than reuse the pre-positioning layout cache.
+    pub fn clear_layout_cache(&mut self) {
+        for node in &mut self.nodes {
+            node.cache.clear();
+            node.intrinsic_inline_sizes = None;
+        }
+    }
+
     /// Admit this direct measured leaf to Buckram's float-aware line lane.
     ///
     /// Measured contexts opt in explicitly because a generic callback is not
@@ -405,6 +415,57 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     /// Whether this node is using Buckram's admitted intrinsic query lane.
     pub fn uses_intrinsic_shrink_to_fit(&self, id: AlgorithmNodeId) -> bool {
         self.nodes[id.index()].intrinsic_shrink_to_fit_enabled
+    }
+
+    /// Query admitted min-content and max-content widths for an out-of-flow
+    /// formatting root.
+    ///
+    /// The caller remains responsible for selecting the containing block and
+    /// resolving the positioned inset equation. This temporarily removes the
+    /// position deferral only for the intrinsic query, so a completed
+    /// normal-flow rectangle never becomes the browser-facing auto width.
+    pub fn positioned_intrinsic_inline_sizes<Measure>(
+        &mut self,
+        id: AlgorithmNodeId,
+        measure: Measure,
+    ) -> Option<IntrinsicSizes>
+    where
+        S: AlgorithmStyle,
+        Measure: FnMut(
+            AlgorithmSize<Option<f32>>,
+            AlgorithmSize<AlgorithmAvailableSpace>,
+            AlgorithmNodeId,
+            Option<&mut Context>,
+            Option<&FloatLineConstraints>,
+        ) -> AlgorithmSize<f32>,
+    {
+        if self.nodes[id.index()].kind != AlgorithmKind::Block
+            || !matches!(
+                self.nodes[id.index()].block_style.position,
+                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+            )
+        {
+            return None;
+        }
+
+        let original_style = self.nodes[id.index()].block_style;
+        self.nodes[id.index()].block_style.position = crate::BlockPosition::Static;
+        if !self.intrinsic_inline_subtree_is_admitted(id, true) {
+            self.nodes[id.index()].block_style = original_style;
+            return None;
+        }
+
+        let mut run = AlgorithmRun {
+            tree: self,
+            measure,
+            line_constraints: None,
+            nested_float_state: None,
+            resolved_shrink_to_fit: None,
+            marker: PhantomData,
+        };
+        let result = run.measure_intrinsic_inline_subtree(id).ok();
+        run.tree.nodes[id.index()].block_style = original_style;
+        result
     }
 
     fn intrinsic_inline_subtree_is_admitted(&self, id: AlgorithmNodeId, is_root: bool) -> bool {
