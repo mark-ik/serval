@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-11
 
-**Status:** In progress. K5h now has an explicit damage record and
-final-document equivalence harness. It has not replaced a formatting-context
-subtree yet.
+**Status:** In progress. K5h now has an explicit damage record,
+final-document equivalence harness, and one narrow paint-only retained path.
+It has not replaced a formatting-context subtree yet.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -17,14 +17,23 @@ DOM, stylesheet, device, resource, interaction, and viewport events retain
 their distinct event class. Overlapping DOM roots coalesce to a disjoint,
 outermost set.
 
-The current correctness path still recomputes full geometry, reconciles K5g
-identities, and records the damage for inspection. `LayoutDamage` is therefore
-not an incremental-layout claim.
+The current geometry-changing path still recomputes full geometry and
+reconciles K5g identities. One admitted exception compares the fresh computed
+plane with the retained plane and keeps fragments only when every existing
+element differs solely in `background-color`. It updates paint directly and
+has a fresh-final-document receipt. Every box, text, inherited metric,
+resource, custom-property, diagnostic, and paint-order difference remains a
+full-layout path.
 
 `retained_mutation_paints_like_a_fresh_final_document` compares the paint
 commands and document extent after a retained mutation with a fresh document
 constructed from the same final DOM. This is the equivalence harness that a
 future dirty-root replacement must continue to satisfy.
+
+`background_color_mutation_repaints_without_a_geometry_pass` proves the first
+admission keeps box and fragment identities, does not advance the separate
+layout-generation counter, and emits the same commands as a fresh final
+document.
 
 ## Next replacement seam
 

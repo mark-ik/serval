@@ -561,6 +561,25 @@ where
         self.values.get(&id)
     }
 
+    /// Whether only `background-color` changed for already styled elements.
+    /// This is the first K5h paint-only reuse admission: it deliberately
+    /// excludes every property that can alter box generation, geometry,
+    /// inherited metrics, resources, or paint ordering.
+    pub(crate) fn differs_only_in_background_color(&self, previous: &Self) -> bool {
+        self.values.len() == previous.values.len()
+            && self.custom == previous.custom
+            && self.inline_diagnostics == previous.inline_diagnostics
+            && self.color_context == previous.color_context
+            && self.values.iter().all(|(id, current)| {
+                let Some(previous) = previous.values.get(id) else {
+                    return false;
+                };
+                let mut normalized = previous.clone();
+                normalized.background_color = current.background_color.clone();
+                normalized == *current
+            })
+    }
+
     /// Resolve contextual colors for one element using the exact palette and
     /// used `color-scheme` that created this style plane.
     pub(crate) fn used_color_context(&self, id: Id) -> Option<UsedColorContext> {

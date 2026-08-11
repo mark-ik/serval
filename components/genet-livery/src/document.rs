@@ -111,6 +111,7 @@ where
     style_session: IncrementalStyle<D::NodeId>,
     text: TextSystem,
     generation: u64,
+    layout_generation: u64,
     cached: Option<((u32, u32), LiveryPaintList)>,
     layout: Option<LayoutState<D::NodeId>>,
     identity_source: Option<LayoutState<D::NodeId>>,
@@ -147,6 +148,7 @@ where
             style_session: IncrementalStyle::new(),
             text: TextSystem::new(),
             generation: 0,
+            layout_generation: 0,
             cached: None,
             layout: None,
             identity_source: None,
@@ -176,6 +178,12 @@ where
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The number of completed geometry passes. Paint-only and scroll-only
+    /// frames advance [`Self::generation`] but not this counter.
+    pub fn layout_generation(&self) -> u64 {
+        self.layout_generation
     }
 
     pub fn interactions_mut(&mut self) -> &mut InteractionStates<D::NodeId> {
@@ -294,11 +302,15 @@ where
     /// layout as K5g's identity source. The next frame recomputes geometry and
     /// reconciles only compatible generated boxes and fragments against it.
     fn retain_layout_identity(&mut self) {
-        self.cached = None;
-        self.layout_dirty = true;
+        self.mark_layout_dirty();
         if let Some(layout) = self.layout.take() {
             self.identity_source = Some(layout);
         }
+    }
+
+    fn mark_layout_dirty(&mut self) {
+        self.cached = None;
+        self.layout_dirty = true;
     }
 
     /// Apply one exact DOM-mutation batch before the next frame.
@@ -318,7 +330,7 @@ where
         }
 
         self.record_dom_layout_damage(mutations);
-        self.retain_layout_identity();
+        self.mark_layout_dirty();
         self.transitions.clear();
         self.keyframe_animation = None;
         self.style_session.update(
@@ -464,10 +476,10 @@ where
             return self.paint_active_layout(width, height);
         }
 
-        if self.viewport != (width, height) {
+        let viewport_changed = self.viewport != (width, height);
+        if viewport_changed {
             self.record_full_layout_damage(LayoutDamageKind::Viewport);
         }
-        self.retain_layout_identity();
         self.viewport = (width, height);
         self.device.set_viewport_size(width as f32, height as f32);
         self.finish_completed_transitions();
@@ -486,6 +498,25 @@ where
             &self.interactions,
             &self.image_sources,
         )?;
+        if !viewport_changed
+            && self.layout_dirty
+            && self.transitions.is_empty()
+            && self.keyframe_animation.is_none()
+            && self.layout.as_ref().is_some_and(|layout| {
+                styles.differs_only_in_background_color(&layout.styles)
+            })
+        {
+            self.layout
+                .as_mut()
+                .expect("a checked retained layout is still live")
+                .styles = styles;
+            self.identity_source = None;
+            self.layout_dirty = false;
+            self.generation = self.generation.saturating_add(1);
+            return self.paint_active_layout(width, height);
+        }
+
+        self.retain_layout_identity();
         self.schedule_transitions(&styles);
         self.schedule_keyframe_animation(&styles);
         self.apply_transitions(&mut styles);
@@ -512,6 +543,7 @@ where
         });
         self.identity_source = None;
         self.layout_dirty = false;
+        self.layout_generation = self.layout_generation.saturating_add(1);
         self.clamp_scroll();
         self.clamp_nested_scroll();
         self.generation = self.generation.saturating_add(1);
@@ -1762,6 +1794,88 @@ mod tests {
                 full_document: false,
             }),
             "K5h records the flex root whose child list changed",
+        );
+    }
+
+    #[test]
+    fn background_color_mutation_repaints_without_a_geometry_pass() {
+        let initial = "<html><body><div id=target>target</div></body></html>";
+        let final_document =
+            "<html><body><div id=target style=\"background-color: blue\">target</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } #target { width: 100px; height: 20px; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(160.0, 120.0));
+        retained.frame(160, 120).expect("initial frame");
+        let target = by_id(retained.dom(), "target");
+        let ids_before = generated_ids(&retained, target);
+        let layout_generation = retained.layout_generation();
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(
+                by_id(dom, "target"),
+                attr("style"),
+                "background-color: blue",
+            );
+        });
+        let retained_paint = retained.frame(160, 120).expect("repainted frame");
+
+        assert_eq!(retained.layout_generation(), layout_generation);
+        assert_eq!(generated_ids(&retained, target), ids_before);
+        assert!(
+            retained.identity_source.is_none() && !retained.layout_dirty,
+            "the retained geometry was repainted directly rather than rebuilt",
+        );
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(160.0, 120.0));
+        let fresh_paint = fresh.frame(160, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "paint-only reuse must match a fresh final-document layout",
+        );
+    }
+
+    #[test]
+    fn geometry_mutation_rejects_the_paint_only_reuse_path() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=target>target</div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } #target { width: 100px; height: 20px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("initial frame");
+        let layout_generation = document.layout_generation();
+
+        document.mutate_dom(|dom| {
+            let target = by_id(dom, "target");
+            dom.set_attribute(target, attr("style"), "width: 120px");
+        });
+        document.frame(160, 120).expect("resized frame");
+
+        assert_eq!(document.layout_generation(), layout_generation + 1);
+        assert_eq!(
+            document
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.fragments.get(by_id(document.dom(), "target")))
+                .map(|fragment| fragment.width),
+            Some(120.0),
+            "a geometry change stays on the full K5g reconciliation path",
         );
     }
 
