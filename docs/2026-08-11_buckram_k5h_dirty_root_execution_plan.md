@@ -17,13 +17,21 @@ DOM, stylesheet, device, resource, interaction, and viewport events retain
 their distinct event class. Overlapping DOM roots coalesce to a disjoint,
 outermost set.
 
-The current geometry-changing path still recomputes full geometry and
+The current general geometry-changing path still recomputes full geometry and
 reconciles K5g identities. One admitted exception compares the fresh computed
 plane with the retained plane and keeps fragments only when every existing
 element differs solely in `background-color`. It updates paint directly and
-has a fresh-final-document receipt. Every box, text, inherited metric,
-resource, custom-property, diagnostic, and paint-order difference remains a
-full-layout path.
+has a fresh-final-document receipt.
+
+A second, geometric admission accepts exactly one existing absolute or fixed
+element whose only computed-style differences are its four insets. Livery
+reruns Buckram's K5d equation against the retained containing block, then
+translates the retained fragment subtree only when the resulting border-box
+size is unchanged. It excludes table internals and fragmented roots. The
+fresh-document receipt proves the translated paint output and document extent
+match a complete final layout. Any changed used size, second style difference,
+box-generation difference, text, inherited metric, resource, custom-property,
+diagnostic, or paint-order difference remains a full-layout path.
 
 `retained_mutation_paints_like_a_fresh_final_document` compares the paint
 commands and document extent after a retained mutation with a fresh document
@@ -34,6 +42,11 @@ future dirty-root replacement must continue to satisfy.
 admission keeps box and fragment identities, does not advance the separate
 layout-generation counter, and emits the same commands as a fresh final
 document.
+
+`positioned_inset_mutation_reuses_a_stable_fragment_subtree` proves a
+fixed-size absolute subtree moves through the K5d equation, preserves its and
+an unrelated sibling's generated identities, advances the geometry generation,
+and emits the same output as a fresh final document.
 
 ## Next replacement seam
 
@@ -49,6 +62,8 @@ document.
 
 - Do not use `RestyleStats` as evidence of incremental geometry.
 - Do not retain stale table paint or static-position source records.
+- Do not admit an inset mutation when Buckram changes its used border-box
+  size; that case requires constrained reformatting rather than translation.
 - Do not call K5h complete until a real root is replaced and compared against
   fresh geometry across mutation, style, resource, interaction, and resize
   cases.

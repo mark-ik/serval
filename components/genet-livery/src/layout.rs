@@ -297,6 +297,72 @@ where
         }
     }
 
+    /// Reposition one retained absolute or fixed fragment subtree when its
+    /// computed insets are the only style change and Buckram proves its used
+    /// border-box size is unchanged. General dirty-root formatting still
+    /// rebuilds; this bounded K5h route owns only the final K5d translation.
+    pub(crate) fn reposition_stable_positioned_subtree<D>(
+        &mut self,
+        dom: &D,
+        styles: &StylePlane<D::NodeId>,
+        image_sources: &ImageSources,
+        node: D::NodeId,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool
+    where
+        D: LayoutDom<NodeId = Id>,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        let intrinsic_sizes = HashMap::new();
+        let mut placements = positioned_placements(
+            self.buckram.fragments(),
+            self.buckram.boxes(),
+            styles,
+            dom,
+            image_sources,
+            &intrinsic_sizes,
+            viewport_width,
+            viewport_height,
+        )
+        .into_iter()
+        .filter(|placement| self.buckram.boxes()[placement.box_id].origin.node() == Some(node));
+        let Some(placement) = placements.next() else {
+            return false;
+        };
+        if placements.next().is_some()
+            || self.buckram.boxes()[placement.box_id]
+                .display
+                .internal_table
+                .is_some()
+            || self
+                .buckram
+                .fragments()
+                .fragment_ids_for_box(placement.box_id)
+                .len()
+                != 1
+        {
+            return false;
+        }
+        let target = placement.target_rect();
+        if (target.width - placement.current.width).abs() > 0.001
+            || (target.height - placement.current.height).abs() > 0.001
+        {
+            return false;
+        }
+        let offset = PhysicalOffset {
+            x: placement.containing_rect.x + target.x - placement.current.x,
+            y: placement.containing_rect.y + target.y - placement.current.y,
+        };
+        if offset.x == 0.0 && offset.y == 0.0 {
+            return false;
+        }
+        let fragments = self.buckram.fragments_mut();
+        fragments.translate_subtree(placement.root, offset);
+        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        true
+    }
+
     pub fn fragments_for_node(&self, node: Id) -> impl Iterator<Item = &TreeFragment> {
         self.buckram.fragments_for_node(node)
     }
@@ -3452,7 +3518,7 @@ impl PositionedPlacement {
 )]
 fn positioned_placements<D>(
     fragments: &FragmentTree,
-    boxes: &GeneratedBoxTree<D::NodeId>,
+    boxes: &buckram::CssBoxTree<D::NodeId>,
     styles: &StylePlane<D::NodeId>,
     dom: &D,
     image_sources: &ImageSources,

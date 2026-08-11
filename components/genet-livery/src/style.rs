@@ -23,7 +23,8 @@ use livery::{
     },
     values::{
         BackgroundImage, BorderStyle, BoxShadow, ComputedColor, FontSize, Length, LengthPercentage,
-        LengthUnit, LineHeight, Margin, Padding, Size, SystemColor, TreeCounts, UsedColorContext,
+        LengthUnit, LineHeight, Margin, Padding, Position, Size, SystemColor, TreeCounts,
+        UsedColorContext,
     },
 };
 
@@ -578,6 +579,48 @@ where
                 normalized.background_color = current.background_color.clone();
                 normalized == *current
             })
+    }
+
+    /// Return the sole absolute/fixed element whose computed insets changed.
+    ///
+    /// This is a deliberately narrow K5h admission: every other computed
+    /// value, custom property, diagnostic, and style-plane identity must stay
+    /// unchanged. The retained layout can then rerun only Buckram's final
+    /// positioning equation for a fragment subtree whose used size is proven
+    /// stable.
+    pub(crate) fn only_positioned_insets_changed(&self, previous: &Self) -> Option<Id>
+    where
+        Id: Copy,
+    {
+        if self.values.len() != previous.values.len()
+            || self.custom != previous.custom
+            || self.inline_diagnostics != previous.inline_diagnostics
+            || self.color_context != previous.color_context
+        {
+            return None;
+        }
+
+        let mut changed = None;
+        for (id, current) in &self.values {
+            let previous = previous.values.get(id)?;
+            if current == previous {
+                continue;
+            }
+            if !matches!(current.position, Position::Absolute | Position::Fixed)
+                || current.position != previous.position
+            {
+                return None;
+            }
+            let mut normalized = previous.clone();
+            normalized.top = current.top;
+            normalized.right = current.right;
+            normalized.bottom = current.bottom;
+            normalized.left = current.left;
+            if normalized != *current || changed.replace(*id).is_some() {
+                return None;
+            }
+        }
+        changed
     }
 
     /// Resolve contextual colors for one element using the exact palette and
