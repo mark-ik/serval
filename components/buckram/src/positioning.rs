@@ -26,6 +26,20 @@ pub struct PositionedBoxInput {
     /// rather than a completed normal-flow rectangle. The measured fallback
     /// stays available for unsupported descendants and the block axis.
     pub intrinsic_inline: Option<IntrinsicSizes>,
+    /// Replaced-content contributions for the positioned leaf subset.
+    ///
+    /// The physical element metadata has already been converted into the
+    /// positioned box's logical axes. Missing intrinsic metadata is valid:
+    /// a definite CSS dimension or `aspect-ratio` may still determine one
+    /// axis, while the other continues to use the measured fallback.
+    pub replaced: Option<ReplacedSize>,
+}
+
+/// Intrinsic replaced-content inputs kept separate from CSS style.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReplacedSize {
+    /// The intrinsic content-box size when the replaced source supplied one.
+    pub intrinsic_size: Option<LogicalSize>,
 }
 
 /// The resolved border-box rectangle and margins for a positioned box.
@@ -35,12 +49,12 @@ pub struct PositionedBoxGeometry {
     pub margin: LogicalSides<f32>,
 }
 
-/// Resolve the implemented non-replaced absolute/fixed block box subset.
+/// Resolve the implemented absolute/fixed block box subset.
 ///
 /// The caller selects the absolute or fixed containing block before calling
-/// this function. Auto dimensions use the supplied measured border box; the
-/// later K5d shrink-to-fit and replaced branches replace that fallback with
-/// their own contributions without changing the inset equation.
+/// this function. Automatic dimensions use admitted intrinsic or replaced
+/// contributions where available, with the formatter's measured border box
+/// retained as the unsupported fallback.
 pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> PositionedBoxGeometry {
     let containing_inline = input.containing_size.inline;
     let insets = style
@@ -51,6 +65,10 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
     let dimensions = logical_dimensions(style.containing_flow, style.size);
     let minimums = logical_dimensions(style.containing_flow, style.min_size);
     let maximums = logical_dimensions(style.containing_flow, style.max_size);
+    let replaced = input
+        .replaced
+        .map(|replaced| resolve_replaced_size(style, replaced, input.containing_size))
+        .unwrap_or_default();
 
     let inline = solve_axis(
         input.containing_size.inline,
@@ -66,6 +84,7 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         padding_border.inline_start + padding_border.inline_end,
         style.box_sizing,
         input.intrinsic_inline,
+        replaced.inline,
     );
     let block = solve_axis(
         input.containing_size.block,
@@ -81,6 +100,7 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         padding_border.block_start + padding_border.block_end,
         style.box_sizing,
         None,
+        replaced.block,
     );
 
     PositionedBoxGeometry {
@@ -125,6 +145,7 @@ fn solve_axis(
     padding_border: f32,
     box_sizing: BlockBoxSizing,
     intrinsic: Option<IntrinsicSizes>,
+    replaced_size: Option<f32>,
 ) -> AxisGeometry {
     let start_auto = margin_start.is_none();
     let end_auto = margin_end.is_none();
@@ -140,7 +161,9 @@ fn solve_axis(
             })
         })
         .unwrap_or_else(|| {
-            if let Some(intrinsic) = intrinsic {
+            if let Some(size) = replaced_size {
+                size
+            } else if let Some(intrinsic) = intrinsic {
                 let available = (containing
                     - resolved_start.unwrap_or(0.0)
                     - resolved_end.unwrap_or(0.0)
@@ -202,6 +225,108 @@ fn solve_axis(
         size,
         margin_start,
         margin_end,
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ReplacedAxisSize {
+    inline: Option<f32>,
+    block: Option<f32>,
+}
+
+/// Resolve the small replaced-content subset K5d owns: a replaced leaf with
+/// definite CSS dimensions, an intrinsic size, or one usable aspect ratio.
+/// It returns border-box dimensions, leaving min/max clamping and the inset
+/// equation to `solve_axis`.
+fn resolve_replaced_size(
+    style: BlockStyle,
+    input: ReplacedSize,
+    containing_size: LogicalSize,
+) -> ReplacedAxisSize {
+    let dimensions = logical_dimensions(style.containing_flow, style.size);
+    let padding_border = style.logical_padding_border(containing_size.inline);
+    let inline_padding = padding_border.inline_start + padding_border.inline_end;
+    let block_padding = padding_border.block_start + padding_border.block_end;
+    let specified_inline = specified_border_box(
+        dimensions.inline,
+        containing_size.inline,
+        inline_padding,
+        style.box_sizing,
+    );
+    let specified_block = specified_border_box(
+        dimensions.block,
+        containing_size.block,
+        block_padding,
+        style.box_sizing,
+    );
+    let intrinsic = input.intrinsic_size;
+    let intrinsic_ratio = intrinsic.and_then(|size| {
+        (size.inline > 0.0 && size.block > 0.0).then_some(size.inline / size.block)
+    });
+    // CSS `aspect-ratio` is physical width/height. Flip it into the logical
+    // axes when the containing flow is vertical.
+    let style_ratio = style.aspect_ratio.and_then(|ratio| {
+        (ratio.is_finite() && ratio > 0.0).then_some(if style.containing_flow.is_horizontal() {
+            ratio
+        } else {
+            ratio.recip()
+        })
+    });
+    let ratio = style_ratio.or(intrinsic_ratio);
+
+    let inline = specified_inline.or_else(|| {
+        specified_block.and_then(|block| {
+            ratio.map(|ratio| {
+                let block_content = content_from_border_box(
+                    block,
+                    block_padding,
+                    style.box_sizing,
+                );
+                border_box_from_content(block_content * ratio, inline_padding, style.box_sizing)
+            })
+        })
+        .or_else(|| {
+            intrinsic.map(|size| {
+                border_box_from_content(size.inline, inline_padding, style.box_sizing)
+            })
+        })
+    });
+    let block = specified_block.or_else(|| {
+        specified_inline.and_then(|inline| {
+            ratio.map(|ratio| {
+                let inline_content = content_from_border_box(
+                    inline,
+                    inline_padding,
+                    style.box_sizing,
+                );
+                border_box_from_content(inline_content / ratio, block_padding, style.box_sizing)
+            })
+        })
+        .or_else(|| {
+            intrinsic.map(|size| {
+                let content = style_ratio.map_or(size.block, |ratio| size.inline / ratio);
+                border_box_from_content(content, block_padding, style.box_sizing)
+            })
+        })
+    });
+    ReplacedAxisSize { inline, block }
+}
+
+fn border_box_from_content(content: f32, padding_border: f32, box_sizing: BlockBoxSizing) -> f32 {
+    match box_sizing {
+        BlockBoxSizing::ContentBox => content + padding_border,
+        BlockBoxSizing::BorderBox => content.max(padding_border),
+    }
+}
+
+fn content_from_border_box(
+    border_box: f32,
+    padding_border: f32,
+    box_sizing: BlockBoxSizing,
+) -> f32 {
+    match box_sizing {
+        BlockBoxSizing::ContentBox => (border_box - padding_border).max(0.0),
+        BlockBoxSizing::BorderBox => border_box,
     }
 }
 
@@ -302,6 +427,7 @@ mod tests {
                 block: 20.0,
             },
             intrinsic_inline: None,
+            replaced: None,
         }
     }
 
@@ -412,5 +538,45 @@ mod tests {
 
         assert_eq!(geometry.logical_rect.inline_size, 170.0);
         assert_eq!(geometry.logical_rect.inline_start, 10.0);
+    }
+
+    #[test]
+    fn replaced_intrinsic_size_does_not_fill_between_definite_insets() {
+        let mut style = positioned();
+        style.replaced = true;
+        style.inset.left = FlowLengthAuto::Value(FlowLength::px(10.0));
+        style.inset.right = FlowLengthAuto::Value(FlowLength::px(20.0));
+        let mut input = input();
+        input.replaced = Some(ReplacedSize {
+            intrinsic_size: Some(LogicalSize {
+                inline: 50.0,
+                block: 20.0,
+            }),
+        });
+
+        let geometry = solve_positioned_box(style, input);
+
+        assert_eq!(geometry.logical_rect.inline_size, 50.0);
+        assert_eq!(geometry.logical_rect.block_size, 20.0);
+        assert_eq!(geometry.logical_rect.inline_start, 10.0);
+    }
+
+    #[test]
+    fn replaced_auto_block_size_follows_its_intrinsic_ratio() {
+        let mut style = positioned();
+        style.replaced = true;
+        style.size.width = BlockSizeValue::Length(FlowLength::px(80.0));
+        let mut input = input();
+        input.replaced = Some(ReplacedSize {
+            intrinsic_size: Some(LogicalSize {
+                inline: 50.0,
+                block: 20.0,
+            }),
+        });
+
+        let geometry = solve_positioned_box(style, input);
+
+        assert_eq!(geometry.logical_rect.inline_size, 80.0);
+        assert_eq!(geometry.logical_rect.block_size, 32.0);
     }
 }

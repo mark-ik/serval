@@ -414,6 +414,32 @@ impl FragmentTree {
         }
     }
 
+    /// Replace a leaf fragment's border-box size while preserving its retained
+    /// identity and origin. Positioned replaced leaves use this after their
+    /// standards-owned used-size calculation; a non-leaf must be reformatted
+    /// instead so descendants can receive the new containing size.
+    pub fn resize_leaf(&mut self, id: FragmentId, size: PhysicalSize) -> bool {
+        let Some(slot) = self.slots.get(&id).copied() else {
+            return false;
+        };
+        if self
+            .ids
+            .iter()
+            .any(|candidate| self.get(*candidate).and_then(Fragment::parent) == Some(id))
+        {
+            return false;
+        }
+        let fragment = &mut self.fragments[slot];
+        let logical_size = fragment.flow.logical_size(size);
+        fragment.logical_rect.inline_size = logical_size.inline;
+        fragment.logical_rect.block_size = logical_size.block;
+        fragment.overflow.inline_size = logical_size.inline;
+        fragment.overflow.block_size = logical_size.block;
+        fragment.physical_rect.width = size.width;
+        fragment.physical_rect.height = size.height;
+        true
+    }
+
     /// Rekey dense construction identifiers against retained fragments after
     /// the owning box tree has already reconciled its own identities.
     pub fn reconcile_identifiers(
@@ -1148,6 +1174,58 @@ mod tests {
                 height: 40.0,
             }
         );
+    }
+
+    #[test]
+    fn resize_leaf_keeps_its_origin_and_updates_both_geometry_views() {
+        let mut boxes = CssBoxTree::default();
+        let box_id = boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(1u8),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Absolute,
+                true,
+                None,
+                ContainingBlock::Initial,
+            ),
+            None,
+            true,
+        );
+        let mut fragments = FragmentTree::default();
+        let leaf = fragments.push(
+            Fragment::from_horizontal_physical(
+                box_id,
+                PhysicalRect {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 30.0,
+                    height: 40.0,
+                },
+            ),
+            None,
+            None,
+        );
+
+        assert!(fragments.resize_leaf(
+            leaf,
+            PhysicalSize {
+                width: 80.0,
+                height: 25.0,
+            },
+        ));
+        let fragment = fragments.get(leaf).expect("resized leaf");
+        assert_eq!(
+            fragment.physical_rect(),
+            PhysicalRect {
+                x: 10.0,
+                y: 20.0,
+                width: 80.0,
+                height: 25.0,
+            }
+        );
+        assert_eq!(fragment.logical_rect.inline_size, 80.0);
+        assert_eq!(fragment.logical_rect.block_size, 25.0);
     }
 
     /// A negative margin can place a child's baseline above its parent's

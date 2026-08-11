@@ -50,6 +50,15 @@ second content pass before final positioning. Wrapping and block-size output
 therefore follow Buckram's used inline size instead of retaining the first
 auto-width fragment.
 
+For a positioned replaced image or canvas leaf, Livery separately passes HTML
+width/height hints and decoded intrinsic dimensions to Buckram. The solver
+keeps a replaced automatic width at its intrinsic size even when both inline
+insets are definite, and derives the automatic opposite axis from the usable
+intrinsic or CSS ratio. Its final border-box size replaces the retained leaf
+fragment's size before the K5a translation. This is intentionally only the
+leaf subset: it does not make normal-flow replaced sizing or replaced
+subtrees a Buckram formatting context.
+
 Livery gives the scratch formatter auto insets for absolute and fixed boxes,
 then translates the emitted fragment subtree from this Buckram result and
 rewires its containing-fragment link to K5a's selection. The bridge converts
@@ -60,10 +69,10 @@ carries a duplicate root-only absolute/fixed gap. The fixed receipt uses a
 transform-established fixed containing block.
 
 Taffy still excludes the out-of-flow box, and remains the measured fallback
-for unadmitted descendants, the block axis, flex/grid roots, replaced content,
-and internal table parts. K5d remains open until those routes and out-of-flow
-participation itself are Buckram-owned. Those gaps are not treated as final K5
-behavior.
+for unadmitted descendants, the non-replaced block axis, flex/grid roots,
+replaced non-leaves or missing contributions, and internal table parts. K5d
+remains open until those routes and out-of-flow participation itself are
+Buckram-owned. Those gaps are not treated as final K5 behavior.
 
 ## Work
 

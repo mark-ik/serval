@@ -1334,6 +1334,8 @@ where
         &fragments,
         &boxes,
         styles,
+        dom,
+        image_sources,
         &positioned_intrinsics,
         viewport_width,
         viewport_height,
@@ -1394,6 +1396,8 @@ where
         &mut fragments,
         &boxes,
         styles,
+        dom,
+        image_sources,
         &positioned_intrinsics,
         viewport_width,
         viewport_height,
@@ -1919,6 +1923,8 @@ where
         &fragments,
         &boxes,
         styles,
+        dom,
+        image_sources,
         &positioned_intrinsics,
         viewport_width,
         viewport_height,
@@ -1999,6 +2005,8 @@ where
         &mut fragments,
         &boxes,
         styles,
+        dom,
+        image_sources,
         &positioned_intrinsics,
         viewport_width,
         viewport_height,
@@ -3391,6 +3399,7 @@ struct PositionedPlacement {
     containing_size: buckram::LogicalSize,
     style: BlockStyle,
     geometry: buckram::PositionedBoxGeometry,
+    replaced_leaf: bool,
 }
 
 impl PositionedPlacement {
@@ -3437,16 +3446,23 @@ impl PositionedPlacement {
 /// formatting pass has supplied static rectangles and admitted intrinsic
 /// contributions. The returned record keeps positioning separate from the
 /// later fragment translation and possible constrained reformat.
-fn positioned_placements<Id>(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the positioning boundary needs fragment, box, style, replaced-source, intrinsic, and viewport inputs"
+)]
+fn positioned_placements<D>(
     fragments: &FragmentTree,
-    boxes: &GeneratedBoxTree<Id>,
-    styles: &StylePlane<Id>,
+    boxes: &GeneratedBoxTree<D::NodeId>,
+    styles: &StylePlane<D::NodeId>,
+    dom: &D,
+    image_sources: &ImageSources,
     intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
     viewport_width: f32,
     viewport_height: f32,
 ) -> Vec<PositionedPlacement>
 where
-    Id: Copy + Eq + Hash,
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
 {
     let candidates = boxes
         .iter()
@@ -3544,7 +3560,14 @@ where
                     computed.clone()
                 };
             let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
-            let style = to_block_style(boxes, box_id, &computed, font_size);
+            let mut style = to_block_style(boxes, box_id, &computed, font_size);
+            let replaced = positioned_replaced_input(
+                dom,
+                node,
+                &computed,
+                image_sources,
+                &mut style,
+            );
             let containing_size = containing_flow.logical_size(PhysicalSize {
                 width: containing_rect.width,
                 height: containing_rect.height,
@@ -3566,6 +3589,7 @@ where
                         height: current.height,
                     }),
                     intrinsic_inline: intrinsic_sizes.get(&box_id).copied(),
+                    replaced,
                 },
             );
             Some(PositionedPlacement {
@@ -3578,6 +3602,7 @@ where
                 containing_size,
                 style,
                 geometry,
+                replaced_leaf: replaced.is_some(),
             })
         })
         .collect()
@@ -3616,25 +3641,43 @@ fn apply_admitted_positioned_inline_sizes<Context, Source>(
 /// Apply final absolute and fixed offsets from Buckram's resolved used
 /// geometry. The formatter supplies content fragments only; this bridge never
 /// lets it select the CSS containing block or final inset origin.
-fn apply_absolute_and_fixed_positioning<Id>(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the final positioning bridge receives the same explicit CSS and replaced-source inputs as placement"
+)]
+fn apply_absolute_and_fixed_positioning<D>(
     fragments: &mut FragmentTree,
-    boxes: &GeneratedBoxTree<Id>,
-    styles: &StylePlane<Id>,
+    boxes: &GeneratedBoxTree<D::NodeId>,
+    styles: &StylePlane<D::NodeId>,
+    dom: &D,
+    image_sources: &ImageSources,
     intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
     viewport_width: f32,
     viewport_height: f32,
 ) where
-    Id: Copy + Eq + Hash,
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
 {
     for placement in positioned_placements(
         fragments,
         boxes,
         styles,
+        dom,
+        image_sources,
         intrinsic_sizes,
         viewport_width,
         viewport_height,
     ) {
         let target = placement.target_rect();
+        if placement.replaced_leaf {
+            fragments.resize_leaf(
+                placement.root,
+                PhysicalSize {
+                    width: target.width,
+                    height: target.height,
+                },
+            );
+        }
         fragments.translate_subtree(
             placement.root,
             PhysicalOffset {
@@ -5192,6 +5235,40 @@ fn apply_replaced_image_size<D>(
     }
 }
 
+/// Preserve the HTML image-dimension hints at the browser-facing K5d edge.
+/// The scratch formatter still receives the same hints for its normal-flow
+/// fallback, but a positioned replaced leaf passes this independent input to
+/// Buckram for final used geometry.
+fn positioned_replaced_input<D>(
+    dom: &D,
+    id: D::NodeId,
+    computed: &ComputedValues,
+    image_sources: &ImageSources,
+    style: &mut BlockStyle,
+) -> Option<buckram::ReplacedSize>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !style.replaced {
+        return None;
+    }
+    if matches!(computed.width, CssSize::Auto)
+        && let Some(width) = image_attribute_size(dom, id, "width")
+    {
+        style.size.width = width.block_size_value();
+    }
+    if matches!(computed.height, CssSize::Auto)
+        && let Some(height) = image_attribute_size(dom, id, "height")
+    {
+        style.size.height = height.block_size_value();
+    }
+    let intrinsic_size = image_intrinsic_size(dom, id, image_sources).map(|(width, height)| {
+        style.containing_flow.logical_size(PhysicalSize { width, height })
+    });
+    Some(buckram::ReplacedSize { intrinsic_size })
+}
+
 #[derive(Clone, Copy)]
 enum ImageAttributeSize {
     Length(f32),
@@ -5210,6 +5287,13 @@ impl ImageAttributeSize {
         match self {
             Self::Length(value) => Some(value),
             Self::Percentage(_) => None,
+        }
+    }
+
+    fn block_size_value(self) -> BlockSizeValue {
+        match self {
+            Self::Length(value) => BlockSizeValue::Length(FlowLength::px(value)),
+            Self::Percentage(value) => BlockSizeValue::Length(FlowLength::percent(value)),
         }
     }
 }
@@ -8454,6 +8538,52 @@ mod tests {
         let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
         let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
         assert_eq!((canvas.width, canvas.height), (100.0, 100.0));
+    }
+
+    #[test]
+    fn positioned_replaced_leaf_keeps_its_hint_size_between_definite_insets() {
+        fn find_by_name(
+            dom: &StaticDocument,
+            node: <StaticDocument as LayoutDom>::NodeId,
+            name: &str,
+        ) -> Option<<StaticDocument as LayoutDom>::NodeId> {
+            if dom
+                .element_name(node)
+                .is_some_and(|element| element.local.as_ref() == name)
+            {
+                return Some(node);
+            }
+            dom.dom_children(node)
+                .find_map(|child| find_by_name(dom, child, name))
+        }
+
+        let dom = StaticDocument::parse(
+            "<html><body><div><canvas width=\"80\" height=\"40\"></canvas></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body { margin: 0; } div { position: relative; width: 200px; } \
+                 canvas { position: absolute; left: 10px; right: 20px; top: 5px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+
+        let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
+        let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
+        assert_eq!((canvas.x, canvas.y, canvas.width, canvas.height), (10.0, 5.0, 80.0, 40.0));
     }
 
     #[test]

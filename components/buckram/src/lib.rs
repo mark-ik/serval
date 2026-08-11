@@ -42,7 +42,9 @@ pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,
     IntrinsicSizeQuery, IntrinsicSizes, block_intrinsic_sizes_for_definite_inline,
 };
-pub use positioning::{PositionedBoxGeometry, PositionedBoxInput, solve_positioned_box};
+pub use positioning::{
+    PositionedBoxGeometry, PositionedBoxInput, ReplacedSize, solve_positioned_box,
+};
 pub use sticky::{StickyAxisInput, solve_sticky_axis};
 pub use table::{
     AffineLengthPercentage, CaptionMinContribution, CellBlockOffsets, CellCollapsedBorderMetrics,
