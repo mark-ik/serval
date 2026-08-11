@@ -12,6 +12,7 @@ mod flow;
 mod fragment_tree;
 mod intrinsic;
 mod positioning;
+mod sticky;
 mod table;
 mod taffy_adapter;
 
@@ -42,6 +43,7 @@ pub use intrinsic::{
     IntrinsicSizeQuery, IntrinsicSizes, block_intrinsic_sizes_for_definite_inline,
 };
 pub use positioning::{PositionedBoxGeometry, PositionedBoxInput, solve_positioned_box};
+pub use sticky::{StickyAxisInput, solve_sticky_axis};
 pub use table::{
     AffineLengthPercentage, CaptionMinContribution, CellBlockOffsets, CellCollapsedBorderMetrics,
     CellInlineOffsets, CollapsedBorderGeometry, CollapsedBorderGeometryError,

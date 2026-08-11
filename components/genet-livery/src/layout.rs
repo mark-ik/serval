@@ -71,6 +71,15 @@ use crate::{
 /// Physical geometry used at the DOM compatibility edge and by inline atoms.
 pub(crate) type Fragment = PhysicalRect;
 
+/// The static physical rectangle and content-scroll offset of one sticky
+/// scrollport. The offset is added in layout space before ordinary scroll
+/// painting translates its descendants back toward the viewport.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StickyScrollport {
+    pub rect: PhysicalRect,
+    pub offset: PhysicalOffset,
+}
+
 #[derive(Clone, Debug)]
 struct AtomicSubtree {
     root: BoxId,
@@ -175,6 +184,119 @@ where
             .remap_box_ids(|box_id| identities.box_id(box_id));
     }
 
+    /// Apply retained scroll-dependent sticky constraints to this otherwise
+    /// normal-flow layout snapshot. Callers clone the static layout first, so
+    /// scroll changes never accumulate into the next frame's base geometry.
+    pub(crate) fn apply_sticky_positioning(
+        &mut self,
+        styles: &StylePlane<Id>,
+        viewport_width: f32,
+        viewport_height: f32,
+        mut scrollport_for: impl FnMut(Id) -> Option<StickyScrollport>,
+    ) {
+        let placements = self
+            .buckram
+            .boxes()
+            .iter()
+            .filter_map(|(box_id, css_box)| {
+                if css_box.positioning != PositioningScheme::Sticky
+                    || matches!(
+                        css_box.display.internal_table,
+                        Some(role) if role != InternalTableRole::Wrapper
+                    )
+                {
+                    return None;
+                }
+                let node = css_box.origin.node()?;
+                let scrollport = scrollport_for(node)?;
+                let root = self
+                    .buckram
+                    .fragments()
+                    .fragment_ids_for_box(box_id)
+                    .iter()
+                    .copied()
+                    .find(|fragment_id| {
+                        self.buckram
+                            .fragments()
+                            .get(*fragment_id)
+                            .and_then(TreeFragment::parent)
+                            .and_then(|parent| self.buckram.fragments().get(parent))
+                            .is_none_or(|parent| parent.box_id() != box_id)
+                    })?;
+                let current = self.buckram.fragments().get(root)?.physical_rect();
+                let containing = match css_box.containing_block {
+                    ContainingBlock::Initial => PhysicalRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: viewport_width,
+                        height: viewport_height,
+                    },
+                    ContainingBlock::Box(containing) => self
+                        .buckram
+                        .fragments()
+                        .fragment_ids_for_box(containing)
+                        .first()
+                        .and_then(|fragment_id| self.buckram.fragments().get(*fragment_id))
+                        .map(TreeFragment::physical_rect)?,
+                };
+                let computed = styles.get(node)?;
+                let computed = if css_box.display.internal_table == Some(InternalTableRole::Wrapper)
+                {
+                    wrapper_style(computed)
+                } else {
+                    computed.clone()
+                };
+                let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+                let style = to_block_style(self.buckram.boxes(), box_id, &computed, font_size);
+                let percentage_basis = style
+                    .containing_flow
+                    .logical_size(PhysicalSize {
+                        width: scrollport.rect.width,
+                        height: scrollport.rect.height,
+                    })
+                    .inline;
+                Some((
+                    root,
+                    current,
+                    containing,
+                    scrollport,
+                    style.inset.left.resolve(percentage_basis),
+                    style.inset.right.resolve(percentage_basis),
+                    style.inset.top.resolve(percentage_basis),
+                    style.inset.bottom.resolve(percentage_basis),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        for (root, current, containing, scrollport, left, right, top, bottom) in placements {
+            let x = buckram::solve_sticky_axis(buckram::StickyAxisInput {
+                normal_start: current.x,
+                box_size: current.width,
+                scrollport_start: scrollport.rect.x,
+                scrollport_size: scrollport.rect.width,
+                scroll_offset: scrollport.offset.x,
+                containing_start: containing.x,
+                containing_size: containing.width,
+                start_inset: left,
+                end_inset: right,
+            });
+            let y = buckram::solve_sticky_axis(buckram::StickyAxisInput {
+                normal_start: current.y,
+                box_size: current.height,
+                scrollport_start: scrollport.rect.y,
+                scrollport_size: scrollport.rect.height,
+                scroll_offset: scrollport.offset.y,
+                containing_start: containing.y,
+                containing_size: containing.height,
+                start_inset: top,
+                end_inset: bottom,
+            });
+            self.buckram
+                .fragments_mut()
+                .translate_subtree(root, PhysicalOffset { x, y });
+        }
+    }
+
     pub fn fragments_for_node(&self, node: Id) -> impl Iterator<Item = &TreeFragment> {
         self.buckram.fragments_for_node(node)
     }
@@ -261,6 +383,12 @@ pub struct LayoutError(String);
 impl fmt::Display for LayoutError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+impl LayoutError {
+    pub(crate) fn retained_state(message: impl Into<String>) -> Self {
+        Self(message.into())
     }
 }
 
@@ -3256,7 +3384,7 @@ where
 }
 
 fn to_block_style<Id>(
-    boxes: &GeneratedBoxTree<Id>,
+    boxes: &buckram::CssBoxTree<Id>,
     box_id: BoxId,
     computed: &ComputedValues,
     font_size: f32,
@@ -4886,18 +5014,15 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
         },
         position: match computed.position {
             CssPosition::Absolute | CssPosition::Fixed => Position::Absolute,
+            // Taffy has only in-flow versus absolute. Sticky remains an
+            // in-flow transport value here; Buckram keeps and applies its
+            // distinct scroll-dependent semantic below the formatter.
             _ => Position::Relative,
         },
-        inset: if matches!(computed.position, CssPosition::Sticky) {
-            Rect {
-                left: inset(computed.left, font_size),
-                right: inset(computed.right, font_size),
-                top: inset(computed.top, font_size),
-                bottom: inset(computed.bottom, font_size),
-            }
-        } else {
-            Rect::auto()
-        },
+        // Sticky geometry is a retained Buckram scroll constraint. The
+        // scratch formatter receives no inset so it produces only the normal
+        // flow rectangle, rather than selecting a sticky offset itself.
+        inset: Rect::auto(),
         size: Size {
             width: dimension(computed.width, font_size),
             height: dimension(computed.height, font_size),
@@ -5174,13 +5299,6 @@ fn resolved_explicit_size(size: CssSize, em: f32, basis: Option<f32>) -> Option<
         basis.map(|basis| absolute_length_percentage(value, em, 16.0, basis))
     } else {
         Some(absolute_length_percentage(value, em, 16.0, 0.0))
-    }
-}
-
-fn inset(value: Inset, em: f32) -> LengthPercentageAuto {
-    match value {
-        Inset::Auto => LengthPercentageAuto::auto(),
-        Inset::Value(value) => length_percentage_auto(value, em),
     }
 }
 

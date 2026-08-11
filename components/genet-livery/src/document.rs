@@ -19,7 +19,7 @@ use crate::{
     StylePlane, StyleSet, TextRange, TextRect, TextSelection, TextSystem,
     emit_paint_list_with_text_system_scrolled_with_images, hit_test_with_scroll,
     layout::{
-        layout_with_text_system, resolve_container_query_styles,
+        StickyScrollport, layout_with_text_system, resolve_container_query_styles,
         resolve_container_query_styles_with_images,
     },
     resolve_styles,
@@ -93,6 +93,7 @@ where
     cached: Option<((u32, u32), LiveryPaintList)>,
     layout: Option<LayoutState<D::NodeId>>,
     identity_source: Option<LayoutState<D::NodeId>>,
+    layout_dirty: bool,
     viewport: (u32, u32),
     scroll: (f32, f32),
     focused_chain: Vec<D::NodeId>,
@@ -127,6 +128,7 @@ where
             cached: None,
             layout: None,
             identity_source: None,
+            layout_dirty: true,
             viewport,
             scroll: (0.0, 0.0),
             focused_chain: Vec::new(),
@@ -168,6 +170,7 @@ where
     /// reconciles only compatible generated boxes and fragments against it.
     fn retain_layout_identity(&mut self) {
         self.cached = None;
+        self.layout_dirty = true;
         if let Some(layout) = self.layout.take() {
             self.identity_source = Some(layout);
         }
@@ -325,6 +328,16 @@ where
             return Ok(list.clone().translated(-self.scroll.0, -self.scroll.1));
         }
 
+        if !self.layout_dirty
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| layout.viewport == (width, height))
+        {
+            self.generation = self.generation.saturating_add(1);
+            return self.paint_active_layout(width, height);
+        }
+
         self.retain_layout_identity();
         self.viewport = (width, height);
         self.device.set_viewport_size(width as f32, height as f32);
@@ -369,9 +382,24 @@ where
             content_height,
         });
         self.identity_source = None;
+        self.layout_dirty = false;
         self.clamp_scroll();
         self.clamp_nested_scroll();
         self.generation = self.generation.saturating_add(1);
+        self.paint_active_layout(width, height)
+    }
+
+    fn paint_active_layout(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<LiveryPaintList, LayoutError> {
+        let (styles, mut fragments) = self
+            .layout
+            .as_ref()
+            .map(|layout| (layout.styles.clone(), layout.fragments.clone()))
+            .ok_or_else(|| LayoutError::retained_state("no retained layout to paint"))?;
+        self.apply_sticky_positioning(&mut fragments, &styles);
         let list = emit_paint_list_with_text_system_scrolled_with_images(
             &self.dom,
             &styles,
@@ -384,6 +412,76 @@ where
         );
         self.cached = Some(((width, height), list.clone()));
         Ok(list.translated(-self.scroll.0, -self.scroll.1))
+    }
+
+    fn sticky_layout(&self, layout: &LayoutState<D::NodeId>) -> LiveryLayout<D::NodeId> {
+        let mut active = layout.fragments.clone();
+        self.apply_sticky_positioning(&mut active, &layout.styles);
+        active
+    }
+
+    fn apply_sticky_positioning(
+        &self,
+        fragments: &mut LiveryLayout<D::NodeId>,
+        styles: &StylePlane<D::NodeId>,
+    ) {
+        let scrollport_geometry = fragments.clone();
+        fragments.apply_sticky_positioning(
+            styles,
+            self.viewport.0 as f32,
+            self.viewport.1 as f32,
+            |node| self.sticky_scrollport(node, styles, &scrollport_geometry),
+        );
+    }
+
+    fn sticky_scrollport(
+        &self,
+        node: D::NodeId,
+        styles: &StylePlane<D::NodeId>,
+        fragments: &LiveryLayout<D::NodeId>,
+    ) -> Option<StickyScrollport> {
+        let mut ancestor = self.dom.parent(node);
+        while let Some(candidate) = ancestor {
+            if styles
+                .get(candidate)
+                .is_some_and(|style| self.is_scroll_container(style))
+                && let Some(fragment) = fragments.get(candidate)
+            {
+                return Some(StickyScrollport {
+                    rect: fragment.physical_rect(),
+                    offset: self
+                        .nested_scroll
+                        .get(&candidate)
+                        .copied()
+                        .map_or(buckram::PhysicalOffset::default(), |(x, y)| {
+                            buckram::PhysicalOffset { x, y }
+                        }),
+                });
+            }
+            ancestor = self.dom.parent(candidate);
+        }
+        Some(StickyScrollport {
+            rect: buckram::PhysicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: self.viewport.0 as f32,
+                height: self.viewport.1 as f32,
+            },
+            offset: buckram::PhysicalOffset {
+                x: self.scroll.0,
+                y: self.scroll.1,
+            },
+        })
+    }
+
+    fn has_sticky_positioning(&self) -> bool {
+        self.layout.as_ref().is_some_and(|layout| {
+            layout
+                .fragments
+                .boxes()
+                .iter()
+                .any(|(_, css_box)| css_box.positioning == buckram::PositioningScheme::Sticky)
+        })
     }
 
     /// Return the current viewport scroll offset.
@@ -517,17 +615,22 @@ where
         self.scroll.0 += dx;
         self.scroll.1 += dy;
         self.clamp_scroll();
-        before != self.scroll
+        let changed = before != self.scroll;
+        if changed && self.has_sticky_positioning() {
+            self.cached = None;
+        }
+        changed
     }
 
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
         let Some(layout) = self.layout.as_ref() else {
             return false;
         };
+        let active = self.sticky_layout(layout);
         let mut node = hit_test_with_scroll(
             &self.dom,
             &layout.styles,
-            &layout.fragments,
+            &active,
             &self.nested_scroll,
             x + self.scroll.0,
             y + self.scroll.1,
@@ -544,8 +647,12 @@ where
     }
 
     pub fn scroll_to(&mut self, y: f32) {
+        let before = self.scroll;
         self.scroll.1 = y;
         self.clamp_scroll();
+        if self.scroll != before && self.has_sticky_positioning() {
+            self.cached = None;
+        }
     }
 
     pub fn scroll_line(&mut self, direction: i8) -> bool {
@@ -571,10 +678,11 @@ where
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<D::NodeId> {
         let layout = self.layout.as_ref()?;
+        let active = self.sticky_layout(layout);
         hit_test_with_scroll(
             &self.dom,
             &layout.styles,
-            &layout.fragments,
+            &active,
             &self.nested_scroll,
             x + self.scroll.0,
             y + self.scroll.1,
@@ -1024,7 +1132,7 @@ where
     }
 
     fn schedule_transitions(&mut self, styles: &StylePlane<D::NodeId>) {
-        let Some(layout) = self.layout.as_ref() else {
+        let Some(layout) = self.layout.as_ref().or(self.identity_source.as_ref()) else {
             return;
         };
         // One live transition per longhand at a time, as the per-property
@@ -1112,7 +1220,7 @@ where
             parent = self.dom.parent(ancestor);
         }
         self.focused_chain = chain;
-        self.cached = None;
+        self.retain_layout_identity();
         true
     }
 
@@ -1435,5 +1543,95 @@ mod tests {
             !generated_ids(&document, by_id(document.dom(), "inserted")).is_empty(),
             "the inserted sibling receives separate live identities",
         );
+    }
+
+    #[test]
+    fn sticky_scrolls_its_retained_fragment_without_a_new_layout_generation() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=spacer></div><div id=sticky>sticky</div><div id=tail></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } #spacer { height: 120px; } \
+                 #sticky { position: sticky; top: 0; height: 20px; } #tail { height: 180px; }",
+            ]),
+            Device::screen(160.0, 80.0),
+        );
+        document.frame(160, 80).expect("initial sticky frame");
+        let sticky = by_id(document.dom(), "sticky");
+        let before_ids = generated_ids(&document, sticky);
+        let static_rect = document
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.get(sticky))
+            .map(|fragment| fragment.physical_rect())
+            .expect("static sticky fragment");
+        assert_eq!(static_rect.y, 120.0);
+
+        assert!(document.scroll_by(0.0, 150.0));
+        document.frame(160, 80).expect("scrolled sticky frame");
+
+        let active = document.sticky_layout(document.layout.as_ref().expect("retained layout"));
+        let sticky_rect = active
+            .get(sticky)
+            .map(|fragment| fragment.physical_rect())
+            .expect("active sticky fragment");
+        assert_eq!(sticky_rect.y, 150.0);
+        assert_eq!(sticky_rect.y - document.scroll().1, 0.0);
+        assert_eq!(generated_ids(&document, sticky), before_ids);
+        assert_eq!(
+            document
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.fragments.get(sticky))
+                .map(|fragment| fragment.physical_rect()),
+            Some(static_rect),
+            "scrolling never mutates the retained normal-flow base layout",
+        );
+        assert!(
+            !document.layout_dirty,
+            "scroll repaint did not trigger relayout"
+        );
+    }
+
+    #[test]
+    fn sticky_uses_the_nearest_nested_scrollport_offset() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=scroller><div id=content><div id=spacer></div><div id=sticky>sticky</div><div id=tail></div></div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } #scroller { height: 80px; overflow-y: auto; } \
+                 #spacer { height: 120px; } #sticky { position: sticky; top: 0; height: 20px; } \
+                 #tail { height: 180px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document
+            .frame(160, 120)
+            .expect("initial nested sticky frame");
+        let scroller = by_id(document.dom(), "scroller");
+        let sticky = by_id(document.dom(), "sticky");
+
+        assert!(document.scroll_at(10.0, 10.0, 0.0, 150.0));
+        assert_eq!(
+            document.element_scroll().get(&scroller),
+            Some(&(0.0, 150.0))
+        );
+        document.frame(160, 120).expect("nested sticky frame");
+
+        let active = document.sticky_layout(document.layout.as_ref().expect("retained layout"));
+        let sticky_rect = active
+            .get(sticky)
+            .map(|fragment| fragment.physical_rect())
+            .expect("active nested sticky fragment");
+        assert_eq!(sticky_rect.y, 150.0);
+        assert_eq!(sticky_rect.y - document.element_scroll()[&scroller].1, 0.0);
     }
 }

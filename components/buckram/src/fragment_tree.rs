@@ -647,6 +647,10 @@ where
         &self.fragments
     }
 
+    pub fn fragments_mut(&mut self) -> &mut FragmentTree {
+        &mut self.fragments
+    }
+
     /// Reconcile this freshly constructed layout against the previous
     /// continuous-media generation. The geometry is new; only identities with
     /// unchanged generated-box and fragment context are retained.
