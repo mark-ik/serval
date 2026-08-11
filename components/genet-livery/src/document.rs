@@ -1546,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn sticky_scrolls_its_retained_fragment_without_a_new_layout_generation() {
+    fn sticky_scrolls_its_retained_fragment_without_relayout() {
         let mut dom = ScriptedDom::from_serialized_document(
             "<html><body><div id=spacer></div><div id=sticky>sticky</div><div id=tail></div></body></html>",
         );
