@@ -48,6 +48,10 @@ fixed-size absolute subtree moves through the K5d equation, preserves its and
 an unrelated sibling's generated identities, advances the geometry generation,
 and emits the same output as a fresh final document.
 
+`positioned_inset_reuse_updates_nested_scroll_range` moves the same admitted
+kind of subtree inside an `overflow: auto` container and verifies the retained
+scroll range equals a fresh final layout.
+
 ## Next replacement seam
 
 1. Make Buckram replace the selected formatting-context fragment subtree,

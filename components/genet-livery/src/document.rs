@@ -1943,6 +1943,55 @@ mod tests {
     }
 
     #[test]
+    fn positioned_inset_reuse_updates_nested_scroll_range() {
+        let initial = "<html><body><div id=scroller><div id=positioned>out of flow</div></div></body></html>";
+        let final_document = "<html><body><div id=scroller><div id=positioned style=\"top: 300px\">out of flow</div></div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #scroller { position: relative; width: 100px; height: 80px; overflow-y: auto; } \
+                 #positioned { position: absolute; left: 0; top: 200px; width: 100px; height: 20px; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(160.0, 120.0));
+        retained.frame(160, 120).expect("initial frame");
+        let positioned = by_id(retained.dom(), "positioned");
+        let scroller = by_id(retained.dom(), "scroller");
+        let positioned_ids = generated_ids(&retained, positioned);
+        let layout_generation = retained.layout_generation();
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(
+                by_id(dom, "positioned"),
+                attr("style"),
+                "top: 300px",
+            );
+        });
+        retained.frame(160, 120).expect("repositioned frame");
+
+        assert_eq!(retained.layout_generation(), layout_generation + 1);
+        assert_eq!(generated_ids(&retained, positioned), positioned_ids);
+        let layout = retained.layout.as_ref().expect("repositioned layout");
+        assert_eq!(retained.scroll_extent(layout, scroller), (0.0, 240.0));
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(160.0, 120.0));
+        fresh.frame(160, 120).expect("fresh final frame");
+        let fresh_scroller = by_id(fresh.dom(), "scroller");
+        let fresh_layout = fresh.layout.as_ref().expect("fresh final layout");
+        assert_eq!(
+            retained.scroll_extent(layout, scroller),
+            fresh.scroll_extent(fresh_layout, fresh_scroller),
+            "retained repositioning must keep nested scrolling equal to a fresh final layout",
+        );
+    }
+
+    #[test]
     fn geometry_mutation_rejects_the_paint_only_reuse_path() {
         let mut dom = ScriptedDom::from_serialized_document(
             "<html><body><div id=target>target</div></body></html>",
