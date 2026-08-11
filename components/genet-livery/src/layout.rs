@@ -5683,6 +5683,84 @@ mod tests {
     }
 
     #[test]
+    fn absolute_flex_and_grid_children_keep_their_native_static_rectangles() {
+        let dom = StaticDocument::parse(
+            "<div id=flex><div id=flex-positioned>flex</div></div>\
+             <div id=grid><div id=grid-positioned>grid</div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #flex { position: relative; display: flex; width: 200px; height: 100px; \
+                         justify-content: center; align-items: end; } \
+                 #grid { position: relative; display: grid; width: 200px; height: 100px; } \
+                 #flex-positioned, #grid-positioned { position: absolute; left: 18px; top: 9px; \
+                                                       width: 30px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let rect_for = |box_id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+
+        let flex = box_for("flex");
+        let flex_positioned = box_for("flex-positioned");
+        let grid = box_for("grid");
+        let grid_positioned = box_for("grid-positioned");
+        let flex_static = layout
+            .fragments()
+            .static_position_for_box(flex_positioned)
+            .expect("flex static rectangle");
+        let grid_static = layout
+            .fragments()
+            .static_position_for_box(grid_positioned)
+            .expect("grid static rectangle");
+
+        assert_eq!(
+            (
+                flex_static.logical_rect.inline_start,
+                flex_static.logical_rect.block_start
+            ),
+            (85.0, 80.0),
+            "the flex formatter owns alignment, while Buckram keeps its pre-inset result"
+        );
+        assert_eq!(
+            (
+                grid_static.logical_rect.inline_start,
+                grid_static.logical_rect.block_start
+            ),
+            (0.0, 0.0),
+            "the grid formatter contributes its grid-area static rectangle"
+        );
+
+        let flex_rect = rect_for(flex);
+        let flex_positioned_rect = rect_for(flex_positioned);
+        let grid_rect = rect_for(grid);
+        let grid_positioned_rect = rect_for(grid_positioned);
+        assert_eq!(
+            (flex_positioned_rect.x, flex_positioned_rect.y),
+            (flex_rect.x + 18.0, flex_rect.y + 9.0),
+        );
+        assert_eq!(
+            (grid_positioned_rect.x, grid_positioned_rect.y),
+            (grid_rect.x + 18.0, grid_rect.y + 9.0),
+        );
+    }
+
+    #[test]
     fn fixed_position_uses_a_transform_fixed_containing_block() {
         let dom = StaticDocument::parse("<div id=trigger><div id=fixed>item</div></div>");
         let styles = resolve_styles(

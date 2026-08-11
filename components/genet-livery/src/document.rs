@@ -1634,4 +1634,33 @@ mod tests {
         assert_eq!(sticky_rect.y, 150.0);
         assert_eq!(sticky_rect.y - document.element_scroll()[&scroller].1, 0.0);
     }
+
+    #[test]
+    fn positioned_descendant_extends_its_scroll_container_range() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=scroller><div id=positioned>out of flow</div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #scroller { position: relative; width: 100px; height: 80px; overflow-y: auto; } \
+                 #positioned { position: absolute; top: 200px; width: 100px; height: 20px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("positioned overflow frame");
+        let scroller = by_id(document.dom(), "scroller");
+        let layout = document.layout.as_ref().expect("retained layout");
+        assert_eq!(document.scroll_extent(layout, scroller), (0.0, 140.0));
+
+        assert!(document.scroll_at(10.0, 10.0, 0.0, 200.0));
+        assert_eq!(
+            document.element_scroll().get(&scroller),
+            Some(&(0.0, 140.0)),
+            "the positioned fragment contributes to the container's scrollable overflow"
+        );
+    }
 }
