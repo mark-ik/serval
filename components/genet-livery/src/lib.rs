@@ -31,7 +31,7 @@ pub use buckram::{
     FormattingContextKind, Fragment, FragmentId, FragmentTree, FragmentationContextId,
     InternalTableRole, LayoutResult, LogicalRect, PhysicalRect, PositioningScheme, PseudoElement,
 };
-pub use document::{ClickOutcome, LinkTarget, LiveryDocument};
+pub use document::{ClickOutcome, LayoutDamage, LayoutDamageKind, LinkTarget, LiveryDocument};
 pub use dom::{ElementRef, InteractionStates, SelectorTree};
 pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, RestyleStats};
 pub(crate) use layout::hit_test_with_scroll;

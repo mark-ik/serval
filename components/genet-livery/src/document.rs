@@ -41,6 +41,27 @@ pub struct LinkTarget {
     pub rect: [f32; 4],
 }
 
+/// The event class that invalidated retained layout geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayoutDamageKind {
+    Dom,
+    Stylesheet,
+    Device,
+    Resource,
+    Interaction,
+    Viewport,
+}
+
+/// Conservative formatting-context candidates for the next retained-layout
+/// replacement. K5h records this separately from style invalidation so a
+/// caller can inspect exactly why a frame was rebuilt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutDamage<Id> {
+    pub kind: LayoutDamageKind,
+    pub roots: Vec<Id>,
+    pub full_document: bool,
+}
+
 struct LayoutState<Id> {
     viewport: (u32, u32),
     styles: StylePlane<Id>,
@@ -93,6 +114,7 @@ where
     cached: Option<((u32, u32), LiveryPaintList)>,
     layout: Option<LayoutState<D::NodeId>>,
     identity_source: Option<LayoutState<D::NodeId>>,
+    last_layout_damage: Option<LayoutDamage<D::NodeId>>,
     layout_dirty: bool,
     viewport: (u32, u32),
     scroll: (f32, f32),
@@ -128,6 +150,7 @@ where
             cached: None,
             layout: None,
             identity_source: None,
+            last_layout_damage: None,
             layout_dirty: true,
             viewport,
             scroll: (0.0, 0.0),
@@ -156,13 +179,115 @@ where
     }
 
     pub fn interactions_mut(&mut self) -> &mut InteractionStates<D::NodeId> {
+        self.record_full_layout_damage(LayoutDamageKind::Interaction);
         self.retain_layout_identity();
         &mut self.interactions
     }
 
     pub fn invalidate(&mut self) {
+        self.invalidate_with_layout_damage(LayoutDamageKind::Device);
+    }
+
+    fn invalidate_with_layout_damage(&mut self, kind: LayoutDamageKind) {
+        self.record_full_layout_damage(kind);
         self.retain_layout_identity();
         self.style_session.invalidate();
+    }
+
+    /// The latest retained-layout damage classification. The current K5g
+    /// correctness path still rebuilds a full layout; K5h will replace these
+    /// named roots rather than treating `RestyleStats` as geometry proof.
+    pub fn last_layout_damage(&self) -> Option<&LayoutDamage<D::NodeId>> {
+        self.last_layout_damage.as_ref()
+    }
+
+    fn record_full_layout_damage(&mut self, kind: LayoutDamageKind) {
+        self.last_layout_damage = Some(LayoutDamage {
+            kind,
+            roots: vec![self.dom.document()],
+            full_document: true,
+        });
+    }
+
+    fn record_dom_layout_damage(&mut self, mutations: &[DomMutation<D::NodeId>]) {
+        let mut roots = Vec::new();
+        for mutation in mutations {
+            match *mutation {
+                DomMutation::Inserted { parent, .. }
+                | DomMutation::Removed {
+                    former_parent: parent,
+                    ..
+                }
+                | DomMutation::SubtreeReplaced { node: parent }
+                | DomMutation::AttributeChanged { node: parent, .. } => {
+                    self.insert_damage_root(&mut roots, self.formatting_damage_root(parent));
+                },
+                DomMutation::CharacterDataChanged { node } => {
+                    let parent = self.dom.parent(node).unwrap_or(node);
+                    self.insert_damage_root(&mut roots, self.formatting_damage_root(parent));
+                },
+                DomMutation::Moved {
+                    from_parent,
+                    to_parent,
+                    ..
+                } => {
+                    self.insert_damage_root(&mut roots, self.formatting_damage_root(from_parent));
+                    self.insert_damage_root(&mut roots, self.formatting_damage_root(to_parent));
+                },
+            }
+        }
+        self.last_layout_damage = Some(LayoutDamage {
+            kind: LayoutDamageKind::Dom,
+            roots,
+            full_document: false,
+        });
+    }
+
+    fn formatting_damage_root(&self, node: D::NodeId) -> D::NodeId {
+        let Some(layout) = self.layout.as_ref() else {
+            return self.dom.document();
+        };
+        let mut candidate = Some(node);
+        while let Some(current) = candidate {
+            if layout
+                .fragments
+                .boxes()
+                .boxes_for_node(current)
+                .iter()
+                .any(|box_id| {
+                    layout.fragments.boxes()[*box_id]
+                        .formatting_context
+                        .is_some()
+                })
+            {
+                return current;
+            }
+            candidate = self.dom.parent(current);
+        }
+        self.dom.document()
+    }
+
+    fn insert_damage_root(&self, roots: &mut Vec<D::NodeId>, candidate: D::NodeId) {
+        if roots
+            .iter()
+            .copied()
+            .any(|root| self.is_dom_ancestor(root, candidate))
+        {
+            return;
+        }
+        roots.retain(|root| !self.is_dom_ancestor(candidate, *root));
+        roots.push(candidate);
+    }
+
+    fn is_dom_ancestor(&self, ancestor: D::NodeId, node: D::NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(candidate) = current {
+            if candidate == ancestor {
+                return true;
+            }
+            current = self.dom.parent(candidate);
+        }
+        false
     }
 
     /// Discard visible derived output while retaining the immediately prior
@@ -192,6 +317,7 @@ where
             return self.style_session.last_stats();
         }
 
+        self.record_dom_layout_damage(mutations);
         self.retain_layout_identity();
         self.transitions.clear();
         self.keyframe_animation = None;
@@ -268,7 +394,7 @@ where
             return;
         }
         self.image_sources.insert(url, bytes);
-        self.invalidate();
+        self.invalidate_with_layout_damage(LayoutDamageKind::Resource);
     }
 
     /// Supply host-resolved font bytes for a non-data URL. The host owns URL
@@ -281,7 +407,7 @@ where
         }
         self.font_sources.insert(url, bytes);
         self.rebuild_font_resources();
-        self.invalidate();
+        self.invalidate_with_layout_damage(LayoutDamageKind::Resource);
     }
 
     /// Replace the complete host image ledger. A missing prior key is removed,
@@ -295,7 +421,7 @@ where
             return;
         }
         self.image_sources = next;
-        self.invalidate();
+        self.invalidate_with_layout_damage(LayoutDamageKind::Resource);
     }
 
     /// Replace the complete host font ledger. Fontique has no per-blob removal
@@ -311,7 +437,7 @@ where
         }
         self.font_sources = next;
         self.rebuild_font_resources();
-        self.invalidate();
+        self.invalidate_with_layout_damage(LayoutDamageKind::Resource);
     }
 
     fn rebuild_font_resources(&mut self) {
@@ -338,6 +464,9 @@ where
             return self.paint_active_layout(width, height);
         }
 
+        if self.viewport != (width, height) {
+            self.record_full_layout_damage(LayoutDamageKind::Viewport);
+        }
         self.retain_layout_identity();
         self.viewport = (width, height);
         self.device.set_viewport_size(width as f32, height as f32);
@@ -498,6 +627,7 @@ where
         index: usize,
     ) -> Result<usize, livery::stylesheet::RuleMutationError> {
         let inserted = self.style_set.insert_author_rule(sheet, rule, index)?;
+        self.record_full_layout_damage(LayoutDamageKind::Stylesheet);
         self.retain_layout_identity();
         Ok(inserted)
     }
@@ -509,6 +639,7 @@ where
         index: usize,
     ) -> Result<(), livery::stylesheet::RuleMutationError> {
         self.style_set.delete_author_rule(sheet, index)?;
+        self.record_full_layout_damage(LayoutDamageKind::Stylesheet);
         self.retain_layout_identity();
         Ok(())
     }
@@ -1220,6 +1351,7 @@ where
             parent = self.dom.parent(ancestor);
         }
         self.focused_chain = chain;
+        self.record_full_layout_damage(LayoutDamageKind::Interaction);
         self.retain_layout_identity();
         true
     }
@@ -1443,6 +1575,7 @@ mod tests {
     use super::*;
     use genet_scripted_dom::{NodeId, ScriptedDom};
     use layout_dom_api::QualName;
+    use paint_list_api::PaintList;
 
     fn attr(name: &str) -> QualName {
         QualName::new(None, Namespace::from(""), LocalName::from(name))
@@ -1542,6 +1675,93 @@ mod tests {
         assert!(
             !generated_ids(&document, by_id(document.dom(), "inserted")).is_empty(),
             "the inserted sibling receives separate live identities",
+        );
+    }
+
+    #[test]
+    fn retained_mutation_paints_like_a_fresh_final_document() {
+        let initial = "<html><body id=body><div id=before>before</div><div id=after>after</div></body></html>";
+        let final_document = "<html><body id=body><div id=before>before</div><div id=inserted>inserted</div><div id=after>after</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } div { width: 100px; height: 20px; } \
+                 #inserted { background: blue; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(160.0, 120.0));
+        retained.frame(160, 120).expect("initial retained frame");
+
+        retained.mutate_dom(|dom| {
+            let body = by_id(dom, "body");
+            let after = by_id(dom, "after");
+            let inserted = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("div"),
+            ));
+            dom.set_attribute(inserted, attr("id"), "inserted");
+            let text = dom.create_text("inserted");
+            dom.append_child(inserted, text);
+            dom.insert_before(body, inserted, Some(after));
+        });
+        let retained_paint = retained.frame(160, 120).expect("retained final frame");
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(160.0, 120.0));
+        let fresh_paint = fresh.frame(160, 120).expect("fresh final frame");
+
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "retained mutation and fresh final-document layout must emit the same paint commands",
+        );
+        assert_eq!(
+            retained.content_height(0),
+            fresh.content_height(0),
+            "the same final DOM has the same retained document extent",
+        );
+    }
+
+    #[test]
+    fn dom_mutation_records_its_nearest_formatting_context_root() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=flex><div id=existing>existing</div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } #flex { display: flex; width: 120px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("initial frame");
+        let flex = by_id(document.dom(), "flex");
+
+        document.mutate_dom(|dom| {
+            let flex = by_id(dom, "flex");
+            let inserted = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("div"),
+            ));
+            dom.append_child(flex, inserted);
+        });
+
+        assert_eq!(
+            document.last_layout_damage(),
+            Some(&LayoutDamage {
+                kind: LayoutDamageKind::Dom,
+                roots: vec![flex],
+                full_document: false,
+            }),
+            "K5h records the flex root whose child list changed",
         );
     }
 
