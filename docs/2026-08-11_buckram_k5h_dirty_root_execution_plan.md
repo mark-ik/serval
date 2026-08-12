@@ -5,8 +5,8 @@
 **Status:** In progress. K5h now has an explicit damage record,
 final-document equivalence harness, a narrow paint-only retained path, and a
 conservative Buckram fragment-subtree splice. Livery has one true
-selected-root formatter for a closed flex/grid case and falls back to a fresh
-complete layout outside that boundary.
+selected-root formatter for a closed static block/flex/grid case and falls
+back to a fresh complete layout outside that boundary.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -126,14 +126,19 @@ retained ancestors, and document extent and paint remain equal to a fresh final
 document. A changed used root size still requires parent-flow replacement.
 
 When an unchanged flex or grid root's child-driven used size changes, Livery
-attempts its direct DOM parent as the one wider local root. A root style change
-retains the established complete-layout publication path. The parent must be an
-admitted block, flex, or grid formatting context whose own used size remains
-unchanged; otherwise the complete-layout fallback remains authoritative.
+promotes the local replacement through each direct DOM parent only while the
+formatter proves the selected root's outer size changed. Any other rejected
+admission takes the complete-layout path. A root style change retains that
+complete-layout publication path. The first stable ancestor must be an admitted
+block, flex, or grid formatting context; otherwise the complete-layout fallback
+remains authoritative.
 `retained_root_formatter_promotes_a_changed_size_to_its_block_parent` proves
 that promotion recomputes the changed flex child and following parent sibling,
 preserves the parent root identity, retains a sibling outside the parent, and
 matches fresh final paint and extent.
+`retained_root_formatter_promotes_through_a_changed_parent_to_a_stable_ancestor`
+proves a second auto-sized parent can grow before the retained replacement
+settles at its stable ancestor.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
@@ -146,12 +151,10 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Extend direct-parent promotion to the first actual dependent ancestor,
-   escalating only when that ancestor's used inputs change.
-2. Extend to table roots only with their required
+1. Extend to table roots only with their required
    parent-flow and table side-plane replacement.
-3. Compare each incremental result with the fresh-final-document harness.
-4. Move flex, grid, inline, and table-internal out-of-flow participation to
+2. Compare each incremental result with the fresh-final-document harness.
+3. Move flex, grid, inline, and table-internal out-of-flow participation to
    equivalent Buckram-owned routes before deleting the remaining flex/grid
    backend position provider.
 

@@ -137,6 +137,15 @@ pub struct LiveryLayout<Id> {
     table_shadow: TableShadowLedger,
 }
 
+/// The outcome of attempting one bounded retained-root formatting pass.
+/// `PromoteParent` is deliberately distinct from an unsupported root: only a
+/// changed outer size can make the caller widen the retained replacement.
+pub(crate) enum RetainedRootFormatting<Id> {
+    Formatted(Box<LiveryLayout<Id>>),
+    PromoteParent,
+    Unsupported,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BlockAlgorithmCounts {
     pub buckram: usize,
@@ -1271,18 +1280,18 @@ pub(crate) fn layout_retained_formatting_root<D>(
     node: D::NodeId,
     text: &mut TextSystem,
     image_sources: &ImageSources,
-) -> Result<Option<LiveryLayout<D::NodeId>>, LayoutError>
+) -> Result<RetainedRootFormatting<D::NodeId>, LayoutError>
 where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
     if styles.get(node) != previous_styles.get(node) {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     }
 
     let boxes = GeneratedBoxTree::from_dom(dom, styles);
     let Some(root_box) = boxes.principal_box(node) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     if !matches!(
         boxes[root_box].formatting_context,
@@ -1294,35 +1303,35 @@ where
     ) || !supports_retained_root_formatting(&boxes, root_box)
         || !retained_ancestor_styles_unchanged(&boxes, styles, previous_styles, root_box)
     {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     }
 
     let Some(previous_root_box) = previous.boxes().principal_box(node) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let [previous_root] = previous
         .fragments()
         .fragment_ids_for_box(previous_root_box)
     else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(previous_root_fragment) = previous.fragments().get(*previous_root) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(parent_box) = previous.boxes()[previous_root_box].parent() else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(parent_node) = previous.boxes().origin_node(parent_box) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(parent_style) = previous_styles.get(parent_node) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(parent_fragment) = previous_root_fragment
         .parent()
         .and_then(|parent| previous.fragments().get(parent))
     else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let containing_size = content_box_size(parent_style, parent_fragment);
     if !containing_size.0.is_finite()
@@ -1330,7 +1339,7 @@ where
         || containing_size.0 < 0.0
         || containing_size.1 < 0.0
     {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     }
 
     let atomic = AtomicLayoutPlane::default();
@@ -1353,7 +1362,7 @@ where
         parent_font_size,
         (Some(containing_size.0), Some(containing_size.1)),
     )? else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let formatter_root = state.tree.new_with_children_and_block_style(
         AlgorithmKind::Block,
@@ -1424,15 +1433,15 @@ where
         styles,
     )?;
     let [local_root] = fragments.fragment_ids_for_box(root_box) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(local_root_fragment) = fragments.get(*local_root) else {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::Unsupported);
     };
     let local_rect = local_root_fragment.physical_rect();
     let retained_rect = previous_root_fragment.physical_rect();
     if !same_retained_root_size(local_rect, retained_rect) {
-        return Ok(None);
+        return Ok(RetainedRootFormatting::PromoteParent);
     }
     fragments.translate_subtree(
         *local_root,
@@ -1443,7 +1452,7 @@ where
     );
     drop(state);
 
-    Ok(Some(LiveryLayout::new(
+    Ok(RetainedRootFormatting::Formatted(Box::new(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         Some(text_frame),
         BlockAlgorithmCounts {
@@ -1452,7 +1461,7 @@ where
         },
         TablePaintPlane::default(),
         TableShadowLedger::default(),
-    )))
+    ))))
 }
 
 fn supports_retained_root_formatting<Id>(boxes: &GeneratedBoxTree<Id>, root: BoxId) -> bool
