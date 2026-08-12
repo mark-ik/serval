@@ -200,6 +200,14 @@ parent-controlled step without resetting the count, lowers a typed Report
 event into catalog state, and proves teardown drops the local state while a
 remount reinitializes it.
 
+Also landed 2026-08-12: `Component::memo()` (props-equality skip gated by a
+local-dirty bit) and `setting_row`, the first component-shaped control:
+draft-local settings editing over `genet-host-api` specs, per-row Apply as
+the only emitter, memoized on its props. The catalog's settings form renders
+through it. The uncontrolled-wrapper idea is rejected in favor of
+per-control component-shaped signatures; see the 2026-08-12 brief in the
+repository root docs.
+
 Effects remain application-owned. `GenetAppRunner` returning `Vec<Action>` is
 the outward event seam; it is not a shared effect queue. Lift an effect contract
 only after another application duplicates Turnstone's action-to-effect shape.

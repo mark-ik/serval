@@ -92,7 +92,7 @@
 }
 
 .catalog-pane-context,
-.catalog-setting-label {
+.setting-label {
     color: var(--catalog-muted);
     font-size: 0.85rem;
 }
@@ -103,9 +103,22 @@
     padding: 1rem;
 }
 
-.catalog-setting-row {
+.setting-row {
     display: grid;
     gap: 0.35rem;
+}
+
+.setting-editor {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.setting-apply {
+    justify-self: start;
+}
+
+.setting-unsupported {
+    color: var(--catalog-disabled);
 }
 
 .catalog-pane-state {

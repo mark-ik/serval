@@ -64,6 +64,7 @@ mod runner;
 mod sectioned_list;
 mod select;
 mod selection_bar;
+mod setting_row;
 mod slider;
 mod splice;
 mod split;
@@ -84,6 +85,7 @@ pub use command_surface::{
     command_picker, command_surface,
 };
 pub use component::{COMPONENT_PROBE_ATTR, Component, ComponentView, component};
+pub use setting_row::setting_row;
 pub use context::GenetCtx;
 pub use detail_panel::{DetailRow, DetailSection, detail_panel};
 pub use detail_popover::{

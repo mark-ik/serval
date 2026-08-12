@@ -153,6 +153,66 @@ Validation receipts:
 - Compile-time measurement remains a follow-on receipt. The architectural
   proof is functional; no compile-time improvement is claimed yet.
 
+## Memo boundary (landed 2026-08-12)
+
+`Component::memo()` (requires `Props: PartialEq`) skips `reconcile`, `body`,
+and the child rebuild when props are unchanged and no message has touched the
+subtree since the last rebuild. A delivered message marks the component's
+local state dirty, so an interaction always renders even under equal props.
+This recovers what the deleted `Memoize` HOC did, as a property of the
+boundary rather than a freestanding view, at the layer where the equality
+comparison is meaningful. The equality check is a stored fn pointer, so
+un-memoized components keep working with non-comparable props. Receipt: the
+`memo_skips_body_on_equal_props_until_a_message_dirties_local_state` unit
+test counts body runs across a clean rebuild, a props change, and a dispatch.
+
+## setting_row (landed 2026-08-12)
+
+`cambium::setting_row` renders one `genet-host-api` `SettingSpec` as a
+labelled control with an Apply button. The draft is component-local; the only
+value crossing the boundary is the applied `SettingValue`. An externally
+changed committed value or control re-derives the draft (the
+parent-controlled axis); local edits never reset it. Rows are memoized on
+`(spec, label)`. The draft controls keep their `Action = ()` signatures
+inside a `map_message_result`-silenced cluster; the Apply button is the row's
+only emitter. The catalog's settings-form specimen now renders through
+`setting_row` from four inline provider-shaped specs, and its headless
+contract proves draft-edit-then-apply: toggling the control applies nothing,
+Apply carries `Boolean(false)` from the edited draft into catalog state.
+
+## Uncontrolled variants: no wrapper
+
+A generic `uncontrolled(control)` wrapper family is rejected. The
+interaction/value split is per-control knowledge (a select's open state is
+interaction; a disclosure's expansion IS its value), so a generic wrapper
+cannot place it and would double the API surface into React's documented
+controlled/uncontrolled confusion. The alternative is what `setting_row`
+demonstrates: when a consumer pulls, that control gains a component-shaped
+signature (value props in, typed events out, interaction local) built on
+`component` internally, one control at a time. No wrapper vocabulary is ever
+public; the split is decided once, correctly, by the control author.
+
+## Turnstone settings pane: adoption staged, measurement pending
+
+The measured adopter is turnstone's `settings_pane.rs`: `SettingsState`
+currently threads four HashMaps of draft state through the pane with boxed
+lenses, initialized inside lens accessors; `setting_row` replaces the lane
+with `on_apply` lowering into the existing `apply_value` provider path.
+Blocked 2026-08-12: turnstone's build is red on concurrent trail-memory and
+eidetic-family work in flight across turnstone and mere, so neither the
+baseline nor the post-adoption timing can be taken yet. Procedure when green:
+touch `settings_pane.rs`, time two warm rebuilds, adopt, repeat, record both
+numbers here.
+
+## Next consumers
+
+- Graph canvas: selection stays app truth on NODE_SHEET; hover, preview, and
+  focus-emphasis state moves component-local (the catalog's
+  `graph_swatch_hovered`/`focused` threading is the receipt of the cost).
+- Woodshed: practice-tool controls (fretboard highlights, knob interaction)
+  as the second consumer app; its action-to-effect shape is also what arms
+  the consumer-pull gate on the shared effect contract.
+
 ## Layer ownership
 
 - **Meristem:** retained diff/message primitives only. No component, probe, or

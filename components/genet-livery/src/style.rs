@@ -1267,6 +1267,8 @@ fn definite_size(size: Size, em: f32) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
+    use livery::values::BorderWidth;
+
     use super::*;
 
     fn matched(css: &str, source_order: u64) -> MatchedDeclaration {
@@ -1345,5 +1347,27 @@ mod tests {
             ColorComputeContext::default(),
         );
         assert_eq!(vertical_rtl.margin_bottom, "23px".parse().unwrap());
+
+        let (logical_borders, _) = cascade_with_logical_properties(
+            None,
+            None,
+            vec![
+                matched("writing-mode: vertical-rl", 0),
+                matched("border-block-start-style: solid", 1),
+                matched("border-inline-start-width: 7px", 2),
+                matched("border-inline-end-color: red", 3),
+            ],
+            vec![],
+            ColorComputeContext::default(),
+        );
+        assert_eq!(logical_borders.border_right_style, BorderStyle::Solid);
+        assert_eq!(
+            logical_borders.border_top_width,
+            BorderWidth::Length(Length::px(7.0))
+        );
+        assert_eq!(
+            logical_borders.border_bottom_color.to_srgb8(),
+            Some((255, 0, 0, 255))
+        );
     }
 }

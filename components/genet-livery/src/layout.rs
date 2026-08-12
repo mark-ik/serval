@@ -5162,6 +5162,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ph3_rules_attribute_reaches_k4g_collapsed_border_resolution() {
+        let dom = StaticDocument::parse(
+            r#"<table id="table" rules="all" bordercolor="red"><tbody><tr><td id="cell">one</td><td>two</td></tr></tbody></table>"#,
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let cell = node_by_id(&dom, dom.document(), "cell").expect("cell");
+
+        assert_eq!(
+            styles.get(table).unwrap().border_collapse,
+            BorderCollapse::Collapse,
+            "the HTML attribute must first become an ordinary computed declaration"
+        );
+        assert_eq!(
+            styles.get(cell).unwrap().border_top_style,
+            BorderStyle::Solid
+        );
+        assert_eq!(
+            styles.get(cell).unwrap().border_top_color.to_srgb8(),
+            Some((0, 0, 0, 255)),
+            "the attribute-sensitive UA rule supplies the cell candidate color"
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let ledger = layout.table_shadow_ledger();
+        assert_eq!(ledger.collapsed_metrics, 1, "{ledger:?}");
+        assert_eq!(ledger.assigned, 1, "{ledger:?}");
+        assert_eq!(ledger.honored, 1, "{ledger:?}");
+        assert!(ledger.skipped.is_empty(), "{ledger:?}");
+    }
+
     fn fixed_table_ledger(spacing: &str) -> crate::table_shadow::TableShadowLedger {
         let dom = StaticDocument::parse(
             "<table><tbody><tr><td id=first>one</td><td>two</td><td>three</td></tr></tbody></table>",

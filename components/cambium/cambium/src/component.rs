@@ -44,6 +44,10 @@ pub struct Component<Props, Local, Event, State, Action, Init, Reconcile, Body, 
     body: Body,
     on_event: OnEvent,
     probe_id: Option<String>,
+    // A stored fn pointer rather than a `Props: PartialEq` bound on the View
+    // impl: only `memo()` requires equality, so un-memoized components keep
+    // working with non-comparable props (closures, trait objects).
+    props_unchanged: Option<fn(&Props, &Props) -> bool>,
     phantom: PhantomData<fn(Local, Event, State) -> Action>,
 }
 
@@ -76,6 +80,7 @@ where
         body,
         on_event,
         probe_id: None,
+        props_unchanged: None,
         phantom: PhantomData,
     }
 }
@@ -90,6 +95,23 @@ impl<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
         self.probe_id = Some(id.into());
         self
     }
+
+    /// Skip `reconcile`, `body`, and the child rebuild when the props are
+    /// unchanged and no message has touched the local state since the last
+    /// rebuild.
+    ///
+    /// This is the memo boundary: correct only because a component's child
+    /// tree depends on nothing but its props and its local state. A message
+    /// delivered to the subtree marks the local state dirty, so an
+    /// interaction always renders even under equal props.
+    #[must_use]
+    pub fn memo(mut self) -> Self
+    where
+        Props: PartialEq,
+    {
+        self.props_unchanged = Some(|prev, next| prev == next);
+        self
+    }
 }
 
 /// Retained state for [`Component`]. Public only because it is a `View`
@@ -99,6 +121,9 @@ pub struct ComponentState<Local: 'static, Event: 'static> {
     local: Local,
     child: ComponentView<Local, Event>,
     child_state: <ComponentView<Local, Event> as View<Local, Event, GenetCtx>>::ViewState,
+    /// Set when a message reaches this subtree (it may have mutated `local`),
+    /// cleared when a rebuild has run `body`. Gates the `memo()` skip.
+    local_dirty: bool,
 }
 
 impl<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent> ViewMarker
@@ -138,6 +163,7 @@ where
                 local,
                 child,
                 child_state,
+                local_dirty: false,
             },
         )
     }
@@ -150,6 +176,14 @@ where
         mut element: Mut<'_, Self::Element>,
         _app_state: &mut State,
     ) {
+        if let Some(unchanged) = self.props_unchanged {
+            if !state.local_dirty && unchanged(&prev.props, &self.props) {
+                // The probe stamp is cheap and idempotent, and `probe_id` is
+                // not covered by the props comparison, so keep it honest.
+                apply_probe_id(&element.dom, *element.node, self.probe_id.as_deref());
+                return;
+            }
+        }
         (self.reconcile)(&prev.props, &self.props, &mut state.local);
         let child = (self.body)(&self.props, &state.local);
         child.rebuild(
@@ -160,6 +194,7 @@ where
             &mut state.local,
         );
         state.child = child;
+        state.local_dirty = false;
         apply_probe_id(&element.dom, *element.node, self.probe_id.as_deref());
     }
 
@@ -179,6 +214,9 @@ where
         element: Mut<'_, Self::Element>,
         app_state: &mut State,
     ) -> MessageResult<Action> {
+        // Any delivered message may have mutated `local` through a handler, so
+        // the next rebuild must run `body` even under `memo()` with equal props.
+        state.local_dirty = true;
         match state
             .child
             .message(&mut state.child_state, message, element, &mut state.local)
@@ -338,5 +376,56 @@ mod tests {
         let events = runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::Enter)));
         assert_eq!(events, [AppEvent::Activated(vec![1])]);
         assert_eq!(runner.state().activated, [vec![1]]);
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Bump;
+    impl Action for Bump {}
+
+    #[test]
+    fn memo_skips_body_on_equal_props_until_a_message_dirties_local_state() {
+        use std::cell::Cell;
+
+        use crate::{PointerClick, button};
+
+        let body_runs = Rc::new(Cell::new(0_u32));
+        let seen = body_runs.clone();
+        let app_view = move |step: &i64| {
+            let seen = seen.clone();
+            component(
+                *step,
+                |_: &i64| 0_i64,
+                |_: &i64, _: &i64, _: &mut i64| {},
+                move |_: &i64, _: &i64| -> ComponentView<i64, Bump> {
+                    seen.set(seen.get() + 1);
+                    Box::new(button("+", |count: &mut i64, _: PointerClick| {
+                        *count += 1;
+                    }))
+                },
+                |_: &mut i64, _: Bump| {},
+            )
+            .memo()
+        };
+
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::new(dom.clone(), app_view, 1_i64);
+        assert_eq!(body_runs.get(), 1, "build runs the body once");
+
+        runner.update(|_| {});
+        assert_eq!(body_runs.get(), 1, "equal props and clean local skip the body");
+
+        runner.update(|step| *step += 1);
+        assert_eq!(body_runs.get(), 2, "changed props run the body");
+
+        let root = runner.root();
+        runner.dispatch_click(root, PointerClick::at((2.0, 2.0)));
+        assert_eq!(
+            body_runs.get(),
+            3,
+            "a message marks local dirty, so the dispatch rebuild runs the body"
+        );
+
+        runner.update(|_| {});
+        assert_eq!(body_runs.get(), 3, "the skip resumes once local is clean again");
     }
 }

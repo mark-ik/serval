@@ -24,32 +24,30 @@ pub(crate) fn parse_legacy_color(mut input: &str) -> Option<ComputedColor> {
         return None;
     }
 
-    if let Ok((red, green, blue)) = parse_named_color(input) {
+    if let Ok((red, green, blue)) = parse_named_color(&input.to_ascii_lowercase()) {
         return Some(Color::srgb8(red, green, blue, 1.0).into());
     }
 
-    if input.len() == 4 {
-        if let (Some(b'#'), Some(red), Some(green), Some(blue)) = (
+    if input.len() == 4
+        && let (Some(b'#'), Some(red), Some(green), Some(blue)) = (
             input.as_bytes().first().copied(),
             hex(input.as_bytes()[1] as char),
             hex(input.as_bytes()[2] as char),
             hex(input.as_bytes()[3] as char),
-        ) {
-            return Some(Color::srgb8(red * 17, green * 17, blue * 17, 1.0).into());
-        }
+        )
+    {
+        return Some(Color::srgb8(red * 17, green * 17, blue * 17, 1.0).into());
     }
 
-    let replaced = input
-        .chars()
-        .flat_map(|character| {
-            if u32::from(character) > 0xffff {
-                ['0', '0'].into_iter().collect::<Vec<_>>()
-            } else {
-                vec![character]
-            }
-        })
-        .take(128)
-        .collect::<String>();
+    let mut replaced = String::new();
+    for character in input.chars() {
+        if u32::from(character) > 0xffff {
+            replaced.push_str("00");
+        } else {
+            replaced.push(character);
+        }
+    }
+    let replaced = replaced.chars().take(128).collect::<String>();
     let input = replaced.strip_prefix('#').unwrap_or(&replaced);
     let mut digits = input
         .chars()
@@ -87,15 +85,7 @@ pub(crate) fn parse_legacy_color(mut input: &str) -> Option<ComputedColor> {
         channel_length -= 1;
     }
 
-    Some(
-        Color::srgb8(
-            hex_string(red)?,
-            hex_string(green)?,
-            hex_string(blue)?,
-            1.0,
-        )
-        .into(),
-    )
+    Some(Color::srgb8(hex_string(red)?, hex_string(green)?, hex_string(blue)?, 1.0).into())
 }
 
 fn hex(character: char) -> Option<u8> {

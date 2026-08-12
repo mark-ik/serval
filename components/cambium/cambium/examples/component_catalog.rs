@@ -20,8 +20,12 @@ use cambium::{
     accordion_with, button, button_with, checkbox, command_menu, command_palette, command_picker,
     component, custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, frisket,
     graph_canvas_swatch, graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer,
-    overlay_surface, radio_group, reorderable_list, segmented_control, select, slider,
+    overlay_surface, radio_group, reorderable_list, segmented_control, select, setting_row, slider,
     styled_textarea, summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
+};
+use genet_host_api::settings::{
+    SettingControl, SettingMovement, SettingMutability, SettingOption, SettingScope,
+    SettingSecurity, SettingSpec, SettingValue,
 };
 use genet_host_api::tile::{
     ContentSource, DocumentRef, TabStack, Tile, TileBranch, TileEvent, TileId, TileTree,
@@ -105,11 +109,8 @@ struct CatalogState {
     text: TextInput,
     multiline: TextInput,
     styled: TextInput,
-    settings_theme: TextInput,
-    settings_zoom: Slider,
-    settings_shellbar_visible: bool,
-    settings_shellbar_edge: RadioGroup,
     settings_saves: usize,
+    settings_last: String,
     pane_events: Vec<TileEvent>,
     actions: CommandState,
     last_action: String,
@@ -176,13 +177,8 @@ impl Default for CatalogState {
             text: TextInput::new("turnstone"),
             multiline: TextInput::new("First line\nSecond line"),
             styled: TextInput::new("let answer = 42;"),
-            settings_theme: TextInput::new("theme:night"),
-            settings_zoom: Slider::new(0.24)
-                .with_steps(0.02, 0.1)
-                .with_label("UI zoom"),
-            settings_shellbar_visible: true,
-            settings_shellbar_edge: RadioGroup::new(0).with_label("Shellbar edge"),
             settings_saves: 0,
+            settings_last: "none".into(),
             pane_events: Vec::new(),
             actions: CommandState::default()
                 .with_label("Catalog actions")
@@ -540,6 +536,59 @@ fn grid(state: &CatalogState) -> GridView<CatalogState, ()> {
     )
 }
 
+/// The settings-form specimen's provider-shaped rows. In an application these
+/// come from a `SettingsProvider`; the catalog describes them inline.
+fn catalog_setting_specs() -> Vec<SettingSpec> {
+    let spec = |id: &str, label: &str, control: SettingControl, value: SettingValue| SettingSpec {
+        id: id.into(),
+        label: label.into(),
+        scope: SettingScope::Application,
+        movement: SettingMovement::LocalOnly,
+        mutability: SettingMutability::Live,
+        security: SettingSecurity::Ordinary,
+        control,
+        value,
+    };
+    vec![
+        spec(
+            "appearance.theme",
+            "Theme",
+            SettingControl::Text,
+            SettingValue::Text("theme:night".into()),
+        ),
+        spec(
+            "appearance.ui-zoom",
+            "UI zoom",
+            SettingControl::Number {
+                min: Some(0.5),
+                max: Some(2.0),
+                step: Some(0.05),
+            },
+            SettingValue::Number(1.1),
+        ),
+        spec(
+            "chrome.shellbar.visible",
+            "Show shellbar",
+            SettingControl::Toggle,
+            SettingValue::Boolean(true),
+        ),
+        spec(
+            "chrome.shellbar.edge",
+            "Shellbar edge",
+            SettingControl::Choice {
+                options: ["Left", "Right", "Top", "Bottom"]
+                    .into_iter()
+                    .map(|label| SettingOption {
+                        value: label.to_ascii_lowercase(),
+                        label: label.into(),
+                    })
+                    .collect(),
+            },
+            SettingValue::Text("left".into()),
+        ),
+    ]
+}
+
 /// The component-boundary specimen's typed event vocabulary: the only values
 /// that cross from the counter to the catalog.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -720,12 +769,6 @@ fn catalog(state: &CatalogState) -> CatalogView {
     .attr("id", "component-section")
     .attr("class", "catalog-section");
 
-    let shellbar_edges = [
-        "Left".to_string(),
-        "Right".to_string(),
-        "Top".to_string(),
-        "Bottom".to_string(),
-    ];
     let pane_tree = catalog_pane_tree();
     let settings_form = el::<_, CatalogState, ()>(
         "section",
@@ -742,62 +785,19 @@ fn catalog(state: &CatalogState) -> CatalogView {
             el::<_, CatalogState, ()>(
                 "div",
                 (
-                    el(
-                        "label",
-                        (
-                            el::<_, CatalogState, ()>("span", "Theme")
-                                .attr("class", "catalog-setting-label"),
-                            lens(
-                                |input: &mut TextInput| text_field_typed(input),
-                                |state: &mut CatalogState| &mut state.settings_theme,
-                            ),
-                        ),
-                    )
-                    .attr("class", "catalog-setting-row"),
-                    el(
-                        "div",
-                        (
-                            el::<_, CatalogState, ()>("span", "UI zoom")
-                                .attr("class", "catalog-setting-label"),
-                            lens(
-                                |slider_state: &mut Slider| slider(slider_state),
-                                |state: &mut CatalogState| &mut state.settings_zoom,
-                            ),
-                        ),
-                    )
-                    .attr("class", "catalog-setting-row"),
-                    el(
-                        "div",
-                        (
-                            el::<_, CatalogState, ()>("span", "Show shellbar")
-                                .attr("class", "catalog-setting-label"),
-                            lens(
-                                |visible: &mut bool| toggle(*visible),
-                                |state: &mut CatalogState| &mut state.settings_shellbar_visible,
-                            ),
-                        ),
-                    )
-                    .attr("class", "catalog-setting-row"),
-                    el(
-                        "div",
-                        (
-                            el::<_, CatalogState, ()>("span", "Shellbar edge")
-                                .attr("class", "catalog-setting-label"),
-                            lens(
-                                move |edge: &mut RadioGroup| radio_group(edge, &shellbar_edges),
-                                |state: &mut CatalogState| &mut state.settings_shellbar_edge,
-                            ),
-                        ),
-                    )
-                    .attr("class", "catalog-setting-row"),
-                    button(
-                        "Apply settings",
-                        |state: &mut CatalogState, _: PointerClick| {
-                            state.settings_saves += 1;
-                        },
-                    )
-                    .attr("id", "catalog-settings-apply")
-                    .attr("class", "catalog-button"),
+                    catalog_setting_specs()
+                        .iter()
+                        .map(|spec| {
+                            Box::new(setting_row(
+                                spec,
+                                spec.label.clone(),
+                                |state: &mut CatalogState, value: SettingValue| {
+                                    state.settings_saves += 1;
+                                    state.settings_last = format!("{value:?}");
+                                },
+                            )) as CatalogView
+                        })
+                        .collect::<Vec<_>>(),
                     el::<_, CatalogState, ()>(
                         "output",
                         format!("{} saved changes", state.settings_saves),
@@ -1520,6 +1520,12 @@ fn assert_initial_surface(dom: &ScriptedDom, root: NodeId, width: CatalogWidth) 
     })
     .expect("settings choice control");
     assert_attr(dom, settings_radio, "aria-label", "Shellbar edge");
+    let mut setting_rows = Vec::new();
+    collect_class(dom, pane_shell, "setting-row", &mut setting_rows);
+    assert_eq!(setting_rows.len(), 4, "one setting_row per provider spec");
+    let mut setting_applies = Vec::new();
+    collect_class(dom, pane_shell, "setting-apply", &mut setting_applies);
+    assert_eq!(setting_applies.len(), 4, "every supported row has an apply");
     for state in ["empty", "error", "unavailable"] {
         find_where(dom, pane_shell, &|dom, node| {
             attr(dom, node, "data-pane-state") == Some(state)
@@ -2011,9 +2017,28 @@ fn run_interactions(runner: &mut CatalogRunner) {
     runner.dispatch_click(apply, PointerClick::at((4.0, 4.0)));
     assert_eq!(runner.state().presses, 1);
 
-    let settings_apply = find_id(&runner.dom().borrow(), root, "catalog-settings-apply");
-    runner.dispatch_click(settings_apply, PointerClick::at((4.0, 4.0)));
+    // Settings rows: edit the component-local draft, then apply. Only the
+    // applied SettingValue crosses into catalog state.
+    let visible_row = find_where(&runner.dom().borrow(), root, &|dom, node| {
+        attr(dom, node, "data-setting") == Some("chrome.shellbar.visible")
+            && has_class(dom, node, "setting-row")
+    })
+    .expect("shellbar toggle row");
+    let visible_toggle = find_class(&runner.dom().borrow(), visible_row, "toggle");
+    runner.dispatch_click(visible_toggle, PointerClick::at((4.0, 4.0)));
+    assert_eq!(
+        runner.state().settings_saves,
+        0,
+        "editing the draft applies nothing"
+    );
+    let visible_apply = find_class(&runner.dom().borrow(), visible_row, "setting-apply");
+    runner.dispatch_click(visible_apply, PointerClick::at((4.0, 4.0)));
     assert_eq!(runner.state().settings_saves, 1);
+    assert_eq!(
+        runner.state().settings_last,
+        "Boolean(false)",
+        "the applied value reflects the edited draft, not the committed spec"
+    );
     assert_eq!(
         node_text(
             &runner.dom().borrow(),

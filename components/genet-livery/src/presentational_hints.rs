@@ -521,7 +521,7 @@ where
     }
 
     if border.is_some_and(|(_, equivalent_nonzero)| equivalent_nonzero) {
-        for cell in table_descendants(dom, table, &["td", "th"]) {
+        for cell in corresponding_table_cells(dom, table) {
             let declarations = hints.declarations_for_mut(cell);
             push_border_widths(declarations, BorderWidth::Length(Length::px(1.0)));
             push_border_styles(declarations, [BorderStyle::Inset; 4]);
@@ -637,7 +637,7 @@ fn collect_table_rule_hints<D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    for cell in table_descendants(dom, table, &["td", "th"]) {
+    for cell in corresponding_table_cells(dom, table) {
         let declarations = hints.declarations_for_mut(cell);
         push_border_widths(declarations, BorderWidth::Length(Length::px(1.0)));
         match rules {
@@ -645,11 +645,7 @@ fn collect_table_rule_hints<D>(
                 push_border_styles(declarations, [BorderStyle::None; 4]);
             },
             LegacyTableRules::Cols => {
-                push_logical_border_styles(
-                    declarations,
-                    BorderStyle::None,
-                    BorderStyle::Solid,
-                );
+                push_logical_border_styles(declarations, BorderStyle::None, BorderStyle::Solid);
             },
             LegacyTableRules::All => {
                 push_border_styles(declarations, [BorderStyle::Solid; 4]);
@@ -659,7 +655,7 @@ fn collect_table_rule_hints<D>(
 
     match rules {
         LegacyTableRules::Groups => {
-            for colgroup in table_descendants(dom, table, &["colgroup"]) {
+            for colgroup in direct_table_children(dom, table, &["colgroup"]) {
                 let declarations = hints.declarations_for_mut(colgroup);
                 push_logical_inline_border_widths(
                     declarations,
@@ -667,7 +663,7 @@ fn collect_table_rule_hints<D>(
                 );
                 push_logical_inline_border_styles(declarations, BorderStyle::Solid);
             }
-            for group in table_descendants(dom, table, &["thead", "tbody", "tfoot"]) {
+            for group in direct_table_children(dom, table, &["thead", "tbody", "tfoot"]) {
                 let declarations = hints.declarations_for_mut(group);
                 push_logical_block_border_widths(
                     declarations,
@@ -677,7 +673,7 @@ fn collect_table_rule_hints<D>(
             }
         },
         LegacyTableRules::Rows => {
-            for row in table_descendants(dom, table, &["tr"]) {
+            for row in corresponding_table_rows(dom, table) {
                 let declarations = hints.declarations_for_mut(row);
                 push_logical_block_border_widths(
                     declarations,
@@ -690,7 +686,7 @@ fn collect_table_rule_hints<D>(
     }
 }
 
-fn table_descendants<D>(
+fn direct_table_children<D>(
     dom: &D,
     table: D::NodeId,
     local_names: &[&str],
@@ -699,28 +695,45 @@ where
     D: LayoutDom,
     D::NodeId: Copy,
 {
-    fn visit<D>(dom: &D, ancestor: D::NodeId, local_names: &[&str], found: &mut Vec<D::NodeId>)
-    where
-        D: LayoutDom,
-        D::NodeId: Copy,
-    {
-        for child in dom.dom_children(ancestor) {
-            if is_html_element(dom, child, "table") {
-                continue;
-            }
-            if local_names
+    dom.dom_children(table)
+        .filter(|child| {
+            local_names
                 .iter()
-                .any(|local| is_html_element(dom, child, local))
-            {
-                found.push(child);
-            }
-            visit(dom, child, local_names, found);
-        }
-    }
+                .any(|local| is_html_element(dom, *child, local))
+        })
+        .collect()
+}
 
-    let mut found = Vec::new();
-    visit(dom, table, local_names, &mut found);
-    found
+fn corresponding_table_rows<D>(dom: &D, table: D::NodeId) -> Vec<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy,
+{
+    let mut rows = direct_table_children(dom, table, &["tr"]);
+    for group in direct_table_children(dom, table, &["thead", "tbody", "tfoot"]) {
+        rows.extend(
+            dom.dom_children(group)
+                .filter(|row| is_html_element(dom, *row, "tr")),
+        );
+    }
+    rows
+}
+
+fn corresponding_table_cells<D>(dom: &D, table: D::NodeId) -> Vec<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy,
+{
+    corresponding_table_rows(dom, table)
+        .into_iter()
+        .flat_map(|row| {
+            dom.dom_children(row)
+                .filter(|cell| {
+                    is_html_element(dom, *cell, "td") || is_html_element(dom, *cell, "th")
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn push_value(
@@ -1499,6 +1512,345 @@ mod tests {
             session.styles().legacy_descendant_alignment(descendant),
             None,
             "incremental recascade must remove stale used-value metadata"
+        );
+    }
+
+    #[test]
+    fn table_color_border_frame_and_rules_project_typed_css() {
+        let dom = StaticDocument::parse(
+            r##"
+                <table id="table" bgcolor="chucknorris" bordercolor="#0f8"
+                       border="3" frame="hsides" rules="cols">
+                  <colgroup id="columns"><col></colgroup>
+                  <tbody id="group"><tr id="row"><td id="cell" bgcolor="blue">cell</td></tr></tbody>
+                </table>
+            "##,
+        );
+        let table = node_by_id(&dom, dom.document(), "table").unwrap();
+        let group = node_by_id(&dom, dom.document(), "group").unwrap();
+        let cell = node_by_id(&dom, dom.document(), "cell").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let table_style = styles.get(table).unwrap();
+        let group_style = styles.get(group).unwrap();
+        let cell_style = styles.get(cell).unwrap();
+
+        assert_eq!(
+            table_style.background_color.to_srgb8(),
+            Some((192, 0, 0, 255))
+        );
+        assert_eq!(
+            table_style.border_top_color.to_srgb8(),
+            Some((0, 255, 136, 255))
+        );
+        assert_eq!(
+            group_style.border_top_color.to_srgb8(),
+            Some((0, 255, 136, 255))
+        );
+        assert_eq!(
+            cell_style.background_color.to_srgb8(),
+            Some((0, 0, 255, 255))
+        );
+        assert_eq!(cell_style.border_top_color.to_srgb8(), Some((0, 0, 0, 255)));
+        assert_eq!(table_style.border_collapse, BorderCollapse::Collapse);
+        assert_eq!(
+            table_style.border_top_width,
+            BorderWidth::Length(Length::px(3.0))
+        );
+        assert_eq!(
+            table_style.border_right_width,
+            BorderWidth::Length(Length::px(3.0))
+        );
+        assert_eq!(table_style.border_top_style, BorderStyle::Outset);
+        assert_eq!(table_style.border_right_style, BorderStyle::Hidden);
+        assert_eq!(table_style.border_bottom_style, BorderStyle::Outset);
+        assert_eq!(table_style.border_left_style, BorderStyle::Hidden);
+        assert_eq!(
+            cell_style.border_top_width,
+            BorderWidth::Length(Length::px(1.0))
+        );
+        assert_eq!(cell_style.border_top_style, BorderStyle::None);
+        assert_eq!(cell_style.border_right_style, BorderStyle::Solid);
+        assert_eq!(cell_style.border_bottom_style, BorderStyle::None);
+        assert_eq!(cell_style.border_left_style, BorderStyle::Solid);
+    }
+
+    #[test]
+    fn border_attribute_distinguishes_zero_prefixes_from_errors() {
+        let dom = StaticDocument::parse(
+            r#"
+                <table id="empty" border><tr><td id="empty-cell">empty</td></tr></table>
+                <table id="prefix" border="1foo"><tr><td id="prefix-cell">prefix</td></tr></table>
+                <table id="zero" border="-0foo"><tr><td id="zero-cell">zero</td></tr></table>
+            "#,
+        );
+        let by_id = |id| node_by_id(&dom, dom.document(), id).unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::parse("", &[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        for id in ["empty", "prefix"] {
+            let style = styles.get(by_id(id)).unwrap();
+            assert_eq!(style.border_top_width, BorderWidth::Length(Length::px(1.0)));
+            assert_eq!(style.border_top_style, BorderStyle::Outset);
+        }
+        for id in ["empty-cell", "prefix-cell"] {
+            let style = styles.get(by_id(id)).unwrap();
+            assert_eq!(style.border_top_width, BorderWidth::Length(Length::px(1.0)));
+            assert_eq!(style.border_top_style, BorderStyle::Inset);
+        }
+        let zero = styles.get(by_id("zero")).unwrap();
+        assert_eq!(zero.border_top_width, BorderWidth::Length(Length::px(0.0)));
+        assert_eq!(zero.border_top_style, BorderStyle::None);
+        assert_eq!(
+            styles.get(by_id("zero-cell")).unwrap().border_top_width,
+            BorderWidth::Medium
+        );
+        assert_eq!(
+            styles.presentational_hint_diagnostics(by_id("empty")),
+            [PresentationalHintDiagnostic::InvalidNonNegativeInteger {
+                attribute: "border",
+                value: String::new(),
+            }]
+        );
+        assert!(
+            styles
+                .presentational_hint_diagnostics(by_id("prefix"))
+                .is_empty()
+        );
+        assert!(
+            styles
+                .presentational_hint_diagnostics(by_id("zero"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_legacy_colors_are_diagnosed_without_declarations() {
+        let dom = StaticDocument::parse(
+            r#"<table id="table" bgcolor="transparent" bordercolor=""><tr><td>cell</td></tr></table>"#,
+        );
+        let table = node_by_id(&dom, dom.document(), "table").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::parse("", &[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        assert_eq!(
+            styles.presentational_hint_diagnostics(table),
+            [
+                PresentationalHintDiagnostic::InvalidLegacyColor {
+                    attribute: "bgcolor",
+                    value: "transparent".to_owned(),
+                },
+                PresentationalHintDiagnostic::InvalidLegacyColor {
+                    attribute: "bordercolor",
+                    value: String::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            styles.get(table).unwrap().background_color.to_srgb8(),
+            Some((0, 0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn logical_table_rules_follow_the_cells_writing_mode() {
+        let dom = StaticDocument::parse(
+            r#"<table rules="cols"><tr><td id="cell" style="writing-mode: vertical-rl">cell</td></tr></table>"#,
+        );
+        let cell = node_by_id(&dom, dom.document(), "cell").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let style = styles.get(cell).unwrap();
+
+        assert_eq!(style.border_top_style, BorderStyle::Solid);
+        assert_eq!(style.border_right_style, BorderStyle::None);
+        assert_eq!(style.border_bottom_style, BorderStyle::Solid);
+        assert_eq!(style.border_left_style, BorderStyle::None);
+    }
+
+    #[test]
+    fn group_rules_target_column_and_row_groups_on_logical_axes() {
+        let dom = StaticDocument::parse(
+            r#"
+                <table rules="groups">
+                  <colgroup id="columns"><col></colgroup>
+                  <tbody id="rows"><tr><td id="cell">cell</td></tr></tbody>
+                </table>
+            "#,
+        );
+        let columns = node_by_id(&dom, dom.document(), "columns").unwrap();
+        let rows = node_by_id(&dom, dom.document(), "rows").unwrap();
+        let cell = node_by_id(&dom, dom.document(), "cell").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let columns = styles.get(columns).unwrap();
+        let rows = styles.get(rows).unwrap();
+        let cell = styles.get(cell).unwrap();
+
+        assert_eq!(columns.border_left_style, BorderStyle::Solid);
+        assert_eq!(columns.border_right_style, BorderStyle::Solid);
+        assert_eq!(
+            columns.border_left_width,
+            BorderWidth::Length(Length::px(1.0))
+        );
+        assert_eq!(rows.border_top_style, BorderStyle::Solid);
+        assert_eq!(rows.border_bottom_style, BorderStyle::Solid);
+        assert_eq!(rows.border_top_width, BorderWidth::Length(Length::px(1.0)));
+        assert_eq!(cell.border_top_style, BorderStyle::None);
+        assert_eq!(cell.border_left_style, BorderStyle::None);
+    }
+
+    #[test]
+    fn author_css_overrides_ph3_hints_and_ua_rule_colors() {
+        let dom = StaticDocument::parse(
+            r#"<table id="table" bgcolor="red" border="4" frame="box" rules="all"><tr><td id="cell">cell</td></tr></table>"#,
+        );
+        let table = node_by_id(&dom, dom.document(), "table").unwrap();
+        let cell = node_by_id(&dom, dom.document(), "cell").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[r#"
+                    #table { background-color: white; border-top-style: dashed; }
+                    #cell { border-left-style: dotted; border-left-color: red; }
+                "#]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        assert_eq!(
+            styles.get(table).unwrap().background_color.to_srgb8(),
+            Some((255, 255, 255, 255))
+        );
+        assert_eq!(
+            styles.get(table).unwrap().border_top_style,
+            BorderStyle::Dashed
+        );
+        assert_eq!(
+            styles.get(cell).unwrap().border_left_style,
+            BorderStyle::Dotted
+        );
+        assert_eq!(
+            styles.get(cell).unwrap().border_left_color.to_srgb8(),
+            Some((255, 0, 0, 255))
+        );
+    }
+
+    #[test]
+    fn outer_table_rules_do_not_cross_a_nested_table_boundary() {
+        let dom = StaticDocument::parse(
+            r#"
+                <table rules="all" border="2"><tr><td>
+                  <table><tr><td id="inner">inner</td></tr></table>
+                </td></tr></table>
+            "#,
+        );
+        let inner = node_by_id(&dom, dom.document(), "inner").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let style = styles.get(inner).unwrap();
+
+        assert_eq!(style.border_top_style, BorderStyle::None);
+        assert_eq!(style.border_top_width, BorderWidth::Medium);
+    }
+
+    #[test]
+    fn ph3_attribute_mutation_restyles_table_and_cells_without_stale_rules() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            r#"<table id="table" bgcolor="red" frame="above" rules="cols"><tr><td id="cell">cell</td></tr></table>"#,
+        );
+        let table = node_by_id(&dom, dom.document(), "table").unwrap();
+        let cell = node_by_id(&dom, dom.document(), "cell").unwrap();
+        let style_set = StyleSet::cambium(&[]);
+        let device = Device::screen(800.0, 600.0);
+        let states = InteractionStates::default();
+        let mut session = IncrementalStyle::new();
+        session.update(&dom, &style_set, &device, &states, &[]);
+        assert_eq!(
+            session
+                .styles()
+                .get(table)
+                .unwrap()
+                .background_color
+                .to_srgb8(),
+            Some((255, 0, 0, 255))
+        );
+        assert_eq!(
+            session.styles().get(table).unwrap().border_top_style,
+            BorderStyle::Outset
+        );
+        assert_eq!(
+            session.styles().get(cell).unwrap().border_left_style,
+            BorderStyle::Solid
+        );
+        assert_eq!(
+            session.styles().get(cell).unwrap().border_top_style,
+            BorderStyle::None
+        );
+
+        for (attribute, value) in [("bgcolor", "blue"), ("frame", "rhs"), ("rules", "rows")] {
+            dom.set_attribute(
+                table,
+                layout_dom_api::QualName::new(
+                    None,
+                    Namespace::from(""),
+                    LocalName::from(attribute),
+                ),
+                value,
+            );
+        }
+        let mut mutations = Vec::new();
+        dom.drain_mutations(&mut mutations);
+        let stats = session.update(&dom, &style_set, &device, &states, &mutations);
+
+        assert!(!stats.full_document);
+        assert_eq!(
+            session
+                .styles()
+                .get(table)
+                .unwrap()
+                .background_color
+                .to_srgb8(),
+            Some((0, 0, 255, 255))
+        );
+        assert_eq!(
+            session.styles().get(table).unwrap().border_top_style,
+            BorderStyle::Hidden
+        );
+        assert_eq!(
+            session.styles().get(table).unwrap().border_right_style,
+            BorderStyle::Outset
+        );
+        assert_eq!(
+            session.styles().get(cell).unwrap().border_left_style,
+            BorderStyle::None
+        );
+        assert_eq!(
+            session.styles().get(cell).unwrap().border_top_style,
+            BorderStyle::None
         );
     }
 

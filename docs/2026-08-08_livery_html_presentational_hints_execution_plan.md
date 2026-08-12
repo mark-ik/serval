@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-08
 
-**Status:** PH0, the PH1 adapter, and PH2 were implemented locally through
-2026-08-12. Table and table-part dimensions use HTML's
+**Status:** PH0 through PH3 were implemented locally through 2026-08-12.
+Table and table-part dimensions use HTML's
 legacy dimension algorithms, `table[align]` maps to float or harvested logical
 margins, and applicable legacy alignment owners carry HTML's separate
 `align descendants` policy to Buckram's generic used-margin solver. The PH1
@@ -254,6 +254,55 @@ not select winners.
 **Receipt:** computed-style fixtures distinguish the hinted declaration from
 the K4g border result, and focused table border/color WPT has an exact
 before/after map.
+
+**Implemented 2026-08-12:** the Genet adapter parses `bgcolor` on tables, row
+groups, rows, and cells with a bounded harvest of Stylo's HTML legacy-color
+algorithm. `table[bordercolor]` contributes four typed border-color
+longhands. Failed colors remain diagnostics and do not become CSS parser
+inputs.
+
+`table[border]` now maps valid non-negative integer prefixes to all four
+border widths and uses the specified 1px fallback after a parse error. The
+nonzero-or-error condition independently controls the table's outset styles
+and corresponding cells' 1px inset styles. Every `frame` state maps its exact
+physical side pattern. Every recognized `rules` state collapses the table and
+projects the specified cell, row, row-group, and column-group widths and
+styles. `cols`, `rows`, and `groups` retain logical block/inline semantics
+through Livery's generated border logical groups, including vertical writing
+modes. Traversal stops at nested tables.
+
+The attribute-sensitive black rule colors and inherited table-part colors are
+UA-origin selectors in `CAMBIUM_UA_DEFAULTS`; geometry remains at the author
+presentational-hint origin. Ordinary author CSS therefore overrides both at
+the correct cascade coordinate. K4g still selects collapsed-border winners.
+The end-to-end receipt first asserts the typed table and cell candidates, then
+records one collapsed-metrics, assigned, and honored table with no skip.
+
+Focused tests are green: 22 HTML-hint unit tests, logical-border projection,
+the K4g receipt, all 112 `genet-livery` library tests, every integration and
+example target, and the full `livery` suite. Mutation changes `bgcolor`,
+`frame`, and `rules` in one batch without retaining the old side pattern.
+
+The rebuilt release WPT runner reports:
+
+| WPT | before | after |
+|---|---:|---:|
+| `table-bordercolor-001.html` | pass | pass |
+| `table-border-1.html` | fail | pass |
+| `table-border-2.html` | pass | pass |
+| `table-border-presentational-hints-ascii-case-insensitive.html` | pass | pass |
+| `table-attribute.html` | 0/58 | 41/58 |
+
+The broad harness delta is cumulative with the rebuilt PH1/PH2 binary, so it
+is not credited wholly to PH3. Its 17 remaining subtests name separate
+boundaries: seven `background` URL hints, one computed `border-color`
+shorthand serialization gap despite the longhands and rendering being
+correct, percentage/used table sizing, default `th` alignment, and harness
+DOM/script gaps. The four PH3-focused reftests are all green.
+
+The joint `livery` plus `genet-livery` clippy command remains blocked by 146
+pre-existing warnings in untouched Livery selector and color-space code.
+`genet-livery` alone is clean under `-D warnings`.
 
 ### PH4. Replaced and embedded elements
 
