@@ -151,7 +151,7 @@ where
         self.by_node.is_empty() && self.descendant_alignment.is_empty()
     }
 
-    /// Collect the bounded HTML table attributes admitted through PH2.
+    /// Collect the bounded HTML table attributes admitted through PH3.
     ///
     /// `cellpadding` is expanded onto each cell belonging to its table. The
     /// traversal stops at nested tables so a nested table's cells never inherit
@@ -686,11 +686,7 @@ fn collect_table_rule_hints<D>(
     }
 }
 
-fn direct_table_children<D>(
-    dom: &D,
-    table: D::NodeId,
-    local_names: &[&str],
-) -> Vec<D::NodeId>
+fn direct_table_children<D>(dom: &D, table: D::NodeId, local_names: &[&str]) -> Vec<D::NodeId>
 where
     D: LayoutDom,
     D::NodeId: Copy,

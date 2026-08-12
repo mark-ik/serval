@@ -150,8 +150,9 @@ Validation receipts:
   Cambium instead exposes `caret_field_children`, the non-editing projection
   beneath the editable field; Turnstone consumes it without acquiring a second
   text authority.
-- Compile-time measurement remains a follow-on receipt. The architectural
-  proof is functional; no compile-time improvement is claimed yet.
+- Compile-time measurement was run against the turnstone settings pane and
+  found no improvement; see that section. No compile-time claim is made for
+  the boundary.
 
 ## Memo boundary (landed 2026-08-12)
 
@@ -192,17 +193,37 @@ signature (value props in, typed events out, interaction local) built on
 `component` internally, one control at a time. No wrapper vocabulary is ever
 public; the split is decided once, correctly, by the control author.
 
-## Turnstone settings pane: adoption staged, measurement pending
+## Turnstone settings pane: adopted, and the compile-time claim retracted
 
-The measured adopter is turnstone's `settings_pane.rs`: `SettingsState`
-currently threads four HashMaps of draft state through the pane with boxed
-lenses, initialized inside lens accessors; `setting_row` replaces the lane
-with `on_apply` lowering into the existing `apply_value` provider path.
-Blocked 2026-08-12: turnstone's build is red on concurrent trail-memory and
-eidetic-family work in flight across turnstone and mere, so neither the
-baseline nor the post-adoption timing can be taken yet. Procedure when green:
-touch `settings_pane.rs`, time two warm rebuilds, adopt, repeat, record both
-numbers here.
+`settings_pane.rs` now renders through `cambium::setting_row`. The four
+draft HashMaps (`text_inputs`, `number_inputs`, `toggles`, `choices`) and the
+four boxed lenses that initialized them inside accessor closures are gone,
+along with the per-control apply lane (`apply_text`/`apply_number`/
+`apply_toggle`/`apply_choice`) and the draft-derivation helpers, which now
+live once in Cambium. `SettingsState` drops from 9 fields to 5; the file
+loses 241 lines and gains 25. The pane keeps `apply_value`, the provider,
+and the live-settings publish path: `on_apply` forwards the applied
+`SettingValue` under the id the row was given.
+
+DOM compatibility receipt: all 9 turnstone settings tests pass unchanged,
+including `pane_renders_controls_from_setting_control_not_setting_ids`,
+which asserts 5 rows, 5 labels, 5 applies, 1 slider track, 1 toggle, and 7
+radios. The component-shaped row reproduces the hand-rolled row's structure
+exactly.
+
+**Compile-time measurement: no improvement, claim retracted.** Protocol:
+touch `settings_pane.rs`, time a warm `cargo build`, three runs each side.
+Baseline 71.8 / 73.2 / 72.6 (mean 72.5s); adopted 69.2 / 73.8 / 72.6 (mean
+71.9s). The 0.6s difference is inside the run-to-run spread and is not a
+result. The instrument is wrong for the question: Rust rebuilds per crate,
+so touching one file recompiles all of turnstone's lib, and one pane's
+generic instantiations are swamped by the rest. Measuring the type-plumbing
+cost honestly would need a finer instrument (monomorphization counts via
+`cargo llvm-lines`, or `-Zself-profile` on a crate containing only the
+pane). Until someone runs that, the boundary's case rests on state
+ownership and deleted plumbing, not on build times. The brief's earlier
+"compile-time delta measured before and after" validation item is retired
+as measured-and-negative rather than pending.
 
 ## Next consumers
 
