@@ -72,6 +72,7 @@ pub(super) fn align_and_position_item(
     node: NodeId,
     order: u32,
     grid_area: Rect<f32>,
+    static_position_area: Rect<f32>,
     container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
     baseline_shim: f32,
     direction: Direction,
@@ -259,7 +260,7 @@ pub(super) fn align_and_position_item(
         Direction::Ltr,
     );
     let (static_x, _) = align_item_within_area(
-        Line { start: grid_area.left, end: grid_area.right },
+        Line { start: static_position_area.left, end: static_position_area.right },
         justify_self.unwrap_or(alignment_styles.horizontal),
         width,
         position,
@@ -269,7 +270,7 @@ pub(super) fn align_and_position_item(
         direction,
     );
     let (static_y, _) = align_item_within_area(
-        Line { start: grid_area.top, end: grid_area.bottom },
+        Line { start: static_position_area.top, end: static_position_area.bottom },
         align_self.unwrap_or(alignment_styles.vertical),
         height,
         position,

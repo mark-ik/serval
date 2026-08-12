@@ -600,6 +600,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             item.node,
             index as u32,
             grid_area,
+            grid_area,
             container_alignment_styles,
             item.baseline_shim,
             direction,
@@ -613,7 +614,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         }
     }
 
-    // Position hidden and absolutely positioned children
+    // Position hidden and absolutely positioned children. CSS Positioned
+    // Layout can use the content box, rather than this child's grid area, for
+    // its static-position rectangle.
+    let content_box = Rect {
+        top: content_box_inset.top,
+        right: container_border_box.width - content_box_inset.right,
+        bottom: container_border_box.height - content_box_inset.bottom,
+        left: content_box_inset.left,
+    };
     let mut order = items.len() as u32;
     #[cfg(feature = "detailed_layout_info")]
     let mut positioned_items = Vec::new();
@@ -694,12 +703,22 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             };
             #[cfg(feature = "detailed_layout_info")]
             positioned_items.push(DetailedGridPositionedItemInfo { node: child, grid_area });
+            let static_position_area = tree.grid_child_static_position_area(node, child, grid_area, content_box);
             drop(child_style);
 
             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
             let (content_size_contribution, _, _) =
-                align_and_position_item(tree, child, order, grid_area, container_alignment_styles, 0.0, direction);
+                align_and_position_item(
+                    tree,
+                    child,
+                    order,
+                    grid_area,
+                    static_position_area,
+                    container_alignment_styles,
+                    0.0,
+                    direction,
+                );
             #[cfg(feature = "content_size")]
             {
                 item_content_size_contribution = item_content_size_contribution.f32_max(content_size_contribution);

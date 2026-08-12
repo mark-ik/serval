@@ -1,0 +1,117 @@
+diff --git a/src/compute/grid/alignment.rs b/src/compute/grid/alignment.rs
+index fd6ff0d7c4e..a569c096491 100644
+--- a/src/compute/grid/alignment.rs
++++ b/src/compute/grid/alignment.rs
+@@ -72,6 +72,7 @@ pub(super) fn align_and_position_item(
+     node: NodeId,
+     order: u32,
+     grid_area: Rect<f32>,
++    static_position_area: Rect<f32>,
+     container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
+     baseline_shim: f32,
+     direction: Direction,
+@@ -259,7 +260,7 @@ pub(super) fn align_and_position_item(
+         Direction::Ltr,
+     );
+     let (static_x, _) = align_item_within_area(
+-        Line { start: grid_area.left, end: grid_area.right },
++        Line { start: static_position_area.left, end: static_position_area.right },
+         justify_self.unwrap_or(alignment_styles.horizontal),
+         width,
+         position,
+@@ -269,7 +270,7 @@ pub(super) fn align_and_position_item(
+         direction,
+     );
+     let (static_y, _) = align_item_within_area(
+-        Line { start: grid_area.top, end: grid_area.bottom },
++        Line { start: static_position_area.top, end: static_position_area.bottom },
+         align_self.unwrap_or(alignment_styles.vertical),
+         height,
+         position,
+diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
+index 7ef183f03c9..20254864914 100644
+--- a/src/compute/grid/mod.rs
++++ b/src/compute/grid/mod.rs
+@@ -600,6 +600,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
+             item.node,
+             index as u32,
+             grid_area,
++            grid_area,
+             container_alignment_styles,
+             item.baseline_shim,
+             direction,
+@@ -616,4 +616,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
+-    // Position hidden and absolutely positioned children
++    // Position hidden and absolutely positioned children. CSS Positioned
++    // Layout can use the content box, rather than this child's grid area, for
++    // its static-position rectangle.
++    let content_box = Rect {
++        top: content_box_inset.top,
++        right: container_border_box.width - content_box_inset.right,
++        bottom: container_border_box.height - content_box_inset.bottom,
++        left: content_box_inset.left,
++    };
+     let mut order = items.len() as u32;
+     #[cfg(feature = "detailed_layout_info")]
+     let mut positioned_items = Vec::new();
+@@ -694,4 +702,5 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
+             };
+             #[cfg(feature = "detailed_layout_info")]
+             positioned_items.push(DetailedGridPositionedItemInfo { node: child, grid_area });
++            let static_position_area = tree.grid_child_static_position_area(node, child, grid_area, content_box);
+             drop(child_style);
+@@ -699,7 +708,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
+             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
+             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
+             let (content_size_contribution, _, _) =
+-                align_and_position_item(tree, child, order, grid_area, container_alignment_styles, 0.0, direction);
++                align_and_position_item(
++                    tree,
++                    child,
++                    order,
++                    grid_area,
++                    static_position_area,
++                    container_alignment_styles,
++                    0.0,
++                    direction,
++                );
+             #[cfg(feature = "content_size")]
+             {
+                 item_content_size_contribution = item_content_size_contribution.f32_max(content_size_contribution);
+diff --git a/src/tree/traits.rs b/src/tree/traits.rs
+index b91f9ca2bbb..9de8b28f4b0 100644
+--- a/src/tree/traits.rs
++++ b/src/tree/traits.rs
+@@ -129,7 +129,7 @@
+ use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode};
+ #[cfg(feature = "detailed_layout_info")]
+ use crate::debug::debug_log;
+-use crate::geometry::{AbsoluteAxis, Line, Size};
++use crate::geometry::{AbsoluteAxis, Line, Rect, Size};
+ use crate::style::{AvailableSpace, CoreStyle};
+ #[cfg(feature = "flexbox")]
+ use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
+@@ -273,5 +273,21 @@ pub trait LayoutGridContainer: LayoutPartialTree {
+     /// Get the child's styles
+     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_>;
+-
++    /// Select the alignment container used to calculate an absolutely
++    /// positioned grid child's static location.
++    ///
++    /// The default keeps Taffy's established grid-area behavior. Embedders
++    /// that model the CSS Positioned Layout containing-block chain can select
++    /// the content box when this grid is only the static-position parent.
++    #[inline(always)]
++    fn grid_child_static_position_area(
++        &self,
++        _container_node_id: NodeId,
++        _child_node_id: NodeId,
++        grid_area: Rect<f32>,
++        _content_box: Rect<f32>,
++    ) -> Rect<f32> {
++        grid_area
++    }
++
+     /// Set the node's detailed grid information
+     ///
+     /// Implementing this method is optional. Doing so allows you to access details about the the grid such as

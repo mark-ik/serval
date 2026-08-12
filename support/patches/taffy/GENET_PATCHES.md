@@ -160,3 +160,25 @@ This adds `positioned_items`, keyed by Taffy's child `NodeId`, with the exact
 track selection, writing direction, borders, scrollbars, and track alignment.
 It changes no layout. Buckram reads the rectangle as formatter evidence and
 keeps CSS containing-block selection and used geometry outside Taffy.
+
+### 0006 — positioned grid static-position area (`0006-grid-static-position-area.patch`)
+
+**Files:** `src/tree/traits.rs`, `src/compute/grid/mod.rs`,
+`src/compute/grid/alignment.rs`
+**Upstream status:** additive and Genet-specific so far. The callback belongs
+with a future upstream discussion of whether a grid formatter should expose a
+static-position rectangle separately from its positioning area.
+
+CSS Positioned Layout makes two different choices for a direct absolutely
+positioned grid child: the grid's content edges define the static-position
+rectangle by default, while its specified grid area does so only if this grid
+also established the child's actual containing block. Taffy previously used
+the grid area for both jobs, which cannot express that rule for an embedding
+engine with its own containing-block graph.
+
+This adds a backwards-compatible `LayoutGridContainer` callback. It receives
+the direct child, the finalized grid area, and the grid content box, then
+returns the alignment area used only to calculate `Layout::static_location`.
+Its default keeps prior Taffy behavior. Buckram selects the content box unless
+K5a selected the same grid as the actual containing block; detailed grid-area
+diagnostics and ordinary absolute layout remain unchanged.

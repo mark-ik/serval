@@ -6953,6 +6953,7 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
     container_node: AlgorithmNodeId,
 ) where
     Id: Copy + Eq + Hash,
+    Source: AlgorithmSourceBox,
 {
     if !matches!(
         boxes[container].display.inside,
@@ -6967,6 +6968,35 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
             BuckramBlockPosition::Absolute | BuckramBlockPosition::Fixed
         ) {
             tree.enable_flex_grid_static_position_provider(child);
+            if boxes[container].display.inside == Some(DisplayInside::Grid)
+                && tree.source(child).single_box().is_some_and(|box_id| {
+                    boxes[box_id].containing_block == ContainingBlock::Box(container)
+                })
+            {
+                tree.use_grid_area_for_static_position(child);
+            }
+        }
+    }
+}
+
+/// The static-position provider only needs a generated box identity for the
+/// direct child it is admitting. Inline grouping can carry several source
+/// boxes, but no such group is a single positioned grid child.
+trait AlgorithmSourceBox {
+    fn single_box(&self) -> Option<BoxId>;
+}
+
+impl AlgorithmSourceBox for Option<BoxId> {
+    fn single_box(&self) -> Option<BoxId> {
+        *self
+    }
+}
+
+impl AlgorithmSourceBox for Vec<BoxId> {
+    fn single_box(&self) -> Option<BoxId> {
+        match self.as_slice() {
+            [box_id] => Some(*box_id),
+            _ => None,
         }
     }
 }

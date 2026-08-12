@@ -143,6 +143,7 @@ struct AlgorithmNode<S, Context, Source> {
     unrounded_layout: Layout,
     final_layout: Layout,
     grid_info: Option<DetailedGridInfo>,
+    grid_static_position_uses_grid_area: bool,
     baselines: Baselines,
 }
 
@@ -250,6 +251,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             grid_info: None,
+            grid_static_position_uses_grid_area: false,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -341,6 +343,29 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         );
         sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[id.index()].style).position =
             taffy::Position::Absolute;
+    }
+
+    /// Select this direct grid child's finalized grid area as its static
+    /// position rectangle. Callers make this selection only when the K5a
+    /// containing-block graph chose the same grid; otherwise CSS Positioned
+    /// Layout uses the grid's content box.
+    pub fn use_grid_area_for_static_position(&mut self, id: AlgorithmNodeId) {
+        let parent = self.nodes[id.index()]
+            .parent
+            .expect("a grid static-position area requires an attached direct child");
+        assert_eq!(
+            self.nodes[parent.index()].kind,
+            AlgorithmKind::Grid,
+            "only a direct grid child can use a grid-area static-position rectangle"
+        );
+        assert!(
+            matches!(
+                self.nodes[id.index()].block_style.position,
+                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+            ),
+            "the grid-area static-position rectangle requires an absolute or fixed child"
+        );
+        self.nodes[id.index()].grid_static_position_uses_grid_area = true;
     }
 
     /// Supply the resolved CSS inline size to a detached absolute/fixed
@@ -2481,6 +2506,19 @@ where
 
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
         self.style(child_node_id)
+    }
+
+    fn grid_child_static_position_area(
+        &self,
+        _container_node_id: NodeId,
+        child_node_id: NodeId,
+        grid_area: taffy::geometry::Rect<f32>,
+        content_box: taffy::geometry::Rect<f32>,
+    ) -> taffy::geometry::Rect<f32> {
+        self.tree.nodes[AlgorithmNodeId::from_taffy(child_node_id).index()]
+            .grid_static_position_uses_grid_area
+            .then_some(grid_area)
+            .unwrap_or(content_box)
     }
 
     fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
