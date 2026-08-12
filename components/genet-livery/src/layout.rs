@@ -6441,7 +6441,7 @@ mod tests {
                  #behind, #front { position: absolute; left: 0; top: 0; width: 80px; height: 80px; } \
                  #behind { z-index: -1; } #normal { width: 80px; height: 80px; } \
                  #front { z-index: 1; } \
-                 #clip { position: relative; width: 50px; height: 50px; overflow-x: hidden; overflow-y: hidden; } \
+                 #clip { position: relative; width: 50px; height: 50px; overflow: hidden; } \
                  #overlay { position: absolute; left: 0; top: 0; width: 100px; height: 100px; z-index: 1; }"]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),

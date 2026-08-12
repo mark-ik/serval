@@ -1088,7 +1088,7 @@ mod positioned_paint_tests {
         let list = render(
             "<div id=clip><div id=overlay></div></div>",
             "html, body, div { margin: 0; padding: 0; } \
-             #clip { position: relative; width: 50px; height: 50px; overflow-x: hidden; overflow-y: hidden; } \
+             #clip { position: relative; width: 50px; height: 50px; overflow: hidden; } \
              #overlay { position: absolute; left: 0; top: 0; width: 100px; height: 100px; \
                         z-index: 1; background: #f00; }",
         );

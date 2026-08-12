@@ -37,8 +37,8 @@ The live receipts currently cover:
   negative, normal, and positive paint phases share the positioned fragment
   plane in that order.
 - `positioned_stacking_item_keeps_its_overflow_clip` verifies a positive
-  positioned descendant retains the `overflow-x`/`overflow-y` clip that would
-  otherwise be lost when its stacking context is flattened.
+  positioned descendant retains the `overflow` clip that would otherwise be
+  lost when its stacking context is flattened.
 - `positioned_hit_test_respects_stacking_level_and_ancestor_clip` verifies
   the retained hit walk picks the same positive stacking item and excludes it
   outside its ancestor overflow clip.
@@ -50,7 +50,8 @@ Their table-size participation and internal structural fragments need an
 explicit out-of-flow route before they can use the generic K5d geometry
 solver. Full CSS stacking-context ordering and clipping remain a separate K5e
 matrix; the current receipts cover only numeric positioned levels and the
-supported overflow longhands. These are open work, not fallback-free behavior.
+supported `overflow` shorthand and longhands. These are open work, not
+fallback-free behavior.
 
 ## Stop rules
 

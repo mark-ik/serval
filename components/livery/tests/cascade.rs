@@ -4,7 +4,7 @@ use livery::cascade::{
 };
 use livery::values::{
     Color, FontFamily, FontSize, FontStyle, FontWeight, Length, LengthPercentage, LineHeight,
-    Margin, Size, TransitionProperty, VerticalAlign,
+    Margin, Overflow, Size, TransitionProperty, VerticalAlign,
 };
 
 fn matched(
@@ -117,6 +117,35 @@ fn background_color_shorthand_accepts_the_bounded_color_form() {
         panic!("background-color did not parse as a color");
     };
     assert_eq!(color.to_srgb8(), Some((0, 0, 0, 255)));
+}
+
+#[test]
+fn overflow_shorthand_expands_one_or_two_axis_values() {
+    let values = |css: &str| {
+        let block = parse_declaration_block(css);
+        assert!(block.errors.is_empty(), "{css}: {:?}", block.errors);
+        block
+            .declarations
+            .iter()
+            .map(|declaration| {
+                let livery::cascade::DeclaredValue::Value(PropertyValue::Overflow(value)) =
+                    declaration.value
+                else {
+                    panic!("{css}: expected an overflow declaration");
+                };
+                (declaration.property.metadata().name, value)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        values("overflow: hidden"),
+        vec![("overflow-x", Overflow::Hidden), ("overflow-y", Overflow::Hidden)]
+    );
+    assert_eq!(
+        values("overflow: clip auto"),
+        vec![("overflow-x", Overflow::Clip), ("overflow-y", Overflow::Auto)]
+    );
 }
 
 #[test]
