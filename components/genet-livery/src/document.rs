@@ -606,8 +606,22 @@ where
             &mut self.text,
             &self.image_sources,
         )?;
-        if let Some(previous) = self.identity_source.as_ref() {
+        let previous = self.identity_source.take();
+        if let Some(previous) = previous.as_ref() {
             fragments.reconcile_identifiers(&previous.fragments);
+        }
+        let replacement_root = self.last_layout_damage.as_ref().and_then(|damage| {
+            (!damage.full_document
+                && damage.kind == LayoutDamageKind::Dom
+                && damage.roots.len() == 1)
+                .then_some(damage.roots[0])
+        });
+        if let (Some(mut previous), Some(root)) = (previous, replacement_root)
+            && previous
+                .fragments
+                .replace_reconciled_formatting_subtree_from(&fragments, root)
+        {
+            fragments = previous.fragments;
         }
         let (content_width, content_height) = self.document_content_extent(&styles, &fragments);
         self.layout = Some(LayoutState {
@@ -617,7 +631,6 @@ where
             content_width,
             content_height,
         });
-        self.identity_source = None;
         self.layout_dirty = false;
         self.layout_generation = self.layout_generation.saturating_add(1);
         self.clamp_scroll();
@@ -1871,6 +1884,70 @@ mod tests {
             }),
             "K5h records the flex root whose child list changed",
         );
+    }
+
+    #[test]
+    fn retained_formatting_root_splice_refreshes_descendants_and_keeps_outside_identity() {
+        let initial = "<html><body><div id=flex><div id=child>child</div></div><div id=outside>outside</div></body></html>";
+        let final_document = "<html><body><div id=flex style=\"width: 180px\"><div id=child>child</div></div><div id=outside>outside</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #flex { display: flex; width: 100px; height: 40px; background: red; } \
+                 #child { width: 40px; height: 20px; background: blue; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 120.0));
+        retained.frame(240, 120).expect("initial retained frame");
+        let flex = by_id(retained.dom(), "flex");
+        let child = by_id(retained.dom(), "child");
+        let outside = by_id(retained.dom(), "outside");
+        let flex_before = generated_ids(&retained, flex);
+        let child_before = generated_ids(&retained, child);
+        let outside_before = generated_ids(&retained, outside);
+        let layout_generation = retained.layout_generation();
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(by_id(dom, "flex"), attr("style"), "width: 180px");
+        });
+        assert_eq!(
+            retained.last_layout_damage(),
+            Some(&LayoutDamage {
+                kind: LayoutDamageKind::Dom,
+                roots: vec![flex],
+                full_document: false,
+            })
+        );
+        let retained_paint = retained.frame(240, 120).expect("spliced retained frame");
+
+        assert_eq!(retained.layout_generation(), layout_generation + 1);
+        assert_eq!(generated_ids(&retained, flex), flex_before);
+        assert_ne!(
+            generated_ids(&retained, child),
+            child_before,
+            "the selected formatting root receives fresh descendant fragments"
+        );
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+        assert!(
+            retained.identity_source.is_none() && !retained.layout_dirty,
+            "the selected root was published into the retained layout"
+        );
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 120.0));
+        let fresh_paint = fresh.frame(240, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "the spliced root must paint like a fresh final document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
     }
 
     #[test]

@@ -4,8 +4,9 @@
 
 **Status:** In progress. K5h now has an explicit damage record,
 final-document equivalence harness, a narrow paint-only retained path, and a
-conservative Buckram fragment-subtree splice. It has not replaced a real
-formatting-context subtree through Livery yet.
+conservative Buckram fragment-subtree splice. Livery publishes one real
+non-structural formatting-root replacement through that splice, but still
+computes fresh full-document geometry before that bounded publication.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -71,7 +72,17 @@ and recomputes aggregate overflow from each fragment's own extent. It refuses
 an incompatible root box, a partially selected fragmented box, and either
 incoming or outgoing static-position dependencies that cross the selected
 root. This is not a formatter route yet, and it does not publish Livery's
-separate table-paint or node side data.
+separate table-paint or node side data on its own.
+
+Livery now admits exactly one DOM damage root when the fresh layout reconciles
+to the identical generated box tree. It preserves that root's fragment ID,
+replaces its descendants through `FragmentTree::replace_subtree`, retains
+unrelated fragment identities, and installs fresh text, table-paint, and table
+shadow planes together. The receipt changes a flex root's width and proves the
+new child fragment identity, preserved outside identity, fresh-final paint,
+and document extent. This is a publication proof only: formatter work still
+recomputes the complete document, while structural DOM or display changes and
+cross-root fragment dependencies fall back to the full replacement path.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
@@ -84,10 +95,10 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Thread Buckram's selected-root splice through Livery's formatter and
-   publish its concurrent by-node and table-paint side data with the fragment,
-   static-position, and overflow updates.
-2. Recompute a selected root against its retained containing inputs.
+1. Recompute a selected root against its retained containing inputs, rather
+   than formatting the complete document before its bounded publication.
+2. Generalize the publication route from one unchanged-box-tree DOM root to
+   compatible structural changes, including new and retired box ownership.
 3. Propagate changed used size or overflow to the first dependent ancestor.
    Escalate to a wider root only when that dependency actually changes.
 4. Compare each incremental result with the fresh-final-document harness.

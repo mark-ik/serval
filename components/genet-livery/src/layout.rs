@@ -184,6 +184,64 @@ where
             .remap_box_ids(|box_id| identities.box_id(box_id));
     }
 
+    /// Publish one freshly formatted, reconciled formatting root into this
+    /// retained layout. The fresh tree must retain the exact same generated
+    /// boxes: structural DOM or display changes need a wider publication path
+    /// because this layout still owns the old box tree.
+    ///
+    /// The fragment splice preserves the selected root identity but gives its
+    /// descendants fresh identities. Fresh text and table planes accompany it
+    /// as one publication unit, so paint cannot read a stale side model.
+    pub(crate) fn replace_reconciled_formatting_subtree_from(
+        &mut self,
+        fresh: &Self,
+        node: Id,
+    ) -> bool {
+        if !self
+            .buckram
+            .boxes()
+            .iter()
+            .eq(fresh.buckram.boxes().iter())
+        {
+            return false;
+        }
+        let Some(root_box) = self
+            .buckram
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .find(|box_id| self.buckram.boxes()[*box_id].formatting_context.is_some())
+        else {
+            return false;
+        };
+        let root = match self.buckram.fragments().fragment_ids_for_box(root_box) {
+            [root] => *root,
+            _ => return false,
+        };
+        let fresh_root = match fresh
+            .buckram
+            .fragments()
+            .fragment_ids_for_box(root_box)
+        {
+            [root] => *root,
+            _ => return false,
+        };
+        if self
+            .buckram
+            .fragments_mut()
+            .replace_subtree(root, fresh.buckram.fragments(), fresh_root)
+            .is_none()
+        {
+            return false;
+        }
+        self.text_frame = fresh.text_frame.clone();
+        self.block_algorithms = fresh.block_algorithms;
+        self.table_paint = fresh.table_paint.clone();
+        self.table_shadow = fresh.table_shadow.clone();
+        true
+    }
+
     /// Apply retained scroll-dependent sticky constraints to this otherwise
     /// normal-flow layout snapshot. Callers clone the static layout first, so
     /// scroll changes never accumulate into the next frame's base geometry.
