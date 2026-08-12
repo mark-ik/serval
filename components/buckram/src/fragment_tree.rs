@@ -37,13 +37,18 @@ pub enum StaticPositionSource {
 ///
 /// This is deliberately separate from a final fragment: an absolute or fixed
 /// box can use a containing block other than the formatting context that
-/// supplied its static position.
+/// supplied its static position. A grid source can additionally supply the
+/// selected grid area that replaces the ordinary padding rectangle only when
+/// that grid is the K5a-selected containing block.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StaticPosition {
     pub box_id: BoxId,
     pub source: StaticPositionSource,
     pub containing_block: ContainingBlock,
     pub logical_rect: LogicalRect,
+    /// An optional grid-area replacement for the selected containing block,
+    /// expressed in the source fragment's logical coordinates.
+    pub containing_block_area: Option<LogicalRect>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1306,6 +1311,7 @@ mod tests {
             source: StaticPositionSource::Fragment(old_child),
             containing_block: ContainingBlock::Box(root_box),
             logical_rect: LogicalRect::default(),
+            containing_block_area: None,
         });
         assert_eq!(tree.get(outer).map(|fragment| fragment.overflow.block_size), Some(200.0));
 
@@ -1346,6 +1352,7 @@ mod tests {
                 inline_size: 0.0,
                 block_size: 0.0,
             },
+            containing_block_area: None,
         });
 
         assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), Some(root));
@@ -1384,6 +1391,7 @@ mod tests {
                     inline_size: 0.0,
                     block_size: 0.0,
                 },
+                containing_block_area: None,
             })
         );
     }
@@ -1435,6 +1443,7 @@ mod tests {
             source: StaticPositionSource::Fragment(external),
             containing_block: ContainingBlock::Box(root_box),
             logical_rect: LogicalRect::default(),
+            containing_block_area: None,
         });
 
         assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), None);
@@ -1478,6 +1487,7 @@ mod tests {
             source: StaticPositionSource::Fragment(replacement_root),
             containing_block: ContainingBlock::Initial,
             logical_rect: LogicalRect::default(),
+            containing_block_area: None,
         });
 
         assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), None);
@@ -1624,6 +1634,7 @@ mod tests {
                 inline_size: 0.0,
                 block_size: 0.0,
             },
+            containing_block_area: None,
         });
 
         assert_eq!(
@@ -1638,6 +1649,7 @@ mod tests {
                     inline_size: 0.0,
                     block_size: 0.0,
                 },
+                containing_block_area: None,
             })
         );
     }

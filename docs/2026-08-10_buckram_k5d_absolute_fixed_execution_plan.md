@@ -75,9 +75,13 @@ auto insets therefore use the padding-box size, while the padding itself stays
 inside the positioning rectangle. `positioned_child_uses_the_positioned_ancestor_padding_box`
 pins asymmetric border edges and a 100% absolute child. This is the ordinary
 containing-block rule only. An inline establishing ancestor still needs its
-multi-fragment content-edge rectangle, and a grid establishing the selected
-containing block still needs to replace the padding rectangle with the
-specified grid area before K5d receives it.
+multi-fragment content-edge rectangle. A direct positioned grid child now
+retains the formatter's finalized grid area in its K5b record; when the same
+grid fragment is the K5a-selected containing block, K5d replaces the ordinary
+padding rectangle with that area before resolving its insets and percentages.
+`grid_positioned_area_keeps_the_final_explicit_track_rectangle` proves the
+carrier independently of final child placement. The remaining grid K5b work is
+the static-rectangle rule, not this containing-block substitution.
 
 Taffy still excludes the out-of-flow box, and remains the measured fallback
 for unadmitted descendants, the non-replaced block axis, flex/grid roots, and

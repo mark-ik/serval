@@ -615,6 +615,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Position hidden and absolutely positioned children
     let mut order = items.len() as u32;
+    #[cfg(feature = "detailed_layout_info")]
+    let mut positioned_items = Vec::new();
     (0..tree.child_count(node)).for_each(|index| {
         let child = tree.get_child_id(node, index);
         let child_style = tree.get_grid_child_style(child);
@@ -690,6 +692,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     }
                 }),
             };
+            #[cfg(feature = "detailed_layout_info")]
+            positioned_items.push(DetailedGridPositionedItemInfo { node: child, grid_area });
             drop(child_style);
 
             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
@@ -713,6 +717,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
             columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
             items: items.iter().map(DetailedGridItemsInfo::from_grid_item).collect(),
+            positioned_items,
         },
     );
 
@@ -809,6 +814,19 @@ pub struct DetailedGridInfo {
     pub columns: DetailedGridTracksInfo,
     /// <https://drafts.csswg.org/css-grid-1/#grid-items>
     pub items: Vec<DetailedGridItemsInfo>,
+    /// The finalized containing rectangles for absolutely positioned grid
+    /// children, in the grid container's border-box coordinate space.
+    pub positioned_items: Vec<DetailedGridPositionedItemInfo>,
+}
+
+/// One absolutely positioned child's grid area, after grid-line resolution.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg(feature = "detailed_layout_info")]
+pub struct DetailedGridPositionedItemInfo {
+    /// The child whose absolute-positioning containing block is this area.
+    pub node: NodeId,
+    /// The grid area selected before absolute-positioned self-alignment.
+    pub grid_area: Rect<f32>,
 }
 
 /// Information from the computation of grids tracks

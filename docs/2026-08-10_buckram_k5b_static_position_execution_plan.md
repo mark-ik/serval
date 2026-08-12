@@ -4,7 +4,9 @@
 
 **Status:** Partially implemented. K5a supplies the containing-block graph;
 K5b records the source fragment and static rectangle for block, inline, and
-table paths. Direct flex/grid static rectangles remain a re-opened K5b seam.
+table paths. A direct grid child now also retains the formatter's finalized
+grid area when it can replace the selected containing block. Direct flex
+static rectangles and the remaining grid static-rectangle rules remain open.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5b. **Prerequisite:** [K5a containing-block graph](2026-08-10_buckram_k5a_containing_blocks_execution_plan.md).
@@ -86,14 +88,21 @@ actual containing block, in which case the placement area applies. The old
 rewrite could not see the K5a containing-block relationship and substituted
 one scalar coordinate for those distinct rectangles.
 
-The next K5b slice must pass the selected K5a containing block into flex/grid
-static-rectangle construction, retain both logical edges, and carry the
-applicable alignment inputs into K5d. It may use finalized grid track offsets
-only for the grid-containing-block case. Until then, the formatter's direct
-flex/grid result remains the compatibility boundary and is not a K5b closure
-receipt. The retained inline formatter emits an inline-origin positioned child
-against its owning line fragment, and K4h table structural fragments emit
-wrapper and part records from their own logical rectangles.
+The direct-grid carrier now preserves the exact rectangle Taffy constructed
+after grid-line resolution, implicit tracks, direction, borders, scrollbars,
+and track alignment. It is stored as `StaticPosition::containing_block_area`
+in the grid source fragment's logical coordinates. K5d replaces its ordinary
+padding rectangle with that area only when the source grid fragment is also
+the K5a-selected containing block. It does not reuse Taffy's final child
+location, recompute placement in Buckram, or affect a grid that was merely the
+formatting parent.
+
+The next K5b slice must still pass the selected K5a containing block into the
+flex static-rectangle construction, retain both logical edges, and carry the
+applicable alignment inputs into K5d. The retained inline formatter emits an
+inline-origin positioned child against its owning line fragment, and K4h table
+structural fragments emit wrapper and part records from their own logical
+rectangles.
 
 K5b does not calculate final absolute or fixed geometry. K5d now consumes the
 wrapper, caption, row-group, row, and cell records through the shared

@@ -7,11 +7,11 @@
 use std::{marker::PhantomData, slice};
 
 use taffy::{
-    BlockContext, Cache, CacheTree, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, RoundTree, RunMode,
-    SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
-    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
-    compute_leaf_layout, compute_root_layout, round_layout,
+    BlockContext, Cache, CacheTree, DetailedGridInfo, Layout, LayoutBlockContainer,
+    LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree,
+    NodeId, RoundTree, RunMode, SizingMode, Style, TraversePartialTree, TraverseTree,
+    compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
+    compute_hidden_layout, compute_leaf_layout, compute_root_layout, round_layout,
 };
 
 use crate::block::FloatContextState;
@@ -19,8 +19,8 @@ use crate::{
     Baselines, BlockBoxSizing, BlockContainingBlock, BlockDeferral, BlockFormattingContext,
     BlockMarginState, BlockSizeValue, BlockStyle, ClearSide, CollapsedMargin, FloatLineConstraints,
     FloatSide, FlowAxes, FlowLength, FlowLengthAuto, IntrinsicSizeKind, IntrinsicSizes,
-    LogicalRect, LogicalSides, LogicalSize, PhysicalSides, PhysicalSize, solve_float_inline_size,
-    solve_in_flow_inline_size, solve_shrink_to_fit_inline_size,
+    LogicalRect, LogicalSides, LogicalSize, PhysicalRect, PhysicalSides, PhysicalSize,
+    solve_float_inline_size, solve_in_flow_inline_size, solve_shrink_to_fit_inline_size,
 };
 
 /// Formatting role selected by Buckram before entering a backend algorithm.
@@ -142,6 +142,7 @@ struct AlgorithmNode<S, Context, Source> {
     cache: Cache,
     unrounded_layout: Layout,
     final_layout: Layout,
+    grid_info: Option<DetailedGridInfo>,
     baselines: Baselines,
 }
 
@@ -248,6 +249,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
+            grid_info: None,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -572,6 +574,30 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             width: layout.size.width,
             height: layout.size.height,
         }
+    }
+
+    /// The grid area Taffy finalized for this direct absolutely positioned
+    /// child before it applied the child's insets and self-alignment. The
+    /// rectangle is relative to the grid container's border box and stays
+    /// separate from the child's static-position coordinate.
+    pub fn grid_positioned_area(&self, id: AlgorithmNodeId) -> Option<PhysicalRect> {
+        let parent = self.nodes[id.index()].parent?;
+        if self.nodes[parent.index()].kind != AlgorithmKind::Grid {
+            return None;
+        }
+        let area = self.nodes[parent.index()]
+            .grid_info
+            .as_ref()?
+            .positioned_items
+            .iter()
+            .find(|item| item.node == id.into_taffy())?
+            .grid_area;
+        Some(PhysicalRect {
+            x: area.left,
+            y: area.top,
+            width: (area.right - area.left).max(0.0),
+            height: (area.bottom - area.top).max(0.0),
+        })
     }
 
     /// The rectangle an algorithm wrote, before the backend's rounding pass.
@@ -2456,6 +2482,11 @@ where
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
         self.style(child_node_id)
     }
+
+    fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
+        self.tree.nodes[AlgorithmNodeId::from_taffy(node_id).index()].grid_info =
+            Some(detailed_grid_info);
+    }
 }
 
 impl<S, Context, Source, Measure> RoundTree for AlgorithmRun<'_, S, Context, Source, Measure>
@@ -2475,7 +2506,7 @@ where
 mod tests {
     use taffy::{
         geometry::Rect,
-        prelude::{Dimension, Display, Position, Style, fr, length},
+        prelude::{Dimension, Display, Position, Style, fr, length, line},
         style::{AlignItems, JustifyContent},
     };
 
@@ -2639,6 +2670,60 @@ mod tests {
         assert_eq!(tree.layout(positioned).y, 9.0);
         assert_eq!(tree.static_layout(positioned).x, 0.0);
         assert_eq!(tree.static_layout(positioned).y, 0.0);
+    }
+
+    #[test]
+    fn grid_positioned_area_keeps_the_final_explicit_track_rectangle() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                grid_row: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(500.0),
+                    height: Dimension::length(250.0),
+                },
+                grid_template_columns: vec![length(200.0_f32), length(300.0_f32)],
+                grid_template_rows: vec![length(150.0_f32), length(100.0_f32)],
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+
+        tree.compute_layout_with_measure(root, available(500.0, 250.0), zero_measure);
+
+        assert_eq!(
+            tree.grid_positioned_area(positioned),
+            Some(PhysicalRect {
+                x: 200.0,
+                y: 150.0,
+                width: 300.0,
+                height: 100.0,
+            })
+        );
     }
 
     #[test]

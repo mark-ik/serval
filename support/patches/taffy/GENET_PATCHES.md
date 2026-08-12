@@ -142,3 +142,21 @@ The `stylo_taffy` full-style literal initializes the additive field to false,
 preserving the incumbent Stylo route until it opts into the seam. Native
 receipts cover block, flex, grid, horizontal inline-size, and vertical
 inline-size containers.
+
+### 0005 — positioned grid-area diagnostics
+
+**Files:** `src/compute/grid/mod.rs`
+**Upstream status:** additive and genet-only so far. The API should be reviewed
+alongside Taffy's existing detailed grid output before upstreaming.
+
+`DetailedGridInfo` previously retained ordinary grid-item placements but
+discarded the finalized area used to lay out an absolutely positioned child.
+An embedding layout engine could therefore observe the child after Taffy had
+applied insets and self-alignment, but could not receive the distinct grid area
+that CSS Positioned Layout uses as the child's containing block.
+
+This adds `positioned_items`, keyed by Taffy's child `NodeId`, with the exact
+`Rect<f32>` constructed by the grid algorithm after line resolution, implicit
+track selection, writing direction, borders, scrollbars, and track alignment.
+It changes no layout. Buckram reads the rectangle as formatter evidence and
+keeps CSS containing-block selection and used geometry outside Taffy.

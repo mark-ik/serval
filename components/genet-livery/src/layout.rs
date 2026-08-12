@@ -2576,6 +2576,7 @@ fn append_atomic_fragment<Id>(
         box_id,
         parent,
         LogicalRect::from_horizontal_physical(local),
+        None,
         &mut output,
     );
     output.fragments.push(
@@ -4367,6 +4368,7 @@ fn record_static_position<Id>(
     box_id: BoxId,
     source_fragment: Option<FragmentId>,
     logical_rect: LogicalRect,
+    containing_block_area: Option<PhysicalRect>,
     output: &mut FragmentOutput<'_>,
 ) where
     Id: Copy + Eq + Hash,
@@ -4377,6 +4379,18 @@ fn record_static_position<Id>(
     ) {
         return;
     }
+    let containing_block_area = containing_block_area.and_then(|area| {
+        let source = source_fragment?;
+        let fragment = output.fragments.get(source)?;
+        let rect = fragment.physical_rect();
+        Some(fragment.flow().logical_rect(
+            area,
+            PhysicalSize {
+                width: rect.width,
+                height: rect.height,
+            },
+        ))
+    });
     output.fragments.record_static_position(StaticPosition {
         box_id,
         source: source_fragment.map_or(
@@ -4393,6 +4407,7 @@ fn record_static_position<Id>(
         } else {
             logical_rect
         },
+        containing_block_area,
     });
 }
 
@@ -4585,12 +4600,34 @@ where
                         let border_rect = fragments
                             .get(fragment_id)
                             .map(TreeFragment::physical_rect)?;
-                        let rect = positioned_containing_block_rect(
-                            border_rect,
-                            containing_box,
-                            boxes,
-                            styles,
-                        );
+                        let rect = match (
+                            static_position.source,
+                            static_position.containing_block_area,
+                        ) {
+                            (StaticPositionSource::Fragment(source), Some(area))
+                                if source == fragment_id =>
+                            {
+                                let area = boxes[containing_box].flow.physical_rect(
+                                    area,
+                                    PhysicalSize {
+                                        width: border_rect.width,
+                                        height: border_rect.height,
+                                    },
+                                );
+                                PhysicalRect {
+                                    x: border_rect.x + area.x,
+                                    y: border_rect.y + area.y,
+                                    width: area.width,
+                                    height: area.height,
+                                }
+                            },
+                            _ => positioned_containing_block_rect(
+                                border_rect,
+                                containing_box,
+                                boxes,
+                                styles,
+                            ),
+                        };
                         (Some(fragment_id), rect, boxes[containing_box].flow)
                     },
                 };
@@ -5794,7 +5831,7 @@ fn commit_table_structure<Id>(
             width: fragment.rect.inline_size,
             height: fragment.rect.block_size,
         };
-        record_static_position(boxes, box_id, Some(parent), fragment.rect, output);
+        record_static_position(boxes, box_id, Some(parent), fragment.rect, None, output);
         ids[index] = Some(output.fragments.push(
             TreeFragment::from_horizontal_physical(box_id, rect),
             Some(parent),
@@ -5877,7 +5914,14 @@ where
                         );
                         TreeFragment::from_physical_with_logical(box_id, rect, logical_rect, flow)
                     };
-                    record_static_position(boxes, box_id, parent, static_rect, output);
+                    record_static_position(
+                        boxes,
+                        box_id,
+                        parent,
+                        static_rect,
+                        tree.grid_positioned_area(node),
+                        output,
+                    );
                     let id = output.fragments.push(
                         fragment
                             .with_baselines(fragment_baselines(tree, boxes, node, box_id, rect)),
@@ -6006,7 +6050,7 @@ where
                             height: cursor.containing.height,
                         },
                     );
-                    record_static_position(boxes, box_id, parent, static_rect, output);
+                    record_static_position(boxes, box_id, parent, static_rect, None, output);
                     let fragment_id = output.fragments.push(
                         fragment_for_box(
                             boxes,
@@ -6041,7 +6085,14 @@ where
                         height: cursor.containing.height,
                     },
                 );
-                record_static_position(boxes, box_id, parent, static_rect, output);
+                record_static_position(
+                    boxes,
+                    box_id,
+                    parent,
+                    static_rect,
+                    tree.grid_positioned_area(node),
+                    output,
+                );
                 let fragment_id = output.fragments.push(
                     fragment_for_box(boxes, box_id, rect, relative_rect, cursor.containing)
                         .with_baselines(fragment_baselines(tree, boxes, node, box_id, rect)),
@@ -7639,6 +7690,16 @@ mod tests {
             ),
             (0.0, 0.0),
             "the grid formatter contributes its grid-area static rectangle"
+        );
+        assert_eq!(
+            grid_static.containing_block_area,
+            Some(LogicalRect {
+                inline_start: 0.0,
+                block_start: 0.0,
+                inline_size: 200.0,
+                block_size: 100.0,
+            }),
+            "the direct grid child retains its finalized containing area separately from its static rectangle"
         );
 
         let flex_rect = rect_for(flex);
