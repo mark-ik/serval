@@ -74,18 +74,19 @@ incoming or outgoing static-position dependencies that cross the selected
 root. This is not a formatter route yet, and it does not publish Livery's
 separate table-paint or node side data on its own.
 
-Livery now admits a nonempty disjoint DOM damage set when the fresh layout
-reconciles to the identical generated box tree. It preserves each selected
-root's fragment ID, replaces its descendants through
-`FragmentTree::replace_subtree`, retains unrelated fragment identities, and
-installs fresh text, table-paint, and table-shadow planes together. The update
-is all-or-nothing: a rejected root discards the candidate retained publication.
-The receipts change one and two flex roots' widths, prove fresh child fragment
-identities and preserved outside identities, and compare paint and document
-extent with a fresh final document. This is a publication proof only:
-formatter work still recomputes the complete document, while structural DOM or
-display changes and cross-root fragment dependencies fall back to the full
-replacement path.
+Livery now admits a nonempty disjoint DOM damage set when every selected root
+is an unchanged flex or grid box. It preserves each selected root's fragment
+ID, replaces its descendants through `FragmentTree::replace_subtree`, then
+installs the fresh reconciled box tree with fresh text, table-paint, and
+table-shadow planes. That permits added or retired descendant boxes without
+invalidating node-to-box lookup, while unrelated fragment identities remain
+retained. The update is all-or-nothing: a rejected root discards the candidate
+retained publication. The receipts change one and two flex roots' widths and
+insert a flex child, prove fresh child fragment identities and preserved outside
+identities, and compare paint and document extent with a fresh final document.
+This is a publication proof only: formatter work still recomputes the complete
+document, while ordinary-block/table roots, changed root display, and cross-root
+fragment dependencies fall back to the full replacement path.
 
 `retained_root_splice_keeps_an_unrelated_table_paint_plane_live` adds the
 side-plane receipt: a flex-root splice preserves an unrelated table's generated
@@ -105,8 +106,8 @@ be replaced before Taffy's position role can vanish entirely.
 
 1. Recompute a selected root against its retained containing inputs, rather
    than formatting the complete document before its bounded publication.
-2. Generalize the publication route from one unchanged-box-tree DOM root to
-   compatible structural changes, including new and retired box ownership.
+2. Extend the flex/grid publication route to ordinary-block and table roots
+   only with their required parent-flow and table side-plane replacement.
 3. Propagate changed used size or overflow to the first dependent ancestor.
    Escalate to a wider root only when that dependency actually changes.
 4. Compare each incremental result with the fresh-final-document harness.

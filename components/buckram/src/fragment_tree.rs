@@ -893,6 +893,15 @@ where
         &mut self.fragments
     }
 
+    /// Replace generated-box ownership after a retained fragment operation
+    /// has admitted the compatible root. Callers use this when a selected
+    /// subtree gained or retired boxes: the fragment tree already contains
+    /// the reconciled identities, while node-to-box lookup must come from the
+    /// newly generated tree.
+    pub fn replace_box_tree(&mut self, boxes: CssBoxTree<Id>) {
+        self.boxes = boxes;
+    }
+
     /// Reconcile this freshly constructed layout against the previous
     /// continuous-media generation. The geometry is new; only identities with
     /// unchanged generated-box and fragment context are retained.

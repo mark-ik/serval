@@ -184,10 +184,10 @@ where
             .remap_box_ids(|box_id| identities.box_id(box_id));
     }
 
-    /// Publish one freshly formatted, reconciled formatting root into this
-    /// retained layout. The fresh tree must retain the exact same generated
-    /// boxes: structural DOM or display changes need a wider publication path
-    /// because this layout still owns the old box tree.
+    /// Publish one freshly formatted, reconciled flex or grid root into this
+    /// retained layout. Its root box must retain identity, but descendants
+    /// may gain or retire boxes; the fresh box tree replaces node ownership
+    /// only after the fragment splice has accepted that compatible root.
     ///
     /// The fragment splice preserves the selected root identity but gives its
     /// descendants fresh identities. Fresh text and table planes accompany it
@@ -197,21 +197,28 @@ where
         fresh: &Self,
         node: Id,
     ) -> bool {
-        if !self
-            .buckram
-            .boxes()
-            .iter()
-            .eq(fresh.buckram.boxes().iter())
-        {
-            return false;
-        }
         let Some(root_box) = self
             .buckram
             .boxes()
             .boxes_for_node(node)
             .iter()
             .copied()
-            .find(|box_id| self.buckram.boxes()[*box_id].formatting_context.is_some())
+            .find(|box_id| {
+                matches!(
+                    self.buckram.boxes()[*box_id].formatting_context,
+                    Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+                )
+            })
+        else {
+            return false;
+        };
+        let Some(fresh_root_box) = fresh
+            .buckram
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .find(|box_id| *box_id == root_box)
         else {
             return false;
         };
@@ -222,7 +229,7 @@ where
         let fresh_root = match fresh
             .buckram
             .fragments()
-            .fragment_ids_for_box(root_box)
+            .fragment_ids_for_box(fresh_root_box)
         {
             [root] => *root,
             _ => return false,
@@ -235,6 +242,7 @@ where
         {
             return false;
         }
+        self.buckram.replace_box_tree(fresh.buckram.boxes().clone());
         self.text_frame = fresh.text_frame.clone();
         self.block_algorithms = fresh.block_algorithms;
         self.table_paint = fresh.table_paint.clone();
