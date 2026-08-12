@@ -2824,7 +2824,7 @@ mod tests {
                  table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
-                 #other-cell { position: sticky; top: 0; }",
+                 #other-cell { position: absolute; top: 0; }",
             ])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
@@ -2887,7 +2887,7 @@ mod tests {
         assert_eq!(retained_ledger.honored, 2, "both table entries remain verified");
         assert!(
             !retained_ledger.positioning_gaps.is_empty(),
-            "the untouched table's sticky record remains in the aggregate ledger",
+            "the untouched table's absolute record remains in the aggregate ledger",
         );
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
@@ -2901,6 +2901,74 @@ mod tests {
             "both retained table paint planes match a fresh final document",
         );
         assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
+    fn sticky_table_cell_uses_its_nested_scrollport_without_relayout() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=scroller><div id=content><div id=spacer></div><table id=table><tbody><tr><td id=sticky>sticky</td></tr><tr><td id=tail></td></tr></tbody></table></div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #scroller { height: 80px; overflow-y: auto; } \
+                 #spacer { height: 120px; } \
+                 table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 100px; } \
+                 #sticky { position: sticky; top: 0; height: 20px; background: red; } \
+                 #tail { height: 180px; background: blue; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("initial table frame");
+        let scroller = by_id(document.dom(), "scroller");
+        let table = by_id(document.dom(), "table");
+        let sticky = by_id(document.dom(), "sticky");
+        let ids_before = generated_ids(&document, sticky);
+        let table_wrapper_before = table_wrapper_fragment_id(&document, table);
+        let static_rect = document
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.get(sticky))
+            .map(|fragment| fragment.physical_rect())
+            .expect("static table cell fragment");
+        assert_eq!(static_rect.y, 120.0);
+        assert!(
+            !document
+                .table_shadow_ledger()
+                .expect("table ledger")
+                .positioning_gaps
+                .iter()
+                .any(|record| record.gap == crate::table_shadow::TablePositioningGap::Sticky),
+            "table-cell sticky uses the shared retained sticky solver",
+        );
+
+        assert!(document.scroll_at(10.0, 10.0, 0.0, 150.0));
+        assert_eq!(document.element_scroll().get(&scroller), Some(&(0.0, 150.0)));
+        document.frame(160, 120).expect("scrolled table frame");
+
+        let active = document.sticky_layout(document.layout.as_ref().expect("retained layout"));
+        let sticky_rect = active
+            .get(sticky)
+            .map(|fragment| fragment.physical_rect())
+            .expect("active table cell fragment");
+        assert_eq!(sticky_rect.y, 150.0);
+        assert_eq!(sticky_rect.y - document.element_scroll()[&scroller].1, 0.0);
+        assert_eq!(generated_ids(&document, sticky), ids_before);
+        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            document
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.fragments.get(sticky))
+                .map(|fragment| fragment.physical_rect()),
+            Some(static_rect),
+            "scrolling keeps the retained table base layout unchanged",
+        );
     }
 
     #[test]

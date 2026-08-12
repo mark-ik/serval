@@ -428,7 +428,9 @@ where
                 if css_box.positioning != PositioningScheme::Sticky
                     || matches!(
                         css_box.display.internal_table,
-                        Some(role) if role != InternalTableRole::Wrapper
+                        Some(role)
+                            if role != InternalTableRole::Wrapper
+                                && role != InternalTableRole::Cell
                     )
                 {
                     return None;
@@ -450,7 +452,30 @@ where
                             .is_none_or(|parent| parent.box_id() != box_id)
                     })?;
                 let current = self.buckram.fragments().get(root)?.physical_rect();
-                let containing = match css_box.containing_block {
+                // A cell's generated parent is an internal table row. That
+                // row is only as tall as the cell, so it would clamp a sticky
+                // translation to zero. Its sticky containing block is the
+                // table wrapper: the nearest block-level table ancestor that
+                // owns the cell's full scrollable table extent.
+                let table_wrapper = if css_box.display.internal_table == Some(InternalTableRole::Cell)
+                {
+                    let mut ancestor = css_box.parent();
+                    loop {
+                        let candidate = ancestor?;
+                        if self.buckram.boxes()[candidate].display.internal_table
+                            == Some(InternalTableRole::Wrapper)
+                        {
+                            break Some(candidate);
+                        }
+                        ancestor = self.buckram.boxes()[candidate].parent();
+                    }
+                } else {
+                    None
+                };
+                let containing = match table_wrapper
+                    .map(ContainingBlock::Box)
+                    .unwrap_or(css_box.containing_block)
+                {
                     ContainingBlock::Initial => PhysicalRect {
                         x: 0.0,
                         y: 0.0,
@@ -5226,6 +5251,12 @@ fn apply_relative_table_part_offsets<Id>(
             CssPosition::Absolute | CssPosition::Fixed if part == table => None,
             CssPosition::Absolute => Some(TablePositioningGap::Absolute),
             CssPosition::Fixed => Some(TablePositioningGap::Fixed),
+            CssPosition::Sticky
+                if part == table
+                    || boxes[part].display.internal_table == Some(InternalTableRole::Cell) =>
+            {
+                None
+            },
             CssPosition::Sticky => Some(TablePositioningGap::Sticky),
             CssPosition::Static | CssPosition::Relative => None,
         };

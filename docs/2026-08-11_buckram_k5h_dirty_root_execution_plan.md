@@ -152,17 +152,23 @@ entry, then rebuilds the existing aggregate ledger from all retained entries.
 proves a fixed-size table can gain a cell with equal fresh final paint and
 extent. `retained_table_root_keeps_an_unrelated_table_paint_plane_live` proves
 the two-table case preserves the untouched table's wrapper, fragments, paint
-sources, and sticky table-part K5 record. A caption, out-of-flow descendant,
+sources, and absolute table-part K5 record. A caption, out-of-flow descendant,
 `retained_root_formatter_replaces_a_captioned_fixed_size_table` proves the
 same replacement includes a stable caption. An out-of-flow descendant or
 nested table inside the selected root still takes the complete path.
+
+`sticky_table_cell_uses_its_nested_scrollport_without_relayout` proves a
+sticky table cell uses the retained sticky solver and the table wrapper's
+scrollable extent without a relayout. Table row groups and rows, plus absolute
+and fixed table parts, remain explicit gaps.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
 second pass; an out-of-flow subtree no longer makes its ordinary block parent
 fall back to Taffy. Flex and grid retain the one remaining backend
-static-position provider; inline and table-internal routes remain separate.
+static-position provider; inline and table-internal absolute/fixed routes
+remain separate.
 The generic source lowering is deleted, but the scoped flex/grid provider must
 be replaced before Taffy's position role can vanish entirely.
 
