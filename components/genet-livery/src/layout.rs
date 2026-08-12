@@ -86,6 +86,8 @@ fn supports_retained_sticky_table_part(role: InternalTableRole) -> bool {
         InternalTableRole::Wrapper
             | InternalTableRole::Caption
             | InternalTableRole::RowGroup
+            | InternalTableRole::HeaderGroup
+            | InternalTableRole::FooterGroup
             | InternalTableRole::Row
             | InternalTableRole::Cell
     )
