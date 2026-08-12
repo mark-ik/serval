@@ -68,6 +68,17 @@ The same path now handles a table root at its K4h wrapper; its grid no longer
 carries a duplicate root-only absolute/fixed gap. The fixed receipt uses a
 transform-established fixed containing block.
 
+Before that conversion, a selected non-inline containing fragment now changes
+from its emitted border rectangle to its CSS positioning padding rectangle.
+The bridge subtracts only the resolved physical border widths: percentages and
+auto insets therefore use the padding-box size, while the padding itself stays
+inside the positioning rectangle. `positioned_child_uses_the_positioned_ancestor_padding_box`
+pins asymmetric border edges and a 100% absolute child. This is the ordinary
+containing-block rule only. An inline establishing ancestor still needs its
+multi-fragment content-edge rectangle, and a grid establishing the selected
+containing block still needs to replace the padding rectangle with the
+specified grid area before K5d receives it.
+
 Taffy still excludes the out-of-flow box, and remains the measured fallback
 for unadmitted descendants, the non-replaced block axis, flex/grid roots, and
 replaced non-leaves or missing contributions. The retained inline formatter
@@ -106,6 +117,8 @@ not treated as final K5 behavior.
 - `left/right/width`, `top/bottom/height`, percentage, auto-margin,
   shrink-to-fit, min/max, replaced, and aspect-ratio receipts are explicit.
 - Direction and every supported writing mode keep the same logical equation.
+- A non-inline positioned ancestor with asymmetric borders supplies a
+  padding-box percentage basis and padding-edge origin.
 - Positioned tables and table parts use the wrapper/internal K5b records and
   produce ordinary Buckram fragments.
 - No Taffy `Position` value selects browser absolute or fixed behavior.

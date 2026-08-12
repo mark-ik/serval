@@ -4582,9 +4582,15 @@ where
                             .fragment_ids_for_box(containing_box)
                             .first()
                             .copied()?;
-                        let rect = fragments
+                        let border_rect = fragments
                             .get(fragment_id)
                             .map(TreeFragment::physical_rect)?;
+                        let rect = positioned_containing_block_rect(
+                            border_rect,
+                            containing_box,
+                            boxes,
+                            styles,
+                        );
                         (Some(fragment_id), rect, boxes[containing_box].flow)
                     },
                 };
@@ -4683,6 +4689,61 @@ where
             })
         })
         .collect()
+}
+
+/// Resolve the ordinary absolute/fixed containing-block rectangle from an
+/// established ancestor fragment. CSS Positioned Layout defines a non-inline
+/// ancestor's containing block at its padding edge, while inline ancestors
+/// have their own multi-fragment content-edge rule and therefore remain on the
+/// pre-existing fragment route until that rule has a representation here.
+fn positioned_containing_block_rect<Id>(
+    border_rect: PhysicalRect,
+    containing_box: BoxId,
+    boxes: &buckram::CssBoxTree<Id>,
+    styles: &StylePlane<Id>,
+) -> PhysicalRect
+where
+    Id: Copy + Eq + Hash,
+{
+    let css_box = &boxes[containing_box];
+    if css_box.display.outside == Some(DisplayOutside::Inline)
+        && css_box.display.inside == Some(DisplayInside::Flow)
+        && css_box.display.internal_table.is_none()
+    {
+        return border_rect;
+    }
+    let Some(computed) = css_box.origin.node().and_then(|node| styles.get(node)) else {
+        return border_rect;
+    };
+    let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+    let border = PhysicalSides {
+        top: border_width_px(
+            computed.border_top_style,
+            computed.border_top_width,
+            font_size,
+        ),
+        right: border_width_px(
+            computed.border_right_style,
+            computed.border_right_width,
+            font_size,
+        ),
+        bottom: border_width_px(
+            computed.border_bottom_style,
+            computed.border_bottom_width,
+            font_size,
+        ),
+        left: border_width_px(
+            computed.border_left_style,
+            computed.border_left_width,
+            font_size,
+        ),
+    };
+    PhysicalRect {
+        x: border_rect.x + border.left,
+        y: border_rect.y + border.top,
+        width: (border_rect.width - border.left - border.right).max(0.0),
+        height: (border_rect.height - border.top - border.bottom).max(0.0),
+    }
 }
 
 /// Reformat an admitted auto-sized positioned root at Buckram's resolved
@@ -7591,6 +7652,52 @@ mod tests {
         assert_eq!(
             (grid_positioned_rect.x, grid_positioned_rect.y),
             (grid_rect.x + 18.0, grid_rect.y + 9.0),
+        );
+    }
+
+    #[test]
+    fn positioned_child_uses_the_positioned_ancestor_padding_box() {
+        let dom = StaticDocument::parse("<div id=containing><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 100px; height: 100px; \
+                               border-style: solid; border-top-width: 5px; \
+                               border-right-width: 10px; border-bottom-width: 15px; \
+                               border-left-width: 20px; } \
+                 #positioned { position: absolute; width: 100%; height: 100%; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let rect_for = |box_id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+
+        let containing = rect_for(box_for("containing"));
+        let positioned = rect_for(box_for("positioned"));
+        assert_eq!((containing.width, containing.height), (130.0, 120.0));
+        assert_eq!(
+            (
+                positioned.x,
+                positioned.y,
+                positioned.width,
+                positioned.height
+            ),
+            (20.0, 5.0, 100.0, 100.0),
+            "percentage sizes and auto insets resolve against the padding box"
         );
     }
 
