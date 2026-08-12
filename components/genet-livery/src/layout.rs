@@ -250,6 +250,65 @@ where
         true
     }
 
+    /// Publish a text-free local formatting result. Unlike the complete
+    /// publication route, `fresh` contains one selected subtree only, so the
+    /// retained text and table planes outside that subtree stay authoritative.
+    /// The local formatter admits no text, table, atomic-inline, or positioned
+    /// boxes, which makes that retained side data disjoint by construction.
+    pub(crate) fn replace_reconciled_local_formatting_subtree_from(
+        &mut self,
+        fresh: &Self,
+        node: Id,
+    ) -> bool {
+        let Some(root_box) = self
+            .buckram
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .find(|box_id| {
+                matches!(
+                    self.buckram.boxes()[*box_id].formatting_context,
+                    Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+                )
+            })
+        else {
+            return false;
+        };
+        let Some(fresh_root_box) = fresh
+            .buckram
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .find(|box_id| *box_id == root_box)
+        else {
+            return false;
+        };
+        let root = match self.buckram.fragments().fragment_ids_for_box(root_box) {
+            [root] => *root,
+            _ => return false,
+        };
+        let fresh_root = match fresh
+            .buckram
+            .fragments()
+            .fragment_ids_for_box(fresh_root_box)
+        {
+            [root] => *root,
+            _ => return false,
+        };
+        if self
+            .buckram
+            .fragments_mut()
+            .replace_subtree(root, fresh.buckram.fragments(), fresh_root)
+            .is_none()
+        {
+            return false;
+        }
+        self.buckram.replace_box_tree(fresh.buckram.boxes().clone());
+        true
+    }
+
     /// Publish a disjoint K5h damage set as one retained-layout update. A
     /// failed root leaves `self` untouched, so callers can safely fall back
     /// to the complete fresh result without exposing a partial publication.
@@ -1150,6 +1209,277 @@ where
         image_sources,
     )?;
     Ok((styles, fragments))
+}
+
+/// Reformat exactly one retained flex or grid root against its existing
+/// parent content box. This is intentionally narrower than complete layout:
+/// text, tables, inline atoms, floats, and positioned descendants retain the
+/// full-document path until their side planes have an equivalent replacement
+/// primitive.
+pub(crate) fn layout_retained_formatting_root<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    previous_styles: &StylePlane<D::NodeId>,
+    previous: &LiveryLayout<D::NodeId>,
+    node: D::NodeId,
+    image_sources: &ImageSources,
+) -> Result<Option<LiveryLayout<D::NodeId>>, LayoutError>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if styles.get(node) != previous_styles.get(node) {
+        return Ok(None);
+    }
+
+    let boxes = GeneratedBoxTree::from_dom(dom, styles);
+    let Some(root_box) = boxes.principal_box(node) else {
+        return Ok(None);
+    };
+    if !matches!(
+        boxes[root_box].formatting_context,
+        Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+    ) || !supports_retained_root_formatting(&boxes, root_box)
+        || !retained_ancestor_styles_unchanged(&boxes, styles, previous_styles, root_box)
+    {
+        return Ok(None);
+    }
+
+    let Some(previous_root_box) = previous.boxes().principal_box(node) else {
+        return Ok(None);
+    };
+    let [previous_root] = previous
+        .fragments()
+        .fragment_ids_for_box(previous_root_box)
+    else {
+        return Ok(None);
+    };
+    let Some(previous_root_fragment) = previous.fragments().get(*previous_root) else {
+        return Ok(None);
+    };
+    let Some(parent_box) = previous.boxes()[previous_root_box].parent() else {
+        return Ok(None);
+    };
+    let Some(parent_node) = previous.boxes().origin_node(parent_box) else {
+        return Ok(None);
+    };
+    let Some(parent_style) = previous_styles.get(parent_node) else {
+        return Ok(None);
+    };
+    let Some(parent_fragment) = previous_root_fragment
+        .parent()
+        .and_then(|parent| previous.fragments().get(parent))
+    else {
+        return Ok(None);
+    };
+    let containing_size = content_box_size(parent_style, parent_fragment);
+    if !containing_size.0.is_finite()
+        || !containing_size.1.is_finite()
+        || containing_size.0 < 0.0
+        || containing_size.1 < 0.0
+    {
+        return Ok(None);
+    }
+
+    let atomic = AtomicLayoutPlane::default();
+    let mut text = TextSystem::new();
+    let mut intrinsic_sizes = IntrinsicSizeCache::default();
+    let mut state = InlineBuildState {
+        dom,
+        styles,
+        boxes: &boxes,
+        atomic: &atomic,
+        tree: AlgorithmTree::new(),
+        image_sources,
+        table_shadow: TableShadowLedger::default(),
+        pending_tables: Vec::new(),
+        pending_table_handoff: None,
+    };
+    let parent_font_size = inherited_font_size(&boxes, styles, root_box);
+    let Some(formatted_root) = state.build_box(
+        root_box,
+        None,
+        parent_font_size,
+        (Some(containing_size.0), Some(containing_size.1)),
+    )? else {
+        return Ok(None);
+    };
+    let formatter_root = state.tree.new_with_children_and_block_style(
+        AlgorithmKind::Block,
+        BlockStyle {
+            size: BlockDimensions::new(
+                BlockSizeValue::Length(FlowLength::px(containing_size.0)),
+                BlockSizeValue::Length(FlowLength::px(containing_size.1)),
+            ),
+            ..BlockStyle::default()
+        },
+        Style {
+            display: Display::Block,
+            size: Size {
+                width: Dimension::length(containing_size.0),
+                height: Dimension::length(containing_size.1),
+            },
+            ..Style::default()
+        },
+        &[formatted_root],
+        Vec::new(),
+    );
+    state.tree.compute_layout_with_measure(
+        formatter_root,
+        AlgorithmSize::new(
+            AlgorithmAvailableSpace::Definite(containing_size.0),
+            AlgorithmAvailableSpace::Definite(containing_size.1),
+        ),
+        |known, available, _, context, line_constraints| {
+            measure_inline_algorithm_node(
+                &mut text,
+                dom,
+                styles,
+                &boxes,
+                &atomic,
+                &mut intrinsic_sizes,
+                known,
+                available,
+                context,
+                line_constraints,
+            )
+        },
+    );
+    populate_inline_baselines(&mut state.tree);
+    let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
+    let mut fragments = FragmentTree::default();
+    let mut text_frame = TextFrame::default();
+    let mut output = FragmentOutput {
+        fragments: &mut fragments,
+    };
+    let tables = TablePaintPlane::default();
+    collect_inline_fragments(
+        &state.tree,
+        &boxes,
+        formatter_root,
+        FragmentCursor {
+            origin: Point { x: 0.0, y: 0.0 },
+            containing: Fragment {
+                x: 0.0,
+                y: 0.0,
+                width: containing_size.0,
+                height: containing_size.1,
+            },
+            parent: None,
+        },
+        &tables.fragments(),
+        &mut output,
+        &mut text_frame,
+        styles,
+    )?;
+    let [local_root] = fragments.fragment_ids_for_box(root_box) else {
+        return Ok(None);
+    };
+    let Some(local_root_fragment) = fragments.get(*local_root) else {
+        return Ok(None);
+    };
+    let local_rect = local_root_fragment.physical_rect();
+    let retained_rect = previous_root_fragment.physical_rect();
+    if !same_retained_root_size(local_rect, retained_rect) {
+        return Ok(None);
+    }
+    fragments.translate_subtree(
+        *local_root,
+        PhysicalOffset {
+            x: retained_rect.x - local_rect.x,
+            y: retained_rect.y - local_rect.y,
+        },
+    );
+    drop(state);
+
+    Ok(Some(LiveryLayout::new(
+        LayoutResult::new(boxes.into_tree(), fragments),
+        Some(text_frame),
+        BlockAlgorithmCounts {
+            buckram: buckram_blocks,
+            taffy: taffy_blocks,
+        },
+        TablePaintPlane::default(),
+        TableShadowLedger::default(),
+    )))
+}
+
+fn supports_retained_root_formatting<Id>(boxes: &GeneratedBoxTree<Id>, root: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId) -> bool
+    where
+        Id: Copy + Eq + Hash,
+    {
+        let css_box = &boxes[box_id];
+        if !matches!(css_box.origin, BoxOrigin::Element(_) | BoxOrigin::Anonymous { .. }) {
+            return false;
+        }
+        if css_box.positioning != PositioningScheme::Static {
+            return false;
+        }
+        if css_box.float != FloatSide::None {
+            return false;
+        }
+        if css_box.display.outside == Some(DisplayOutside::Inline) {
+            return false;
+        }
+        if css_box.display.internal_table.is_some() {
+            return false;
+        }
+        css_box.children().iter().copied().all(|child| visit(boxes, child))
+    }
+
+    visit(boxes, root)
+}
+
+fn retained_ancestor_styles_unchanged<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    previous_styles: &StylePlane<Id>,
+    root: BoxId,
+) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut current = boxes[root].parent();
+    while let Some(box_id) = current {
+        if let Some(node) = boxes.origin_node(box_id)
+            && styles.get(node) != previous_styles.get(node)
+        {
+            return false;
+        }
+        current = boxes[box_id].parent();
+    }
+    true
+}
+
+fn inherited_font_size<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    box_id: BoxId,
+) -> f32
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut ancestors = Vec::new();
+    let mut current = boxes[box_id].parent();
+    while let Some(parent) = current {
+        ancestors.push(parent);
+        current = boxes[parent].parent();
+    }
+    ancestors.reverse();
+    ancestors.into_iter().fold(16.0, |font_size, ancestor| {
+        boxes
+            .origin_node(ancestor)
+            .and_then(|node| styles.get(node))
+            .map_or(font_size, |style| font_size_px(&style.font_size, font_size))
+    })
+}
+
+fn same_retained_root_size(left: PhysicalRect, right: PhysicalRect) -> bool {
+    (left.width - right.width).abs() <= 0.01 && (left.height - right.height).abs() <= 0.01
 }
 
 /// Resolve deferred container-relative units from the nearest eligible

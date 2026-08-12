@@ -4,9 +4,9 @@
 
 **Status:** In progress. K5h now has an explicit damage record,
 final-document equivalence harness, a narrow paint-only retained path, and a
-conservative Buckram fragment-subtree splice. Livery publishes one real
-non-structural formatting-root replacement through that splice, but still
-computes fresh full-document geometry before that bounded publication.
+conservative Buckram fragment-subtree splice. Livery has one true
+selected-root formatter for a closed flex/grid case and falls back to a fresh
+complete layout outside that boundary.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -94,6 +94,24 @@ side-plane receipt: a flex-root splice preserves an unrelated table's generated
 identities, every fresh table-paint source resolves to a live retained fragment,
 and the final paint remains equal to a fresh document.
 
+`layout_retained_formatting_root` is the first actual selected-root formatter.
+It regenerates box ownership for the final DOM but builds and computes only one
+unchanged, unfragmented flex or grid root, using its retained parent's content
+size and translating the accepted local result back to the retained root
+origin. The root and its ancestor style inputs must be unchanged. The root and
+every descendant must be static, non-floating element or anonymous boxes, with
+no text, inline outside box, table part, or positioned content. The root's
+used size must remain unchanged. Its existing text,
+table-paint, and table-shadow planes therefore remain valid and are retained;
+a single DOM root, no container-query pass, and no active animation are also
+required. `retained_root_formatter_reflows_a_text_free_flex_subtree` and
+`retained_root_formatter_reflows_a_text_free_grid_subtree` prove local
+structural insertion takes that formatter, preserves the selected root and
+unrelated identities, refreshes descendants, and matches fresh-final paint and
+document extent. Text, tables, inline/atomic content, positioned descendants,
+root-size changes, multiple roots, and changed root style still take the full
+replacement path.
+
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
@@ -105,12 +123,14 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Recompute a selected root against its retained containing inputs, rather
-   than formatting the complete document before its bounded publication.
-2. Extend the flex/grid publication route to ordinary-block and table roots
-   only with their required parent-flow and table side-plane replacement.
-3. Propagate changed used size or overflow to the first dependent ancestor.
-   Escalate to a wider root only when that dependency actually changes.
+1. Replace the text-free boundary with text-frame replacement for one selected
+   root, preserving DOM text order, prepared command groups, clusters, and
+   decoration state outside that root.
+2. Extend the flex/grid route to changed root size and overflow by propagating
+   only to the first dependent parent-flow root, escalating only when that
+   dependency actually changes.
+3. Extend to ordinary-block and table roots only with their required
+   parent-flow and table side-plane replacement.
 4. Compare each incremental result with the fresh-final-document harness.
 5. Move flex, grid, inline, and table-internal out-of-flow participation to
    equivalent Buckram-owned routes before deleting the remaining flex/grid

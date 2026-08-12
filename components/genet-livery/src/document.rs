@@ -19,7 +19,8 @@ use crate::{
     StylePlane, StyleSet, TextRange, TextRect, TextSelection, TextSystem,
     emit_paint_list_with_text_system_scrolled_with_images, hit_test_with_scroll,
     layout::{
-        StickyScrollport, layout_with_text_system, resolve_container_query_styles,
+        StickyScrollport, layout_retained_formatting_root, layout_with_text_system,
+        resolve_container_query_styles,
         resolve_container_query_styles_with_images,
     },
     resolve_styles,
@@ -112,6 +113,8 @@ where
     text: TextSystem,
     generation: u64,
     layout_generation: u64,
+    #[cfg(test)]
+    retained_root_relayout_generation: u64,
     cached: Option<((u32, u32), LiveryPaintList)>,
     layout: Option<LayoutState<D::NodeId>>,
     identity_source: Option<LayoutState<D::NodeId>>,
@@ -149,6 +152,8 @@ where
             text: TextSystem::new(),
             generation: 0,
             layout_generation: 0,
+            #[cfg(test)]
+            retained_root_relayout_generation: 0,
             cached: None,
             layout: None,
             identity_source: None,
@@ -590,6 +595,58 @@ where
             self.layout_dirty = false;
             self.generation = self.generation.saturating_add(1);
             return self.paint_active_layout(width, height);
+        }
+
+        let local_root = self.last_layout_damage.as_ref().and_then(|damage| {
+            (!viewport_changed
+                && damage.kind == LayoutDamageKind::Dom
+                && !damage.full_document
+                && damage.roots.len() == 1)
+                .then(|| damage.roots[0])
+        });
+        if self.transitions.is_empty()
+            && self.keyframe_animation.is_none()
+            && !self.style_set.has_container_queries()
+            && let (Some(root), Some(previous)) = (local_root, self.layout.as_ref())
+        {
+            let previous_styles = previous.styles.clone();
+            let previous_fragments = previous.fragments.clone();
+            if let Some(mut local) = layout_retained_formatting_root(
+                &self.dom,
+                &styles,
+                &previous_styles,
+                &previous_fragments,
+                root,
+                &self.image_sources,
+            )? {
+                local.reconcile_identifiers(&previous_fragments);
+                let mut fragments = previous_fragments.clone();
+                if fragments.replace_reconciled_local_formatting_subtree_from(&local, root) {
+                    let (content_width, content_height) =
+                        self.document_content_extent(&styles, &fragments);
+                    let layout = self
+                        .layout
+                        .as_mut()
+                        .expect("the retained root formatter had a source layout");
+                    layout.styles = styles;
+                    layout.fragments = fragments;
+                    layout.content_width = content_width;
+                    layout.content_height = content_height;
+                    self.identity_source = None;
+                    self.layout_dirty = false;
+                    self.layout_generation = self.layout_generation.saturating_add(1);
+                    #[cfg(test)]
+                    {
+                        self.retained_root_relayout_generation = self
+                            .retained_root_relayout_generation
+                            .saturating_add(1);
+                    }
+                    self.clamp_scroll();
+                    self.clamp_nested_scroll();
+                    self.generation = self.generation.saturating_add(1);
+                    return self.paint_active_layout(width, height);
+                }
+            }
         }
 
         self.retain_layout_identity();
@@ -2078,6 +2135,132 @@ mod tests {
             format!("{:?}", retained_paint.commands()),
             format!("{:?}", fresh_paint.commands()),
             "the selected grid-root splice must paint like a fresh structural mutation",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
+    fn retained_root_formatter_reflows_a_text_free_flex_subtree() {
+        let initial = "<html><body><div id=flex><div id=existing></div></div><div id=outside></div></body></html>";
+        let final_document = "<html><body><div id=flex><div id=existing></div><div id=inserted></div></div><div id=outside></div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #flex { display: flex; width: 180px; height: 40px; background: red; } \
+                 #existing, #inserted { width: 60px; height: 20px; background: blue; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 120.0));
+        retained.frame(240, 120).expect("initial retained frame");
+        let flex = by_id(retained.dom(), "flex");
+        let existing = by_id(retained.dom(), "existing");
+        let outside = by_id(retained.dom(), "outside");
+        let flex_before = generated_ids(&retained, flex);
+        let existing_before = generated_ids(&retained, existing);
+        let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
+
+        retained.mutate_dom(|dom| {
+            let flex = by_id(dom, "flex");
+            let inserted = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("div"),
+            ));
+            dom.set_attribute(inserted, attr("id"), "inserted");
+            dom.append_child(flex, inserted);
+        });
+        let retained_paint = retained.frame(240, 120).expect("locally formatted frame");
+
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "the text-free flex mutation takes the selected-root formatter instead of the complete-layout publication path",
+        );
+        assert_eq!(generated_ids(&retained, flex), flex_before);
+        assert_ne!(generated_ids(&retained, existing), existing_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+        assert!(
+            !generated_ids(&retained, by_id(retained.dom(), "inserted")).is_empty(),
+            "the selected-root formatter publishes the inserted descendant",
+        );
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 120.0));
+        let fresh_paint = fresh.frame(240, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "the locally formatted flex root paints like a fresh final document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
+    fn retained_root_formatter_reflows_a_text_free_grid_subtree() {
+        let initial = "<html><body><div id=grid><div id=existing></div></div><div id=outside></div></body></html>";
+        let final_document = "<html><body><div id=grid><div id=existing></div><div id=inserted></div></div><div id=outside></div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #grid { display: grid; grid-template-columns: 60px 60px; width: 180px; height: 40px; background: red; } \
+                 #existing, #inserted { width: 60px; height: 20px; background: blue; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 120.0));
+        retained.frame(240, 120).expect("initial retained frame");
+        let grid = by_id(retained.dom(), "grid");
+        let existing = by_id(retained.dom(), "existing");
+        let outside = by_id(retained.dom(), "outside");
+        let grid_before = generated_ids(&retained, grid);
+        let existing_before = generated_ids(&retained, existing);
+        let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
+
+        retained.mutate_dom(|dom| {
+            let grid = by_id(dom, "grid");
+            let inserted = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("div"),
+            ));
+            dom.set_attribute(inserted, attr("id"), "inserted");
+            dom.append_child(grid, inserted);
+        });
+        let retained_paint = retained.frame(240, 120).expect("locally formatted frame");
+
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "the text-free grid mutation takes the selected-root formatter instead of the complete-layout publication path",
+        );
+        assert_eq!(generated_ids(&retained, grid), grid_before);
+        assert_ne!(generated_ids(&retained, existing), existing_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+        assert!(
+            !generated_ids(&retained, by_id(retained.dom(), "inserted")).is_empty(),
+            "the selected-root formatter publishes the inserted descendant",
+        );
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 120.0));
+        let fresh_paint = fresh.frame(240, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "the locally formatted grid root paints like a fresh final document",
         );
         assert_eq!(retained.content_height(0), fresh.content_height(0));
     }
