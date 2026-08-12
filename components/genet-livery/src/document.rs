@@ -2753,7 +2753,8 @@ mod tests {
                 "html, body { margin: 0; padding: 0; } \
                  table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
-                 td { display: table-cell; width: 40px; height: 20px; background: yellow; }",
+                 td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
+                 #other-cell { position: sticky; top: 0; }",
             ])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
@@ -2770,6 +2771,13 @@ mod tests {
         let local_generation = retained.retained_root_relayout_generation;
         assert_table_paint_sources_are_live(&retained, changed);
         assert_table_paint_sources_are_live(&retained, other);
+        let initial_ledger = retained.table_shadow_ledger().expect("completed table ledger");
+        assert_eq!(initial_ledger.assigned, 2, "one contribution per live table");
+        assert_eq!(initial_ledger.honored, 2, "both tables remain verified");
+        assert!(
+            !initial_ledger.positioning_gaps.is_empty(),
+            "the untouched table keeps a noncanonical K5 table-part record",
+        );
 
         retained.mutate_dom(|dom| {
             let row = by_id(dom, "row");
@@ -2804,6 +2812,13 @@ mod tests {
         assert_eq!(generated_ids(&retained, other), other_before);
         assert_table_paint_sources_are_live(&retained, changed);
         assert_table_paint_sources_are_live(&retained, other);
+        let retained_ledger = retained.table_shadow_ledger().expect("retained table ledger");
+        assert_eq!(retained_ledger.assigned, 2, "aggregate keeps both table entries");
+        assert_eq!(retained_ledger.honored, 2, "both table entries remain verified");
+        assert!(
+            !retained_ledger.positioning_gaps.is_empty(),
+            "the untouched table's sticky record remains in the aggregate ledger",
+        );
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
         let mut fresh_mutations = Vec::new();

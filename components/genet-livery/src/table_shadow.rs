@@ -11,7 +11,7 @@
 //! match what Buckram assigned; a divergence there is an invariant violation
 //! rather than a sizing disagreement.
 
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash};
 
 use buckram::{
     AlgorithmNodeId, BoxId, CaptionMinContribution, CollapsedBorderMetrics, IntrinsicSizes,
@@ -117,6 +117,10 @@ pub struct TableShadowLedger {
     /// two axes are one dispatch decision, and two ledgers threaded through
     /// three routes would drift apart.
     pub block: TableBlockLedger,
+    /// Exact table-owned contributions. The aggregate fields above remain the
+    /// public whole-layout receipt, while retained relayout can replace one
+    /// entry without invalidating an unrelated table's verification record.
+    per_table: HashMap<BoxId, Box<TableShadowLedger>>,
 }
 
 impl TableShadowLedger {
@@ -128,17 +132,26 @@ impl TableShadowLedger {
     /// `BuildState`, and dropping their ledgers would leave tables reached
     /// through the text path unaccounted.
     pub fn merge(&mut self, other: Self) {
-        self.collapsed_metrics += other.collapsed_metrics;
-        self.assigned += other.assigned;
-        self.verified += other.verified;
-        self.honored += other.honored;
-        self.divergences.extend(other.divergences);
-        self.skipped.extend(other.skipped);
-        self.positioning_gaps.extend(other.positioning_gaps);
-        self.block.merge(other.block);
+        if other.per_table.is_empty() {
+            self.merge_summary(&other);
+        } else {
+            self.per_table.extend(other.per_table);
+            self.rebuild_summary();
+        }
     }
 
     pub(crate) fn remap_box_ids(&mut self, mut id_of: impl FnMut(BoxId) -> BoxId) {
+        self.remap_summary_box_ids(&mut id_of);
+        self.per_table = std::mem::take(&mut self.per_table)
+            .into_iter()
+            .map(|(table, mut entry)| {
+                entry.remap_summary_box_ids(&mut id_of);
+                (id_of(table), entry)
+            })
+            .collect();
+    }
+
+    fn remap_summary_box_ids(&mut self, id_of: &mut dyn FnMut(BoxId) -> BoxId) {
         for divergence in &mut self.divergences {
             divergence.table = id_of(divergence.table);
         }
@@ -152,8 +165,93 @@ impl TableShadowLedger {
         self.block.remap_box_ids(id_of);
     }
 
+    /// Publish a completed one-table contribution into the aggregate receipt.
+    pub(crate) fn record_table(&mut self, table: BoxId, entry: Self) {
+        self.per_table.insert(table, Box::new(entry));
+        self.rebuild_summary();
+    }
+
+    /// Take one contribution while it receives its post-fragment verification.
+    pub(crate) fn take_table(&mut self, table: BoxId) -> Self {
+        let entry = self
+            .per_table
+            .remove(&table)
+            .map(|entry| *entry)
+            .unwrap_or_default();
+        self.rebuild_summary();
+        entry
+    }
+
+    pub(crate) fn can_replace_subtree<Id>(
+        &self,
+        fresh: &Self,
+        boxes: &buckram::CssBoxTree<Id>,
+        fresh_boxes: &buckram::CssBoxTree<Id>,
+        root: BoxId,
+        fresh_root: BoxId,
+    ) -> bool
+    where
+        Id: Copy + Eq + Hash,
+    {
+        self.per_table
+            .keys()
+            .any(|table| table_is_descendant_of(boxes, *table, root))
+            && fresh
+                .per_table
+                .keys()
+                .any(|table| table_is_descendant_of(fresh_boxes, *table, fresh_root))
+    }
+
+    pub(crate) fn replace_subtree_from<Id>(
+        &mut self,
+        fresh: &Self,
+        boxes: &buckram::CssBoxTree<Id>,
+        fresh_boxes: &buckram::CssBoxTree<Id>,
+        root: BoxId,
+        fresh_root: BoxId,
+    ) where
+        Id: Copy + Eq + Hash,
+    {
+        self.per_table
+            .retain(|table, _| !table_is_descendant_of(boxes, *table, root));
+        self.per_table.extend(
+            fresh
+                .per_table
+                .iter()
+                .filter(|(table, _)| table_is_descendant_of(fresh_boxes, **table, fresh_root))
+                .map(|(table, entry)| (*table, entry.clone())),
+        );
+        self.rebuild_summary();
+    }
+
     pub(crate) fn skip(&mut self, table: BoxId, reason: TableShadowSkip) {
         self.skipped.push((table, reason));
+    }
+
+    fn merge_summary(&mut self, other: &Self) {
+        self.collapsed_metrics += other.collapsed_metrics;
+        self.assigned += other.assigned;
+        self.verified += other.verified;
+        self.honored += other.honored;
+        self.divergences.extend(other.divergences.iter().copied());
+        self.skipped.extend(other.skipped.iter().cloned());
+        self.positioning_gaps.extend(other.positioning_gaps.iter().copied());
+        self.block.merge(other.block.clone());
+    }
+
+    fn rebuild_summary(&mut self) {
+        let mut summary = Self::default();
+        for entry in self.per_table.values() {
+            summary.merge_summary(entry);
+        }
+        self.collapsed_metrics = summary.collapsed_metrics;
+        self.assigned = summary.assigned;
+        self.verified = summary.verified;
+        self.honored = summary.honored;
+        self.divergences = summary.divergences;
+        self.skipped = summary.skipped;
+        self.positioning_gaps = summary.positioning_gaps;
+        self.block = summary.block;
     }
 
     fn deferrals(&self) -> impl Iterator<Item = (BoxId, TableDeferral)> + '_ {
@@ -167,6 +265,24 @@ impl TableShadowLedger {
     pub fn deferral_count(&self, deferral: TableDeferral) -> usize {
         self.deferrals().filter(|(_, one)| *one == deferral).count()
     }
+}
+
+fn table_is_descendant_of<Id>(
+    boxes: &buckram::CssBoxTree<Id>,
+    table: BoxId,
+    root: BoxId,
+) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut current = Some(table);
+    while let Some(box_id) = current {
+        if box_id == root {
+            return true;
+        }
+        current = boxes[box_id].parent();
+    }
+    false
 }
 
 /// Tolerance for verifying assigned columns against painted fragments.

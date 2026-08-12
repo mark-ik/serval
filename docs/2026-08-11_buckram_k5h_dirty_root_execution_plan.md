@@ -146,15 +146,14 @@ an internal row, group, or cell maps to the owning table element; the selected
 fragment root is its anonymous wrapper, while the element's grid and table
 parts receive fresh identities. The local formatter runs the normal Buckram
 column, block, fragment, paint, and verification sequence before publication.
-It replaces just the selected table-paint model. It may retain an unrelated
-table only when every live table has the canonical complete, zero-deferral
-ledger contribution, making the aggregate table-shadow ledger unchanged by
-the replacement. `retained_root_formatter_replaces_a_fixed_size_table_and_its_paint_plane`
+It replaces just the selected table-paint model and per-table shadow-ledger
+entry, then rebuilds the existing aggregate ledger from all retained entries.
+`retained_root_formatter_replaces_a_fixed_size_table_and_its_paint_plane`
 proves a fixed-size table can gain a cell with equal fresh final paint and
 extent. `retained_table_root_keeps_an_unrelated_table_paint_plane_live` proves
-the canonical two-table case preserves the untouched table's wrapper,
-fragments, and paint sources. A caption, out-of-flow descendant, nested table,
-or noncanonical table ledger still takes the complete path.
+the two-table case preserves the untouched table's wrapper, fragments, paint
+sources, and sticky table-part K5 record. A caption, out-of-flow descendant,
+or nested table inside the selected root still takes the complete path.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
@@ -167,10 +166,8 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Partition table-shadow ownership so a table root can update alongside
-   noncanonical or deferred unrelated tables.
-2. Compare each incremental result with the fresh-final-document harness.
-3. Move flex, grid, inline, and table-internal out-of-flow participation to
+1. Compare each incremental result with the fresh-final-document harness.
+2. Move flex, grid, inline, and table-internal out-of-flow participation to
    equivalent Buckram-owned routes before deleting the remaining flex/grid
    backend position provider.
 

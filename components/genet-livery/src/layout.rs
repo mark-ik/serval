@@ -219,27 +219,6 @@ where
         nodes
     }
 
-    /// The aggregate table ledger can stay authoritative across one local
-    /// table replacement only when every live table contributed the same
-    /// complete, zero-deferral record. A later per-table ledger removes this
-    /// admission-specific invariant.
-    fn table_shadow_is_canonical(&self) -> bool {
-        let table_count = self.table_paint.tables.len();
-        table_count != 0
-            && self.table_shadow.assigned == table_count
-            && self.table_shadow.verified == table_count
-            && self.table_shadow.honored == table_count
-            && self.table_shadow.divergences.is_empty()
-            && self.table_shadow.skipped.is_empty()
-            && self.table_shadow.positioning_gaps.is_empty()
-            && self.table_shadow.block.laid_out == table_count
-            && self.table_shadow.block.relaid_out == 0
-            && self.table_shadow.block.verified == table_count
-            && self.table_shadow.block.agreed == table_count
-            && self.table_shadow.block.divergences.is_empty()
-            && self.table_shadow.block.skipped.is_empty()
-    }
-
     /// Publish one freshly formatted, reconciled flex or grid root into this
     /// retained layout. Its root box must retain identity, but descendants
     /// may gain or retire boxes; the fresh box tree replaces node ownership
@@ -331,8 +310,6 @@ where
         if table_root
             && (self.table_paint.tables.is_empty()
                 || fresh.table_paint.tables.is_empty()
-                || !self.table_shadow_is_canonical()
-                || !fresh.table_shadow_is_canonical()
                 || !self
                     .table_paint
                     .tables
@@ -347,7 +324,14 @@ where
                     .table_paint
                     .tables
                     .keys()
-                    .any(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box)))
+                    .any(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box))
+                || !self.table_shadow.can_replace_subtree(
+                    &fresh.table_shadow,
+                    self.buckram.boxes(),
+                    fresh.buckram.boxes(),
+                    root_box,
+                    fresh_root_box,
+                ))
         {
             return false;
         }
@@ -377,6 +361,13 @@ where
         if table_root {
             self.table_paint.replace_subtree_from(
                 &fresh.table_paint,
+                self.buckram.boxes(),
+                fresh.buckram.boxes(),
+                root_box,
+                fresh_root_box,
+            );
+            self.table_shadow.replace_subtree_from(
+                &fresh.table_shadow,
                 self.buckram.boxes(),
                 fresh.buckram.boxes(),
                 root_box,
@@ -3122,64 +3113,67 @@ where
     /// recomputes.
     fn apply_buckram_table_layout(&mut self, text: &mut TextSystem) {
         let mut pendings = std::mem::take(&mut self.pending_tables);
+        let mut aggregate = std::mem::take(&mut self.table_shadow);
         for pending in &mut pendings {
-            let Some(computed) = self.styles.get(pending.node).cloned() else {
-                continue;
-            };
-            pending.collapsed_border_metrics = None;
-            pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
-                match collapsed_table_borders(
+            self.table_shadow = TableShadowLedger::default();
+            if let Some(computed) = self.styles.get(pending.node).cloned() {
+                pending.collapsed_border_metrics = None;
+                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
+                    match collapsed_table_borders(
+                        self.boxes,
+                        self.styles,
+                        &pending.grid,
+                        pending.table,
+                        &computed,
+                        pending.font_size,
+                    ) {
+                        Ok(borders) => {
+                            pending.collapsed_border_metrics = Some(borders.metrics);
+                            self.table_shadow.collapsed_metrics += 1;
+                            Some(borders.winners)
+                        },
+                        Err(error) => {
+                            self.table_shadow.skip(
+                                pending.table,
+                                crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
+                            );
+                            None
+                        },
+                    }
+                } else {
+                    None
+                };
+                let intrinsics = pending
+                    .cell_nodes
+                    .clone()
+                    .into_iter()
+                    .map(|cell_node| {
+                        cell_node.and_then(|node| self.measure_cell_intrinsics(text, node))
+                    })
+                    .collect::<Vec<_>>();
+                let caption_min = self.measure_caption_min(text, &pending.captions.clone());
+                let columns = buckram_table_columns(
+                    self.dom,
                     self.boxes,
                     self.styles,
                     &pending.grid,
                     pending.table,
+                    pending.node,
                     &computed,
+                    pending.collapsed_border_metrics.as_ref(),
                     pending.font_size,
-                ) {
-                    Ok(borders) => {
-                        pending.collapsed_border_metrics = Some(borders.metrics);
-                        self.table_shadow.collapsed_metrics += 1;
-                        Some(borders.winners)
-                    },
-                    Err(error) => {
-                        self.table_shadow.skip(
-                            pending.table,
-                            crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
-                        );
-                        None
-                    },
-                }
-            } else {
-                None
-            };
-            let intrinsics = pending
-                .cell_nodes
-                .clone()
-                .into_iter()
-                .map(|cell_node| {
-                    cell_node.and_then(|node| self.measure_cell_intrinsics(text, node))
-                })
-                .collect::<Vec<_>>();
-            let caption_min = self.measure_caption_min(text, &pending.captions.clone());
-            let columns = buckram_table_columns(
-                self.dom,
-                self.boxes,
-                self.styles,
-                &pending.grid,
-                pending.table,
-                pending.node,
-                &computed,
-                pending.collapsed_border_metrics.as_ref(),
-                pending.font_size,
-                pending.containing_width,
-                caption_min,
-                &intrinsics,
-                &mut self.table_shadow,
-            );
-            pending.assigned = columns;
-            self.size_wrapper_from_grid(pending);
+                    pending.containing_width,
+                    caption_min,
+                    &intrinsics,
+                    &mut self.table_shadow,
+                );
+                pending.assigned = columns;
+                self.size_wrapper_from_grid(pending);
+            }
+            self.apply_buckram_table_rows(text, std::slice::from_mut(pending));
+            aggregate.record_table(pending.table, std::mem::take(&mut self.table_shadow));
         }
-        self.apply_buckram_table_rows(text, &mut pendings);
+        self.table_shadow = aggregate;
         self.pending_tables = pendings;
     }
 
@@ -3318,7 +3312,9 @@ where
     fn verify_table_layout(&mut self, live_rect_of: impl Fn(BoxId) -> Option<Fragment>) {
         let pendings = std::mem::take(&mut self.pending_tables);
         for pending in pendings {
-            verify_one_table(&pending, &live_rect_of, &mut self.table_shadow);
+            let mut ledger = self.table_shadow.take_table(pending.table);
+            verify_one_table(&pending, &live_rect_of, &mut ledger);
+            self.table_shadow.record_table(pending.table, ledger);
         }
     }
 
@@ -3560,62 +3556,65 @@ where
     /// only scribble on scratch layout state that the main pass recomputes.
     fn apply_buckram_table_layout(&mut self) {
         let mut pendings = std::mem::take(&mut self.pending_tables);
+        let mut aggregate = std::mem::take(&mut self.table_shadow);
         for pending in &mut pendings {
-            let Some(computed) = self.styles.get(pending.node).cloned() else {
-                continue;
-            };
-            pending.collapsed_border_metrics = None;
-            pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
-                match collapsed_table_borders(
+            self.table_shadow = TableShadowLedger::default();
+            if let Some(computed) = self.styles.get(pending.node).cloned() {
+                pending.collapsed_border_metrics = None;
+                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
+                    match collapsed_table_borders(
+                        self.boxes,
+                        self.styles,
+                        &pending.grid,
+                        pending.table,
+                        &computed,
+                        pending.font_size,
+                    ) {
+                        Ok(borders) => {
+                            pending.collapsed_border_metrics = Some(borders.metrics);
+                            self.table_shadow.collapsed_metrics += 1;
+                            Some(borders.winners)
+                        },
+                        Err(error) => {
+                            self.table_shadow.skip(
+                                pending.table,
+                                crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
+                            );
+                            None
+                        },
+                    }
+                } else {
+                    None
+                };
+                let intrinsics = pending
+                    .cell_nodes
+                    .clone()
+                    .into_iter()
+                    .map(|cell_node| cell_node.and_then(|node| self.measure_cell_intrinsics(node)))
+                    .collect::<Vec<_>>();
+                let caption_min = self.measure_caption_min(&pending.captions.clone());
+                let columns = buckram_table_columns(
+                    self.dom,
                     self.boxes,
                     self.styles,
                     &pending.grid,
                     pending.table,
+                    pending.node,
                     &computed,
+                    pending.collapsed_border_metrics.as_ref(),
                     pending.font_size,
-                ) {
-                    Ok(borders) => {
-                        pending.collapsed_border_metrics = Some(borders.metrics);
-                        self.table_shadow.collapsed_metrics += 1;
-                        Some(borders.winners)
-                    },
-                    Err(error) => {
-                        self.table_shadow.skip(
-                            pending.table,
-                            crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
-                        );
-                        None
-                    },
-                }
-            } else {
-                None
-            };
-            let intrinsics = pending
-                .cell_nodes
-                .clone()
-                .into_iter()
-                .map(|cell_node| cell_node.and_then(|node| self.measure_cell_intrinsics(node)))
-                .collect::<Vec<_>>();
-            let caption_min = self.measure_caption_min(&pending.captions.clone());
-            let columns = buckram_table_columns(
-                self.dom,
-                self.boxes,
-                self.styles,
-                &pending.grid,
-                pending.table,
-                pending.node,
-                &computed,
-                pending.collapsed_border_metrics.as_ref(),
-                pending.font_size,
-                pending.containing_width,
-                caption_min,
-                &intrinsics,
-                &mut self.table_shadow,
-            );
-            pending.assigned = columns;
-            self.size_wrapper_from_grid(pending);
+                    pending.containing_width,
+                    caption_min,
+                    &intrinsics,
+                    &mut self.table_shadow,
+                );
+                pending.assigned = columns;
+                self.size_wrapper_from_grid(pending);
+            }
+            self.apply_buckram_table_rows(std::slice::from_mut(pending));
+            aggregate.record_table(pending.table, std::mem::take(&mut self.table_shadow));
         }
-        self.apply_buckram_table_rows(&mut pendings);
+        self.table_shadow = aggregate;
         self.pending_tables = pendings;
     }
 
@@ -3749,7 +3748,9 @@ where
     fn verify_table_layout(&mut self, live_rect_of: impl Fn(BoxId) -> Option<Fragment>) {
         let pendings = std::mem::take(&mut self.pending_tables);
         for pending in pendings {
-            verify_one_table(&pending, &live_rect_of, &mut self.table_shadow);
+            let mut ledger = self.table_shadow.take_table(pending.table);
+            verify_one_table(&pending, &live_rect_of, &mut ledger);
+            self.table_shadow.record_table(pending.table, ledger);
         }
     }
 
