@@ -7277,11 +7277,30 @@ mod tests {
             .fragments()
             .static_position_for_box(positioned)
             .expect("static position");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+        let container = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "container").expect("container"))
+            .expect("container box");
+        let container_fragment = layout
+            .fragments()
+            .fragments_for_box(container)
+            .next()
+            .expect("container fragment");
 
         assert_eq!(
             static_position.source,
             StaticPositionSource::Fragment(source_fragment),
             "an inline-origin positioned child uses its line fragment, not a leaf fallback",
+        );
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (container_fragment.x + 34.0, container_fragment.y + 8.0),
+            "the shared K5d route resolves the inline-origin child's final insets",
         );
     }
 

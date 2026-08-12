@@ -210,8 +210,8 @@ Buckram has an equivalent flex/grid static-position algorithm.
 
 1. Compare each incremental result with the fresh-final-document harness.
 2. Replace the remaining private flex/grid renderer provider with an
-   equivalent Buckram static-position algorithm. Move inline out-of-flow
-   participation to its own equivalent route.
+   equivalent Buckram static-position algorithm. Give generic inline
+   automatic-width out-of-flow roots their own formatter-replacement route.
 
 ## Stop rules
 

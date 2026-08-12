@@ -70,7 +70,9 @@ transform-established fixed containing block.
 
 Taffy still excludes the out-of-flow box, and remains the measured fallback
 for unadmitted descendants, the non-replaced block axis, flex/grid roots,
-replaced non-leaves or missing contributions, and generic inline participants.
+replaced non-leaves or missing contributions, and generic inline automatic-width
+reformatting. The inline-origin receipt proves its line fragment reaches the
+shared K5d inset solver for a definite-size result.
 Table wrappers, captions, row groups, rows, and cells now supply their K5b
 records to the shared K5d path; detached row-group, row, and cell subtrees are
 formatted only after K4d track work. K5d remains open until the remaining
