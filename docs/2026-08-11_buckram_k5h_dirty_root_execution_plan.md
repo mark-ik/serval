@@ -141,18 +141,20 @@ matches fresh final paint and extent.
 proves a second auto-sized parent can grow before the retained replacement
 settles at its stable ancestor.
 
-A static, caption-free table can now be the local replacement root when it
-owns every current table-paint plane. Damage to an internal row, group, or cell
-maps to the owning table element; the selected fragment root is its anonymous
-wrapper, while the element's grid and table parts receive fresh identities.
-The local formatter runs the normal Buckram column, block, fragment, paint, and
-verification sequence before publication. It replaces the table-paint model and
-shadow ledger together with the fragment splice, preserving the wrapper and
-outside non-table identities. `retained_root_formatter_replaces_a_fixed_size_table_and_its_paint_plane`
+A static, caption-free table can now be the local replacement root. Damage to
+an internal row, group, or cell maps to the owning table element; the selected
+fragment root is its anonymous wrapper, while the element's grid and table
+parts receive fresh identities. The local formatter runs the normal Buckram
+column, block, fragment, paint, and verification sequence before publication.
+It replaces just the selected table-paint model. It may retain an unrelated
+table only when every live table has the canonical complete, zero-deferral
+ledger contribution, making the aggregate table-shadow ledger unchanged by
+the replacement. `retained_root_formatter_replaces_a_fixed_size_table_and_its_paint_plane`
 proves a fixed-size table can gain a cell with equal fresh final paint and
-extent. A caption, out-of-flow descendant, nested table, or any unrelated live
-table still takes the complete path because table verification state is not yet
-partitioned per table.
+extent. `retained_table_root_keeps_an_unrelated_table_paint_plane_live` proves
+the canonical two-table case preserves the untouched table's wrapper,
+fragments, and paint sources. A caption, out-of-flow descendant, nested table,
+or noncanonical table ledger still takes the complete path.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
@@ -165,8 +167,8 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Partition table-paint and table-shadow ownership so a table root can update
-   while an unrelated table stays retained.
+1. Partition table-shadow ownership so a table root can update alongside
+   noncanonical or deferred unrelated tables.
 2. Compare each incremental result with the fresh-final-document harness.
 3. Move flex, grid, inline, and table-internal out-of-flow participation to
    equivalent Buckram-owned routes before deleting the remaining flex/grid

@@ -219,6 +219,27 @@ where
         nodes
     }
 
+    /// The aggregate table ledger can stay authoritative across one local
+    /// table replacement only when every live table contributed the same
+    /// complete, zero-deferral record. A later per-table ledger removes this
+    /// admission-specific invariant.
+    fn table_shadow_is_canonical(&self) -> bool {
+        let table_count = self.table_paint.tables.len();
+        table_count != 0
+            && self.table_shadow.assigned == table_count
+            && self.table_shadow.verified == table_count
+            && self.table_shadow.honored == table_count
+            && self.table_shadow.divergences.is_empty()
+            && self.table_shadow.skipped.is_empty()
+            && self.table_shadow.positioning_gaps.is_empty()
+            && self.table_shadow.block.laid_out == table_count
+            && self.table_shadow.block.relaid_out == 0
+            && self.table_shadow.block.verified == table_count
+            && self.table_shadow.block.agreed == table_count
+            && self.table_shadow.block.divergences.is_empty()
+            && self.table_shadow.block.skipped.is_empty()
+    }
+
     /// Publish one freshly formatted, reconciled flex or grid root into this
     /// retained layout. Its root box must retain identity, but descendants
     /// may gain or retire boxes; the fresh box tree replaces node ownership
@@ -310,18 +331,23 @@ where
         if table_root
             && (self.table_paint.tables.is_empty()
                 || fresh.table_paint.tables.is_empty()
+                || !self.table_shadow_is_canonical()
+                || !fresh.table_shadow_is_canonical()
                 || !self
                     .table_paint
                     .tables
                     .keys()
-                    .all(|grid| box_is_descendant_of(self.buckram.boxes(), *grid, root_box))
-                || !table_grids_are_within(self.buckram.boxes(), root_box)
+                    .any(|grid| box_is_descendant_of(self.buckram.boxes(), *grid, root_box))
                 || !fresh
                     .table_paint
                     .tables
                     .keys()
                     .all(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box))
-                || !table_grids_are_within(fresh.buckram.boxes(), fresh_root_box))
+                || !fresh
+                    .table_paint
+                    .tables
+                    .keys()
+                    .any(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box)))
         {
             return false;
         }
@@ -348,6 +374,15 @@ where
         {
             return false;
         }
+        if table_root {
+            self.table_paint.replace_subtree_from(
+                &fresh.table_paint,
+                self.buckram.boxes(),
+                fresh.buckram.boxes(),
+                root_box,
+                fresh_root_box,
+            );
+        }
         self.buckram.replace_box_tree(fresh.buckram.boxes().clone());
         self.text_frame
             .as_mut()
@@ -360,13 +395,6 @@ where
                 replaced_nodes,
                 dom_text_order,
             );
-        if table_root {
-            // This first table-root admission owns every live table plane.
-            // Until ledgers carry a per-table partition, an outside table
-            // would make selective replacement observationally ambiguous.
-            self.table_paint = fresh.table_paint.clone();
-            self.table_shadow = fresh.table_shadow.clone();
-        }
         true
     }
 
@@ -1572,16 +1600,6 @@ where
         current = boxes[box_id].parent();
     }
     false
-}
-
-fn table_grids_are_within<Id>(boxes: &buckram::CssBoxTree<Id>, root: BoxId) -> bool
-where
-    Id: Copy + Eq + Hash,
-{
-    boxes
-        .iter()
-        .filter(|(_, css_box)| css_box.display.internal_table == Some(InternalTableRole::Grid))
-        .all(|(grid, _)| box_is_descendant_of(boxes, grid, root))
 }
 
 fn supports_retained_table_root_formatting<Id>(
@@ -5105,6 +5123,30 @@ impl TablePaintPlane {
 
     fn merge(&mut self, other: Self) {
         self.tables.extend(other.tables);
+    }
+
+    /// Replace only the table paint models rooted in one reconciled fragment
+    /// subtree. Their BoxIds already agree with the fresh layout; unrelated
+    /// table models keep their existing structural fragments and paint order.
+    fn replace_subtree_from<Id>(
+        &mut self,
+        fresh: &Self,
+        boxes: &buckram::CssBoxTree<Id>,
+        fresh_boxes: &buckram::CssBoxTree<Id>,
+        root: BoxId,
+        fresh_root: BoxId,
+    ) where
+        Id: Copy + Eq + Hash,
+    {
+        self.tables
+            .retain(|grid, _| !box_is_descendant_of(boxes, *grid, root));
+        self.tables.extend(
+            fresh
+                .tables
+                .iter()
+                .filter(|(grid, _)| box_is_descendant_of(fresh_boxes, **grid, fresh_root))
+                .map(|(grid, table)| (*grid, table.clone())),
+        );
     }
 
     fn remap_box_ids(&mut self, identities: &buckram::LayoutIdentityMap) {
