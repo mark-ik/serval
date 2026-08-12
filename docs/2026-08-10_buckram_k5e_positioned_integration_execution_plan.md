@@ -39,6 +39,9 @@ The live receipts currently cover:
 - `positioned_stacking_item_keeps_its_overflow_clip` verifies a positive
   positioned descendant retains the `overflow-x`/`overflow-y` clip that would
   otherwise be lost when its stacking context is flattened.
+- `positioned_hit_test_respects_stacking_level_and_ancestor_clip` verifies
+  the retained hit walk picks the same positive stacking item and excludes it
+  outside its ancestor overflow clip.
 
 ## Remaining boundary
 

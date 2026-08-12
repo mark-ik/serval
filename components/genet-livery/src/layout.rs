@@ -6429,6 +6429,32 @@ mod tests {
     }
 
     #[test]
+    fn positioned_hit_test_respects_stacking_level_and_ancestor_clip() {
+        let dom = StaticDocument::parse(
+            "<div id=host><div id=behind></div><div id=normal></div><div id=front></div></div>\
+             <div id=clip><div id=overlay></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { position: relative; width: 100px; height: 100px; } \
+                 #behind, #front { position: absolute; left: 0; top: 0; width: 80px; height: 80px; } \
+                 #behind { z-index: -1; } #normal { width: 80px; height: 80px; } \
+                 #front { z-index: 1; } \
+                 #clip { position: relative; width: 50px; height: 50px; overflow-x: hidden; overflow-y: hidden; } \
+                 #overlay { position: absolute; left: 0; top: 0; width: 100px; height: 100px; z-index: 1; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let node = |id| node_by_id(&dom, dom.document(), id).expect(id);
+
+        assert_eq!(hit_test(&dom, &styles, &layout, 10.0, 10.0), Some(node("front")));
+        assert_eq!(hit_test(&dom, &styles, &layout, 10.0, 110.0), Some(node("overlay")));
+        assert_ne!(hit_test(&dom, &styles, &layout, 75.0, 110.0), Some(node("overlay")));
+    }
+
+    #[test]
     fn fixed_position_uses_a_transform_fixed_containing_block() {
         let dom = StaticDocument::parse("<div id=trigger><div id=fixed>item</div></div>");
         let styles = resolve_styles(
