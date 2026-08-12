@@ -18,6 +18,8 @@ The live receipts currently cover:
 
 - flex alignment and grid-area static rectangles surviving the later Buckram
   inset equation;
+- same-flow `self-end` grid self-alignment reaching the formatter instead of
+  being discarded as an invalid value;
 - a table root using its wrapper's shared K5d route;
 - positioned descendants contributing their final fragment geometry to a
   nested scroll container's scrollable overflow; and
@@ -29,6 +31,9 @@ The live receipts currently cover:
 
 - `absolute_flex_and_grid_children_keep_their_native_static_rectangles`
   verifies flex and grid static rectangles and final inset geometry.
+- `absolute_grid_self_end_uses_the_grid_content_end` verifies that a same-flow
+  `align-self: self-end` absolute grid child reaches the grid content end
+  instead of falling back to the static start edge.
 - `absolute_table_root_uses_shared_k5d_wrapper_geometry` verifies the table
   root no longer carries a duplicate table-positioning gap.
 - `absolute_table_track_parts_use_zero_track_static_anchors` and
@@ -63,7 +68,10 @@ current receipts cover only numeric positioned levels and the supported
 `overflow` shorthand and longhands. Generic inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
 subset; unsupported writing modes and unadmitted descendants remain explicit
-fallbacks. These are open work, not fallback-free behavior.
+fallbacks. The renderer still supplies the narrow flex/grid static-position
+provider, so its private position role cannot disappear until Buckram has an
+equivalent flex/grid static-position algorithm. These are open work, not
+fallback-free behavior.
 
 ## Stop rules
 

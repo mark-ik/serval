@@ -1305,6 +1305,8 @@ keyword_value! {
         Auto => "auto",
         Start => "start",
         End => "end",
+        SelfStart => "self-start",
+        SelfEnd => "self-end",
         FlexStart => "flex-start",
         FlexEnd => "flex-end",
         Center => "center",

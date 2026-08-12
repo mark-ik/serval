@@ -7068,6 +7068,10 @@ fn align_items(value: CssAlignment) -> AlignItems {
         keyword: match value {
             CssAlignment::Start => AlignItemsKeyword::Start,
             CssAlignment::End => AlignItemsKeyword::End,
+            // Same-flow grid items share their container's corresponding
+            // self edge. K5e's cross-writing-mode matrix remains open.
+            CssAlignment::SelfStart => AlignItemsKeyword::Start,
+            CssAlignment::SelfEnd => AlignItemsKeyword::End,
             CssAlignment::FlexStart => AlignItemsKeyword::FlexStart,
             CssAlignment::FlexEnd => AlignItemsKeyword::FlexEnd,
             CssAlignment::Center => AlignItemsKeyword::Center,
@@ -7935,6 +7939,62 @@ mod tests {
         assert_eq!(
             (grid_positioned_rect.x, grid_positioned_rect.y),
             (grid_rect.x + 18.0, grid_rect.y + 9.0),
+        );
+    }
+
+    #[test]
+    fn absolute_grid_self_end_uses_the_grid_content_end() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #grid { display: grid; width: 100px; height: 100px; border: 1px solid; } \
+                 #positioned { position: absolute; width: 50px; height: 50px; align-self: self-end; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        assert_eq!(
+            styles
+                .get(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+                .map(|style| (style.position, style.align_self)),
+            Some((CssPosition::Absolute, CssAlignment::SelfEnd)),
+            "the style value must survive parsing before layout maps it to the formatter",
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let grid = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+            .expect("grid box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+            .expect("positioned box");
+        let grid_rect = layout
+            .fragments()
+            .fragments_for_box(grid)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("grid fragment");
+        let positioned_rect = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("positioned fragment");
+        assert_eq!(
+            (positioned_rect.x, positioned_rect.y),
+            (grid_rect.x + 1.0, grid_rect.y + 51.0),
+            "a same-flow self-end positioned grid item uses the grid content end",
+        );
+        assert!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .is_some(),
+            "the grid static-position route retains its K5b record",
         );
     }
 
