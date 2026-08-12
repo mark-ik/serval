@@ -98,10 +98,15 @@ pub struct AlgorithmLayout {
 mod sealed {
     pub trait AlgorithmStyle {
         fn as_taffy_style(&self) -> &taffy::Style;
+        fn as_taffy_style_mut(&mut self) -> &mut taffy::Style;
     }
 
     impl AlgorithmStyle for taffy::Style {
         fn as_taffy_style(&self) -> &taffy::Style {
+            self
+        }
+
+        fn as_taffy_style_mut(&mut self) -> &mut taffy::Style {
             self
         }
     }
@@ -301,6 +306,39 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
 
     pub fn style_mut(&mut self, id: AlgorithmNodeId) -> &mut S {
         &mut self.nodes[id.index()].style
+    }
+
+    /// Admit this direct flex/grid child to the renderer's static-position
+    /// provider. Buckram selects the narrow participation boundary and keeps
+    /// the resulting rectangle as the K5b formatter output; callers never
+    /// lower a CSS positioning role into the backend style themselves.
+    ///
+    /// The provider is deliberately unavailable outside a flex or grid
+    /// parent. Ordinary block, inline, and table-internal out-of-flow routes
+    /// have separate Buckram formatting boundaries.
+    pub fn enable_flex_grid_static_position_provider(&mut self, id: AlgorithmNodeId)
+    where
+        S: AlgorithmStyle,
+    {
+        let parent = self.nodes[id.index()]
+            .parent
+            .expect("a flex/grid static-position provider requires an attached direct child");
+        assert!(
+            matches!(
+                self.nodes[parent.index()].kind,
+                AlgorithmKind::Flex | AlgorithmKind::Grid
+            ),
+            "the static-position provider belongs only to a flex or grid parent"
+        );
+        assert!(
+            matches!(
+                self.nodes[id.index()].block_style.position,
+                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+            ),
+            "the static-position provider requires an absolute or fixed child"
+        );
+        sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[id.index()].style).position =
+            taffy::Position::Absolute;
     }
 
     /// Supply the resolved CSS inline size to a detached absolute/fixed
@@ -2566,7 +2604,6 @@ mod tests {
                 ..BlockStyle::default()
             },
             Style {
-                position: Position::Absolute,
                 inset: Rect {
                     left: length(18.0_f32),
                     top: length(9.0_f32),
@@ -2594,6 +2631,7 @@ mod tests {
             &[positioned],
             0,
         );
+        tree.enable_flex_grid_static_position_provider(positioned);
 
         tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
 
@@ -2613,7 +2651,6 @@ mod tests {
                 ..BlockStyle::default()
             },
             Style {
-                position: Position::Absolute,
                 inset: Rect {
                     left: length(18.0_f32),
                     top: length(9.0_f32),
@@ -2643,12 +2680,19 @@ mod tests {
             &[positioned],
             0,
         );
+        tree.enable_flex_grid_static_position_provider(positioned);
 
         tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
 
-        assert_eq!((tree.layout(positioned).x, tree.layout(positioned).y), (18.0, 9.0));
         assert_eq!(
-            (tree.static_layout(positioned).x, tree.static_layout(positioned).y),
+            (tree.layout(positioned).x, tree.layout(positioned).y),
+            (18.0, 9.0)
+        );
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
             (85.0, 80.0)
         );
     }

@@ -2866,8 +2866,7 @@ where
                     child_containing_size,
                 )?;
                 let table_handoff = self.pending_table_handoff.take();
-                let mut taffy_style =
-                    taffy_style_for_box(self.boxes, box_id, &computed, font_size);
+                let mut taffy_style = to_taffy_style(&computed, font_size);
                 apply_replaced_image_size(
                     &mut taffy_style,
                     self.dom,
@@ -2886,6 +2885,7 @@ where
                     &children,
                     vec![box_id],
                 );
+                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
                 if let Some((grid, cell_nodes)) = table_handoff {
                     self.pending_tables.push(PendingTable {
                         table: box_id,
@@ -2977,8 +2977,7 @@ where
                         }
                         children.push(child_node);
                     }
-                    let mut taffy_style =
-                        taffy_style_for_box(self.boxes, box_id, &computed, font_size);
+                    let mut taffy_style = to_taffy_style(&computed, font_size);
                     let logical_wrapper =
                         wrapper_uses_logical_block_axis(&mut taffy_style, self.boxes[box_id].flow);
                     if wrapper_needs_float_fallback(self.boxes, box_id, &taffy_style) {
@@ -3003,6 +3002,12 @@ where
                         &children,
                         vec![box_id],
                     );
+                    enable_flex_grid_static_position_provider(
+                        &mut self.tree,
+                        self.boxes,
+                        box_id,
+                        node,
+                    );
                     if let Some(pending) = self
                         .pending_tables
                         .iter_mut()
@@ -3025,6 +3030,7 @@ where
                     &children,
                     vec![box_id],
                 );
+                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
                 if supports_nested_float_state(&self.boxes[box_id], block_style, kind) {
                     self.tree.enable_nested_float_state(node);
                 }
@@ -3872,8 +3878,7 @@ where
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 };
-                let mut taffy_style =
-                    taffy_style_for_box(self.boxes, box_id, &computed, font_size);
+                let mut taffy_style = to_taffy_style(&computed, font_size);
                 taffy_style.size.width =
                     dimension_with_basis(computed.width, font_size, containing_size.0);
                 taffy_style.size.height =
@@ -3904,6 +3909,7 @@ where
                     &children,
                     Some(box_id),
                 );
+                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
                 // K4c5b: Buckram owns this table's columns. They are computed
                 // before the main layout pass, once the whole tree exists and
                 // intrinsic queries can run, and pinned as explicit tracks.
@@ -4041,8 +4047,7 @@ where
                         }
                         children.push(child_node);
                     }
-                    let mut taffy_style =
-                        taffy_style_for_box(self.boxes, box_id, &computed, font_size);
+                    let mut taffy_style = to_taffy_style(&computed, font_size);
                     let logical_wrapper =
                         wrapper_uses_logical_block_axis(&mut taffy_style, self.boxes[box_id].flow);
                     if wrapper_needs_float_fallback(self.boxes, box_id, &taffy_style) {
@@ -4066,6 +4071,12 @@ where
                         taffy_style,
                         &children,
                         Some(box_id),
+                    );
+                    enable_flex_grid_static_position_provider(
+                        &mut self.tree,
+                        self.boxes,
+                        box_id,
+                        node,
                     );
                     if let Some(pending) = self
                         .pending_tables
@@ -4095,6 +4106,7 @@ where
                     &children,
                     Some(box_id),
                 );
+                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
                 if supports_nested_float_state(&self.boxes[box_id], block_style, kind) {
                     self.tree.enable_nested_float_state(node);
                 }
@@ -6292,9 +6304,9 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             x: overflow(computed.overflow_x),
             y: overflow(computed.overflow_y),
         },
-        // Buckram owns every CSS positioning category. The generic scratch
-        // formatter always receives an in-flow value; the narrow flex/grid
-        // static-position provider opts into its backend item role below.
+        // Buckram owns every CSS positioning category. The scratch formatter
+        // starts in flow; only Buckram's explicit flex/grid static-position
+        // provider changes its private backend role after attachment.
         position: Position::Relative,
         // Sticky geometry is a retained Buckram scroll constraint. The
         // scratch formatter receives no inset so it produces only the normal
@@ -6406,33 +6418,33 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
     }
 }
 
-/// Taffy's absolute item role survives only where its flex/grid algorithms
-/// still provide the K5b static rectangle. Ordinary block, inline, and table
-/// routes retain their out-of-flow participation in Buckram and never lower
-/// it through the backend style.
-fn taffy_style_for_box<Id>(
-    boxes: &buckram::CssBoxTree<Id>,
-    box_id: BoxId,
-    computed: &ComputedValues,
-    font_size: f32,
-) -> Style
-where
+/// The K5b flex/grid provider is selected only after the direct child is
+/// attached to the scratch parent. Livery supplies generated CSS ownership;
+/// Buckram owns the narrow renderer-role transition and retains the static
+/// rectangle it yields for the later K5d equation.
+fn enable_flex_grid_static_position_provider<Id, Context, Source>(
+    tree: &mut AlgorithmTree<Style, Context, Source>,
+    boxes: &GeneratedBoxTree<Id>,
+    container: BoxId,
+    container_node: AlgorithmNodeId,
+) where
     Id: Copy + Eq + Hash,
 {
-    let mut style = to_taffy_style(computed, font_size);
-    let needs_flex_or_grid_static_provider = matches!(
-        boxes[box_id].positioning,
-        PositioningScheme::Absolute | PositioningScheme::Fixed
-    ) && boxes[box_id].parent().is_some_and(|parent| {
-        matches!(
-            boxes[parent].display.inside,
-            Some(DisplayInside::Flex | DisplayInside::Grid)
-        )
-    });
-    if needs_flex_or_grid_static_provider {
-        style.position = Position::Absolute;
+    if !matches!(
+        boxes[container].display.inside,
+        Some(DisplayInside::Flex | DisplayInside::Grid)
+    ) {
+        return;
     }
-    style
+    let children = tree.children(container_node).to_vec();
+    for child in children {
+        if matches!(
+            tree.block_style(child).position,
+            BuckramBlockPosition::Absolute | BuckramBlockPosition::Fixed
+        ) {
+            tree.enable_flex_grid_static_position_provider(child);
+        }
+    }
 }
 
 fn grid_auto_flow(value: CssGridAutoFlow) -> GridAutoFlow {

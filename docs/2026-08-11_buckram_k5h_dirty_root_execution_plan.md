@@ -182,22 +182,31 @@ The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
 second pass; an out-of-flow subtree no longer makes its ordinary block parent
-fall back to Taffy. Flex and grid retain the one remaining backend
-static-position provider; inline and remaining table-internal absolute/fixed
-routes remain separate.
-The generic source lowering is deleted, but the scoped flex/grid provider must
-be replaced before Taffy's position role can vanish entirely.
+fall back to Taffy. Inline and remaining table-internal absolute/fixed routes
+remain separate.
+
+The flex/grid static-position provider is now a narrow Buckram adapter
+capability, selected only for an attached direct absolute or fixed child of a
+flex or grid scratch parent. Livery no longer lowers a CSS positioning role
+into a renderer style. The adapter owns the private renderer-role transition
+and exposes only its pre-inset static rectangle to K5d;
+`grid_static_layout_uses_the_item_area_before_insets`,
+`flex_static_layout_keeps_alignment_when_insets_place_the_item`, and
+`absolute_flex_and_grid_children_keep_their_native_static_rectangles` pin the
+provider's unit and live behavior. The renderer still supplies this one
+specialized flex/grid result, so its private position role cannot vanish until
+Buckram has an equivalent flex/grid static-position algorithm.
 
 ## Next replacement seam
 
 1. Compare each incremental result with the fresh-final-document harness.
-2. Move flex, grid, inline, and the remaining table-internal out-of-flow
-   participation to equivalent Buckram-owned routes before deleting the
-   remaining flex/grid backend position provider. Table row groups, rows, and
-   cells need an explicit zero-track placeholder plus a post-track local
-   formatting/static-position pass; admitting them to the current shared route
-   would let an out-of-flow cell contribute to track sizing and would use a
-   grid-relative rectangle from the wrong source space.
+2. Replace the remaining private flex/grid renderer provider with an
+   equivalent Buckram static-position algorithm. Move inline and the remaining
+   table-internal out-of-flow participation to their own equivalent routes.
+   Table row groups, rows, and cells need an explicit zero-track placeholder
+   plus a post-track local formatting/static-position pass; admitting them to
+   the current shared route would let an out-of-flow cell contribute to track
+   sizing and would use a grid-relative rectangle from the wrong source space.
 
 ## Stop rules
 
