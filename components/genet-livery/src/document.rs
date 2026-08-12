@@ -2010,6 +2010,56 @@ mod tests {
     }
 
     #[test]
+    fn retained_root_splice_keeps_an_unrelated_table_paint_plane_live() {
+        let initial = "<html><body><div id=flex><div id=child>child</div></div><table id=table><tbody><tr><td>cell</td></tr></tbody></table></body></html>";
+        let final_document = "<html><body><div id=flex style=\"width: 180px\"><div id=child>child</div></div><table id=table><tbody><tr><td>cell</td></tr></tbody></table></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #flex { display: flex; width: 100px; height: 40px; background: red; } \
+                 #child { width: 40px; height: 20px; background: blue; } \
+                 table { display: table; border-spacing: 0; background: green; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 60px; height: 20px; background: yellow; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 160.0));
+        retained.frame(240, 160).expect("initial retained frame");
+        let flex = by_id(retained.dom(), "flex");
+        let child = by_id(retained.dom(), "child");
+        let table = by_id(retained.dom(), "table");
+        let flex_before = generated_ids(&retained, flex);
+        let child_before = generated_ids(&retained, child);
+        let table_before = generated_ids(&retained, table);
+        assert_table_paint_sources_are_live(&retained, table);
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(by_id(dom, "flex"), attr("style"), "width: 180px");
+        });
+        let retained_paint = retained.frame(240, 160).expect("spliced retained frame");
+
+        assert_eq!(generated_ids(&retained, flex), flex_before);
+        assert_ne!(generated_ids(&retained, child), child_before);
+        assert_eq!(generated_ids(&retained, table), table_before);
+        assert_table_paint_sources_are_live(&retained, table);
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 160.0));
+        let fresh_paint = fresh.frame(240, 160).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "fresh table paint must agree with the retained fragment tree",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
     fn background_color_mutation_repaints_without_a_geometry_pass() {
         let initial = "<html><body><div id=target>target</div></body></html>";
         let final_document =

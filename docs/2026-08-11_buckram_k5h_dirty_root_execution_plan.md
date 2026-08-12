@@ -87,6 +87,11 @@ formatter work still recomputes the complete document, while structural DOM or
 display changes and cross-root fragment dependencies fall back to the full
 replacement path.
 
+`retained_root_splice_keeps_an_unrelated_table_paint_plane_live` adds the
+side-plane receipt: a flex-root splice preserves an unrelated table's generated
+identities, every fresh table-paint source resolves to a live retained fragment,
+and the final paint remains equal to a fresh document.
+
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
