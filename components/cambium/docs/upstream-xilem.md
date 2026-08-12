@@ -29,6 +29,35 @@ The initial Cambium patch set adds three defaulted `ElementSplice` operations:
 These operations support keyed and portable views in the Serval backend. Their
 default implementations preserve compatibility for other Meristem backends.
 
+### 2026-08-12 scope cut
+
+Removed vendored surfaces with zero consumers across the family (cambium,
+sprigging, hosts, turnstone, woodshed, mere, hocket, isometry, retinue):
+
+- `views/fork.rs`, `views/run_once.rs` and `view_sequences/without_elements.rs`
+  (side-effect views; the family runs side effects imperatively through
+  app-level effect queues instead)
+- `views/one_of.rs` with `OneOfCtx` and `PhantomElementCtx`, and its
+  integration test
+- `views/memoize.rs` (`Memoize` and `Frozen`), which had no family consumers
+- `message_proxy.rs` (`MessageProxy`, `RawProxy`, `ProxyError`)
+- `environment.rs` (`Environment`, `Provides`, `WithContext`, `Resource` and
+  friends), including the `ViewPathTracker::environment()` hook upstream
+  marked temporary, the `Environment` parameter of
+  `MessageCtx::new`/`finish`, and Cambium's take/restore threading (G2.2)
+- the now-orphaned `hashbrown` dependency (the `Environment` slot map was its
+  only consumer)
+- `docs.rs` (`DocsView`, `DocsViewSequence`, `Fake`, and `Nothing`); its only
+  external reference was one lens doctest, now an explicitly illustrative
+  example
+
+Public trait count fell from 16 to 10. Reconciling these files against a
+future upstream pull means re-evaluating, not re-vendoring: see
+`docs/2026-08-12_meristem_scope_cut_and_component_contract_brief.md` at the
+repository root for the rationale and receipts. The next publish of
+`meristem` needs a semver-breaking bump (0.1.x to 0.2.0) for the removed
+public API.
+
 ## Update policy
 
 Reconcile against a recorded Xilem release or commit. Compare the retained core
@@ -37,4 +66,3 @@ accepting an upstream change.
 
 The `upstream-xilem` remote points to `mark-ik/xilem`. Fetching it does not
 merge the wider Xilem workspace; updates are filtered to the core path first.
-

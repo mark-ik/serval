@@ -13,10 +13,10 @@ use buckram::{
     FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment,
     FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
     IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
-    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, TableCell,
-    TableCellInput, TableCellLayoutInput, TableCellLayoutOutput, TableCellLayoutPass,
-    TableFragmentRole, TableFragments, TableGrid, TableGridInputs, TableGridLines,
-    TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    OverconstrainedInlineAlignment, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize,
+    PositioningScheme, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
+    TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
+    TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
     resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -51,7 +51,7 @@ use taffy::{
 type ImageSources = HashMap<String, Vec<u8>>;
 
 use crate::{
-    InteractionStates, StylePlane, StyleSet, TextSystem,
+    InteractionStates, LegacyDescendantAlignment, StylePlane, StyleSet, TextSystem,
     box_tree::GeneratedBoxTree,
     style::resolve_styles_with_containers,
     table_block::{
@@ -613,7 +613,10 @@ where
     }))
 }
 
-pub(crate) fn layout_with_text_system<D>(
+/// Lay out a retained live document through the caller-owned text system and
+/// image ledger. `LiveryDocument` uses this internally; scripted hosts use the
+/// same entry when their runtime owns the DOM.
+pub fn layout_with_text_system<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     viewport_width: f32,
@@ -688,7 +691,9 @@ where
     )
 }
 
-pub(crate) fn resolve_container_query_styles_with_images<D>(
+/// Resolve container-query styles while retaining the caller-owned image
+/// ledger for intrinsic-size resolution.
+pub fn resolve_container_query_styles_with_images<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     style_set: &StyleSet,
@@ -1676,7 +1681,8 @@ where
                     self.image_sources,
                     font_size,
                 );
-                let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                let block_style =
+                    to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
                 let node = self.tree.new_with_children_and_block_style(
@@ -1783,7 +1789,8 @@ where
                     )) {
                         taffy_style.size.width = width;
                     }
-                    let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                    let block_style =
+                        to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                     let kind = if logical_wrapper {
                         AlgorithmKind::Flex
                     } else {
@@ -2680,7 +2687,8 @@ where
                     self.image_sources,
                     font_size,
                 );
-                let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                let block_style =
+                    to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
                 let node = self.tree.new_with_children_and_block_style(
@@ -2833,7 +2841,8 @@ where
                     )) {
                         taffy_style.size.width = width;
                     }
-                    let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                    let block_style =
+                        to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                     let kind = if logical_wrapper {
                         AlgorithmKind::Flex
                     } else {
@@ -2970,6 +2979,7 @@ where
 
 fn to_block_style<Id>(
     boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
     box_id: BoxId,
     computed: &ComputedValues,
     font_size: f32,
@@ -3098,6 +3108,14 @@ where
         },
         size_containment,
         has_nonlinear_lengths: block_style_has_nonlinear_lengths(computed),
+        overconstrained_inline_alignment: boxes
+            .origin_node(box_id)
+            .and_then(|id| styles.legacy_descendant_alignment(id))
+            .map(|alignment| match alignment {
+                LegacyDescendantAlignment::LineLeft => OverconstrainedInlineAlignment::LineLeft,
+                LegacyDescendantAlignment::Center => OverconstrainedInlineAlignment::Center,
+                LegacyDescendantAlignment::LineRight => OverconstrainedInlineAlignment::LineRight,
+            }),
         is_root_element: css_box.parent().is_none()
             && matches!(css_box.origin, BoxOrigin::Element(_)),
     }
@@ -5032,6 +5050,46 @@ mod tests {
     }
 
     #[test]
+    fn html_align_descendants_adjusts_used_margins_without_rewriting_computed_css() {
+        let dom = StaticDocument::parse(
+            r#"
+                <div style="width: 300px">
+                  <div align="right"><div id="right" style="width: 100px; margin: 10px">right</div></div>
+                  <center><div id="center" style="width: 100px; margin: 10px">center</div></center>
+                  <div align="left" style="direction: rtl"><div id="rtl-left" style="width: 100px; margin: 10px">rtl</div></div>
+                  <div align="right"><div id="auto" style="margin: 10px">auto</div></div>
+                </div>
+            "#,
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body { margin: 0; }"]),
+            &Device::screen(300.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 300.0, 240.0).expect("layout");
+        let by_id = |id| node_by_id(&dom, dom.document(), id).expect("node");
+
+        assert_eq!(layout.get(by_id("right")).expect("right").x, 190.0);
+        assert_eq!(layout.get(by_id("center")).expect("center").x, 100.0);
+        assert_eq!(
+            layout.get(by_id("rtl-left")).expect("rtl left").x,
+            10.0,
+            "line-left remains physical left in horizontal RTL"
+        );
+        assert_eq!(
+            layout.get(by_id("auto")).expect("auto width").x,
+            10.0,
+            "width:auto is outside the legacy over-constrained rule"
+        );
+        assert_eq!(
+            styles.get(by_id("right")).unwrap().margin_left,
+            Margin::Value(CssLengthPercentage::Length(Length::px(10.0))),
+            "the adjustment must remain a used value"
+        );
+    }
+
+    #[test]
     fn absolute_table_geometry_is_a_named_k5_gap_without_backend_dispatch() {
         let dom =
             StaticDocument::parse("<table id=table><tbody><tr><td>one</td></tr></tbody></table>");
@@ -5452,6 +5510,19 @@ mod tests {
             one(InternalTableRole::Wrapper),
             one(InternalTableRole::Grid),
         )
+    }
+
+    #[test]
+    fn ph2_table_width_hint_reaches_buckram_through_computed_css() {
+        let (wrapper, grid) = table_wrapper_and_grid(
+            "<div id=host><table width=50%><tr><td></td></tr></table></div>",
+            "#host { width: 200px; }\
+             table { display: table; table-layout: fixed; border-spacing: 0; }\
+             tr { display: table-row; } td { display: table-cell; padding: 0; }",
+        );
+
+        assert!((wrapper.width - 100.0).abs() < 0.5, "wrapper: {wrapper:?}");
+        assert!((grid.width - 100.0).abs() < 0.5, "grid: {grid:?}");
     }
 
     /// K4e1: the wrapper and the grid are two boxes that split one element.

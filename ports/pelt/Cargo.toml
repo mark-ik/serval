@@ -8,6 +8,7 @@ publish.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
+build = "build.rs"
 
 [lib]
 name = "pelt"
@@ -41,6 +42,9 @@ livery = ["viewer-engine", "pelt-desktop/livery"]
 # runtime on top of the present stack. Boa-only by default (a single engine links
 # under the Windows image-size limit alongside wgpu); add `scripted-nova` for Nova.
 scripted = ["viewer-engine", "pelt-desktop/viewer", "pelt-desktop/scripted"]
+# Explicit live Livery route. The default static and incumbent scripted paths
+# stay unchanged; select it with `--engine livery-scripted`.
+livery-scripted = ["viewer-engine", "pelt-desktop/livery-scripted"]
 scripted-nova = ["scripted", "pelt-desktop/scripted-nova"]
 # The rasterized-PNG reftest lane (V3): `pelt --engine headless --out <file>.png`
 # emits a rendered PNG (human-eyes artifact), and `--reftest <dir>` additionally

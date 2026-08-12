@@ -2,8 +2,16 @@
 
 **Date:** 2026-08-08
 
-**Status:** scoped. PH0 is the first gate after contextual-color C1. This is
-an F0/F3 conformance sidequest and does not enter Buckram.
+**Status:** PH0, the PH1 adapter, and PH2 were implemented locally through
+2026-08-12. Table and table-part dimensions use HTML's
+legacy dimension algorithms, `table[align]` maps to float or harvested logical
+margins, and applicable legacy alignment owners carry HTML's separate
+`align descendants` policy to Buckram's generic used-margin solver. The PH1
+acceptance wall is not closed: the named 40-file WPT family measures **10/40**,
+exposing remaining CSS anonymous-table construction and sizing defects rather
+than another hint mapping (measured 2026-08-12). This remains an F0/F3
+conformance sidequest; Buckram owns the generic used-value calculation but not
+the HTML mappings or owner selection.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md)
 
@@ -14,19 +22,26 @@ both slices change generated color fields and the cascade representation.
 
 ## Ruling
 
-HTML presentational attributes become declarations before computed style.
-They do not become layout corrections.
+CSS-representable HTML presentational attributes become declarations before
+computed style. HTML's explicitly used-value-only algorithms cross a separate
+typed metadata seam. Neither becomes an ad hoc late geometry correction.
 
 The HTML adapter derives typed declarations from element attributes and feeds
 them into Livery's cascade at the author presentational-hint origin. Livery
 remains DOM-language neutral; it knows the origin and priority, not the names
-`cellpadding`, `bgcolor`, or `align`. Buckram sees only the resulting computed
-CSS values.
+`cellpadding`, `bgcolor`, or `align`. For `align descendants`, the adapter also
+selects the deepest applicable HTML owner and carries a line-left, center, or
+line-right token beside computed style. Buckram applies that token only while
+solving used margins.
 
-The immediate defect is the 40-file `table-anonymous-objects-059` through
-`-098` family. Buckram's anonymous table geometry is correct. The HTML test
-table carries `cellpadding="0" cellspacing="0"`; Livery ignores both and
-retains the UA defaults, causing a per-column drift.
+The original defect hypothesis came from the 40-file
+`table-anonymous-objects-059` through `-098` family. Every HTML comparison table
+carries `cellpadding="0" cellspacing="0"`; ignoring both was a real systematic
+drift. The post-implementation measurement disproves the stronger claim that
+Buckram's anonymous table geometry was already correct: only 10 files pass,
+all 20 variants with the CSS-generated table on top fail, and another 10 fail
+with that table underneath because its geometry protrudes. Presentational hints
+remove the HTML-side drift; the remaining 30 are a K4 construction/sizing wall.
 
 ## Standards boundary
 
@@ -120,7 +135,7 @@ Required invariants:
 |---|---|
 | PH0 | cascade origin and adapter contract |
 | PH1 | `cellspacing` and cross-element `cellpadding` |
-| PH2 | table dimensions and alignment |
+| PH2 | table dimensions and alignment, complete 2026-08-12 |
 | PH3 | table color, border, frame, and rules families |
 | PH4 | replaced and embedded element hints; layout fallback deletion |
 | PH5 | broader HTML hint census, mutation closure, and ledger update |
@@ -157,9 +172,12 @@ The provider may precompute a table-to-cell dependency index for one style
 resolution. It must not ask Buckram's generated box tree which cells belong to
 the table; hints precede box generation.
 
-**Receipts:** direct cascade fixtures, nested-table fixtures, attribute
-mutation, and the full `table-anonymous-objects-059` through `-098` family.
-The WPT family is credited here, not to K4.
+**Receipts:** direct cascade fixtures, nested-table fixtures, and attribute
+mutation are green. The full `table-anonymous-objects-059` through `-098`
+family is measured at 10/40. That result is not credited as PH1 completion:
+the HTML comparison side now receives zero spacing and padding through computed
+CSS, while the remaining mismatches are on CSS anonymous-table construction
+and sizing and return to K4.
 
 ### PH2. Dimensions and alignment
 
@@ -178,6 +196,45 @@ do not fold it into the text-align family.
 Use HTML's non-negative-integer, dimension, and nonzero-dimension parsing
 rules rather than CSS declaration parsing. Preserve percentage dimensions as
 percentages until used-value resolution.
+
+**Implemented declaration slices, 2026-08-11:** Livery now activates
+`margin-inline-start` and `margin-inline-end` through a generated logical
+group projection adapted from Stylo's axis/side mapping. `table[align=left]`
+and `table[align=right]` emit `float`; `table[align=center]` emits both logical
+auto margins at the presentational-hint origin. Authored physical margins
+compete at their original cascade coordinates and logical CSSOM reads project
+through the winning writing mode and direction.
+
+The HTML adapter also maps `table[width]`, `table[height]`, `col[width]`,
+row-group and row `height`, and cell `width`/`height` to typed `Size` values.
+It preserves percentages and the exact per-element zero policy. `colgroup`
+does not receive the `col` mapping. Table-part `align` values `center`,
+`middle`, `left`, `right`, and `justify` map to `text-align`; `absmiddle` is
+covered by the HTML static hint. `caption[align=bottom]` maps to
+`caption-side: bottom`. Values are ASCII case-insensitive but are not
+whitespace-trimmed.
+
+Fixtures cover parsing edge cases, invalid diagnostics, authored precedence,
+nested tables, mutation, percentage preservation, and the real table layout
+route. No table-specific late width or height fallback existed to remove; the
+remaining direct attribute-size fallback is replaced-element-only and stays
+owned by PH4.
+
+**Implemented used-value slice, 2026-08-12:** the adapter now records the
+deepest applicable alignment owner for each descendant, suppresses an ancestor
+when the element has its own applicable legacy alignment, and treats invalid
+enumerated values as non-owners. `center`, `div[align]`, and the applicable
+table-part values establish owners; `p[align]`, heading `align`, table
+`absmiddle`, and the table/caption special mappings suppress ancestors without
+inventing a descendant owner where HTML does not define one.
+
+The metadata remains separate from computed CSS. Buckram's generic
+`OverconstrainedInlineAlignment` policy adjusts only a definite-width block
+whose two inline margins are non-auto and whose width equation leaves positive
+space. It preserves line-left/line-right semantics across direction and writing
+mode and leaves width-auto, auto-margin, and overflowing cases on the ordinary
+CSS path. Static ownership, scripted mutation, pure used-value, and end-to-end
+layout receipts are green; computed margins remain authored values.
 
 **Removal receipt:** delete any table-specific late geometry fallback for a
 mapping now represented in computed CSS.

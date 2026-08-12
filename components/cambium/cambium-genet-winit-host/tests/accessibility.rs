@@ -72,7 +72,9 @@ fn the_projection_carries_roles_names_and_boxes() {
     let dom_node = *map
         .get(&install_id)
         .expect("the node maps back to its DOM element, or an action could not route");
-    let bounds = install.bounds().expect("a control needs a box to be reachable");
+    let bounds = install
+        .bounds()
+        .expect("a control needs a box to be reachable");
     let painted = h
         .painted_rect(dom_node)
         .expect("the same control has a laid-out box");
@@ -119,7 +121,9 @@ fn a_focus_request_focuses_without_activating() {
     let mut h = harness();
     let (tree, _) = h.a11y_tree();
     let (cancel, _) = node_named(&tree, "Cancel").expect("Cancel projects");
-    let dom_node = h.a11y_dom_node(cancel).expect("Cancel resolves to a DOM node");
+    let dom_node = h
+        .a11y_dom_node(cancel)
+        .expect("Cancel resolves to a DOM node");
 
     h.a11y_request(A11yAction::Focus, dom_node);
     assert_eq!(

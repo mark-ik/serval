@@ -33,12 +33,10 @@ use cambium::{
     focusable, on_pointer, on_wheel, text,
 };
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommands,
-    read_frame, run,
+    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommands, read_frame,
+    run,
 };
-use genet_probe::{
-    Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario,
-};
+use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
 // ------------------------------------------------------------------ state
 
@@ -106,8 +104,7 @@ fn root(state: &Smoke) -> Child {
             "div",
             (
                 title_bar(),
-                el("div", text("cambium-genet-winit-host smoke"))
-                    .attr("class", "title"),
+                el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
                 focusable(clickable(
                     el("button", text(format!("clicked {} times", state.clicks)))
                         .attr("class", "button"),
@@ -239,10 +236,7 @@ impl Automatable for Probe<'_, '_> {
             .with_field("clicks", state.clicks.to_string())
             .with_field("level", ((state.level * 100.0).round() as i32).to_string())
             .with_field("notches", state.notches.to_string())
-            .with_field(
-                "captures",
-                self.lane.captures.len().to_string(),
-            )
+            .with_field("captures", self.lane.captures.len().to_string())
     }
 
     fn drain_events(&mut self) -> Vec<String> {
@@ -262,7 +256,7 @@ impl Automatable for Probe<'_, '_> {
                     s.note("reset".into());
                 });
                 true
-            }
+            },
             _ => false,
         }
     }
@@ -305,7 +299,7 @@ impl Driveable for Probe<'_, '_> {
                 let _ = window.request_inner_size(winit::dpi::LogicalSize::new(w, h));
                 window.request_redraw();
                 Ok(())
-            }
+            },
             _ => Err(format!("unknown verb: {line}")),
         }
     }
@@ -340,7 +334,7 @@ impl Lane {
                 let blank = frame.is_blank();
                 self.captures
                     .push((name, frame.width, frame.height, digest, blank));
-            }
+            },
             // Not yet presented: put it back and try again next frame.
             None => PENDING.with(|p| *p.borrow_mut() = Some((name, sink))),
         }
@@ -356,8 +350,7 @@ impl Lane {
         // worse than no receipt: at least one frame must have real pixels, and
         // the frames captured around a state change must actually differ.
         let blanks = self.captures.iter().filter(|c| c.4).count();
-        let distinct: std::collections::BTreeSet<u64> =
-            self.captures.iter().map(|c| c.3).collect();
+        let distinct: std::collections::BTreeSet<u64> = self.captures.iter().map(|c| c.3).collect();
         let sizes: std::collections::BTreeSet<(u32, u32)> =
             self.captures.iter().map(|c| (c.1, c.2)).collect();
         let frames_ok = blanks == 0 && distinct.len() > 1 && sizes.len() > 1;
@@ -453,6 +446,8 @@ fn main() {
                 window.request_redraw();
             }
         }),
+        after_wake: Box::new(|_ctx| {}),
+        close_request: Box::new(|_ctx, _request| cambium_genet_winit_host::CloseDisposition::Exit),
         focused_text: Box::new(|_runner: &Runner<Smoke, Logic, Child>| None),
         key_intercept: Box::new(|_runner, _press| false),
     };
@@ -470,7 +465,7 @@ fn main() {
         options,
         // The application takes its end of the window-verb seam and keeps it
         // in state; the caption buttons call it from ordinary handlers.
-        |_window, commands| Init {
+        |_window, commands, _wake| Init {
             state: Smoke {
                 window: commands.clone(),
                 ..Smoke::default()

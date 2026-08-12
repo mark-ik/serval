@@ -32,6 +32,9 @@ independently.
    integration specimen, but Cambium will not grow a competing splitter tree.
 5. Product canvases stay with their applications. Promote a paint leaf after a
    genuine second consumer establishes the shared contract.
+6. A reusable state-owning control takes props in, retains local interaction
+   state, and emits typed events out. The application remains responsible for
+   lowering those events into product actions and effects.
 
 ## Ordered work
 
@@ -173,6 +176,33 @@ card, detail panel, or C1 popover.
 
 Done when an accordion and recursive tree share one disclosure primitive, and
 the summary body is reused by two applications.
+
+### C6. Component boundary
+
+**Landed 2026-08-12.** `cambium::component` owns the narrow erasure seam for a
+reusable state-owning control: parent props in, retained local state, typed
+events out. Its reconciler receives previous and current props, so an external
+change can update a controlled axis without resetting component-owned
+interaction state. The retained state stores the local model, the previous
+erased child view, and the child's view state. `data-cambium-component` is
+optional caller-owned probe metadata and is not keyed or routing identity.
+
+The focused command-picker proof moves local selection, reconciles a changed
+parent label without resetting that selection, emits activation into the
+parent's event vocabulary, and exposes its probe id on the root. Turnstone's
+omnibar established the opposite boundary: it is an app-owned mirror, so it
+pulls only Cambium's pure `caret_field_children` projection and keeps its keys
+on Turnstone's Action spine.
+
+The catalog carries the boundary's specimen (2026-08-12): a counter whose
+count is component-owned. The headless contract clicks it, changes the
+parent-controlled step without resetting the count, lowers a typed Report
+event into catalog state, and proves teardown drops the local state while a
+remount reinitializes it.
+
+Effects remain application-owned. `GenetAppRunner` returning `Vec<Action>` is
+the outward event seam; it is not a shared effect queue. Lift an effect contract
+only after another application duplicates Turnstone's action-to-effect shape.
 
 ## Catalog refinements
 

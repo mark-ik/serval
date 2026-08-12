@@ -10,15 +10,19 @@
 //! a second DOM copy: script mutations are visible to the next read immediately.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use genet_document_resources::{
     ResolvedDocumentResources, ResourceDelta, ResourceFetcher, ResourceLimits,
 };
 use genet_livery::{
-    CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryPaintList,
-    RestyleStats, RuleMutationError, StyleSet, ViewportSizes, canonicalize_specified_value,
-    content_box_size, emit_paint_list, layout, resolve_container_query_styles, resolve_styles,
+    CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryLayout,
+    LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextSystem,
+    ViewportSizes, canonicalize_specified_value, content_box_size,
+    emit_paint_list_with_text_system_scrolled_with_images, hit_test, layout,
+    layout_with_text_system, resolve_container_query_styles,
+    resolve_container_query_styles_with_images, resolve_styles,
     used_value_context as layout_used_value_context,
 };
 use genet_scripted_dom::{NodeId, ScriptedDom};
@@ -43,7 +47,21 @@ struct LiveryState {
     render_cursor: u64,
     render_generation: u64,
     cached_frame: Option<((u32, u32), LiveryPaintList)>,
+    frame: Option<LiveFrame>,
+    text: TextSystem,
+    image_sources: HashMap<String, Vec<u8>>,
+    font_sources: HashMap<String, Vec<u8>>,
+    scroll: (f32, f32),
     live_sheets: Option<LiveStylesheetSource>,
+}
+
+/// Geometry retained beside a live runtime-owned DOM. It is deliberately not a
+/// second DOM or a `LiveryDocument`: the runtime remains the mutable owner.
+struct LiveFrame {
+    viewport: (u32, u32),
+    styles: StylePlane<NodeId>,
+    fragments: LiveryLayout<NodeId>,
+    content_extent: (f32, f32),
 }
 
 struct LiveStylesheetSource {
@@ -77,7 +95,47 @@ impl LiveryState {
     /// last paint list. DOM batches are tracked separately by `render_cursor`.
     fn invalidate_frame(&mut self) {
         self.cached_frame = None;
+        self.frame = None;
     }
+}
+
+fn resource_ledgers(
+    resources: &ResolvedDocumentResources,
+) -> (HashMap<String, Vec<u8>>, HashMap<String, Vec<u8>>) {
+    let mut images = HashMap::new();
+    let mut fonts = HashMap::new();
+    for resource in &resources.resources {
+        match resource.kind {
+            genet_document_resources::ResourceKind::Image => {
+                images.insert(resource.authored_url.clone(), resource.bytes.clone());
+                if resource.resolved_url != resource.authored_url {
+                    images.insert(resource.resolved_url.clone(), resource.bytes.clone());
+                }
+            },
+            genet_document_resources::ResourceKind::Font => {
+                fonts.insert(resource.resolved_url.clone(), resource.bytes.clone());
+            },
+        }
+    }
+    (images, fonts)
+}
+
+fn replace_resource_ledger(state: &mut LiveryState, resources: &ResolvedDocumentResources) {
+    let (images, fonts) = resource_ledgers(resources);
+    let images_changed = state.image_sources != images;
+    let fonts_changed = state.font_sources != fonts;
+    if !images_changed && !fonts_changed {
+        return;
+    }
+    state.image_sources = images;
+    if fonts_changed {
+        state.font_sources = fonts;
+        state.text = TextSystem::new();
+        for bytes in state.font_sources.values().cloned() {
+            state.text.register_font_bytes(bytes);
+        }
+    }
+    state.invalidate_frame();
 }
 
 fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
@@ -115,6 +173,7 @@ fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
         (resources, changed)
     };
     if changed {
+        replace_resource_ledger(state, &resources);
         state.styles.replace_author_sheets(&resources.stylesheets);
         state.document_sheets = state.styles.document_sheet_indexes();
         state.session.invalidate();
@@ -151,6 +210,11 @@ impl LiveryCssom {
             render_cursor: 0,
             render_generation: 0,
             cached_frame: None,
+            frame: None,
+            text: TextSystem::new(),
+            image_sources: HashMap::new(),
+            font_sources: HashMap::new(),
+            scroll: (0.0, 0.0),
             live_sheets: None,
         }));
         Self::install_state(runtime, state)
@@ -231,7 +295,7 @@ impl LiveryCssom {
                 sink.borrow_mut().replace_resources(&resources, &initial);
             }
         }
-        let state = Rc::new(RefCell::new(LiveryState {
+        let mut initial_state = LiveryState {
             document_sheets: styles.document_sheet_indexes(),
             styles,
             device,
@@ -241,15 +305,22 @@ impl LiveryCssom {
             render_cursor: mutation_cursor,
             render_generation: 0,
             cached_frame: None,
+            frame: None,
+            text: TextSystem::new(),
+            image_sources: HashMap::new(),
+            font_sources: HashMap::new(),
+            scroll: (0.0, 0.0),
             live_sheets: Some(LiveStylesheetSource {
                 document_url,
                 fetcher,
                 limits,
-                resources,
+                resources: resources.clone(),
                 mutation_cursor,
                 resource_sink,
             }),
-        }));
+        };
+        replace_resource_ledger(&mut initial_state, &resources);
+        let state = Rc::new(RefCell::new(initial_state));
         Self::install_state(runtime, state)
     }
 
@@ -364,7 +435,7 @@ impl LiveryCssom {
             && let Some((cached_viewport, frame)) = &state.cached_frame
             && *cached_viewport == viewport
         {
-            return Ok(frame.clone());
+            return Ok(frame.clone().translated(-state.scroll.0, -state.scroll.1));
         }
 
         let styles = {
@@ -373,33 +444,263 @@ impl LiveryCssom {
                 device,
                 interactions,
                 session,
+                image_sources,
                 ..
             } = &mut *state;
-            resolve_container_query_styles(
+            resolve_container_query_styles_with_images(
                 &host.dom,
                 session.styles(),
                 styles,
                 device,
                 interactions,
+                image_sources,
             )?
         };
-        let fragments = layout(&host.dom, &styles, viewport.0 as f32, viewport.1 as f32)?;
+        let (styles, fragments) = {
+            let viewport_sizes = state.device.viewport_sizes;
+            let LiveryState {
+                text,
+                image_sources,
+                ..
+            } = &mut *state;
+            layout_with_text_system(
+                &host.dom,
+                &styles,
+                viewport.0 as f32,
+                viewport.1 as f32,
+                viewport_sizes,
+                text,
+                image_sources,
+            )?
+        };
+        let content_extent = document_content_extent(&host.dom, &fragments);
+        state.scroll.0 = state
+            .scroll
+            .0
+            .clamp(0.0, (content_extent.0 - viewport.0 as f32).max(0.0));
+        state.scroll.1 = state
+            .scroll
+            .1
+            .clamp(0.0, (content_extent.1 - viewport.1 as f32).max(0.0));
         state.render_generation = state.render_generation.saturating_add(1);
-        let frame = emit_paint_list(
-            &host.dom,
-            &styles,
-            &fragments,
-            DeviceIntSize::new(viewport.0 as i32, viewport.1 as i32),
-            state.render_generation,
-        );
+        let generation = state.render_generation;
+        let frame = {
+            let LiveryState {
+                text,
+                image_sources,
+                ..
+            } = &mut *state;
+            emit_paint_list_with_text_system_scrolled_with_images(
+                &host.dom,
+                &styles,
+                &fragments,
+                DeviceIntSize::new(viewport.0 as i32, viewport.1 as i32),
+                generation,
+                text,
+                &HashMap::new(),
+                image_sources,
+            )
+        };
         state.render_cursor = end;
         state.cached_frame = Some((viewport, frame.clone()));
+        state.frame = Some(LiveFrame {
+            viewport,
+            styles,
+            fragments,
+            content_extent,
+        });
+        let displayed = frame.translated(-state.scroll.0, -state.scroll.1);
         drop(state);
 
         let mut drained = Vec::new();
         host.dom.drain_mutations(&mut drained);
-        Ok(frame)
+        Ok(displayed)
     }
+
+    /// The runtime-visible viewport offset retained by this Livery session.
+    pub fn scroll(&self) -> (f32, f32) {
+        self.state.borrow().scroll
+    }
+
+    /// The most recently rendered viewport. It is `(0, 0)` before the first
+    /// frame so keyboard scrolling remains a no-op until geometry exists.
+    pub fn viewport(&self) -> (u32, u32) {
+        self.state
+            .borrow()
+            .frame
+            .as_ref()
+            .map_or((0, 0), |frame| frame.viewport)
+    }
+
+    /// Apply a wheel delta to the document viewport. Nested overflow routing
+    /// remains in `LiveryDocument`; this scripted bridge has one live viewport
+    /// and never creates a second retained DOM.
+    pub fn scroll_by(&self, dx: f32, dy: f32) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(frame) = state.frame.as_ref() else {
+            return false;
+        };
+        let next = (
+            (state.scroll.0 + dx).clamp(
+                0.0,
+                (frame.content_extent.0 - frame.viewport.0 as f32).max(0.0),
+            ),
+            (state.scroll.1 + dy).clamp(
+                0.0,
+                (frame.content_extent.1 - frame.viewport.1 as f32).max(0.0),
+            ),
+        );
+        let moved = next != state.scroll;
+        state.scroll = next;
+        moved
+    }
+
+    /// Reconcile a script-requested viewport position against the current
+    /// Livery frame. Before the first frame, the request is retained and is
+    /// clamped once geometry exists.
+    pub fn scroll_to(&self, x: f32, y: f32) {
+        let mut state = self.state.borrow_mut();
+        let Some(frame) = state.frame.as_ref() else {
+            state.scroll = (x.max(0.0), y.max(0.0));
+            return;
+        };
+        state.scroll = (
+            x.clamp(
+                0.0,
+                (frame.content_extent.0 - frame.viewport.0 as f32).max(0.0),
+            ),
+            y.clamp(
+                0.0,
+                (frame.content_extent.1 - frame.viewport.1 as f32).max(0.0),
+            ),
+        );
+    }
+
+    /// Scroll a live element's retained fragment into view. Returns false if
+    /// no Livery frame has established the target's geometry yet.
+    pub fn scroll_to_id(&self, id: NodeId) -> bool {
+        let y = {
+            let state = self.state.borrow();
+            state
+                .frame
+                .as_ref()
+                .and_then(|frame| frame.fragments.get(id).map(|rect| rect.y))
+        };
+        let Some(y) = y else {
+            return false;
+        };
+        self.scroll_to(0.0, y);
+        true
+    }
+
+    /// Dispatch a click at the Livery hit-tested live node. The runtime owns
+    /// event propagation; Livery supplies the geometry and the in-page anchor
+    /// default after a listener has had a chance to prevent it.
+    pub fn click_at<E: ScriptEngine>(&self, runtime: &mut Runtime<E>, x: f32, y: f32) -> bool {
+        let target = {
+            let host = runtime.host().borrow();
+            let state = self.state.borrow();
+            let Some(frame) = state.frame.as_ref() else {
+                return false;
+            };
+            hit_test(
+                &host.dom,
+                &frame.styles,
+                &frame.fragments,
+                x + state.scroll.0,
+                y + state.scroll.1,
+            )
+        };
+        let target = target.and_then(|node| {
+            let host = runtime.host().borrow();
+            pointer_event_target(&host.dom, node)
+        });
+        let Some(target) = target else {
+            return false;
+        };
+        let fragment = {
+            let host = runtime.host().borrow();
+            link_fragment(&host.dom, target)
+        };
+        let proceed = runtime
+            .dispatch_event(target.raw(), "click")
+            .unwrap_or(true);
+        if proceed
+            && let Some(fragment) = fragment
+            && let Some(target) = {
+                let host = runtime.host().borrow();
+                find_element_id(&host.dom, host.dom.document(), &fragment)
+            }
+        {
+            let _ = self.scroll_to_id(target);
+        }
+        true
+    }
+}
+
+fn document_content_extent<D: LayoutDom>(dom: &D, fragments: &LiveryLayout<D::NodeId>) -> (f32, f32)
+where
+    D::NodeId: Copy + Eq + std::hash::Hash,
+{
+    fn visit<D: LayoutDom>(
+        dom: &D,
+        fragments: &LiveryLayout<D::NodeId>,
+        node: D::NodeId,
+        extent: &mut (f32, f32),
+    ) where
+        D::NodeId: Copy + Eq + std::hash::Hash,
+    {
+        if let Some(fragment) = fragments.get(node) {
+            extent.0 = extent.0.max(fragment.x + fragment.width);
+            extent.1 = extent.1.max(fragment.y + fragment.height);
+        }
+        for child in dom.dom_children(node) {
+            visit(dom, fragments, child, extent);
+        }
+    }
+
+    let mut extent = (0.0, 0.0);
+    visit(dom, fragments, dom.document(), &mut extent);
+    extent
+}
+
+fn link_fragment<D: LayoutDom>(dom: &D, mut node: D::NodeId) -> Option<String> {
+    loop {
+        if dom.kind(node) == NodeKind::Element
+            && dom
+                .element_name(node)
+                .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("a"))
+            && let Some(href) = dom.attribute(node, &Namespace::default(), &LocalName::from("href"))
+        {
+            return href
+                .strip_prefix('#')
+                .filter(|fragment| !fragment.is_empty())
+                .map(str::to_owned);
+        }
+        node = dom.parent(node)?;
+    }
+}
+
+/// A layout hit can land on a text fragment, but DOM pointer listeners are
+/// attached to elements. Walk that text node to the nearest element before
+/// dispatching through the scripted runtime.
+fn pointer_event_target<D: LayoutDom>(dom: &D, mut node: D::NodeId) -> Option<D::NodeId> {
+    loop {
+        if dom.kind(node) == NodeKind::Element {
+            return Some(node);
+        }
+        node = dom.parent(node)?;
+    }
+}
+
+fn find_element_id<D: LayoutDom>(dom: &D, node: D::NodeId, id: &str) -> Option<D::NodeId> {
+    if dom.kind(node) == NodeKind::Element
+        && dom.attribute(node, &Namespace::default(), &LocalName::from("id")) == Some(id)
+    {
+        return Some(node);
+    }
+    dom.dom_children(node)
+        .find_map(|child| find_element_id(dom, child, id))
 }
 
 struct LiveryInlineStyle;

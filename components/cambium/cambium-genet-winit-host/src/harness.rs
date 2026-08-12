@@ -29,7 +29,8 @@ use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
 use crate::meristem_bounds::RootView;
 use crate::{
-    Host, HostHooks, HostOptions, HostState, Init, KeyPress, Runner, WindowCommands,
+    CloseRequest, Host, HostHooks, HostOptions, HostState, HostWake, Init, KeyPress, Runner,
+    WindowCommands,
 };
 
 /// A windowless host for deterministic tests. See the module docs.
@@ -52,6 +53,8 @@ where
         frame: Box::new(|_| false),
         after_dispatch: Box::new(|_| {}),
         after_frame: Box::new(|_| {}),
+        after_wake: Box::new(|_| {}),
+        close_request: Box::new(|_, _| crate::CloseDisposition::Exit),
         focused_text: Box::new(|_| None),
         key_intercept: Box::new(|_, _| false),
     }
@@ -107,6 +110,41 @@ where
         self.host.s.commands.clone()
     }
 
+    /// The thread-safe wake handle an actor or worker would receive from the
+    /// headed host. Call [`process_wake`](Self::process_wake) to give the
+    /// windowless event loop its turn.
+    pub fn wake(&self) -> HostWake {
+        self.host.wake.clone()
+    }
+
+    /// Process one queued application wake, then relayout as the headed host's
+    /// redraw would. Returns whether a wake was pending.
+    pub fn process_wake(&mut self) -> bool {
+        let woke = self.host.process_wake();
+        if woke {
+            self.relayout();
+        }
+        woke
+    }
+
+    /// Deliver a native or application-requested close through the same policy
+    /// hook the headed host uses.
+    pub fn request_close(&mut self, request: CloseRequest) {
+        self.host.request_close(request);
+    }
+
+    /// Whether the close policy hid the window while retaining the host state.
+    pub fn hidden(&self) -> bool {
+        self.host.s.hidden
+    }
+
+    /// Run the ordinary post-dispatch path, including any queued window
+    /// commands. This is useful when a test needs to prove an app-command
+    /// close shares the native close policy.
+    pub fn after_dispatch(&mut self) {
+        self.host.after_dispatch();
+    }
+
     /// Build a harness with the application's own hooks — the form a consumer
     /// uses when the behavior under test includes its `after_dispatch` sync or
     /// its `focused_text` seam.
@@ -135,12 +173,14 @@ where
         ));
         s.sheet = sheet;
         s.runner = Some(Runner::new(dom, logic, state));
+        let wake = HostWake::new(s.wake_pending.clone(), std::sync::Arc::new(|| {}));
         Self {
             host: Host {
                 options,
                 init: None,
                 hooks,
                 s,
+                wake,
             },
         }
     }
@@ -323,10 +363,9 @@ where
     /// opposite sign; the negation here is the same one `wheel_delta_from_winit`
     /// applies, so a test states the delta it means.)
     pub fn wheel(&mut self, dx: f32, dy: f32) {
-        self.host
-            .wheel(winit::event::MouseScrollDelta::PixelDelta(
-                winit::dpi::PhysicalPosition::new(-dx as f64, -dy as f64),
-            ));
+        self.host.wheel(winit::event::MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(-dx as f64, -dy as f64),
+        ));
         self.relayout();
     }
 
@@ -410,7 +449,8 @@ where
         accesskit::TreeUpdate,
         std::collections::HashMap<accesskit::NodeId, NodeId>,
     ) {
-        let (Some(runner), Some(layout)) = (self.host.s.runner.as_ref(), self.host.s.layout.as_ref())
+        let (Some(runner), Some(layout)) =
+            (self.host.s.runner.as_ref(), self.host.s.layout.as_ref())
         else {
             panic!("a11y_tree needs a laid-out harness: call layout_at first");
         };

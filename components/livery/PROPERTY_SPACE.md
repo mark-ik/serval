@@ -9,9 +9,9 @@ Regenerate after fork realignments or livery property additions.
 | stylo full database | 427 | 92 |
 | excluded (gecko-only engine) | 172 | 24 |
 | servo-lane destination | 255 | 68 |
-| implemented in livery | 99 | 23 |
+| implemented in livery | 101 | 23 |
 | of which livery-local (outside the servo lane) | 2 | 0 |
-| remaining (known, unimplemented) | 158 | 43 |
+| remaining (known, unimplemented) | 156 | 43 |
 
 ## The consumed-set bar (cutover plan F0)
 
@@ -224,12 +224,10 @@ are covered, with the upstream decomposition still ahead of them.
 - `list-style-position` (inherited, discrete)
 - `quotes` (inherited, discrete)
 
-### margin (5)
+### margin (3)
 
 - `margin-block-end` (logical)
 - `margin-block-start` (logical)
-- `margin-inline-end` (logical)
-- `margin-inline-start` (logical)
 - `overflow-clip-margin`
 
 ### outline (4)

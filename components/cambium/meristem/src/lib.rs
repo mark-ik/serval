@@ -33,10 +33,8 @@ pub use anymore;
 
 mod element;
 mod element_splice;
-mod environment;
 mod message;
 mod message_context;
-mod message_proxy;
 mod view;
 mod view_ctx;
 mod view_sequence;
@@ -47,23 +45,14 @@ mod views;
 
 pub use self::element::{AnyElement, Mut, NoElement, SuperElement, ViewElement};
 pub use self::element_splice::{AppendVec, ElementSplice};
-pub use self::environment::{
-    Environment, EnvironmentItem, OnActionWithContext, Provides, Rebuild, Resource, Slot,
-    WithContext, on_action_with_context, provides, with_context,
-};
 pub use self::message::{DynMessage, MessageResult, SendMessage};
 pub use self::message_context::MessageCtx;
-pub use self::message_proxy::{MessageProxy, ProxyError, RawProxy};
 pub use self::view::{View, ViewMarker};
 pub use self::view_ctx::{ViewId, ViewPathTracker};
 pub use self::view_sequence::{Count, ViewSequence};
-pub use self::view_sequences::{WithoutElements, without_elements};
 pub use self::views::{
-    Fork, Frozen, Lens, MapMessage, MapState, Memoize, OrphanView, RunOnce, fork, frozen, lens,
-    map_action, map_message_result, map_state, memoize, one_of, run_once, run_once_raw,
+    Lens, MapMessage, MapState, OrphanView, lens, map_action, map_message_result, map_state,
 };
 
 // TODO - Remove this re-export and rewrite code importing it
 pub use self::views::AnyView;
-
-pub mod docs;

@@ -59,6 +59,7 @@ where
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
                 close: &mut self.s.close_requested,
+                wake: &self.wake,
                 capture: &mut self.s.pending_capture,
                 pointer: &mut self.s.pending_pointer,
                 window_commands: &commands,
@@ -101,7 +102,7 @@ where
                 if !muts.is_empty() {
                     let _ = layout.apply(&*dom_ref, &sheets, &muts);
                 }
-            }
+            },
             _ => {
                 let mut layout = IncrementalLayout::new(&*dom_ref, &sheets, lw, lh);
                 // Carry BOTH scroll planes across rebuilds: element scroll and
@@ -113,7 +114,7 @@ where
                 }
                 self.s.layout = Some(layout);
                 self.s.layout_size = (lw, lh);
-            }
+            },
         }
         let layout = self.s.layout.as_ref().expect("layout just ensured");
         let anim_active = layout.has_active_animations();
@@ -164,10 +165,7 @@ where
         };
         window.set_ime_cursor_area(
             winit::dpi::LogicalPosition::new(rect.x as f64, rect.y as f64),
-            winit::dpi::LogicalSize::new(
-                rect.width.max(2.0) as f64,
-                rect.height.max(1.0) as f64,
-            ),
+            winit::dpi::LogicalSize::new(rect.width.max(2.0) as f64, rect.height.max(1.0) as f64),
         );
     }
 
@@ -327,7 +325,13 @@ where
             ) else {
                 return;
             };
-            a11y.sync(window, &dom_ref, layout, &mut self.s.leaves, self.s.last_focus)
+            a11y.sync(
+                window,
+                &dom_ref,
+                layout,
+                &mut self.s.leaves,
+                self.s.last_focus,
+            )
         };
         self.apply_a11y_requests(&requests);
     }
@@ -347,7 +351,7 @@ where
                     // No cursor is involved, so the local point is genuinely the
                     // element's own origin rather than a hit position.
                     runner.dispatch_click(request.node, PointerClick::at((0.0, 0.0)));
-                }
+                },
                 A11yAction::Focus => runner.set_focus(Some(request.node)),
             }
         }
@@ -412,10 +416,16 @@ where
             return;
         };
         if let Some(old) = old {
-            runner.dispatch_hover(old, HoverEvent::new(HoverPhase::Leave, (0.0, 0.0), (0.0, 0.0)));
+            runner.dispatch_hover(
+                old,
+                HoverEvent::new(HoverPhase::Leave, (0.0, 0.0), (0.0, 0.0)),
+            );
         }
         if let Some(new) = hit {
-            runner.dispatch_hover(new, HoverEvent::new(HoverPhase::Enter, (0.0, 0.0), (0.0, 0.0)));
+            runner.dispatch_hover(
+                new,
+                HoverEvent::new(HoverPhase::Enter, (0.0, 0.0), (0.0, 0.0)),
+            );
         }
         self.after_dispatch();
     }

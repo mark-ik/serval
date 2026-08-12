@@ -99,7 +99,9 @@ impl LiveryPaintList {
             .map(|image| (image.width as f32, image.height as f32))
     }
 
-    pub(crate) fn translated(mut self, x: f32, y: f32) -> Self {
+    /// Translate an already-emitted frame into the current viewport scroll
+    /// coordinate system without rebuilding paint commands.
+    pub fn translated(mut self, x: f32, y: f32) -> Self {
         if x == 0.0 && y == 0.0 {
             return self;
         }
@@ -218,7 +220,10 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_paint_list_with_text_system_scrolled_with_images<D>(
+/// Emit a retained Livery frame with caller-owned shaped text, nested scroll
+/// offsets, and image bytes. This is public for a live runtime that owns the
+/// DOM outside `LiveryDocument`.
+pub fn emit_paint_list_with_text_system_scrolled_with_images<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     fragments: &LiveryLayout<D::NodeId>,

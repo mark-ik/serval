@@ -622,7 +622,11 @@ pub(crate) mod windowed {
     /// scripted profiles share the shell.
     pub(crate) struct ViewerApp<C: ViewerContent> {
         config: StaticViewerConfig,
-        doc: C,
+        // A live scripted document carries its DOM, JS runtime, and retained
+        // Livery session. Keep the generic viewer payload off the Windows UI
+        // thread's stack; static content remains source-compatible through Box's
+        // transparent dereference.
+        doc: Box<C>,
         window: Option<Arc<Window>>,
         host: Option<SurfaceHost>,
         width: u32,
@@ -647,7 +651,7 @@ pub(crate) mod windowed {
                 height: config.size.map_or(600, |size| size.1),
                 scale_factor: 1.0,
                 config,
-                doc,
+                doc: Box::new(doc),
                 window: None,
                 host: None,
                 redraws: 0,

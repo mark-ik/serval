@@ -6,19 +6,15 @@ use alloc::vec::Vec;
 
 use anymore::AnyDebug;
 
-use crate::{DynMessage, Environment, ViewId};
+use crate::{DynMessage, ViewId};
 
 /// The `MessageCtx` is used in [`View::message`](crate::View::message).
 ///
 /// It contains the full current "target" path for message routing, along with
 /// where we are along that path.
-/// Additionally, it also provides access to the current [`Environment`],
-/// allowing the resources for the current view tree location to be accessed.
 // TODO: Is it OK for this debug to be load bearing? It probably shouldn't be a derive.
 #[derive(Debug)]
 pub struct MessageCtx {
-    // TODO: Just plain pub?
-    pub(crate) environment: Environment,
     full_id_path: Vec<ViewId>,
     id_path_index: usize,
     message: Option<DynMessage>,
@@ -113,12 +109,8 @@ impl MessageCtx {
     /// Creates a new message context.
     ///
     /// End-users of Xilem do not need to use this function.
-    ///
-    /// For driver implementers, the provided environment should your app's global environment.
-    /// This can be recovered by [`finish`](Self::finish).
-    pub fn new(environment: Environment, target_id_path: Vec<ViewId>, message: DynMessage) -> Self {
+    pub fn new(target_id_path: Vec<ViewId>, message: DynMessage) -> Self {
         Self {
-            environment,
             full_id_path: target_id_path,
             id_path_index: 0,
             message: Some(message),
@@ -126,14 +118,13 @@ impl MessageCtx {
     }
 
     /// Unwraps this `MessageCtx` into its constituent parts.
-    pub fn finish(self) -> (Environment, Vec<ViewId>, Option<DynMessage>) {
+    pub fn finish(self) -> (Vec<ViewId>, Option<DynMessage>) {
         let Self {
-            environment,
             full_id_path,
             message,
             ..
         } = self;
-        (environment, full_id_path, message)
+        (full_id_path, message)
     }
 }
 
@@ -142,17 +133,16 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{DynMessage, Environment, MessageCtx, ViewId};
+    use crate::{DynMessage, MessageCtx, ViewId};
 
     #[test]
     fn take_path_full_path() {
-        let env = Environment::new();
         let path = [0, 4, 3, 2, 1, 0]
             .into_iter()
             .map(ViewId::new)
             .collect::<Vec<_>>();
 
-        let mut ctx = MessageCtx::new(env, path.clone(), DynMessage::new(()));
+        let mut ctx = MessageCtx::new(path.clone(), DynMessage::new(()));
         for element in &path {
             let next = ctx.take_first().unwrap();
             assert_eq!(next, *element);
@@ -175,19 +165,17 @@ mod tests {
     )]
     #[should_panic(expected = "Can't take a message that has not reached its target")]
     fn take_message_nonempty_path() {
-        let env = Environment::new();
         let path = vec![ViewId::new(1)];
 
-        let mut ctx = MessageCtx::new(env, path.clone(), DynMessage::new(()));
+        let mut ctx = MessageCtx::new(path.clone(), DynMessage::new(()));
         ctx.take_message::<()>();
     }
 
     #[test]
     fn take_message_wrong_type() {
-        let env = Environment::new();
         let path = vec![];
 
-        let mut ctx = MessageCtx::new(env, path.clone(), DynMessage::new(()));
+        let mut ctx = MessageCtx::new(path.clone(), DynMessage::new(()));
         let took = ctx.take_message::<u32>();
         assert!(took.is_none());
         let () = *ctx.take_message::<()>().unwrap();
@@ -196,20 +184,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "The message has already been taken.")]
     fn take_message_twice() {
-        let env = Environment::new();
         let path = vec![];
 
-        let mut ctx = MessageCtx::new(env, path.clone(), DynMessage::new(()));
+        let mut ctx = MessageCtx::new(path.clone(), DynMessage::new(()));
         let () = *ctx.take_message::<()>().unwrap();
         ctx.take_message::<()>();
     }
 
     #[test]
     fn maybe_take_message() {
-        let env = Environment::new();
         let path = vec![];
 
-        let mut ctx = MessageCtx::new(env, path.clone(), DynMessage::new(10_u32));
+        let mut ctx = MessageCtx::new(path.clone(), DynMessage::new(10_u32));
         ctx.maybe_take_message::<u32>(|x| {
             assert_eq!(*x, 10);
             false

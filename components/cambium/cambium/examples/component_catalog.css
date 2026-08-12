@@ -674,6 +674,25 @@ textarea {
     grid-column: span 2;
 }
 
+.catalog-counter {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+}
+
+.catalog-counter output {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    min-width: 2ch;
+}
+
+#catalog-counter-reports {
+    color: var(--catalog-muted);
+    display: block;
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+}
+
 .catalog-knob-card {
     flex-direction: column;
     gap: 0.35rem;

@@ -324,6 +324,8 @@ grammar = "<color>"
 seed_values = ["hex"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-color"
+physical_side = "bottom"
 
 [[property]]
 name = "border-bottom-style"
@@ -334,6 +336,8 @@ grammar = "<line-style>"
 seed_values = ["solid"]
 animation = "discrete"
 source = "css_backgrounds_3"
+logical_group = "border-style"
+physical_side = "bottom"
 
 [[property]]
 name = "border-bottom-width"
@@ -344,6 +348,80 @@ grammar = "<line-width>"
 seed_values = ["px"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-width"
+physical_side = "bottom"
+
+[[property]]
+name = "border-block-end-color"
+value_type = "color"
+inherited = false
+initial = "currentcolor"
+grammar = "<color>"
+seed_values = ["hex"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-color"
+logical_side = "block-end"
+
+[[property]]
+name = "border-block-end-style"
+value_type = "border-style"
+inherited = false
+initial = "none"
+grammar = "<line-style>"
+seed_values = ["solid"]
+animation = "discrete"
+source = "css_logical_properties_1"
+logical_group = "border-style"
+logical_side = "block-end"
+
+[[property]]
+name = "border-block-end-width"
+value_type = "border-width"
+inherited = false
+initial = "medium"
+grammar = "<line-width>"
+seed_values = ["px"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-width"
+logical_side = "block-end"
+
+[[property]]
+name = "border-block-start-color"
+value_type = "color"
+inherited = false
+initial = "currentcolor"
+grammar = "<color>"
+seed_values = ["hex"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-color"
+logical_side = "block-start"
+
+[[property]]
+name = "border-block-start-style"
+value_type = "border-style"
+inherited = false
+initial = "none"
+grammar = "<line-style>"
+seed_values = ["solid"]
+animation = "discrete"
+source = "css_logical_properties_1"
+logical_group = "border-style"
+logical_side = "block-start"
+
+[[property]]
+name = "border-block-start-width"
+value_type = "border-width"
+inherited = false
+initial = "medium"
+grammar = "<line-width>"
+seed_values = ["px"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-width"
+logical_side = "block-start"
 
 [[property]]
 name = "border-left-color"
@@ -354,6 +432,8 @@ grammar = "<color>"
 seed_values = ["hex"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-color"
+physical_side = "left"
 
 [[property]]
 name = "border-left-style"
@@ -364,6 +444,8 @@ grammar = "<line-style>"
 seed_values = ["solid"]
 animation = "discrete"
 source = "css_backgrounds_3"
+logical_group = "border-style"
+physical_side = "left"
 
 [[property]]
 name = "border-left-width"
@@ -374,6 +456,8 @@ grammar = "<line-width>"
 seed_values = ["px"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-width"
+physical_side = "left"
 
 [[property]]
 name = "border-right-color"
@@ -384,6 +468,8 @@ grammar = "<color>"
 seed_values = ["hex"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-color"
+physical_side = "right"
 
 [[property]]
 name = "border-right-style"
@@ -394,6 +480,8 @@ grammar = "<line-style>"
 seed_values = ["solid"]
 animation = "discrete"
 source = "css_backgrounds_3"
+logical_group = "border-style"
+physical_side = "right"
 
 [[property]]
 name = "border-right-width"
@@ -404,6 +492,80 @@ grammar = "<line-width>"
 seed_values = ["px"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-width"
+physical_side = "right"
+
+[[property]]
+name = "border-inline-end-color"
+value_type = "color"
+inherited = false
+initial = "currentcolor"
+grammar = "<color>"
+seed_values = ["hex"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-color"
+logical_side = "inline-end"
+
+[[property]]
+name = "border-inline-end-style"
+value_type = "border-style"
+inherited = false
+initial = "none"
+grammar = "<line-style>"
+seed_values = ["solid"]
+animation = "discrete"
+source = "css_logical_properties_1"
+logical_group = "border-style"
+logical_side = "inline-end"
+
+[[property]]
+name = "border-inline-end-width"
+value_type = "border-width"
+inherited = false
+initial = "medium"
+grammar = "<line-width>"
+seed_values = ["px"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-width"
+logical_side = "inline-end"
+
+[[property]]
+name = "border-inline-start-color"
+value_type = "color"
+inherited = false
+initial = "currentcolor"
+grammar = "<color>"
+seed_values = ["hex"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-color"
+logical_side = "inline-start"
+
+[[property]]
+name = "border-inline-start-style"
+value_type = "border-style"
+inherited = false
+initial = "none"
+grammar = "<line-style>"
+seed_values = ["solid"]
+animation = "discrete"
+source = "css_logical_properties_1"
+logical_group = "border-style"
+logical_side = "inline-start"
+
+[[property]]
+name = "border-inline-start-width"
+value_type = "border-width"
+inherited = false
+initial = "medium"
+grammar = "<line-width>"
+seed_values = ["px"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "border-width"
+logical_side = "inline-start"
 
 [[property]]
 name = "border-top-left-radius"
@@ -434,6 +596,8 @@ grammar = "<color>"
 seed_values = ["hex"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-color"
+physical_side = "top"
 
 [[property]]
 name = "border-top-style"
@@ -444,6 +608,8 @@ grammar = "<line-style>"
 seed_values = ["solid"]
 animation = "discrete"
 source = "css_backgrounds_3"
+logical_group = "border-style"
+physical_side = "top"
 
 [[property]]
 name = "border-top-width"
@@ -454,6 +620,8 @@ grammar = "<line-width>"
 seed_values = ["px"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
+logical_group = "border-width"
+physical_side = "top"
 
 [[property]]
 name = "border-collapse"
@@ -847,6 +1015,8 @@ grammar = "auto | <length-percentage> | min-content | max-content | fit-content(
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_sizing_3"
+logical_group = "size"
+physical_axis = "vertical"
 
 [[property]]
 name = "inline-size"
@@ -857,6 +1027,8 @@ grammar = "auto | <length-percentage> | min-content | max-content | fit-content(
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_logical_properties_1"
+logical_group = "size"
+logical_axis = "inline"
 
 [[property]]
 name = "left"
@@ -947,6 +1119,32 @@ grammar = "<length-percentage> | auto"
 seed_values = ["0", "px", "em"]
 animation = "by-computed-value"
 source = "css_box_4"
+logical_group = "margin"
+physical_side = "bottom"
+
+[[property]]
+name = "margin-inline-end"
+value_type = "margin"
+inherited = false
+initial = "0"
+grammar = "<length-percentage> | auto"
+seed_values = ["0", "px", "em", "auto"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "margin"
+logical_side = "inline-end"
+
+[[property]]
+name = "margin-inline-start"
+value_type = "margin"
+inherited = false
+initial = "0"
+grammar = "<length-percentage> | auto"
+seed_values = ["0", "px", "em", "auto"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "margin"
+logical_side = "inline-start"
 
 [[property]]
 name = "margin-left"
@@ -957,6 +1155,8 @@ grammar = "<length-percentage> | auto"
 seed_values = ["0", "px", "em"]
 animation = "by-computed-value"
 source = "css_box_4"
+logical_group = "margin"
+physical_side = "left"
 
 [[property]]
 name = "margin-right"
@@ -967,6 +1167,8 @@ grammar = "<length-percentage> | auto"
 seed_values = ["0", "px", "em"]
 animation = "by-computed-value"
 source = "css_box_4"
+logical_group = "margin"
+physical_side = "right"
 
 [[property]]
 name = "margin-top"
@@ -977,6 +1179,8 @@ grammar = "<length-percentage> | auto"
 seed_values = ["0", "px", "em"]
 animation = "by-computed-value"
 source = "css_box_4"
+logical_group = "margin"
+physical_side = "top"
 
 [[property]]
 name = "min-height"
@@ -1325,6 +1529,8 @@ grammar = "auto | <length-percentage> | min-content | max-content | fit-content(
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_sizing_3"
+logical_group = "size"
+physical_axis = "horizontal"
 
 [[property]]
 name = "z-index"
@@ -1397,54 +1603,6 @@ spec = "https://drafts.csswg.org/css-backgrounds/#the-background-size"
 
 # group: border
 [[unimplemented]]
-name = "border-block-end-color"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-block-end-color"
-
-[[unimplemented]]
-name = "border-block-end-style"
-group = "border"
-inherited = false
-animation = "none"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-block-end-style"
-
-[[unimplemented]]
-name = "border-block-end-width"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-block-end-width"
-
-[[unimplemented]]
-name = "border-block-start-color"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-block-start-color"
-
-[[unimplemented]]
-name = "border-block-start-style"
-group = "border"
-inherited = false
-animation = "none"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-block-start-style"
-
-[[unimplemented]]
-name = "border-block-start-width"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-block-start-width"
-
-[[unimplemented]]
 name = "border-end-end-radius"
 group = "border"
 inherited = false
@@ -1494,54 +1652,6 @@ group = "border"
 inherited = false
 animation = "by-computed-value"
 spec = "https://drafts.csswg.org/css-backgrounds/#border-image-width"
-
-[[unimplemented]]
-name = "border-inline-end-color"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-inline-end-color"
-
-[[unimplemented]]
-name = "border-inline-end-style"
-group = "border"
-inherited = false
-animation = "none"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-inline-end-style"
-
-[[unimplemented]]
-name = "border-inline-end-width"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-inline-end-width"
-
-[[unimplemented]]
-name = "border-inline-start-color"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-inline-start-color"
-
-[[unimplemented]]
-name = "border-inline-start-style"
-group = "border"
-inherited = false
-animation = "none"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-inline-start-style"
-
-[[unimplemented]]
-name = "border-inline-start-width"
-group = "border"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-border-inline-start-width"
 
 [[unimplemented]]
 name = "border-start-end-radius"
@@ -2060,22 +2170,6 @@ inherited = false
 animation = "by-computed-value"
 logical = true
 spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-block-start"
-
-[[unimplemented]]
-name = "margin-inline-end"
-group = "margin"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-inline-end"
-
-[[unimplemented]]
-name = "margin-inline-start"
-group = "margin"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-inline-start"
 
 [[unimplemented]]
 name = "overflow-clip-margin"

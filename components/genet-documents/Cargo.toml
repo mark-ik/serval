@@ -25,6 +25,9 @@ smolweb = [
 scripted = [
     "dep:genet-scripted", "dep:script-engine-api", "dep:script-engine-boa", "dep:url",
 ]
+# Explicit live Livery route. This adds a second scripted construction path;
+# the incumbent `scripted` engine and its Stylo geometry remain unchanged.
+livery-scripted = ["livery", "scripted", "genet-scripted/livery"]
 # Add the Nova engine as a second scripted rung (64-bit targets).
 scripted-nova = ["scripted", "dep:script-engine-nova"]
 

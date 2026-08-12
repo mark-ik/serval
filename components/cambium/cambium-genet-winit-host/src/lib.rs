@@ -18,11 +18,11 @@
 //!
 //! ```ignore
 //! let options = HostOptions { title: "App".into(), ..Default::default() };
-//! run(options, |window| Init { state, logic, sheet }, hooks)
+//! run(options, |window, commands, wake| Init { state, logic, sheet }, hooks)
 //! ```
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,13 +46,41 @@ mod frame;
 mod harness;
 mod input;
 mod spatial;
+mod wake;
 
 pub use capture::{Frame, read_frame};
 pub use decorations::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 pub use harness::{Harness, inert_hooks};
 pub use spatial::Direction;
+pub use wake::HostWake;
 
 use decorations::ClickCadence;
+
+/// An application-level close request. Native window chrome and an app's own
+/// Close command deliberately use the same path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseRequest {
+    /// The operating system asked the window to close.
+    Native,
+    /// The application queued [`WindowCommand::Close`].
+    Command,
+}
+
+/// What the application decided to do with a [`CloseRequest`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseDisposition {
+    /// Keep the window visible and keep the event loop alive.
+    KeepVisible,
+    /// Hide the window but keep the event loop and application state alive.
+    Hide,
+    /// End the event loop.
+    Exit,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HostEvent {
+    Wake,
+}
 
 /// The bound every root view satisfies. A module rather than a trait alias so
 /// the host's signatures stay readable: `V: RootView<State>` means
@@ -76,8 +104,7 @@ pub type Runner<State, Logic, V> = GenetAppRunner<State, Logic, V, ()>;
 
 /// A capture armed by the application, run inside the next frame while the
 /// rasterized view is still alive (scenario screenshots).
-pub type CaptureFn =
-    Box<dyn FnOnce(&SurfaceHost, &wgpu::TextureView, u32, u32) + 'static>;
+pub type CaptureFn = Box<dyn FnOnce(&SurfaceHost, &wgpu::TextureView, u32, u32) + 'static>;
 
 /// Window and pipeline configuration.
 pub struct HostOptions {
@@ -251,6 +278,10 @@ where
     pub set_sheet: &'a mut Option<String>,
     /// Set to end the application after this event.
     pub close: &'a mut bool,
+    /// The cross-thread wake handle for application-owned workers. It has the
+    /// same callback shape Armillary consumes, without making this host depend
+    /// on Armillary or any task runtime.
+    pub wake: &'a HostWake,
     /// Arm a capture of the next presented frame.
     pub capture: &'a mut Option<CaptureFn>,
     /// Pointer events for the host to deliver to itself once this hook
@@ -266,10 +297,12 @@ where
 }
 
 /// A per-frame hook: return `true` to keep frames coming.
-pub type FrameHook<State, Logic, V> =
-    Box<dyn FnMut(&mut AppCtx<'_, State, Logic, V>) -> bool>;
+pub type FrameHook<State, Logic, V> = Box<dyn FnMut(&mut AppCtx<'_, State, Logic, V>) -> bool>;
 /// A plain application hook over the standard context.
 pub type AppHook<State, Logic, V> = Box<dyn FnMut(&mut AppCtx<'_, State, Logic, V>)>;
+/// A request from the OS or an application command to close the root window.
+pub type CloseRequestHook<State, Logic, V> =
+    Box<dyn FnMut(&mut AppCtx<'_, State, Logic, V>, CloseRequest) -> CloseDisposition>;
 /// The text-seam query: which text field has focus, if any.
 pub type FocusedTextHook<State, Logic, V> =
     Box<dyn Fn(&Runner<State, Logic, V>) -> Option<FocusedTextSlot<State>>>;
@@ -294,6 +327,12 @@ where
     /// Runs after a frame is presented and the accessibility tree synced:
     /// scenario pumping and other per-presented-frame work.
     pub after_frame: AppHook<State, Logic, V>,
+    /// Runs after an application-owned worker wakes the host, before the
+    /// redraw it requested. Drain the application's own channel here.
+    pub after_wake: AppHook<State, Logic, V>,
+    /// Decides what a native or application-requested close means. The host
+    /// owns the resulting visibility or exit; the application owns policy.
+    pub close_request: CloseRequestHook<State, Logic, V>,
     /// The text seam: which text field has focus, if any.
     pub focused_text: FocusedTextHook<State, Logic, V>,
     /// Pre-dispatch keyboard intercept (Escape policy and friends). Return
@@ -313,11 +352,15 @@ pub struct Init<State, Logic> {
 }
 
 type InitFn<State, Logic> =
-    Box<dyn FnOnce(&Window, &WindowCommands) -> Init<State, Logic>>;
+    Box<dyn FnOnce(&Window, &WindowCommands, &HostWake) -> Init<State, Logic>>;
 
 /// A logical window dimension from the environment.
 fn env_size(key: &str) -> Option<f64> {
-    std::env::var(key).ok()?.parse::<f64>().ok().filter(|v| *v > 0.0)
+    std::env::var(key)
+        .ok()?
+        .parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0)
 }
 
 pub(crate) struct HostState<State: 'static, Logic, V>
@@ -360,8 +403,16 @@ where
     pub(crate) anim_base: std::time::Instant,
     pub(crate) a11y: Option<A11yHost>,
     pub(crate) a11y_wake: Arc<AtomicBool>,
+    /// Set by [`HostWake`] until the event loop gives the application one drain
+    /// turn. Kept in host state so the harness can exercise the same coalescing
+    /// contract without a native event loop.
+    pub(crate) wake_pending: Arc<AtomicBool>,
     pub(crate) scrollbar_fade: ScrollbarFade<ScrollTarget<NodeId>>,
     pub(crate) close_requested: bool,
+    /// Whether a close disposition hid the root window. The native handle stays
+    /// alive, so a later product extension may restore it without rebuilding
+    /// canonical application state.
+    pub(crate) hidden: bool,
     pub(crate) pending_sheet: Option<String>,
     pub(crate) pending_capture: Option<CaptureFn>,
     /// Pointer events an application hook asked the host to deliver to itself,
@@ -401,8 +452,10 @@ where
             anim_base: std::time::Instant::now(),
             a11y: None,
             a11y_wake: Arc::new(AtomicBool::new(false)),
+            wake_pending: Arc::new(AtomicBool::new(false)),
             scrollbar_fade: ScrollbarFade::new(),
             close_requested: false,
+            hidden: false,
             pending_sheet: None,
             pending_capture: None,
             pending_pointer: Vec::new(),
@@ -422,6 +475,7 @@ where
     pub(crate) init: Option<InitFn<State, Logic>>,
     pub(crate) hooks: HostHooks<State, Logic, V>,
     pub(crate) s: HostState<State, Logic, V>,
+    pub(crate) wake: HostWake,
 }
 
 /// What the event loop should do on an idle turn.
@@ -440,7 +494,7 @@ pub enum IdlePolicy {
 /// Run a single-root Cambium application to completion.
 pub fn run<State, Logic, V>(
     options: HostOptions,
-    init: impl FnOnce(&Window, &WindowCommands) -> Init<State, Logic> + 'static,
+    init: impl FnOnce(&Window, &WindowCommands, &HostWake) -> Init<State, Logic> + 'static,
     hooks: HostHooks<State, Logic, V>,
 ) -> Result<(), winit::error::EventLoopError>
 where
@@ -448,13 +502,23 @@ where
     Logic: FnMut(&State) -> V + 'static,
     V: RootView<State>,
 {
-    let event_loop = EventLoop::new().expect("event loop");
+    let event_loop = EventLoop::<HostEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
+    let s = HostState::new();
+    let pending = s.wake_pending.clone();
+    let proxy = event_loop.create_proxy();
+    let wake = HostWake::new(
+        pending,
+        Arc::new(move || {
+            let _ = proxy.send_event(HostEvent::Wake);
+        }),
+    );
     let mut host = Host {
         options,
         init: Some(Box::new(init)),
         hooks,
-        s: HostState::new(),
+        s,
+        wake,
     };
     event_loop.run_app(&mut host)
 }
@@ -480,7 +544,7 @@ where
                     size.width.max(1) as f32 / scale,
                     size.height.max(1) as f32 / scale,
                 )
-            }
+            },
             None => self.s.layout_size,
         }
     }
@@ -504,6 +568,7 @@ where
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
                 close: &mut self.s.close_requested,
+                wake: &self.wake,
                 capture: &mut self.s.pending_capture,
                 pointer: &mut self.s.pending_pointer,
                 window_commands: &commands,
@@ -512,8 +577,15 @@ where
             match which {
                 Hook::AfterDispatch => (self.hooks.after_dispatch)(&mut ctx),
                 Hook::AfterFrame => (self.hooks.after_frame)(&mut ctx),
+                Hook::AfterWake => (self.hooks.after_wake)(&mut ctx),
             }
         }
+        self.apply_pending();
+    }
+
+    /// Apply requests a hook made after its temporary borrows of the runner and
+    /// view state ended. Shared by normal hooks and close negotiation.
+    fn apply_pending(&mut self) {
         if let Some(sheet) = self.s.pending_sheet.take() {
             self.s.sheet = sheet;
             // Force a full relayout under the new sheet.
@@ -521,6 +593,69 @@ where
             self.s.layout_size = (0.0, 0.0);
         }
         self.drain_pointer();
+    }
+
+    /// Drain one application wake. The caller is the native `UserEvent` path
+    /// or the windowless harness; either way, a worker owns its channel and
+    /// this host only gives it a UI-thread drain turn and a redraw.
+    pub(crate) fn process_wake(&mut self) -> bool {
+        if !self.wake.take_pending() {
+            return false;
+        }
+        self.with_ctx(Hook::AfterWake);
+        if !self.s.hidden {
+            if let Some(window) = self.s.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+        true
+    }
+
+    /// Ask the application whether a close should keep the window visible,
+    /// hide it while its work continues, or terminate the event loop.
+    pub(crate) fn request_close(&mut self, request: CloseRequest) {
+        let disposition = {
+            let logical_size = self.logical_size();
+            let geometry = self.geometry();
+            let commands = self.s.commands.clone();
+            let window = self.s.window.as_deref();
+            let Some(runner) = self.s.runner.as_mut() else {
+                self.s.close_requested = true;
+                return;
+            };
+            let mut ctx = AppCtx {
+                runner,
+                window,
+                logical_size,
+                leaves: &mut self.s.leaves,
+                set_sheet: &mut self.s.pending_sheet,
+                close: &mut self.s.close_requested,
+                wake: &self.wake,
+                capture: &mut self.s.pending_capture,
+                pointer: &mut self.s.pending_pointer,
+                window_commands: &commands,
+                geometry,
+            };
+            (self.hooks.close_request)(&mut ctx, request)
+        };
+        self.apply_pending();
+        if self.s.close_requested {
+            return;
+        }
+        match disposition {
+            CloseDisposition::KeepVisible => {
+                if let Some(window) = self.s.window.as_ref() {
+                    window.request_redraw();
+                }
+            },
+            CloseDisposition::Hide => {
+                if let Some(window) = self.s.window.as_ref() {
+                    window.set_visible(false);
+                }
+                self.s.hidden = true;
+            },
+            CloseDisposition::Exit => self.s.close_requested = true,
+        }
     }
 
     /// Deliver the pointer events an application queued, in order, through the
@@ -544,15 +679,15 @@ where
                     self.hover_dispatch();
                     self.pointer_move();
                     self.drag_text_selection();
-                }
+                },
                 HostPointer::Press(x, y) => {
                     self.s.cursor = (x, y);
                     self.click();
-                }
+                },
                 HostPointer::Release(x, y) => {
                     self.s.cursor = (x, y);
                     self.release();
-                }
+                },
             }
         }
     }
@@ -582,6 +717,7 @@ where
 pub(crate) enum Hook {
     AfterDispatch,
     AfterFrame,
+    AfterWake,
 }
 
 impl<State, Logic, V> Host<State, Logic, V>
@@ -706,7 +842,7 @@ where
     }
 }
 
-impl<State, Logic, V> ApplicationHandler for Host<State, Logic, V>
+impl<State, Logic, V> ApplicationHandler<HostEvent> for Host<State, Logic, V>
 where
     State: 'static,
     Logic: FnMut(&State) -> V + 'static,
@@ -733,7 +869,7 @@ where
                         // The surface is new, so nothing is cached in it: force
                         // a full repaint rather than an incremental one.
                         self.redraw();
-                    }
+                    },
                     Err(e) => eprintln!("[cambium-host] surface re-boot failed: {e}"),
                 }
             }
@@ -799,7 +935,11 @@ where
         let init = self.init.take().expect("resumed once");
         // The application takes its end of the window-verb seam here, stores
         // it in its own state, and calls it from ordinary click handlers.
-        let Init { state, logic, sheet } = init(&window, &self.s.commands.clone());
+        let Init {
+            state,
+            logic,
+            sheet,
+        } = init(&window, &self.s.commands.clone(), &self.wake);
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let runner = Runner::new(dom, logic, state);
         self.s.a11y = Some(A11yHost::new(self.a11y_waker()));
@@ -832,34 +972,44 @@ where
                 // Come straight back: the flag was consumed, and the next idle
                 // turn settles on the real policy once the action is drained.
                 event_loop.set_control_flow(ControlFlow::Poll);
-            }
+            },
             IdlePolicy::Animate(after) => {
                 if let Some(window) = self.s.window.as_ref() {
                     window.request_redraw();
                 }
                 event_loop.set_control_flow(ControlFlow::wait_duration(after));
-            }
+            },
             IdlePolicy::Wait => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HostEvent) {
+        match event {
+            HostEvent::Wake => {
+                self.process_wake();
+            },
+        }
+        if self.s.close_requested {
+            event_loop.exit();
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.request_close(CloseRequest::Native),
             WindowEvent::Resized(size) => {
                 if let Some(surface) = self.s.surface.as_mut() {
                     surface.resize(size.width.max(1), size.height.max(1));
                 }
                 self.note_resize();
-            }
+            },
             WindowEvent::ScaleFactorChanged { .. } => self.note_resize(),
             WindowEvent::ModifiersChanged(mods) => {
                 self.s.modifiers = mods.state();
-            }
+            },
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = self.scale_factor();
-                self.s.cursor =
-                    ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.s.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.update_resize_cursor();
                 self.hover();
                 self.hover_dispatch();
@@ -867,7 +1017,7 @@ where
                 // `on_pointer` element that took the press owns the gesture.
                 self.pointer_move();
                 self.drag_text_selection();
-            }
+            },
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -879,7 +1029,7 @@ where
                         if let Some(w) = self.s.window.as_ref() {
                             let _ = w.drag_resize_window(dir);
                         }
-                    }
+                    },
                     // Then the window frame: a press on an `--app-region: drag`
                     // surface moves the window, and a double-click there
                     // toggles maximize. Both still dispatch into the DOM first,
@@ -887,7 +1037,7 @@ where
                     // `no-drag` control inside it keeps its click.
                     None => self.press_left(),
                 }
-            }
+            },
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
@@ -916,7 +1066,7 @@ where
                     ) {
                         self.s.tab_held = false;
                     }
-                }
+                },
             },
             WindowEvent::RedrawRequested => {
                 self.redraw();
@@ -925,8 +1075,8 @@ where
                 // then let the application pump per-presented-frame work.
                 self.sync_a11y();
                 self.with_ctx(Hook::AfterFrame);
-            }
-            _ => {}
+            },
+            _ => {},
         }
         if self.s.close_requested {
             event_loop.exit();

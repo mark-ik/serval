@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Livery scripted product route</title>
+  <link rel="stylesheet" href="assets/route.css">
+  <style id="face-source">
+    @font-face { font-family: RouteAhem; src: url("../../../../components/genet-layout/Ahem.ttf"); }
+  </style>
+</head>
+<body>
+  <main id="route">
+    <h1 id="headline">Livery scripted route</h1>
+    <p id="status">The parser-blocking script has not run.</p>
+    <img id="badge" src="../../../../resources/servo_64.png" width="64" height="64" alt="Servo icon">
+    <button id="swap">Mutate live DOM</button>
+    <div class="spacer"></div>
+  </main>
+  <script>
+    const status = document.getElementById('status');
+    const headline = document.getElementById('headline');
+    status.textContent = document.styleSheets.length + ' Livery CSS sheets are live.';
+    headline.className = 'ready';
+    document.getElementById('face-source').textContent =
+      '@font-face { font-family: RouteAhem; src: url("../../../../components/genet-layout/Ahem.ttf"); }';
+    document.getElementById('swap').addEventListener('click', () => {
+      status.textContent = 'The live Livery document accepted a click.';
+      document.getElementById('badge').src = '../../../../resources/servo_1024.png';
+    });
+  </script>
+</body>
+</html>

@@ -200,7 +200,10 @@ impl TextSystem {
         self.fonts.len()
     }
 
-    pub(crate) fn register_font_bytes(&mut self, bytes: Vec<u8>) {
+    /// Register host-supplied font bytes with this retained text system. A
+    /// document owner rebuilds the system when its complete resource ledger
+    /// changes, so removed faces cannot remain reachable.
+    pub fn register_font_bytes(&mut self, bytes: Vec<u8>) {
         self.font_context
             .collection
             .register_fonts(parley::fontique::Blob::new(Arc::new(bytes)), None);

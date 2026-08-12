@@ -4,9 +4,9 @@
 
 //! The view context for the Genet backend.
 //!
-//! It holds the `id_path` used for message routing, the [`Environment`], a
-//! shared handle to the [`ScriptedDom`] every view mutates, event-handler
-//! registries, focusability markers, and the portable-child nursery.
+//! It holds the `id_path` used for message routing, a shared handle to the
+//! [`ScriptedDom`] every view mutates, event-handler registries, focusability
+//! markers, and the portable-child nursery.
 //!
 //! Each click or key handler has a propagation phase ([`Handler::capture`]): a
 //! listener registered with `capture == true` fires in
@@ -26,7 +26,7 @@ use crate::DomHandle;
 use crate::pod::{GenetElement, GenetElementMut};
 use genet_scripted_dom::NodeId;
 use layout_dom_api::{LayoutDom, LayoutDomMut};
-use meristem::{Environment, View, ViewId, ViewPathTracker};
+use meristem::{View, ViewId, ViewPathTracker};
 
 /// A registered event handler: its routing view path plus the propagation phase
 /// it listens in.
@@ -64,7 +64,6 @@ pub struct Handler {
 /// same context for drag capture, hover transitions, and scroll routing.
 pub struct GenetCtx {
     id_path: Vec<ViewId>,
-    environment: Environment,
     dom: DomHandle,
     /// `NodeId → `[`Handler`]s for click handlers, in registration order. Usually
     /// one, but a node can carry several stacked `on_click`s; each [`Handler::path`]
@@ -189,7 +188,6 @@ impl GenetCtx {
     pub fn new(dom: DomHandle) -> Self {
         Self {
             id_path: Vec::new(),
-            environment: Environment::new(),
             dom,
             click_handlers: HashMap::new(),
             key_handlers: HashMap::new(),
@@ -294,24 +292,6 @@ impl GenetCtx {
     /// The document handle this context mutates.
     pub fn dom(&self) -> DomHandle {
         self.dom.clone()
-    }
-
-    /// Take the environment out (leaving a fresh empty one) to thread the *real*
-    /// environment through the dispatch message cycle: hand it to
-    /// [`MessageCtx::new`](meristem::MessageCtx::new), then return what
-    /// `MessageCtx::finish` gives back via [`set_environment`](Self::set_environment).
-    /// `Environment` is not `Clone`, so this take / restore is how dispatch shares
-    /// one environment with build (which reads `self.environment` directly through
-    /// the [`ViewPathTracker`] accessor) rather than routing against a throwaway
-    /// `Environment::new()`. (Grab-bag G2.2.)
-    pub fn take_environment(&mut self) -> Environment {
-        std::mem::replace(&mut self.environment, Environment::new())
-    }
-
-    /// Restore the environment after a dispatch message cycle (see
-    /// [`take_environment`](Self::take_environment)).
-    pub fn set_environment(&mut self, environment: Environment) {
-        self.environment = environment;
     }
 
     /// Register `path` (in phase `capture`) as *a* click handler for `node`,
@@ -501,10 +481,6 @@ impl GenetCtx {
 }
 
 impl ViewPathTracker for GenetCtx {
-    fn environment(&mut self) -> &mut Environment {
-        &mut self.environment
-    }
-
     fn push_id(&mut self, id: ViewId) {
         self.id_path.push(id);
     }

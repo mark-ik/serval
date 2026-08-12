@@ -274,7 +274,7 @@ impl<K: Eq + Hash> LeafRegistry<K> {
 }
 
 /// Rendered Path-A command buffers, keyed by leaf key. This is the **leaf-tier
-/// paint cache**: the third of the four retention gates (view `memoize`,
+/// paint cache**: the third of the four retention gates (retained view diff,
 /// `IncrementalLayout`, this, genet-render tile cache). A leaf re-renders only when
 /// it reports `paint_dirty` or has no buffer yet; an unchanged leaf keeps its
 /// cached commands. Neutral: only `paint_list_api` types, so a Genet-side

@@ -105,7 +105,9 @@ impl<E: ScriptEngine> NativeFn<E> for SetTextContent {
         };
         let text_v = cx.arg(1);
         let text = cx.value_to_string(&text_v)?;
-        with_dom::<E, _>(cx, |dom| dom.set_text(NodeId::from_raw(id as usize), &text));
+        with_dom::<E, _>(cx, |dom| {
+            dom.set_text_content(NodeId::from_raw(id as usize), &text)
+        });
         Ok(cx.undefined())
     }
 }

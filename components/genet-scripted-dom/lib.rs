@@ -335,6 +335,32 @@ impl ScriptedDom {
         }
     }
 
+    /// Implement the DOM `textContent` setter without leaving parsed text
+    /// children behind. Text and comment nodes change their own character data;
+    /// container nodes replace their descendants with one new text node (or no
+    /// child for the empty string), so every layout consumer observes the same
+    /// tree as script.
+    pub fn set_text_content(&mut self, node: NodeId, data: &str) {
+        if matches!(self.node(node).kind, NodeKind::Text | NodeKind::Comment) {
+            self.node_mut(node).text = Some(data.to_owned());
+            self.mutations
+                .push(DomMutation::CharacterDataChanged { node });
+            return;
+        }
+
+        let existing = std::mem::take(&mut self.node_mut(node).children);
+        for child in existing {
+            self.node_mut(child).parent = None;
+            self.drop_subtree(child);
+        }
+        self.node_mut(node).text = None;
+        if !data.is_empty() {
+            let text = self.create_text(data);
+            self.attach_silent(node, text);
+        }
+        self.mutations.push(DomMutation::SubtreeReplaced { node });
+    }
+
     /// Create a detached `Document` node (a second document, for
     /// `DOMImplementation.createDocument` / `createHTMLDocument`). Lives in the same
     /// store as the primary document, so `NodeId`s stay globally unique. It is

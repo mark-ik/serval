@@ -5,7 +5,3 @@ mod impl_array;
 mod impl_option;
 mod impl_tuples;
 mod impl_vec;
-mod without_elements;
-
-pub(crate) use self::without_elements::NoElements;
-pub use self::without_elements::{WithoutElements, without_elements};

@@ -38,7 +38,9 @@ impl Frame {
     /// Whether every pixel is fully transparent or black — the signature of a
     /// frame that presented nothing, which a receipt should never call a pass.
     pub fn is_blank(&self) -> bool {
-        self.rgba.chunks_exact(4).all(|p| p[3] == 0 || p[..3] == [0, 0, 0])
+        self.rgba
+            .chunks_exact(4)
+            .all(|p| p[3] == 0 || p[..3] == [0, 0, 0])
     }
 }
 

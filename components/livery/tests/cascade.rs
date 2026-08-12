@@ -411,6 +411,65 @@ fn origin_importance_specificity_and_source_order_follow_the_cascade() {
 }
 
 #[test]
+fn author_presentational_hints_have_their_own_normal_origin() {
+    let values = cascade(
+        None,
+        vec![
+            matched(
+                "color: #111111",
+                Origin::UserAgent,
+                CascadeLayer::Unlayered,
+                100,
+                0,
+            ),
+            matched(
+                "color: #222222",
+                Origin::User,
+                CascadeLayer::Unlayered,
+                100,
+                1,
+            ),
+            matched(
+                "color: #333333",
+                Origin::AuthorPresentationalHint,
+                CascadeLayer::Unlayered,
+                0,
+                2,
+            ),
+            matched(
+                "color: #444444",
+                Origin::Author,
+                CascadeLayer::Unlayered,
+                0,
+                3,
+            ),
+        ],
+    );
+    assert_eq!(values.color, "#444444".parse::<Color>().unwrap());
+
+    let hinted = cascade(
+        None,
+        vec![
+            matched(
+                "color: #222222",
+                Origin::User,
+                CascadeLayer::Unlayered,
+                Specificity::INLINE.0,
+                0,
+            ),
+            matched(
+                "color: #333333",
+                Origin::AuthorPresentationalHint,
+                CascadeLayer::Unlayered,
+                0,
+                1,
+            ),
+        ],
+    );
+    assert_eq!(hinted.color, "#333333".parse::<Color>().unwrap());
+}
+
+#[test]
 fn cascade_layers_reverse_for_important_declarations() {
     let values = cascade(
         None,

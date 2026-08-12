@@ -29,6 +29,7 @@ use layout_dom_api::{LocalName, Namespace, QualName};
 mod action_list;
 mod arrangement;
 mod command_surface;
+mod component;
 mod context;
 mod controls;
 mod detail_panel;
@@ -82,6 +83,7 @@ pub use command_surface::{
     CommandEvent, CommandItem, CommandState, CommandSurfaceKind, command_menu, command_palette,
     command_picker, command_surface,
 };
+pub use component::{COMPONENT_PROBE_ATTR, Component, ComponentView, component};
 pub use context::GenetCtx;
 pub use detail_panel::{DetailRow, DetailSection, detail_panel};
 pub use detail_popover::{
@@ -145,7 +147,8 @@ pub use slider::{Slider, slider};
 pub use splice::GenetChildrenSplice;
 pub use sprigging::{GraphCanvas, GraphViewport, GridColumn, GridSpec};
 pub use styled_field::{
-    FIELD_CARET_CLASS, FieldChild, StyleRange, caret_text_field, styled_text_field, styled_textarea,
+    FIELD_CARET_CLASS, FIELD_PREEDIT_CLASS, FieldChild, StyleRange, caret_field_children,
+    caret_text_field, styled_text_field, styled_textarea,
 };
 pub use summary_body::{SummaryBody, summary_body};
 // Per-tag element-view helpers: `div`, `span`, `p`, `input`, `label`, `a`,
@@ -184,7 +187,7 @@ pub use splice::GenetChildrenSplice as ServalChildrenSplice;
 // `View`/`MessageResult` core traits come along so `impl View<…, GenetCtx, …>`
 // return types and the action path can be named from this crate alone.
 pub use meristem::{
-    AnyView, Lens, MessageResult, View, lens, map_action, map_message_result, map_state, memoize,
+    AnyView, Lens, MessageResult, View, lens, map_action, map_message_result, map_state,
 };
 
 /// The HTML namespace. Cambium views build elements in this namespace, matching

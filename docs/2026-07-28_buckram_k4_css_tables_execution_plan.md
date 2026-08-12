@@ -1296,14 +1296,24 @@ ordinary low-priority author declarations. CSS Cascade Level 5 gives them a
 distinct author presentational-hint origin. The execution plan owns that
 corrected priority; this section remains the WPT attribution receipt.
 
+**Post-hint correction, 2026-08-12:** the full family was rerun after real
+`cellpadding` and `cellspacing` projection and measures **10/40**, not 40/40.
+The native probes above did not cover the complete construction/sizing matrix.
+All 20 even-numbered variants, where the CSS-generated structure is the top
+comparison layer, fail. Ten odd variants also fail because the CSS structure
+underneath protrudes past the HTML comparison. The hint gap was real, but it
+was not the whole family. The remaining 30 return to K4 as anonymous-table
+construction and sizing work; PH owns only the already-correct HTML-side
+declarations.
+
 Its reach is wider than these 40: `border`, `width`, `bgcolor`, and `align`
 are the same mechanism, and every one of them is currently ignored.
 
-**Roadmap effect.** These 40 should not be counted as table work. The largest
-genuinely-table family left is K4g's: `fixed-table-layout-003d*` through
-`003f*` (26), `collapsed-borders-painting-order` (12),
-`collapsing-border-model` (8), `border-conflict-element` (5), and
-`border-collapse-spanning-cells` (4).
+**Roadmap effect.** Ten files leave the table ledger through PH1; 30 remain
+table work. That corrected family is larger than K4g's
+`fixed-table-layout-003d*` through `003f*` (26), followed by
+`collapsed-borders-painting-order` (12), `collapsing-border-model` (8),
+`border-conflict-element` (5), and `border-collapse-spanning-cells` (4).
 
 ## Acceptance ladder for every gate
 

@@ -110,13 +110,16 @@ where
     /// reports where it actually is rather than where it would be unscrolled.
     /// `((0, 0), (0, 0))` when the node has no laid-out box.
     fn local_in(&self, node: NodeId) -> ((f32, f32), (f32, f32)) {
-        let rect = self.s.runner.as_ref().zip(self.s.layout.as_ref()).and_then(
-            |(runner, layout)| {
-                let dom = runner.dom();
-                let dom_ref = dom.borrow();
-                layout.painted_rect(&*dom_ref, node)
-            },
-        );
+        let rect =
+            self.s
+                .runner
+                .as_ref()
+                .zip(self.s.layout.as_ref())
+                .and_then(|(runner, layout)| {
+                    let dom = runner.dom();
+                    let dom_ref = dom.borrow();
+                    layout.painted_rect(&*dom_ref, node)
+                });
         match rect {
             Some((x, y, w, h)) => ((self.s.cursor.0 - x, self.s.cursor.1 - y), (w, h)),
             None => ((0.0, 0.0), (0.0, 0.0)),
@@ -386,16 +389,15 @@ where
             // injected it (on Windows, `VK_PACKET`). Type it, or none of those
             // can type here at all.
             None => match press.injected_text() {
-                Some(text) => cambium::KeyEvent::with_mods(
-                    cambium::Key::Character(text.to_string()),
-                    mods,
-                ),
+                Some(text) => {
+                    cambium::KeyEvent::with_mods(cambium::Key::Character(text.to_string()), mods)
+                },
                 None => {
                     if trace {
                         eprintln!("[cambium-host]   dropped: no Cambium key and no text");
                     }
                     return;
-                }
+                },
             },
         };
         if trace {
@@ -481,7 +483,9 @@ where
         if let Some(target) = scrolled {
             // Wake the scrolled target's overlay bar; the fade clock keeps
             // redraws coming until it hides again.
-            self.s.scrollbar_fade.note(target, std::time::Instant::now());
+            self.s
+                .scrollbar_fade
+                .note(target, std::time::Instant::now());
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();
             }

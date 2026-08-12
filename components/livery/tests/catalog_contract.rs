@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use livery::values::{Direction, WritingMode};
 use livery::{PropertyId, ShorthandId};
 
 const CAMBIUM_CATALOG: &str = include_str!("fixtures/cambium-component-catalog.css");
@@ -116,6 +117,32 @@ fn generated_property_names_round_trip() {
         assert!(!metadata.seed_values.is_empty());
         assert!(metadata.source_url.starts_with("https://www.w3.org/"));
     }
+}
+
+#[test]
+fn generated_logical_groups_project_axes_and_sides() {
+    assert_eq!(
+        PropertyId::InlineSize.to_physical(WritingMode::HorizontalTb, Direction::Ltr),
+        PropertyId::Width
+    );
+    assert_eq!(
+        PropertyId::InlineSize.to_physical(WritingMode::VerticalRl, Direction::Ltr),
+        PropertyId::Height
+    );
+    assert_eq!(
+        PropertyId::MarginInlineStart.to_physical(WritingMode::HorizontalTb, Direction::Rtl),
+        PropertyId::MarginRight
+    );
+    assert_eq!(
+        PropertyId::MarginInlineEnd.to_physical(WritingMode::VerticalLr, Direction::Rtl),
+        PropertyId::MarginTop
+    );
+    assert!(PropertyId::MarginInlineStart.is_logical());
+    assert!(!PropertyId::MarginLeft.is_logical());
+    assert_eq!(
+        PropertyId::MarginInlineStart.metadata().logical_group,
+        Some("margin")
+    );
 }
 
 #[test]

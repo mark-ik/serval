@@ -21,5 +21,4 @@ kurbo = ["dep:kurbo"]
 [dependencies]
 tracing = { workspace = true }
 kurbo = { workspace = true, optional = true }
-hashbrown = { version = "0.17.0", default-features = false, features = ["default-hasher"] }
 anymore = "1.0.0"

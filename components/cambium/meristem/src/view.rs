@@ -57,7 +57,8 @@ pub trait View<State: 'static, Action, Context: ViewPathTracker>: ViewMarker + '
     ///
     /// This often means routing information for messages to child views or view sequences,
     /// to avoid sending outdated views.
-    /// This is also used in [`memoize`](crate::memoize) to store the previously constructed view.
+    /// Wrapper views may also store a previously constructed child view here so
+    /// rebuild can diff it against the next child.
     ///
     /// The type used for this associated type cannot be treated as public API; this is
     /// internal state to the `View` implementation.

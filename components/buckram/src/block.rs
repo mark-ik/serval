@@ -4,7 +4,10 @@
 //! these values at an adapter edge; they do not choose or define the block
 //! algorithm.
 
-use crate::{FlowAxes, IntrinsicSizes, LogicalRect, PhysicalRect, PhysicalSides, PhysicalSize};
+use crate::{
+    FlowAxes, IntrinsicSizes, LogicalRect, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize,
+    WritingMode,
+};
 
 /// A linear used-value expression: an absolute component plus a percentage
 /// of the containing block's inline size.
@@ -133,6 +136,19 @@ pub enum ClearSide {
     Both,
 }
 
+/// Selects which line-relative side receives the remaining space when an
+/// otherwise ordinary block-width equation has two non-auto inline margins.
+///
+/// This is a used-value policy rather than a computed CSS value. Consumers
+/// such as HTML presentational hints can request it without rewriting either
+/// computed margin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OverconstrainedInlineAlignment {
+    LineLeft,
+    Center,
+    LineRight,
+}
+
 /// Standards-owned outer-box inputs used by block flow.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockStyle {
@@ -157,6 +173,9 @@ pub struct BlockStyle {
     pub aspect_ratio: Option<f32>,
     pub size_containment: BlockDimensions<bool>,
     pub has_nonlinear_lengths: bool,
+    /// Optional used-margin adjustment for a definite-width block whose two
+    /// inline margins are non-auto and leave positive remaining space.
+    pub overconstrained_inline_alignment: Option<OverconstrainedInlineAlignment>,
     /// The principal box of the document element. Its margins never collapse.
     pub is_root_element: bool,
 }
@@ -182,6 +201,7 @@ impl Default for BlockStyle {
             aspect_ratio: None,
             size_containment: BlockDimensions::new(false, false),
             has_nonlinear_lengths: false,
+            overconstrained_inline_alignment: None,
             is_root_element: false,
         }
     }
@@ -504,7 +524,7 @@ pub fn solve_in_flow_inline_size_for_available(
     }
 
     let remaining = available_inline_size - border_box - start - end;
-    let (margin_start, margin_end) =
+    let (mut margin_start, mut margin_end) =
         match (margins.inline_start.is_none(), margins.inline_end.is_none()) {
             (true, true) if remaining >= 0.0 => (remaining / 2.0, remaining / 2.0),
             (true, true) => (0.0, remaining),
@@ -518,6 +538,29 @@ pub fn solve_in_flow_inline_size_for_available(
             // physical side. In logical coordinates that is always inline-end.
             (false, false) => (start, end + remaining),
         };
+
+    if preferred.is_some()
+        && margins.inline_start.is_some()
+        && margins.inline_end.is_some()
+        && remaining > 0.0
+        && let Some(alignment) = style.overconstrained_inline_alignment
+    {
+        let line_left = match style.flow.writing_mode {
+            WritingMode::HorizontalTb => PhysicalSide::Left,
+            WritingMode::VerticalRl | WritingMode::SidewaysRl => PhysicalSide::Top,
+            WritingMode::VerticalLr | WritingMode::SidewaysLr => PhysicalSide::Bottom,
+        };
+        let line_left_is_inline_start = line_left == style.containing_flow.inline_start();
+        (margin_start, margin_end) = match (alignment, line_left_is_inline_start) {
+            (OverconstrainedInlineAlignment::Center, _) => {
+                (start + remaining / 2.0, end + remaining / 2.0)
+            },
+            (OverconstrainedInlineAlignment::LineLeft, true)
+            | (OverconstrainedInlineAlignment::LineRight, false) => (start, end + remaining),
+            (OverconstrainedInlineAlignment::LineLeft, false)
+            | (OverconstrainedInlineAlignment::LineRight, true) => (start + remaining, end),
+        };
+    }
 
     UsedInlineSize {
         margin_start,
@@ -1505,6 +1548,63 @@ mod tests {
                 "flow={flow:?}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_alignment_adjusts_only_positive_overconstrained_remaining_space() {
+        let cases = [
+            (
+                OverconstrainedInlineAlignment::LineLeft,
+                FlowAxes::HORIZONTAL_LTR,
+                (10.0, 190.0),
+            ),
+            (
+                OverconstrainedInlineAlignment::Center,
+                FlowAxes::HORIZONTAL_LTR,
+                (100.0, 100.0),
+            ),
+            (
+                OverconstrainedInlineAlignment::LineRight,
+                FlowAxes::HORIZONTAL_LTR,
+                (190.0, 10.0),
+            ),
+            (
+                OverconstrainedInlineAlignment::LineLeft,
+                FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl),
+                (190.0, 10.0),
+            ),
+        ];
+        for (alignment, flow, (margin_start, margin_end)) in cases {
+            let mut style = fixed_width(100.0);
+            style.flow = flow;
+            style.containing_flow = flow;
+            style.margin.left = FlowLengthAuto::Value(FlowLength::px(10.0));
+            style.margin.right = FlowLengthAuto::Value(FlowLength::px(10.0));
+            style.overconstrained_inline_alignment = Some(alignment);
+
+            assert_eq!(
+                solve_in_flow_inline_size(style, 300.0),
+                UsedInlineSize {
+                    margin_start,
+                    border_box: 100.0,
+                    margin_end,
+                },
+                "alignment={alignment:?}, flow={flow:?}"
+            );
+        }
+
+        let mut overflowing = fixed_width(320.0);
+        overflowing.overconstrained_inline_alignment = Some(OverconstrainedInlineAlignment::Center);
+        overflowing.margin.left = FlowLengthAuto::Value(FlowLength::px(10.0));
+        overflowing.margin.right = FlowLengthAuto::Value(FlowLength::px(10.0));
+        assert_eq!(
+            solve_in_flow_inline_size(overflowing, 300.0),
+            UsedInlineSize {
+                margin_start: 10.0,
+                border_box: 320.0,
+                margin_end: -30.0,
+            }
+        );
     }
 
     #[test]

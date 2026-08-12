@@ -28,6 +28,7 @@ The ordered expansion and promotion rules live in
 | Detail popover | Hover preview, click-pinned interactive detail, Escape dismissal, and trigger focus return |
 | Data grid | Grid/row/header/cell semantics, keyboard-sortable headers, and bounded DOM rows for a 10,000-row model |
 | Graph-canvas swatch | Shared graph paint path, native node targets, click/hover routing, selected/focus state, expand action |
+| Component boundary | Counter with component-owned count: clicks mutate local state, a parent prop change reconciles without resetting it, a typed Report event lowers into catalog state, unmount drops the local state and remount reinitializes, caller-owned probe id on the root |
 | Sprigging leaves | Five catalog leaf elements, retained registry entries, paint commands, clean repaint gate |
 | Retained lifecycle | Self-replacing focused and pointer-captured controls retire stale handles before the next dispatch |
 

@@ -43,16 +43,15 @@ fn dom_construction_works<E: ScriptEngine>() {
             Some("main"),
             "getElementById found the div and setAttribute stuck",
         );
-        assert_eq!(dom.text(div), Some("world"), "textContent setter ran");
-
-        // Its text-node child still carries the original data.
+        // `textContent` replaces the parsed text child with its new value, so
+        // script, serialization, and layout observe one document tree.
         let div_kids: Vec<_> = dom.dom_children(div).collect();
         assert_eq!(div_kids.len(), 1);
-        assert_eq!(dom.text(div_kids[0]), Some("hello"));
+        assert_eq!(dom.text(div_kids[0]), Some("world"));
     }
 
-    // The structural + attribute + character-data changes were recorded for
-    // genet-layout: setAttribute, two appendChilds, textContent → 4 mutations.
+    // The structural + attribute changes were recorded for genet-layout:
+    // setAttribute, two appendChilds, textContent replacement → 4 mutations.
     // (createElement / createTextNode record nothing until parented.)
     let mut muts = Vec::new();
     rt.host().borrow_mut().dom.drain_mutations(&mut muts);

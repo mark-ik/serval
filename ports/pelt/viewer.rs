@@ -62,7 +62,7 @@ pub(crate) fn main() {
             "--engine" => {
                 let Some(value) = args.next() else {
                     eprintln!(
-                        "--engine requires browser, viewer, static, livery, scripted, or headless"
+                        "--engine requires browser, viewer, static, livery, scripted, livery-scripted, or headless"
                     );
                     std::process::exit(2);
                 };
@@ -263,6 +263,24 @@ pub(crate) fn main() {
         }
     }
 
+    // `pelt --engine livery-scripted <url>` is the F4 product route: one live
+    // scripted DOM, with Livery owning CSSOM, resources, shaped layout, and paint.
+    // It is intentionally separate from both incumbent routes.
+    if matches!(engine_profile, EngineProfile::LiveryScripted) {
+        #[cfg(feature = "livery-scripted")]
+        {
+            run_livery_scripted_profile(url, js_engine, size, frames);
+            return;
+        }
+        #[cfg(not(feature = "livery-scripted"))]
+        {
+            eprintln!(
+                "pelt has no registered engine 'genet.livery-scripted'; rebuild with `--features livery-scripted`"
+            );
+            std::process::exit(2);
+        }
+    }
+
     // `pelt --engine static|viewer <url>`: the genet-native on-screen document
     // viewer (the orrery-host present shape over the genet-host-api / pelt-desktop
     // contracts). Static and Viewer are the script-free document profiles.
@@ -341,6 +359,7 @@ pub(crate) fn main() {
         "pelt has no engine for profile {engine_profile} in this build; use \
          --engine static <url> for the on-screen document viewer, \
          --engine scripted <url> for the scripted profile (needs --features scripted), \
+         --engine livery-scripted <url> for the explicit F4 route (needs --features livery-scripted), \
          or a smoke flag (--help)."
     );
     std::process::exit(2);
@@ -459,6 +478,47 @@ fn run_scripted_profile(url: String, js: String, size: Option<(u32, u32)>, frame
     match pelt_desktop::run_scripted_viewer(config, engine) {
         Ok(outcome) => println!(
             "pelt scripted viewer engine={} url={} window={} redraws={} size={}x{}",
+            engine.label(),
+            outcome.url,
+            outcome.created_window,
+            outcome.redraws,
+            outcome.size.0,
+            outcome.size.1,
+        ),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        },
+    }
+}
+
+/// Dispatch the explicit Livery-scripted route to the shared headed shell.
+/// The existing scripted route remains Stylo-geometry backed.
+#[cfg(feature = "livery-scripted")]
+fn run_livery_scripted_profile(
+    url: String,
+    js: String,
+    size: Option<(u32, u32)>,
+    frames: Option<u32>,
+) {
+    let Some(engine) = pelt_desktop::ScriptedEngine::parse(&js) else {
+        eprintln!("--js expects boa or nova (got '{js}')");
+        std::process::exit(2);
+    };
+    let mut config = pelt_desktop::StaticViewerConfig::new(
+        EngineProfile::LiveryScripted,
+        pelt_desktop::WindowingMode::Headed,
+        url,
+    );
+    if let Some((width, height)) = size {
+        config = config.with_size(width, height);
+    }
+    if let Some(limit) = frames {
+        config = config.with_frame_limit(limit);
+    }
+    match pelt_desktop::run_livery_scripted_viewer(config, engine) {
+        Ok(outcome) => println!(
+            "pelt livery-scripted viewer engine={} url={} window={} redraws={} size={}x{}",
             engine.label(),
             outcome.url,
             outcome.created_window,
@@ -940,17 +1000,19 @@ Script-free Pelt: genet's reference browser. `--engine static <url-or-file>`
 opens the genet-native on-screen document viewer (file://, a bare path, data:
 URLs, and http(s) in the default build);
 `--chrome` wraps it in an omnibar + back/forward strip, `--tiles` splits the
-window into per-document tiles. The
-other profiles: `--engine scripted` runs a page's <script> (needs --features
-scripted), `--engine headless` is the GPU-free scene-snapshot / reftest harness.
+window into per-document tiles. The other profiles: `--engine scripted` runs a
+page's <script> with incumbent geometry (needs --features scripted),
+`--engine livery-scripted` runs it through the Livery live-document route
+(needs --features livery-scripted), and `--engine headless` is the GPU-free
+scene-snapshot / reftest harness.
 Smoke runners validate the present backends (--help lists them).
 
 Options:
-    --engine <browser|viewer|static|livery|scripted|headless>
+    --engine <browser|viewer|static|livery|scripted|livery-scripted|headless>
     --chrome                           (wrap the content viewer in an omnibar + back/forward strip; needs --features chrome)
     --strip <top|bottom|left|right>    (chrome strip side; default top)
     --tiles <url>...                   (one or two tile side by side; three or more stack the first two beside the third, and ignore the rest; needs --features tiles)
-    --js <boa|nova>                    (scripted profile: JS backend; nova needs --features scripted-nova)
+    --js <boa|nova>                    (scripted and livery-scripted profiles: JS backend; nova needs --features scripted-nova)
     --out <path>                       (headless profile: write the scene snapshot for <file>)
     --reftest <dir>                    (headless profile: run a name.html + name.scene fixture dir)
     --bless                            (headless --reftest: (re)write the .scene snapshots)

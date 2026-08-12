@@ -99,6 +99,16 @@ matches what genet-layout consumes. Census (verified 2026-07-20):
   word-wrap alias resolution); the genet-livery wall (8+22+44+1+1);
   livery clippy `-D warnings`. Descriptor TOMLs are enumerated in the
   census as out-of-scope; they enter with their subsystems (H1, H5).
+
+  A 2026-08-11 follow-on completed the first behavioral use of that logical
+  metadata. The importer now retains Stylo's distinct `logical_group`, and
+  Livery's generated implemented catalog records logical/physical axes and
+  sides. The Stylo-derived mapper replaces the one-off `inline-size` switch
+  and activates `margin-inline-start`/`margin-inline-end`, including
+  writing-mode/direction projection and collision with physical declarations.
+  HTML `table[align=center]` is its first non-CSS authoring consumer: the
+  adapter emits logical auto margins and the shared cascade mapper projects
+  them instead of adding an HTML-specific physical-side switch.
 - **H1 - custom properties: landed 2026-07-20.** `livery::custom` carries
   the substitution walker, fallback handling, and cycle-scoped
   invalidation, following the fork's `custom_properties.rs` shapes

@@ -11,7 +11,9 @@ mod document;
 mod dom;
 mod invalidation;
 mod layout;
+mod legacy_color;
 mod paint;
+mod presentational_hints;
 mod style;
 // K4d6b: Buckram lays out live tables' block axis through the phase order it
 // owns; a table it cannot lay out defers under a named gap.
@@ -37,16 +39,24 @@ pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, Res
 pub(crate) use layout::hit_test_with_scroll;
 pub use layout::{
     BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test, layout,
-    resolve_container_query_styles, resolve_container_relative_styles, used_value_context,
+    layout_with_text_system, resolve_container_query_styles,
+    resolve_container_query_styles_with_images, resolve_container_relative_styles,
+    used_value_context,
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
 pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
-pub(crate) use paint::emit_paint_list_with_text_system_scrolled_with_images;
-pub use paint::{LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system};
+pub use paint::{
+    LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system,
+    emit_paint_list_with_text_system_scrolled_with_images,
+};
+pub use presentational_hints::{
+    LegacyDescendantAlignment, PresentationalDeclarations, PresentationalHintDiagnostic,
+    PresentationalHintProvider, PresentationalHints,
+};
 pub use style::{
     AuthorStylesheet, CssomImportOwner, CssomImportRule, StylePlane, StyleSet, UsedValueContext,
-    resolve_styles,
+    resolve_styles, resolve_styles_with_presentational_hints,
 };
 pub use text::{TextRange, TextRect, TextSelection, TextSystem};
 

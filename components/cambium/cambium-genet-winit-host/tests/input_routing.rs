@@ -102,10 +102,7 @@ fn root(state: &App) -> Child {
                     el("div", text("tall")).attr("style", "width:100px;height:600px;"),
                 )
                 .attr("class", "scroller")
-                .attr(
-                    "style",
-                    format!("{}overflow:auto;", place(0, 220, 200, 60)),
-                ),
+                .attr("style", format!("{}overflow:auto;", place(0, 220, 200, 60))),
             ),
         )
         .attr("style", "position:relative;width:400px;height:400px;"),
@@ -131,7 +128,10 @@ fn a_press_clicks_the_element_under_it() {
     // Alpha's box is (0, 0, 100, 40); press 10px in from its top-left.
     h.click_at(10.0, 12.0);
     assert_eq!(h.state().clicks, vec!["alpha"]);
-    assert!(h.focus().is_some(), "clicking a focusable control focuses it");
+    assert!(
+        h.focus().is_some(),
+        "clicking a focusable control focuses it"
+    );
 
     h.click_at(10.0, 62.0);
     assert_eq!(h.state().clicks, vec!["alpha", "beta"]);

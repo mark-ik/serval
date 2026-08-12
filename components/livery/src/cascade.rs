@@ -970,6 +970,10 @@ pub fn parse_declaration_block(input: &str) -> DeclarationBlock {
 pub enum Origin {
     UserAgent,
     User,
+    /// HTML presentational hints. These are author-adjacent declarations with
+    /// their own Cascade Level 5 origin: normal author declarations override
+    /// them, while hints still override normal user and UA declarations.
+    AuthorPresentationalHint,
     Author,
 }
 
@@ -1029,10 +1033,15 @@ impl Priority {
         let cascade_level = match (important, origin) {
             (false, Origin::UserAgent) => 0,
             (false, Origin::User) => 1,
-            (false, Origin::Author) => 2,
-            (true, Origin::Author) => 3,
-            (true, Origin::User) => 4,
-            (true, Origin::UserAgent) => 5,
+            (false, Origin::AuthorPresentationalHint) => 2,
+            (false, Origin::Author) => 3,
+            // Presentational hints are injected by the host contract without
+            // `!important`; keep this rank defensive if an invalid caller
+            // constructs one directly.
+            (true, Origin::AuthorPresentationalHint) => 3,
+            (true, Origin::Author) => 4,
+            (true, Origin::User) => 5,
+            (true, Origin::UserAgent) => 6,
         };
         let layer = match (important, layer) {
             (false, CascadeLayer::Layer(order)) => order,
@@ -1308,6 +1317,7 @@ impl fmt::Display for Origin {
         formatter.write_str(match self {
             Self::UserAgent => "user-agent",
             Self::User => "user",
+            Self::AuthorPresentationalHint => "author-presentational-hint",
             Self::Author => "author",
         })
     }

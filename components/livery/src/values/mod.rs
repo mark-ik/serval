@@ -6,6 +6,7 @@ mod calc;
 mod color;
 mod color_scheme;
 mod length;
+mod logical;
 mod property;
 mod transform_matrix;
 
@@ -18,6 +19,7 @@ pub use length::{
     CalcLengthPercentage, ContainerAxisSize, Length, LengthPercentage, LengthUnit,
     MathLengthPercentage, RelativeLengthEnvironment, TreeCounts,
 };
+pub use logical::{LogicalAxis, LogicalSide, PhysicalAxis, PhysicalSide};
 pub use property::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
     BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue,

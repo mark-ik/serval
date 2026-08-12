@@ -307,7 +307,6 @@ where
             return (Vec::new(), false);
         }
 
-        let mut env = self.ctx.take_environment();
         let mut actions = Vec::new();
         {
             let Self {
@@ -318,7 +317,7 @@ where
                 ..
             } = self;
             for (path, event) in deliveries {
-                let mut msg = MessageCtx::new(env, path, DynMessage::new(event));
+                let mut msg = MessageCtx::new(path, DynMessage::new(event));
                 let mut_ref = GenetElementMut {
                     node: &mut root.node,
                     dom: dom.clone(),
@@ -329,10 +328,8 @@ where
                 {
                     actions.push(action);
                 }
-                env = msg.finish().0;
             }
         }
-        self.ctx.set_environment(env);
         (actions, true)
     }
 
@@ -400,10 +397,6 @@ where
         //    message cycle. The disjoint-field destructure mirrors `rebuild`,
         //    so `View::message`'s borrow set does not alias `self`. Any action
         //    that reaches the root (a `MessageResult::Action`) is collected.
-        // Thread the *real* environment through the message cycle so dispatch and
-        // build share one: take it out, hand it to each path's `MessageCtx`, and
-        // reclaim it via `finish` for the next path (and to restore below). (G2.2.)
-        let mut env = self.ctx.take_environment();
         {
             // `ctx` is not needed for routing: the recorded path is the full
             // routing target, so `View::message` walks it without the context.
@@ -416,7 +409,7 @@ where
             } = self;
 
             for path in paths {
-                let mut msg = MessageCtx::new(env, path, DynMessage::new(event.clone()));
+                let mut msg = MessageCtx::new(path, DynMessage::new(event.clone()));
                 let mut_ref = GenetElementMut {
                     node: &mut root.node,
                     dom: dom.clone(),
@@ -431,9 +424,6 @@ where
                 {
                     actions.push(a);
                 }
-                // Reclaim the environment for the next path *before* any break, so
-                // it is never left moved-out.
-                env = msg.finish().0;
                 // stopPropagation / stopImmediatePropagation: a handler that
                 // canceled propagation halts the capture/bubble walk here, after
                 // its path fired (every event clone shares one Propagation cell).
@@ -443,7 +433,6 @@ where
                 }
             }
         }
-        self.ctx.set_environment(env);
 
         // Record whether a handler prevented the default action — the host reads
         // this (default_prevented()) to gate its own default (the cancellation
@@ -575,9 +564,6 @@ where
         let routed = !paths.is_empty();
         let mut actions = Vec::new();
         if routed {
-            // Thread the real environment through the cycle (G2.2): take it, hand it
-            // to each path, reclaim via `finish`, restore after.
-            let mut env = self.ctx.take_environment();
             {
                 let Self {
                     view,
@@ -588,7 +574,7 @@ where
                 } = self;
 
                 for path in paths {
-                    let mut msg = MessageCtx::new(env, path, DynMessage::new(event.clone()));
+                    let mut msg = MessageCtx::new(path, DynMessage::new(event.clone()));
                     let mut_ref = GenetElementMut {
                         node: &mut root.node,
                         dom: dom.clone(),
@@ -599,8 +585,6 @@ where
                     {
                         actions.push(a);
                     }
-                    // Reclaim the environment for the next path before any break.
-                    env = msg.finish().0;
                     // stopPropagation halts the bubble walk (shared Propagation
                     // cell), matching dispatch_click and the JS dispatcher.
                     if event.prop.stopped() {
@@ -608,7 +592,6 @@ where
                     }
                 }
             }
-            self.ctx.set_environment(env);
             // Record whether a handler prevented the default (gates step 3 + host).
             self.last_default_prevented = event.prop.default_prevented();
         }
@@ -794,9 +777,8 @@ where
         let Some(path) = self.ctx.hover_handler(node).map(<[ViewId]>::to_vec) else {
             return Vec::new();
         };
-        let env = self.ctx.take_environment();
         let mut actions = Vec::new();
-        let env = {
+        {
             let Self {
                 view,
                 view_state,
@@ -804,7 +786,7 @@ where
                 dom,
                 ..
             } = self;
-            let mut message = MessageCtx::new(env, path, DynMessage::new(event.clone()));
+            let mut message = MessageCtx::new(path, DynMessage::new(event.clone()));
             let element = GenetElementMut {
                 node: &mut root.node,
                 dom: dom.clone(),
@@ -815,9 +797,7 @@ where
             {
                 actions.push(action);
             }
-            message.finish().0
-        };
-        self.ctx.set_environment(env);
+        }
         self.last_default_prevented = event.prop.default_prevented();
         self.rebuild(logic, state);
         actions
@@ -835,12 +815,8 @@ where
         let Some(path) = self.ctx.pointer_handler(node).map(<[ViewId]>::to_vec) else {
             return Vec::new();
         };
-        // Thread the *real* environment through the message cycle (build + dispatch
-        // share one): take it out, hand it to `MessageCtx`, restore what `finish`
-        // returns. (G2.2.)
-        let env = self.ctx.take_environment();
         let mut actions = Vec::new();
-        let env = {
+        {
             let Self {
                 view,
                 view_state,
@@ -850,7 +826,7 @@ where
             } = self;
             // Clone into the message: the handler mutates its clone's shared
             // `Propagation` cell, and the original below reads back what it set.
-            let mut msg = MessageCtx::new(env, path, DynMessage::new(event.clone()));
+            let mut msg = MessageCtx::new(path, DynMessage::new(event.clone()));
             let mut_ref = GenetElementMut {
                 node: &mut root.node,
                 dom: dom.clone(),
@@ -859,9 +835,7 @@ where
             if let MessageResult::Action(a) = view.message(view_state, &mut msg, mut_ref, state) {
                 actions.push(a);
             }
-            msg.finish().0
-        };
-        self.ctx.set_environment(env);
+        }
         // Record this pointer pass's own cancellation (the host gates its default
         // drag behavior on it), mirroring dispatch_click / dispatch_key — not the
         // stale value left by an earlier click/key.
@@ -932,10 +906,8 @@ where
         let Some(path) = self.ctx.wheel_handler(node).map(<[ViewId]>::to_vec) else {
             return Vec::new();
         };
-        // Thread the real environment through the cycle (G2.2), like route_pointer.
-        let env = self.ctx.take_environment();
         let mut actions = Vec::new();
-        let env = {
+        {
             let Self {
                 view,
                 view_state,
@@ -943,7 +915,7 @@ where
                 dom,
                 ..
             } = self;
-            let mut msg = MessageCtx::new(env, path, DynMessage::new(event.clone()));
+            let mut msg = MessageCtx::new(path, DynMessage::new(event.clone()));
             let mut_ref = GenetElementMut {
                 node: &mut root.node,
                 dom: dom.clone(),
@@ -952,9 +924,7 @@ where
             if let MessageResult::Action(a) = view.message(view_state, &mut msg, mut_ref, state) {
                 actions.push(a);
             }
-            msg.finish().0
-        };
-        self.ctx.set_environment(env);
+        }
         self.last_default_prevented = event.prop.default_prevented();
         self.rebuild(logic, state);
         actions

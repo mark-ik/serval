@@ -9,15 +9,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use cambium::{
-    AccordionConfig, AccordionItem, AccordionState, AnyView, CommandEvent, CommandItem,
-    CommandState, DetailPopoverMode, DetailPopoverState, DisclosureState, DomHandle,
+    AccordionConfig, AccordionItem, AccordionState, Action, AnyView, COMPONENT_PROBE_ATTR,
+    CommandEvent, CommandItem, CommandState, ComponentView, DetailPopoverMode, DetailPopoverState,
+    DisclosureState, DomHandle,
     GenetAppRunner, GenetCtx, GenetElement, GraphCanvasEdge, GraphCanvasNode, GraphCanvasSubgraph,
     GraphCanvasSwatch, GridColumn, GridSpec, GridView, HoverEvent, HoverPhase, Key, KeyEvent,
     NamedKey, OverlayDismiss, OverlayRole, OverlaySurface, Placement, PointerClick, PointerEvent,
     PointerPhase, RadioGroup, ReorderItem, ReorderMove, ReorderState, SelectState, SelectionItem,
     SelectionState, Slider, StyleRange, SummaryBody, TabActivation, TextInput, TreeItem, TreeState,
     accordion_with, button, button_with, checkbox, command_menu, command_palette, command_picker,
-    custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, frisket,
+    component, custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, frisket,
     graph_canvas_swatch, graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer,
     overlay_surface, radio_group, reorderable_list, segmented_control, select, slider,
     styled_textarea, summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
@@ -133,6 +134,9 @@ struct CatalogState {
     overlay_last_dismiss: Option<OverlayDismiss>,
     detail_popover: DetailPopoverState,
     detail_uses: usize,
+    counter_step: i64,
+    counter_mounted: bool,
+    counter_reports: Vec<i64>,
 }
 
 impl Default for CatalogState {
@@ -209,6 +213,9 @@ impl Default for CatalogState {
             overlay_last_dismiss: None,
             detail_popover: DetailPopoverState::default(),
             detail_uses: 0,
+            counter_step: 1,
+            counter_mounted: true,
+            counter_reports: Vec::new(),
         }
     }
 }
@@ -533,6 +540,56 @@ fn grid(state: &CatalogState) -> GridView<CatalogState, ()> {
     )
 }
 
+/// The component-boundary specimen's typed event vocabulary: the only values
+/// that cross from the counter to the catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CounterEvent {
+    Report(i64),
+}
+
+impl Action for CounterEvent {}
+
+/// Parent-owned props. The step is catalog state; the count is not.
+struct CounterProps {
+    label: String,
+    step: i64,
+}
+
+fn counter_init(_: &CounterProps) -> i64 {
+    0
+}
+
+/// Nothing in `Local` is parent-controlled: the label and step flow through
+/// `body` on every rebuild, and the count is component-owned.
+fn counter_reconcile(_: &CounterProps, _: &CounterProps, _: &mut i64) {}
+
+fn counter_body(props: &CounterProps, count: &i64) -> ComponentView<i64, CounterEvent> {
+    let step = props.step;
+    Box::new(
+        el(
+            "div",
+            (
+                el::<_, i64, CounterEvent>("output", count.to_string())
+                    .attr("id", "catalog-counter-value"),
+                button(format!("+{step}"), move |count: &mut i64, _: PointerClick| {
+                    *count += step;
+                })
+                .attr("id", "catalog-counter-up")
+                .attr("class", "catalog-button"),
+                button("Report", |count: &mut i64, _: PointerClick| {
+                    CounterEvent::Report(*count)
+                })
+                .attr("id", "catalog-counter-report")
+                .attr("class", "catalog-button"),
+            ),
+        )
+        .attr("role", "group")
+        .attr("aria-label", props.label.clone())
+        .attr("data-count", count.to_string())
+        .attr("class", "catalog-row catalog-counter"),
+    )
+}
+
 fn catalog(state: &CatalogState) -> CatalogView {
     let choices = ["Quiet", "Balanced", "Detailed"];
 
@@ -608,6 +665,59 @@ fn catalog(state: &CatalogState) -> CatalogView {
         ),
     )
     .attr("id", "controls-section")
+    .attr("class", "catalog-section");
+
+    let counter_section = el::<_, CatalogState, ()>(
+        "section",
+        (
+            el::<_, CatalogState, ()>("h2", "Component boundary").attr("class", "catalog-label"),
+            button(
+                if state.counter_step == 1 {
+                    "Count by 5"
+                } else {
+                    "Count by 1"
+                },
+                |state: &mut CatalogState, _: PointerClick| {
+                    state.counter_step = if state.counter_step == 1 { 5 } else { 1 };
+                },
+            )
+            .attr("id", "catalog-counter-step")
+            .attr("class", "catalog-button"),
+            button(
+                if state.counter_mounted {
+                    "Unmount counter"
+                } else {
+                    "Mount counter"
+                },
+                |state: &mut CatalogState, _: PointerClick| {
+                    state.counter_mounted = !state.counter_mounted;
+                },
+            )
+            .attr("id", "catalog-counter-mount")
+            .attr("class", "catalog-button"),
+            state.counter_mounted.then(|| {
+                component(
+                    CounterProps {
+                        label: format!("Count by {}", state.counter_step),
+                        step: state.counter_step,
+                    },
+                    counter_init,
+                    counter_reconcile,
+                    counter_body,
+                    |state: &mut CatalogState, CounterEvent::Report(total)| {
+                        state.counter_reports.push(total);
+                    },
+                )
+                .probe_id("catalog-counter")
+            }),
+            el::<_, CatalogState, ()>(
+                "output",
+                format!("{} reports", state.counter_reports.len()),
+            )
+            .attr("id", "catalog-counter-reports"),
+        ),
+    )
+    .attr("id", "component-section")
     .attr("class", "catalog-section");
 
     let shellbar_edges = [
@@ -1200,6 +1310,7 @@ fn catalog(state: &CatalogState) -> CatalogView {
                 disclosure_section,
                 editors,
                 navigation,
+                counter_section,
                 data,
                 states,
                 leaves,
@@ -1372,12 +1483,22 @@ fn assert_initial_surface(dom: &ScriptedDom, root: NodeId, width: CatalogWidth) 
         "disclosure-section",
         "editors-section",
         "navigation-section",
+        "component-section",
         "data-section",
         "states-section",
         "leaves-section",
     ] {
         find_id(dom, root, section);
     }
+
+    let counter = find_where(dom, root, &|dom, node| {
+        attr(dom, node, COMPONENT_PROBE_ATTR) == Some("catalog-counter")
+    })
+    .expect("component-boundary counter carries its caller-owned probe id");
+    assert_attr(dom, counter, "role", "group");
+    assert_attr(dom, counter, "aria-label", "Count by 1");
+    assert_attr(dom, counter, "data-count", "0");
+
     assert_attr(dom, root, "data-specimen-width", width.name());
     assert!(has_class(
         dom,
@@ -1929,6 +2050,76 @@ fn run_interactions(runner: &mut CatalogRunner) {
     runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::End)));
     runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::Enter)));
     assert_eq!(runner.state().last_picker, "activate:3");
+
+    // Component boundary: the counter's count is component-owned local state.
+    let find_counter = |runner: &CatalogRunner| {
+        find_where(&runner.dom().borrow(), root, &|dom, node| {
+            attr(dom, node, COMPONENT_PROBE_ATTR) == Some("catalog-counter")
+        })
+    };
+    let up = find_id(&runner.dom().borrow(), root, "catalog-counter-up");
+    runner.dispatch_click(up, PointerClick::at((4.0, 4.0)));
+    runner.dispatch_click(up, PointerClick::at((4.0, 4.0)));
+    let counter = find_counter(runner).expect("mounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("2"),
+        "clicks mutate component-owned state"
+    );
+
+    // A parent rebuild that changes the controlled props must not reset the
+    // component-owned count.
+    let step = find_id(&runner.dom().borrow(), root, "catalog-counter-step");
+    runner.dispatch_click(step, PointerClick::at((4.0, 4.0)));
+    assert_eq!(runner.state().counter_step, 5);
+    let counter = find_counter(runner).expect("mounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "aria-label"),
+        Some("Count by 5"),
+        "controlled label reconciles from parent props"
+    );
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("2"),
+        "parent rebuild must not reset component-owned state"
+    );
+
+    let up = find_id(&runner.dom().borrow(), root, "catalog-counter-up");
+    runner.dispatch_click(up, PointerClick::at((4.0, 4.0)));
+    let counter = find_counter(runner).expect("mounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("7"),
+        "the reconciled step applies to the surviving count"
+    );
+
+    // The typed event is the only value that crosses into catalog state.
+    let report = find_id(&runner.dom().borrow(), root, "catalog-counter-report");
+    runner.dispatch_click(report, PointerClick::at((4.0, 4.0)));
+    assert_eq!(runner.state().counter_reports, [7]);
+    let reports = find_id(&runner.dom().borrow(), root, "catalog-counter-reports");
+    assert_eq!(node_text(&runner.dom().borrow(), reports), "1 reports");
+
+    // Teardown drops the local state; remounting starts from init again.
+    let mount = find_id(&runner.dom().borrow(), root, "catalog-counter-mount");
+    runner.dispatch_click(mount, PointerClick::at((4.0, 4.0)));
+    assert!(
+        find_counter(runner).is_none(),
+        "unmounting removes the component subtree"
+    );
+    let mount = find_id(&runner.dom().borrow(), root, "catalog-counter-mount");
+    runner.dispatch_click(mount, PointerClick::at((4.0, 4.0)));
+    let counter = find_counter(runner).expect("remounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("0"),
+        "teardown dropped the local count; init ran again"
+    );
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "aria-label"),
+        Some("Count by 5"),
+        "parent-owned step survives in catalog state across the remount"
+    );
 
     let command_menu = find_id(&runner.dom().borrow(), root, "catalog-command-menu");
     assert_eq!(
