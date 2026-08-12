@@ -4491,7 +4491,6 @@ struct PositionedPlacement {
     containing_size: buckram::LogicalSize,
     style: BlockStyle,
     geometry: buckram::PositionedBoxGeometry,
-    replaced_leaf: bool,
 }
 
 impl PositionedPlacement {
@@ -4723,7 +4722,6 @@ where
                 containing_size,
                 style,
                 geometry,
-                replaced_leaf: replaced.is_some(),
             })
         })
         .collect()
@@ -4974,15 +4972,16 @@ fn apply_absolute_and_fixed_positioning<D>(
         viewport_height,
     ) {
         let target = placement.target_rect();
-        if placement.replaced_leaf {
-            fragments.resize_leaf(
-                placement.root,
-                PhysicalSize {
-                    width: target.width,
-                    height: target.height,
-                },
-            );
-        }
+        // The formatter owns positioned subtrees, but a fragment with no
+        // descendants has no child containing block to invalidate. Publish
+        // Buckram's used border box directly for that leaf.
+        fragments.resize_leaf(
+            placement.root,
+            PhysicalSize {
+                width: target.width,
+                height: target.height,
+            },
+        );
         fragments.translate_subtree(
             placement.root,
             PhysicalOffset {
@@ -7512,6 +7511,36 @@ mod tests {
                 y: 7.0,
                 width: 170.0,
                 height: 30.0,
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_leaf_percentage_block_size_uses_the_initial_containing_block() {
+        let dom = StaticDocument::parse("<div id=fixed></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #fixed { position: fixed; left: 50px; top: 50px; width: 50%; height: 50%; border: 10px solid; }",
+            ]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 800.0, 600.0).expect("layout");
+        let fixed = layout
+            .get(node_by_id(&dom, dom.document(), "fixed").expect("fixed node"))
+            .expect("fixed fragment")
+            .physical_rect();
+
+        assert_eq!(
+            fixed,
+            PhysicalRect {
+                x: 50.0,
+                y: 50.0,
+                width: 420.0,
+                height: 320.0,
             }
         );
     }

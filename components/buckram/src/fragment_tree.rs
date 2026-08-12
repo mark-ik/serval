@@ -432,7 +432,7 @@ impl FragmentTree {
     }
 
     /// Replace a leaf fragment's border-box size while preserving its retained
-    /// identity and origin. Positioned replaced leaves use this after their
+    /// identity and origin. Positioned leaves use this after their
     /// standards-owned used-size calculation; a non-leaf must be reformatted
     /// instead so descendants can receive the new containing size.
     pub fn resize_leaf(&mut self, id: FragmentId, size: PhysicalSize) -> bool {
