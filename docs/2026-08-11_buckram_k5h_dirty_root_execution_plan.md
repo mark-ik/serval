@@ -200,23 +200,24 @@ enclosing line as the K5b static source; the admitted horizontal automatic
 width subset reforms after K5d returns the used width. Remaining
 table-internal absolute/fixed routes remain separate.
 
-The flex/grid static-position provider is now a narrow Buckram adapter
-capability, selected only for an attached direct absolute or fixed child of a
-flex or grid scratch parent. Livery no longer lowers a CSS positioning role
-into a renderer style. The adapter owns the private renderer-role transition
-and exposes only its pre-inset static rectangle to K5d;
-`grid_static_layout_uses_the_item_area_before_insets`,
+The direct flex/grid formatter admission remains a narrow Buckram adapter
+capability: it excludes an attached absolute or fixed child from normal
+participation so the child can supply a local measured subtree. Livery never
+lowers the CSS positioning role itself. K5b now replaces the flex static
+coordinate after that formatting pass with Buckram's own alignment calculation,
+including reverse/RTL, padding, borders, scrollbars, and resolved margins;
+`buckram_flex_static_position_keeps_rtl_reverse_padding_and_margins`,
 `flex_static_layout_keeps_alignment_when_insets_place_the_item`, and
-`absolute_flex_and_grid_children_keep_their_native_static_rectangles` pin the
-provider's unit and live behavior. The renderer still supplies this one
-specialized flex/grid result, so its private position role cannot vanish until
-Buckram has an equivalent flex/grid static-position algorithm.
+`absolute_flex_and_grid_children_keep_their_native_static_rectangles` pin that
+unit and live result. Grid still receives its static area from the renderer's
+track selection (`grid_static_layout_uses_the_item_area_before_insets`), which
+must remain explicit until Buckram has an equivalent track-area query.
 
 ## Next replacement seam
 
 1. Compare each incremental result with the fresh-final-document harness.
-2. Replace the remaining private flex/grid renderer provider with an
-   equivalent Buckram static-position algorithm.
+2. Replace the remaining private grid track-area provider with an equivalent
+   Buckram static-position query.
 
 ## Stop rules
 

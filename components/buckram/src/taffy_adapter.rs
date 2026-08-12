@@ -7,9 +7,10 @@
 use std::{marker::PhantomData, slice};
 
 use taffy::{
-    BlockContext, Cache, CacheTree, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, RoundTree, RunMode,
-    SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
+    AlignContentKeyword, AlignItems, AlignItemsKeyword, BlockContext, Cache, CacheTree, Direction,
+    FlexDirection, FlexWrap, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
+    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, Point, RoundTree,
+    RunMode, SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
     compute_leaf_layout, compute_root_layout, round_layout,
 };
@@ -308,13 +309,16 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         &mut self.nodes[id.index()].style
     }
 
-    /// Admit this direct flex/grid child to the renderer's static-position
-    /// provider. Buckram selects the narrow participation boundary and keeps
-    /// the resulting rectangle as the K5b formatter output; callers never
-    /// lower a CSS positioning role into the backend style themselves.
+    /// Admit this direct flex/grid child to the detached formatter boundary.
+    /// Buckram selects the narrow participation boundary; callers never lower
+    /// a CSS positioning role into the backend style themselves. The formatter
+    /// excludes the child from ordinary flex/grid participation so it can
+    /// supply the local measured subtree that K5d later repositions.
     ///
     /// The provider is deliberately unavailable outside a flex or grid
-    /// parent. Ordinary block, inline, and table-internal out-of-flow routes
+    /// parent. Buckram replaces the flex K5b static coordinate after layout;
+    /// grid retains its track-area provider until it has an equivalent Buckram
+    /// query. Ordinary block, inline, and table-internal out-of-flow routes
     /// have separate Buckram formatting boundaries.
     pub fn enable_flex_grid_static_position_provider(&mut self, id: AlgorithmNodeId)
     where
@@ -728,8 +732,199 @@ where
             marker: PhantomData,
         };
         compute_root_layout(&mut run, root.into_taffy(), available);
+        // The renderer still supplies the detached child formatter, but K5b's
+        // flex static coordinate is Buckram's own post-format result. Keep
+        // this before rounding so final and static layouts land on the same
+        // device-pixel grid.
+        run.tree.replace_flex_static_locations();
         round_layout(&mut run, root.into_taffy());
         run.tree.propagate_baselines();
+    }
+
+    /// Replace the renderer's flex static-position output with the CSS
+    /// alignment result from the finalized formatter boxes. This preserves
+    /// the direct absolute/fixed child exclusion boundary while moving the
+    /// K5b coordinate selection out of the renderer's absolute-position
+    /// result. Grid still has its own track-area provider.
+    fn replace_flex_static_locations(&mut self) {
+        for child_index in 0..self.nodes.len() {
+            let child = AlgorithmNodeId(child_index as u32);
+            let Some(parent) = self.nodes[child_index].parent else {
+                continue;
+            };
+            if self.nodes[parent.index()].kind != AlgorithmKind::Flex
+                || !matches!(
+                    self.nodes[child_index].block_style.position,
+                    crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+                )
+            {
+                continue;
+            }
+
+            let static_location = flex_static_location(
+                sealed::AlgorithmStyle::as_taffy_style(&self.nodes[parent.index()].style),
+                sealed::AlgorithmStyle::as_taffy_style(&self.nodes[child_index].style),
+                self.nodes[parent.index()].unrounded_layout,
+                self.nodes[child_index].unrounded_layout,
+            );
+            self.nodes[child.index()].unrounded_layout.static_location = static_location;
+        }
+    }
+}
+
+/// K5b's static coordinate for one direct absolute/fixed flex child.
+///
+/// The child formatter has already supplied its used border box and resolved
+/// margins. This calculation deliberately treats every inset as automatic:
+/// K5d later owns the selected containing block and any final inset offset.
+/// It mirrors the flex alignment inputs rather than reading the renderer's
+/// `static_location`, leaving grid as the only remaining specialized provider.
+fn flex_static_location(
+    container_style: &Style,
+    child_style: &Style,
+    container: Layout,
+    child: Layout,
+) -> Point<f32> {
+    let direction = container_style.flex_direction;
+    let is_row = matches!(direction, FlexDirection::Row | FlexDirection::RowReverse);
+    let is_reverse = matches!(
+        direction,
+        FlexDirection::RowReverse | FlexDirection::ColumnReverse
+    );
+    let layout_direction_rtl = container_style.direction == Direction::Rtl;
+    let main_is_rtl = is_row && layout_direction_rtl;
+    let cross_is_rtl = !is_row && layout_direction_rtl;
+    let main_start_reversed = is_reverse ^ main_is_rtl;
+    let cross_start_reversed = (container_style.flex_wrap == FlexWrap::WrapReverse) ^ cross_is_rtl;
+
+    let mut content_inset_left = container.padding.left + container.border.left;
+    let mut content_inset_right = container.padding.right + container.border.right;
+    let content_inset_top = container.padding.top + container.border.top;
+    let mut content_inset_bottom = container.padding.bottom + container.border.bottom;
+    content_inset_bottom += container.scrollbar_size.height;
+    if layout_direction_rtl {
+        content_inset_left += container.scrollbar_size.width;
+    } else {
+        content_inset_right += container.scrollbar_size.width;
+    }
+
+    let (
+        container_main,
+        container_cross,
+        size_main,
+        size_cross,
+        inset_main_start,
+        inset_main_end,
+        inset_cross_start,
+        inset_cross_end,
+        margin_main_start,
+        margin_main_end,
+        margin_cross_start,
+        margin_cross_end,
+    ) = if is_row {
+        (
+            container.size.width,
+            container.size.height,
+            child.size.width,
+            child.size.height,
+            content_inset_left,
+            content_inset_right,
+            content_inset_top,
+            content_inset_bottom,
+            child.margin.left,
+            child.margin.right,
+            child.margin.top,
+            child.margin.bottom,
+        )
+    } else {
+        (
+            container.size.height,
+            container.size.width,
+            child.size.height,
+            child.size.width,
+            content_inset_top,
+            content_inset_bottom,
+            content_inset_left,
+            content_inset_right,
+            child.margin.top,
+            child.margin.bottom,
+            child.margin.left,
+            child.margin.right,
+        )
+    };
+
+    let static_main = match (
+        container_style
+            .justify_content
+            .unwrap_or(taffy::JustifyContent::START)
+            .keyword(),
+        main_start_reversed,
+    ) {
+        (AlignContentKeyword::SpaceBetween, _)
+        | (AlignContentKeyword::Stretch, false)
+        | (AlignContentKeyword::FlexStart, false)
+        | (AlignContentKeyword::FlexEnd, true)
+        | (AlignContentKeyword::Start, false)
+        | (AlignContentKeyword::End, true) => inset_main_start + margin_main_start,
+        (AlignContentKeyword::Start, true)
+        | (AlignContentKeyword::End, false)
+        | (AlignContentKeyword::FlexEnd, false)
+        | (AlignContentKeyword::FlexStart, true)
+        | (AlignContentKeyword::Stretch, true) => {
+            container_main - inset_main_end - size_main - margin_main_end
+        },
+        (AlignContentKeyword::SpaceEvenly, _)
+        | (AlignContentKeyword::SpaceAround, _)
+        | (AlignContentKeyword::Center, _) => {
+            (container_main + inset_main_start - inset_main_end - size_main + margin_main_start
+                - margin_main_end)
+                / 2.0
+        },
+    };
+
+    let align_self = child_style
+        .align_self
+        .unwrap_or(container_style.align_items.unwrap_or(AlignItems::STRETCH));
+    let cross_overflows = size_cross + margin_cross_start + margin_cross_end
+        > container_cross - inset_cross_start - inset_cross_end;
+    let cross_keyword = if align_self.is_safe() && cross_overflows {
+        AlignItemsKeyword::Start
+    } else {
+        align_self.keyword()
+    };
+    let static_cross = match (cross_keyword, cross_start_reversed) {
+        (AlignItemsKeyword::Start, false)
+        | (AlignItemsKeyword::End, true)
+        | (AlignItemsKeyword::Baseline, false)
+        | (AlignItemsKeyword::Stretch, false)
+        | (AlignItemsKeyword::FlexStart, false)
+        | (AlignItemsKeyword::FlexEnd, true) => inset_cross_start + margin_cross_start,
+        (AlignItemsKeyword::Start, true)
+        | (AlignItemsKeyword::End, false)
+        | (AlignItemsKeyword::Baseline, true)
+        | (AlignItemsKeyword::Stretch, true)
+        | (AlignItemsKeyword::FlexStart, true)
+        | (AlignItemsKeyword::FlexEnd, false) => {
+            container_cross - inset_cross_end - size_cross - margin_cross_end
+        },
+        (AlignItemsKeyword::Center, _) => {
+            (container_cross + inset_cross_start - inset_cross_end - size_cross
+                + margin_cross_start
+                - margin_cross_end)
+                / 2.0
+        },
+    };
+
+    if is_row {
+        Point {
+            x: static_main,
+            y: static_cross,
+        }
+    } else {
+        Point {
+            x: static_cross,
+            y: static_main,
+        }
     }
 }
 
@@ -2694,6 +2889,57 @@ mod tests {
                 tree.static_layout(positioned).y
             ),
             (85.0, 80.0)
+        );
+    }
+
+    #[test]
+    fn buckram_flex_static_position_keeps_rtl_reverse_padding_and_margins() {
+        let container_style = Style {
+            display: Display::Flex,
+            direction: taffy::Direction::Rtl,
+            flex_direction: taffy::FlexDirection::RowReverse,
+            justify_content: Some(JustifyContent::FLEX_START),
+            align_items: Some(AlignItems::END),
+            ..Style::default()
+        };
+        let child_style = Style::default();
+        let container = Layout {
+            size: taffy::Size {
+                width: 200.0,
+                height: 100.0,
+            },
+            padding: Rect {
+                left: 10.0,
+                right: 20.0,
+                top: 2.0,
+                bottom: 3.0,
+            },
+            border: Rect {
+                left: 3.0,
+                right: 5.0,
+                top: 5.0,
+                bottom: 7.0,
+            },
+            ..Layout::new()
+        };
+        let child = Layout {
+            size: taffy::Size {
+                width: 30.0,
+                height: 20.0,
+            },
+            margin: Rect {
+                left: 4.0,
+                right: 6.0,
+                top: 11.0,
+                bottom: 13.0,
+            },
+            ..Layout::new()
+        };
+
+        assert_eq!(
+            flex_static_location(&container_style, &child_style, container, child),
+            taffy::Point { x: 17.0, y: 57.0 },
+            "K5b computes flex alignment from the formatter boxes, not the renderer static output",
         );
     }
 
