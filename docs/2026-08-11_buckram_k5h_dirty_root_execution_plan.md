@@ -162,8 +162,11 @@ sticky table cell uses the retained sticky solver and the table wrapper's
 scrollable extent without a relayout.
 `sticky_table_row_moves_its_cell_subtree_without_relayout` proves the same
 table-wrapper constraint moves a sticky row and its structural cell subtree.
-Table row groups and captions, plus absolute and fixed table parts, remain
-explicit gaps.
+`sticky_table_row_group_moves_its_row_subtree_without_relayout` proves that
+the body row-group subtree follows the same route, and
+`sticky_table_caption_uses_its_wrapper_scroll_extent_without_relayout` proves
+it for captions. Header and footer row groups, plus absolute and fixed table
+parts, remain explicit gaps.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
