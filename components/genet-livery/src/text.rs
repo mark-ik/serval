@@ -1332,6 +1332,120 @@ where
         }
     }
 
+    /// Replace text data produced by one retained formatting subtree without
+    /// disturbing shaped commands, clusters, and text order outside it. The
+    /// caller supplies DOM text order because a selected root may gain its
+    /// first text source, which has no old frame position to reuse.
+    pub(crate) fn replace_subtree_from(
+        &mut self,
+        fresh: &Self,
+        replaced: &HashSet<Id>,
+        dom_text_order: &[Id],
+    ) {
+        let mut merged = Self::default();
+        merged.append_prepared_from(self, |source| !replaced.contains(&source));
+        merged.append_prepared_from(fresh, |source| replaced.contains(&source));
+
+        merged.copy_geometry_from(self, |source| !replaced.contains(&source));
+        merged.copy_geometry_from(fresh, |source| replaced.contains(&source));
+        merged.rebuild_used_fonts();
+
+        merged.copy_text_from(self, |source| !replaced.contains(&source), 0);
+        let fresh_group_base = merged.next_text_group;
+        merged.copy_text_from(fresh, |source| replaced.contains(&source), fresh_group_base);
+        merged.next_text_group = fresh_group_base.saturating_add(fresh.next_text_group);
+        merged.text_order = dom_text_order
+            .iter()
+            .copied()
+            .filter(|source| merged.text_values.contains_key(source))
+            .collect();
+
+        *self = merged;
+    }
+
+    fn rebuild_used_fonts(&mut self) {
+        self.used_fonts.clear();
+        for command in self.prepared_groups.iter().flatten() {
+            if let PaintCmd::DrawText(run) = &command.command {
+                self.used_fonts.insert(run.font_instance);
+            }
+        }
+    }
+
+    fn append_prepared_from(
+        &mut self,
+        source_frame: &Self,
+        mut includes: impl FnMut(Id) -> bool,
+    ) {
+        for (old_group, commands) in source_frame.prepared_groups.iter().enumerate() {
+            let sources = source_frame
+                .source_groups
+                .iter()
+                .filter_map(|(source, group)| (*group == old_group && includes(*source)).then_some(*source))
+                .collect::<Vec<_>>();
+            if sources.is_empty() {
+                continue;
+            }
+            let group = self.prepared_groups.len();
+            self.prepared_groups.push(commands.clone());
+            for source in sources {
+                self.source_groups.insert(source, group);
+                self.prepared_sources.insert(source);
+            }
+        }
+    }
+
+    fn copy_geometry_from(
+        &mut self,
+        source_frame: &Self,
+        mut includes: impl FnMut(Id) -> bool,
+    ) {
+        for (source, fragments) in &source_frame.inline_fragments {
+            if includes(*source) {
+                self.inline_fragments.insert(*source, fragments.clone());
+            }
+        }
+        for (source, lines) in &source_frame.inline_line_keys {
+            if includes(*source) {
+                self.inline_line_keys.insert(*source, lines.clone());
+            }
+        }
+        #[cfg(test)]
+        for (source, baselines) in &source_frame.inline_baselines {
+            if includes(*source) {
+                self.inline_baselines.insert(*source, baselines.clone());
+            }
+        }
+        self.text_clusters.extend(
+            source_frame
+                .text_clusters
+                .iter()
+                .filter(|cluster| includes(cluster.source))
+                .cloned(),
+        );
+    }
+
+    fn copy_text_from(
+        &mut self,
+        source_frame: &Self,
+        mut includes: impl FnMut(Id) -> bool,
+        group_offset: usize,
+    ) {
+        for (source, value) in &source_frame.text_values {
+            if includes(*source) {
+                self.text_values.insert(*source, value.clone());
+                let group = source_frame.text_groups.get(source).copied().unwrap_or_default();
+                self.text_groups
+                    .insert(*source, group.saturating_add(group_offset));
+            }
+        }
+        self.next_text_group = self.next_text_group.max(
+            source_frame
+                .next_text_group
+                .saturating_add(group_offset),
+        );
+    }
+
     pub(crate) fn mark_decoration_painted(&mut self, source: Id) -> bool {
         self.painted_decorations.insert(source)
     }
@@ -1344,6 +1458,11 @@ where
         self.inline_line_keys
             .get(&source)
             .and_then(|lines| lines.first().copied())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn text_order(&self) -> &[Id] {
+        &self.text_order
     }
 
     /// The first shaped line baseline for an inline source, in document

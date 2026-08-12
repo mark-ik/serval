@@ -1,6 +1,6 @@
 //! Retained Livery document ownership.
 
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::{HashMap, HashSet}, hash::Hash};
 
 use layout_dom_api::{DomMutation, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind};
 use livery::cascade::DeclaredValue;
@@ -69,6 +69,50 @@ struct LayoutState<Id> {
     fragments: LiveryLayout<Id>,
     content_width: f32,
     content_height: f32,
+}
+
+fn nodes_in_subtree<D>(dom: &D, root: D::NodeId) -> HashSet<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    fn visit<D>(dom: &D, node: D::NodeId, nodes: &mut HashSet<D::NodeId>)
+    where
+        D: LayoutDom,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        nodes.insert(node);
+        for child in dom.dom_children(node) {
+            visit(dom, child, nodes);
+        }
+    }
+
+    let mut nodes = HashSet::new();
+    visit(dom, root, &mut nodes);
+    nodes
+}
+
+fn text_sources_in_dom_order<D>(dom: &D) -> Vec<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    fn visit<D>(dom: &D, node: D::NodeId, sources: &mut Vec<D::NodeId>)
+    where
+        D: LayoutDom,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        if dom.kind(node) == NodeKind::Text {
+            sources.push(node);
+        }
+        for child in dom.dom_children(node) {
+            visit(dom, child, sources);
+        }
+    }
+
+    let mut sources = Vec::new();
+    visit(dom, dom.document(), &mut sources);
+    sources
 }
 
 /// One retained transition on the generic clock (harvest H2): any
@@ -611,17 +655,26 @@ where
         {
             let previous_styles = previous.styles.clone();
             let previous_fragments = previous.fragments.clone();
+            let mut replaced_nodes = nodes_in_subtree(&self.dom, root);
+            replaced_nodes.extend(previous_fragments.generated_subtree_nodes(root));
+            let dom_text_order = text_sources_in_dom_order(&self.dom);
             if let Some(mut local) = layout_retained_formatting_root(
                 &self.dom,
                 &styles,
                 &previous_styles,
                 &previous_fragments,
                 root,
+                &mut self.text,
                 &self.image_sources,
             )? {
                 local.reconcile_identifiers(&previous_fragments);
                 let mut fragments = previous_fragments.clone();
-                if fragments.replace_reconciled_local_formatting_subtree_from(&local, root) {
+                if fragments.replace_reconciled_local_formatting_subtree_from(
+                    &local,
+                    root,
+                    &replaced_nodes,
+                    &dom_text_order,
+                ) {
                     let (content_width, content_height) =
                         self.document_content_extent(&styles, &fragments);
                     let layout = self
@@ -2028,6 +2081,7 @@ mod tests {
         let flex_before = generated_ids(&retained, flex);
         let existing_before = generated_ids(&retained, existing);
         let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
 
         retained.mutate_dom(|dom| {
             let flex = by_id(dom, "flex");
@@ -2051,6 +2105,11 @@ mod tests {
         );
         let retained_paint = retained.frame(240, 120).expect("spliced retained frame");
 
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "the text-bearing flex root takes the selected-root formatter",
+        );
         assert_eq!(generated_ids(&retained, flex), flex_before);
         assert_ne!(generated_ids(&retained, existing), existing_before);
         assert_eq!(generated_ids(&retained, outside), outside_before);
@@ -2058,6 +2117,9 @@ mod tests {
             !generated_ids(&retained, by_id(retained.dom(), "inserted")).is_empty(),
             "the new child is published through the fresh selected-root box tree",
         );
+        assert!(retained.text_target("existing").is_some());
+        assert!(retained.text_target("inserted").is_some());
+        assert!(retained.text_target("outside").is_some());
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
         let mut fresh_mutations = Vec::new();
@@ -2095,6 +2157,7 @@ mod tests {
         let grid_before = generated_ids(&retained, grid);
         let existing_before = generated_ids(&retained, existing);
         let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
 
         retained.mutate_dom(|dom| {
             let grid = by_id(dom, "grid");
@@ -2118,6 +2181,11 @@ mod tests {
         );
         let retained_paint = retained.frame(240, 120).expect("spliced retained frame");
 
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "the text-bearing grid root takes the selected-root formatter",
+        );
         assert_eq!(generated_ids(&retained, grid), grid_before);
         assert_ne!(generated_ids(&retained, existing), existing_before);
         assert_eq!(generated_ids(&retained, outside), outside_before);
@@ -2125,6 +2193,9 @@ mod tests {
             !generated_ids(&retained, by_id(retained.dom(), "inserted")).is_empty(),
             "the new child is published through the fresh selected-root box tree",
         );
+        assert!(retained.text_target("existing").is_some());
+        assert!(retained.text_target("inserted").is_some());
+        assert!(retained.text_target("outside").is_some());
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
         let mut fresh_mutations = Vec::new();
@@ -2140,9 +2211,9 @@ mod tests {
     }
 
     #[test]
-    fn retained_root_formatter_reflows_a_text_free_flex_subtree() {
-        let initial = "<html><body><div id=flex><div id=existing></div></div><div id=outside></div></body></html>";
-        let final_document = "<html><body><div id=flex><div id=existing></div><div id=inserted></div></div><div id=outside></div></body></html>";
+    fn retained_root_formatter_adds_its_first_text_source_in_dom_order() {
+        let initial = "<html><body><div id=flex><div id=existing></div></div><div id=outside>outside</div></body></html>";
+        let final_document = "<html><body><div id=flex><div id=existing></div><div id=inserted>inside</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
             StyleSet::cambium(&[
                 "html, body { margin: 0; padding: 0; } \
@@ -2172,6 +2243,8 @@ mod tests {
                 LocalName::from("div"),
             ));
             dom.set_attribute(inserted, attr("id"), "inserted");
+            let text = dom.create_text("inside");
+            dom.append_child(inserted, text);
             dom.append_child(flex, inserted);
         });
         let retained_paint = retained.frame(240, 120).expect("locally formatted frame");
@@ -2179,7 +2252,7 @@ mod tests {
         assert_eq!(
             retained.retained_root_relayout_generation,
             local_generation + 1,
-            "the text-free flex mutation takes the selected-root formatter instead of the complete-layout publication path",
+            "the first text source takes the selected-root formatter instead of the complete-layout publication path",
         );
         assert_eq!(generated_ids(&retained, flex), flex_before);
         assert_ne!(generated_ids(&retained, existing), existing_before);
@@ -2188,6 +2261,33 @@ mod tests {
             !generated_ids(&retained, by_id(retained.dom(), "inserted")).is_empty(),
             "the selected-root formatter publishes the inserted descendant",
         );
+        assert!(retained.text_target("inside").is_some());
+        assert!(retained.text_target("outside").is_some());
+        let inserted_text = retained
+            .dom()
+            .dom_children(by_id(retained.dom(), "inserted"))
+            .find(|node| retained.dom().kind(*node) == NodeKind::Text)
+            .expect("inserted text source");
+        let outside_text = retained
+            .dom()
+            .dom_children(by_id(retained.dom(), "outside"))
+            .find(|node| retained.dom().kind(*node) == NodeKind::Text)
+            .expect("outside text source");
+        let text_order = retained
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.text_frame())
+            .expect("retained text frame")
+            .text_order();
+        let inserted_index = text_order
+            .iter()
+            .position(|source| *source == inserted_text)
+            .expect("inserted source stays ordered");
+        let outside_index = text_order
+            .iter()
+            .position(|source| *source == outside_text)
+            .expect("outside source stays ordered");
+        assert!(inserted_index < outside_index);
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
         let mut fresh_mutations = Vec::new();
@@ -2261,6 +2361,64 @@ mod tests {
             format!("{:?}", retained_paint.commands()),
             format!("{:?}", fresh_paint.commands()),
             "the locally formatted grid root paints like a fresh final document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
+    fn retained_root_formatter_drops_retired_text_sources() {
+        let initial = "<html><body><div id=flex><div id=removed>remove me</div><div id=survives>survives</div></div><div id=outside>outside</div></body></html>";
+        let final_document = "<html><body><div id=flex><div id=survives>survives</div></div><div id=outside>outside</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #flex { display: flex; width: 180px; height: 40px; background: red; } \
+                 #removed, #survives { width: 60px; height: 20px; background: blue; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 120.0));
+        retained.frame(240, 120).expect("initial retained frame");
+        let flex = by_id(retained.dom(), "flex");
+        let survives = by_id(retained.dom(), "survives");
+        let outside = by_id(retained.dom(), "outside");
+        let flex_before = generated_ids(&retained, flex);
+        let survives_before = generated_ids(&retained, survives);
+        let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
+
+        retained.mutate_dom(|dom| dom.remove_child(by_id(dom, "removed")));
+        let retained_paint = retained.frame(240, 120).expect("locally formatted frame");
+
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "removing text takes the selected-root formatter",
+        );
+        assert_eq!(generated_ids(&retained, flex), flex_before);
+        assert_ne!(generated_ids(&retained, survives), survives_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+        assert!(retained.text_target("remove me").is_none());
+        assert!(retained.text_target("survives").is_some());
+        assert!(retained.text_target("outside").is_some());
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 120.0));
+        let fresh_paint = fresh.frame(240, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "the retained frame drops text whose selected subtree retired",
+        );
+        assert_eq!(
+            format!("{:?}", retained_paint.fonts()),
+            format!("{:?}", fresh_paint.fonts()),
+            "retired text cannot retain a font resource in the paint list",
         );
         assert_eq!(retained.content_height(0), fresh.content_height(0));
     }

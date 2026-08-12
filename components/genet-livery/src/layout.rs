@@ -184,6 +184,32 @@ where
             .remap_box_ids(|box_id| identities.box_id(box_id));
     }
 
+    /// Every DOM source attached to the selected generated-box subtree. The
+    /// retained text frame needs this old set as well as the final DOM set so
+    /// a removed text node cannot retain a prepared run or selection cluster.
+    pub(crate) fn generated_subtree_nodes(&self, node: Id) -> HashSet<Id> {
+        fn visit<Id>(
+            boxes: &buckram::CssBoxTree<Id>,
+            box_id: BoxId,
+            nodes: &mut HashSet<Id>,
+        ) where
+            Id: Copy + Eq + Hash,
+        {
+            if let Some(node) = boxes.origin_node(box_id) {
+                nodes.insert(node);
+            }
+            for child in boxes[box_id].children() {
+                visit(boxes, *child, nodes);
+            }
+        }
+
+        let mut nodes = HashSet::new();
+        if let Some(root) = self.buckram.boxes().principal_box(node) {
+            visit(self.buckram.boxes(), root, &mut nodes);
+        }
+        nodes
+    }
+
     /// Publish one freshly formatted, reconciled flex or grid root into this
     /// retained layout. Its root box must retain identity, but descendants
     /// may gain or retire boxes; the fresh box tree replaces node ownership
@@ -250,15 +276,16 @@ where
         true
     }
 
-    /// Publish a text-free local formatting result. Unlike the complete
-    /// publication route, `fresh` contains one selected subtree only, so the
-    /// retained text and table planes outside that subtree stay authoritative.
-    /// The local formatter admits no text, table, atomic-inline, or positioned
-    /// boxes, which makes that retained side data disjoint by construction.
+    /// Publish a local formatting result. Unlike the complete publication
+    /// route, `fresh` contains one selected subtree only, so table planes
+    /// outside that subtree stay authoritative while its text frame replaces
+    /// only the selected DOM sources.
     pub(crate) fn replace_reconciled_local_formatting_subtree_from(
         &mut self,
         fresh: &Self,
         node: Id,
+        replaced_nodes: &HashSet<Id>,
+        dom_text_order: &[Id],
     ) -> bool {
         let Some(root_box) = self
             .buckram
@@ -297,6 +324,9 @@ where
             [root] => *root,
             _ => return false,
         };
+        if self.text_frame.is_none() || fresh.text_frame.is_none() {
+            return false;
+        }
         if self
             .buckram
             .fragments_mut()
@@ -306,6 +336,17 @@ where
             return false;
         }
         self.buckram.replace_box_tree(fresh.buckram.boxes().clone());
+        self.text_frame
+            .as_mut()
+            .expect("a checked retained text frame is present")
+            .replace_subtree_from(
+                fresh
+                    .text_frame
+                    .as_ref()
+                    .expect("a checked fresh text frame is present"),
+                replaced_nodes,
+                dom_text_order,
+            );
         true
     }
 
@@ -1213,15 +1254,17 @@ where
 
 /// Reformat exactly one retained flex or grid root against its existing
 /// parent content box. This is intentionally narrower than complete layout:
-/// text, tables, inline atoms, floats, and positioned descendants retain the
+/// tables, inline atoms, floats, and positioned descendants retain the
 /// full-document path until their side planes have an equivalent replacement
-/// primitive.
+/// primitive. Its local text frame is shaped with the document's retained
+/// text system, then merged into the outside frame at publication.
 pub(crate) fn layout_retained_formatting_root<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     previous_styles: &StylePlane<D::NodeId>,
     previous: &LiveryLayout<D::NodeId>,
     node: D::NodeId,
+    text: &mut TextSystem,
     image_sources: &ImageSources,
 ) -> Result<Option<LiveryLayout<D::NodeId>>, LayoutError>
 where
@@ -1282,7 +1325,6 @@ where
     }
 
     let atomic = AtomicLayoutPlane::default();
-    let mut text = TextSystem::new();
     let mut intrinsic_sizes = IntrinsicSizeCache::default();
     let mut state = InlineBuildState {
         dom,
@@ -1332,7 +1374,7 @@ where
         ),
         |known, available, _, context, line_constraints| {
             measure_inline_algorithm_node(
-                &mut text,
+                text,
                 dom,
                 styles,
                 &boxes,
@@ -1413,7 +1455,10 @@ where
         Id: Copy + Eq + Hash,
     {
         let css_box = &boxes[box_id];
-        if !matches!(css_box.origin, BoxOrigin::Element(_) | BoxOrigin::Anonymous { .. }) {
+        if !matches!(
+            css_box.origin,
+            BoxOrigin::Element(_) | BoxOrigin::Text(_) | BoxOrigin::Anonymous { .. }
+        ) {
             return false;
         }
         if css_box.positioning != PositioningScheme::Static {
@@ -1422,7 +1467,9 @@ where
         if css_box.float != FloatSide::None {
             return false;
         }
-        if css_box.display.outside == Some(DisplayOutside::Inline) {
+        if css_box.display.outside == Some(DisplayOutside::Inline)
+            && !matches!(css_box.origin, BoxOrigin::Text(_))
+        {
             return false;
         }
         if css_box.display.internal_table.is_some() {

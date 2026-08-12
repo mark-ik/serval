@@ -99,18 +99,24 @@ It regenerates box ownership for the final DOM but builds and computes only one
 unchanged, unfragmented flex or grid root, using its retained parent's content
 size and translating the accepted local result back to the retained root
 origin. The root and its ancestor style inputs must be unchanged. The root and
-every descendant must be static, non-floating element or anonymous boxes, with
-no text, inline outside box, table part, or positioned content. The root's
-used size must remain unchanged. Its existing text,
-table-paint, and table-shadow planes therefore remain valid and are retained;
-a single DOM root, no container-query pass, and no active animation are also
-required. `retained_root_formatter_reflows_a_text_free_flex_subtree` and
-`retained_root_formatter_reflows_a_text_free_grid_subtree` prove local
-structural insertion takes that formatter, preserves the selected root and
-unrelated identities, refreshes descendants, and matches fresh-final paint and
-document extent. Text, tables, inline/atomic content, positioned descendants,
-root-size changes, multiple roots, and changed root style still take the full
-replacement path.
+every descendant must be a static, non-floating element, text, or anonymous
+box, with no inline element, table part, or positioned content. The root's used size
+must remain unchanged. `TextFrame::replace_subtree_from` replaces prepared
+runs, clusters, inline geometry, and text-order entries owned by that DOM
+subtree while retaining all outside text-frame data; it preserves global DOM
+text order even when the root gains its first text node, and rebuilds used-font
+references from surviving prepared runs. Table-paint and
+table-shadow planes remain retained. A single DOM root, no container-query
+pass, and no active animation are also required.
+`retained_root_formatter_adds_its_first_text_source_in_dom_order` and
+`retained_root_formatter_reflows_a_text_free_grid_subtree` prove the base
+local formatter. The text-bearing flex and grid structural receipts also prove
+the same route keeps existing, inserted, and outside find targets live while
+matching fresh-final paint and document extent.
+`retained_root_formatter_drops_retired_text_sources` proves removed text
+cannot retain a shaped run or find target. Tables, inline/atomic content,
+positioned descendants, root-size changes, multiple roots, and changed root
+style still take the full replacement path.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
@@ -123,16 +129,13 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Replace the text-free boundary with text-frame replacement for one selected
-   root, preserving DOM text order, prepared command groups, clusters, and
-   decoration state outside that root.
-2. Extend the flex/grid route to changed root size and overflow by propagating
+1. Extend the flex/grid route to changed root size and overflow by propagating
    only to the first dependent parent-flow root, escalating only when that
    dependency actually changes.
-3. Extend to ordinary-block and table roots only with their required
+2. Extend to ordinary-block and table roots only with their required
    parent-flow and table side-plane replacement.
-4. Compare each incremental result with the fresh-final-document harness.
-5. Move flex, grid, inline, and table-internal out-of-flow participation to
+3. Compare each incremental result with the fresh-final-document harness.
+4. Move flex, grid, inline, and table-internal out-of-flow participation to
    equivalent Buckram-owned routes before deleting the remaining flex/grid
    backend position provider.
 
