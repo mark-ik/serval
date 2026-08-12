@@ -1943,6 +1943,16 @@ where
                 });
             },
             BoxOrigin::Element(node) => {
+                if matches!(
+                    css_box.positioning,
+                    buckram::PositioningScheme::Absolute | buckram::PositioningScheme::Fixed
+                ) {
+                    // The enclosing inline run supplies this box's static
+                    // source, but an out-of-flow subtree never contributes
+                    // text, line width, or line height to that run. Livery's
+                    // layout bridge formats the root separately for K5d.
+                    return;
+                }
                 let Some(style) = self.styles.get(node).cloned() else {
                     return;
                 };

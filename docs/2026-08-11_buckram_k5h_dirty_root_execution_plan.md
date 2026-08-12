@@ -7,7 +7,10 @@ final-document equivalence harness, a narrow paint-only retained path, and a
 conservative Buckram fragment-subtree splice. Livery has one true
 selected-root formatter for a closed static block/flex/grid case plus a narrow
 table-root case, and falls back to a fresh complete layout outside that
-boundary.
+boundary. A background-only reuse admission first rules out a newly introduced
+transition or keyframe; a clock advance invalidates that paint cache and goes
+through ordinary retained layout so text shaping samples the same animated
+style as paint.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -191,8 +194,11 @@ The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
 second pass; an out-of-flow subtree no longer makes its ordinary block parent
-fall back to Taffy. Inline and remaining table-internal absolute/fixed routes
-remain separate.
+fall back to Taffy. The retained inline route now makes each outermost
+absolute/fixed descendant a separate formatter root while preserving its
+enclosing line as the K5b static source; the admitted horizontal automatic
+width subset reforms after K5d returns the used width. Remaining
+table-internal absolute/fixed routes remain separate.
 
 The flex/grid static-position provider is now a narrow Buckram adapter
 capability, selected only for an attached direct absolute or fixed child of a
@@ -210,8 +216,7 @@ Buckram has an equivalent flex/grid static-position algorithm.
 
 1. Compare each incremental result with the fresh-final-document harness.
 2. Replace the remaining private flex/grid renderer provider with an
-   equivalent Buckram static-position algorithm. Give generic inline
-   automatic-width out-of-flow roots their own formatter-replacement route.
+   equivalent Buckram static-position algorithm.
 
 ## Stop rules
 

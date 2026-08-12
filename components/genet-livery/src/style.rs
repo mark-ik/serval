@@ -567,7 +567,8 @@ where
     /// excludes every property that can alter box generation, geometry,
     /// inherited metrics, resources, or paint ordering.
     pub(crate) fn differs_only_in_background_color(&self, previous: &Self) -> bool {
-        self.values.len() == previous.values.len()
+        let mut changed = false;
+        let only_background = self.values.len() == previous.values.len()
             && self.custom == previous.custom
             && self.inline_diagnostics == previous.inline_diagnostics
             && self.color_context == previous.color_context
@@ -575,10 +576,12 @@ where
                 let Some(previous) = previous.values.get(id) else {
                     return false;
                 };
+                changed |= current != previous;
                 let mut normalized = previous.clone();
                 normalized.background_color = current.background_color.clone();
                 normalized == *current
-            })
+            });
+        only_background && changed
     }
 
     /// Return the sole absolute/fixed element whose computed insets changed.

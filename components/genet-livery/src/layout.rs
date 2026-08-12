@@ -3572,6 +3572,12 @@ where
                     parent_style,
                     parent_font_size,
                 )?);
+                self.build_positioned_inline_descendants(
+                    &mut children,
+                    &inline_group,
+                    parent_style,
+                    containing_size,
+                )?;
             }
             inline_group.clear();
             if let Some(node) =
@@ -3587,8 +3593,39 @@ where
                 parent_style,
                 parent_font_size,
             )?);
+            self.build_positioned_inline_descendants(
+                &mut children,
+                &inline_group,
+                parent_style,
+                containing_size,
+            )?;
         }
         Ok(children)
+    }
+
+    /// Inline formatting omits absolute and fixed descendants entirely. They
+    /// remain structural descendants in the fragment tree, but their local
+    /// block formatting root must sit beside the inline measure leaf so K5d
+    /// can query its intrinsic size and reformat it at the resolved width.
+    fn build_positioned_inline_descendants(
+        &mut self,
+        children: &mut Vec<AlgorithmNodeId>,
+        roots: &[BoxId],
+        parent_style: &ComputedValues,
+        containing_size: (Option<f32>, Option<f32>),
+    ) -> Result<(), LayoutError> {
+        for positioned in positioned_roots_in_inline_group(self.boxes, roots) {
+            let parent_font_size = inherited_font_size(self.boxes, self.styles, positioned);
+            if let Some(node) = self.build_box(
+                positioned,
+                Some(parent_style),
+                parent_font_size,
+                containing_size,
+            )? {
+                children.push(node);
+            }
+        }
+        Ok(())
     }
 
     /// Whether a pending inline run generates no box at all.
@@ -4798,6 +4835,42 @@ where
             css_box.positioning,
             PositioningScheme::Static | PositioningScheme::Relative | PositioningScheme::Sticky
         )
+}
+
+/// Return each outermost absolute or fixed descendant of an inline run.
+///
+/// The run itself remains with the inline formatter, which supplies the line
+/// fragment used as the positioned root's static-position source. The root
+/// must be built separately, because out-of-flow contents neither occupy that
+/// line nor inherit its measured width.
+fn positioned_roots_in_inline_group<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    roots: &[BoxId],
+) -> Vec<BoxId>
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId, positioned: &mut Vec<BoxId>)
+    where
+        Id: Copy + Eq + Hash,
+    {
+        for child in boxes[box_id].children() {
+            if matches!(
+                boxes[*child].positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            ) {
+                positioned.push(*child);
+                continue;
+            }
+            visit(boxes, *child, positioned);
+        }
+    }
+
+    let mut positioned = Vec::new();
+    for root in roots {
+        visit(boxes, *root, &mut positioned);
+    }
+    positioned
 }
 
 fn anonymous_block_style<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId) -> BlockStyle
@@ -7301,6 +7374,145 @@ mod tests {
             (positioned_fragment.x, positioned_fragment.y),
             (container_fragment.x + 34.0, container_fragment.y + 8.0),
             "the shared K5d route resolves the inline-origin child's final insets",
+        );
+    }
+
+    #[test]
+    fn inline_origin_absolute_auto_width_refits_to_the_k5d_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=container>before <span id=source>source <span id=positioned>one two three four five six seven eight</span></span> after</div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #container { position: relative; width: 160px; } #source { display: inline; } \
+                 #positioned { position: absolute; left: 34px; right: 0; top: 8px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let container = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "container").expect("container"))
+            .expect("container box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let source = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "source").expect("source"))
+            .expect("source box");
+        let container_fragment = layout
+            .fragments()
+            .fragments_for_box(container)
+            .next()
+            .expect("container fragment");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source line fragment");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .expect("static position")
+                .source,
+            StaticPositionSource::Fragment(source_fragment),
+            "the separate formatting root retains its enclosing inline line as the static source",
+        );
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (container_fragment.x + 34.0, container_fragment.y + 8.0),
+        );
+        assert_eq!(positioned_fragment.width, 126.0);
+        assert!(
+            positioned_fragment.height > 20.0,
+            "the text reflows at Buckram's 126px used inline size: {positioned_fragment:?}",
+        );
+    }
+
+    #[test]
+    fn inline_origin_fixed_auto_width_refits_to_the_k5d_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=container>before <span id=source>source <span id=positioned>one two three four five six seven eight</span></span> after</div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #container { width: 160px; } #source { display: inline; } \
+                 #positioned { position: fixed; left: 34px; right: 160px; top: 8px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let source = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "source").expect("source"))
+            .expect("source box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source line fragment");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .expect("static position")
+                .source,
+            StaticPositionSource::Fragment(source_fragment),
+        );
+        assert_eq!((positioned_fragment.x, positioned_fragment.y), (34.0, 8.0));
+        assert_eq!(positioned_fragment.width, 126.0);
+        assert!(
+            positioned_fragment.height > 20.0,
+            "the fixed text reflows at Buckram's 126px used inline size: {positioned_fragment:?}",
         );
     }
 

@@ -69,10 +69,14 @@ carries a duplicate root-only absolute/fixed gap. The fixed receipt uses a
 transform-established fixed containing block.
 
 Taffy still excludes the out-of-flow box, and remains the measured fallback
-for unadmitted descendants, the non-replaced block axis, flex/grid roots,
-replaced non-leaves or missing contributions, and generic inline automatic-width
-reformatting. The inline-origin receipt proves its line fragment reaches the
-shared K5d inset solver for a definite-size result.
+for unadmitted descendants, the non-replaced block axis, flex/grid roots, and
+replaced non-leaves or missing contributions. The retained inline formatter
+now omits each outermost absolute or fixed descendant from its enclosing line,
+then gives that descendant a separate local block-formatting root. Its
+structural fragment parent remains the enclosing inline line, so K5b keeps the
+line-level static source while K5d queries intrinsic sizes, returns the used
+inline size, and triggers the local reformat pass. The absolute and fixed
+automatic-width receipts both prove wrapping follows that returned width.
 Table wrappers, captions, row groups, rows, and cells now supply their K5b
 records to the shared K5d path; detached row-group, row, and cell subtrees are
 formatted only after K4d track work. K5d remains open until the remaining

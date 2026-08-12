@@ -548,6 +548,12 @@ where
             &self.interactions,
             &self.image_sources,
         )?;
+        // Animation ownership must be established before any retained
+        // paint-only shortcut considers the style delta. Otherwise a
+        // transitioning background-color looks like a static repaint and the
+        // shortcut drops the transition before its first sample.
+        self.schedule_transitions(&styles);
+        self.schedule_keyframe_animation(&styles);
         if !viewport_changed
             && self.layout_dirty
             && self.transitions.is_empty()
@@ -717,8 +723,6 @@ where
         }
 
         self.retain_layout_identity();
-        self.schedule_transitions(&styles);
-        self.schedule_keyframe_animation(&styles);
         self.apply_transitions(&mut styles);
         self.apply_keyframe_animation(&mut styles);
         let (styles, mut fragments) = layout_with_text_system(
@@ -766,11 +770,16 @@ where
         width: u32,
         height: u32,
     ) -> Result<LiveryPaintList, LayoutError> {
-        let (styles, mut fragments) = self
+        let (mut styles, mut fragments) = self
             .layout
             .as_ref()
             .map(|layout| (layout.styles.clone(), layout.fragments.clone()))
             .ok_or_else(|| LayoutError::retained_state("no retained layout to paint"))?;
+        // The retained geometry stays stable between clock ticks, while
+        // paint reads a fresh style sample at the current transition or
+        // keyframe time.
+        self.apply_transitions(&mut styles);
+        self.apply_keyframe_animation(&mut styles);
         self.apply_sticky_positioning(&mut fragments, &styles);
         let list = emit_paint_list_with_text_system_scrolled_with_images(
             &self.dom,
@@ -847,13 +856,14 @@ where
     }
 
     fn has_sticky_positioning(&self) -> bool {
-        self.layout.as_ref().is_some_and(|layout| {
-            layout
-                .fragments
-                .boxes()
-                .iter()
-                .any(|(_, css_box)| css_box.positioning == buckram::PositioningScheme::Sticky)
-        })
+        self.layout
+            .as_ref()
+            .or(self.identity_source.as_ref())
+            .is_some_and(|layout| {
+                layout.fragments.boxes().iter().any(|(_, css_box)| {
+                    css_box.positioning == buckram::PositioningScheme::Sticky
+                })
+            })
     }
 
     /// Return the current viewport scroll offset.
@@ -955,7 +965,8 @@ where
     }
 
     /// Advance retained animation time. A following frame samples the
-    /// interpolated value without re-running layout.
+    /// interpolated style through the ordinary retained-layout path, so text
+    /// shaping and every paint consumer see the same frame value.
     pub fn pump(&mut self, now_ms: f64) -> bool {
         if (self.transitions.is_empty() && self.keyframe_animation.is_none()) || !now_ms.is_finite()
         {
@@ -966,6 +977,7 @@ where
         self.clock_ms = next;
         if changed {
             self.cached = None;
+            self.layout_dirty = true;
         }
         changed
     }
@@ -1220,7 +1232,7 @@ where
     }
 
     fn clamp_scroll(&mut self) {
-        let Some(layout) = self.layout.as_ref() else {
+        let Some(layout) = self.layout.as_ref().or(self.identity_source.as_ref()) else {
             self.scroll = (0.0, 0.0);
             return;
         };
@@ -1539,14 +1551,14 @@ where
         if let (Some(old), Some(new)) = (previous.get(id), styles.get(id)) {
             let duration_ms = f64::from(new.transition_duration.milliseconds());
             if duration_ms > 0.0 && new.transition_property.includes_property(property) {
-                let from = old.get(property);
-                let to = new.get(property);
+                let from = previous.resolve_used_color_value(id, old.get(property));
+                let to = styles.resolve_used_color_value(id, new.get(property));
                 if from != to {
                     return Some(PropertyTransition {
                         node: id,
                         property,
-                        from: previous.resolve_used_color_value(id, from),
-                        to: styles.resolve_used_color_value(id, to),
+                        from,
+                        to,
                         start_ms: self.clock_ms,
                         duration_ms,
                         automatic: true,
@@ -1643,9 +1655,13 @@ where
         let Some(target) = find_id(&self.dom, self.dom.document(), fragment) else {
             return false;
         };
+        // Link activation may focus the anchor first, which moves the live
+        // layout into K5g's identity source before this fragment lookup.
+        // That retained geometry is still the current hit-test frame.
         let Some(y) = self
             .layout
             .as_ref()
+            .or(self.identity_source.as_ref())
             .and_then(|layout| layout.fragments.get(target).map(|fragment| fragment.y))
         else {
             return false;

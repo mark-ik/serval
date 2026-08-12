@@ -36,9 +36,11 @@ The live receipts currently cover:
   rows, and cells leave K4b/K4d track topology, retain a zero-track static
   anchor, and resolve through the same K5d geometry path without widening the
   in-flow grid.
-- `inline_origin_absolute_position_uses_the_line_fragment_as_its_static_source`
-  verifies an inline-origin absolute child uses its line fragment for K5b and
-  resolves its final definite-size insets through K5d.
+- `inline_origin_absolute_position_uses_the_line_fragment_as_its_static_source`,
+  `inline_origin_absolute_auto_width_refits_to_the_k5d_inline_size`, and
+  `inline_origin_fixed_auto_width_refits_to_the_k5d_inline_size` verify an
+  inline-origin root keeps its line fragment for K5b and, for both absolute
+  and fixed automatic widths, reforms its text at the K5d-used inline size.
 - `positioned_descendant_extends_its_scroll_container_range` verifies an
   absolute descendant produces nested scroll range from its final fragment.
 - `positioned_numeric_z_indices_wrap_the_normal_paint_phase` verifies the
@@ -58,9 +60,10 @@ appear in `TableShadowLedger::positioning_gaps`: their explicit out-of-flow
 route formats the detached structural subtree after table tracks settle. Full
 CSS stacking-context ordering and clipping remain a separate K5e matrix; the
 current receipts cover only numeric positioned levels and the supported
-`overflow` shorthand and longhands. Generic inline automatic-width reformatting
-remains open: it lacks a distinct formatter root through which Buckram can
-return a new used inline size. These are open work, not fallback-free behavior.
+`overflow` shorthand and longhands. Generic inline automatic-width roots now
+have a distinct formatter root for the admitted horizontal absolute/fixed
+subset; unsupported writing modes and unadmitted descendants remain explicit
+fallbacks. These are open work, not fallback-free behavior.
 
 ## Stop rules
 
