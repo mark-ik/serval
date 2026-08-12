@@ -74,11 +74,27 @@ The bridge subtracts only the resolved physical border widths: percentages and
 auto insets therefore use the padding-box size, while the padding itself stays
 inside the positioning rectangle. `positioned_child_uses_the_positioned_ancestor_padding_box`
 pins asymmetric border edges and a 100% absolute child. This is the ordinary
-containing-block rule only. An inline establishing ancestor still needs its
-multi-fragment content-edge rectangle. A direct positioned grid child now
-retains the formatter's finalized grid area in its K5b record; when the same
-grid fragment is the K5a-selected containing block, K5d replaces the ordinary
-padding rectangle with that area before resolving its insets and percentages.
+containing-block rule only. An inline establishing ancestor instead uses its
+multi-fragment content-edge rectangle. That rectangle is now constructed from
+the retained inline formatter's first fragment at its logical content starts
+and last fragment at its logical content ends. It trims each fragment's
+resolved padding and border edges using the formatter's own percentage basis;
+it does not turn the wrapped inline's union of border fragments into a block
+containing box. When an in-flow block splits one inline element into generated
+continuation boxes, the bridge coalesces all of that element's compatible
+inline fragments before choosing the first and last edges.
+When its first visible content wraps, a nonpainting zero-width retained marker
+preserves the empty first fragment's content-start edge.
+`positioned_child_of_a_split_inline_uses_first_and_last_content_edges` pins a
+wrapped relative inline with asymmetric padding and borders, and
+`positioned_child_of_inline_split_by_a_block_uses_all_continuations` pins the
+block-split continuation case.
+`absolute_siblings_in_one_inline_keep_an_empty_first_fragment` pins two
+absolute descendants against that empty-first-fragment edge. A direct
+positioned grid child now retains the formatter's finalized grid area in its
+K5b record; when the same grid fragment is the K5a-selected containing block,
+K5d replaces the ordinary padding rectangle with that area before resolving its
+insets and percentages.
 `grid_positioned_area_keeps_the_final_explicit_track_rectangle` proves the
 carrier independently of final child placement. The remaining grid K5b work is
 the static-rectangle rule, not this containing-block substitution.
@@ -123,6 +139,9 @@ not treated as final K5 behavior.
 - Direction and every supported writing mode keep the same logical equation.
 - A non-inline positioned ancestor with asymmetric borders supplies a
   padding-box percentage basis and padding-edge origin.
+- A wrapped positioned inline uses its first and last content edges, including
+  asymmetric padding and borders, as one containing rectangle, including
+  generated continuations around an in-flow block and an empty first fragment.
 - Positioned tables and table parts use the wrapper/internal K5b records and
   produce ordinary Buckram fragments.
 - No Taffy `Position` value selects browser absolute or fixed behavior.

@@ -4624,6 +4624,7 @@ where
                             _ => positioned_containing_block_rect(
                                 border_rect,
                                 containing_box,
+                                fragments,
                                 boxes,
                                 styles,
                             ),
@@ -4730,12 +4731,13 @@ where
 
 /// Resolve the ordinary absolute/fixed containing-block rectangle from an
 /// established ancestor fragment. CSS Positioned Layout defines a non-inline
-/// ancestor's containing block at its padding edge, while inline ancestors
-/// have their own multi-fragment content-edge rule and therefore remain on the
-/// pre-existing fragment route until that rule has a representation here.
+/// ancestor's containing block at its padding edge. An inline ancestor instead
+/// combines the logical start content edges of its first fragment with the
+/// logical end content edges of its last fragment.
 fn positioned_containing_block_rect<Id>(
     border_rect: PhysicalRect,
     containing_box: BoxId,
+    fragments: &FragmentTree,
     boxes: &buckram::CssBoxTree<Id>,
     styles: &StylePlane<Id>,
 ) -> PhysicalRect
@@ -4743,16 +4745,24 @@ where
     Id: Copy + Eq + Hash,
 {
     let css_box = &boxes[containing_box];
-    if css_box.display.outside == Some(DisplayOutside::Inline)
-        && css_box.display.inside == Some(DisplayInside::Flow)
-        && css_box.display.internal_table.is_none()
-    {
-        return border_rect;
-    }
     let Some(computed) = css_box.origin.node().and_then(|node| styles.get(node)) else {
         return border_rect;
     };
     let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+    if css_box.display.outside == Some(DisplayOutside::Inline)
+        && css_box.display.inside == Some(DisplayInside::Flow)
+        && css_box.display.internal_table.is_none()
+    {
+        return positioned_inline_containing_block_rect(
+            containing_box,
+            fragments,
+            boxes,
+            css_box.flow,
+            computed,
+            font_size,
+        )
+        .unwrap_or(border_rect);
+    }
     let border = PhysicalSides {
         top: border_width_px(
             computed.border_top_style,
@@ -4781,6 +4791,125 @@ where
         width: (border_rect.width - border.left - border.right).max(0.0),
         height: (border_rect.height - border.top - border.bottom).max(0.0),
     }
+}
+
+/// CSS Positioned Layout's special containing-block rule for an inline
+/// positioned ancestor. The fragment tree retains the in-order line fragments
+/// emitted by the inline formatter, including generated continuation boxes
+/// around an in-flow block. The CSS rectangle starts at the first fragment's
+/// logical content starts and ends at the last fragment's logical content ends,
+/// so it can span intervening lines without treating their union as a normal
+/// block border box.
+fn positioned_inline_containing_block_rect<Id>(
+    containing_box: BoxId,
+    fragments: &FragmentTree,
+    boxes: &buckram::CssBoxTree<Id>,
+    flow: FlowAxes,
+    computed: &ComputedValues,
+    font_size: f32,
+) -> Option<PhysicalRect>
+where
+    Id: Copy + Eq + Hash,
+{
+    // One DOM inline can lower to several generated boxes when it is split by
+    // an in-flow block. K5a names the continuation that structurally owns the
+    // positioned descendant, but CSS Position defines one containing block
+    // from every fragment of the original inline element.
+    let fragment_ids = boxes[containing_box]
+        .origin
+        .node()
+        .map(|node| {
+            boxes
+                .boxes_for_node(node)
+                .iter()
+                .copied()
+                .filter(|box_id| {
+                    let candidate = &boxes[*box_id];
+                    candidate.display.outside == Some(DisplayOutside::Inline)
+                        && candidate.display.inside == Some(DisplayInside::Flow)
+                        && candidate.display.internal_table.is_none()
+                        && candidate.flow == flow
+                })
+                .flat_map(|box_id| {
+                    fragments
+                        .fragment_ids_for_box(box_id)
+                        .iter()
+                        .copied()
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|fragment_ids| !fragment_ids.is_empty())
+        .unwrap_or_else(|| fragments.fragment_ids_for_box(containing_box).to_vec());
+    let first = fragments.get(*fragment_ids.first()?)?;
+    let last = fragments.get(*fragment_ids.last()?)?;
+    let first = first.physical_rect();
+    let last = last.physical_rect();
+
+    // Inline padding percentages use the inline formatting context's resolved
+    // width, which is also the basis supplied to the retained text formatter.
+    // The structural containing fragment is that formatting-context fragment.
+    let percentage_basis = fragments
+        .get(*fragment_ids.first()?)
+        .and_then(TreeFragment::containing_fragment)
+        .and_then(|parent| fragments.get(parent))
+        .map_or(first.width, |parent| parent.physical_rect().width);
+    let decoration = PhysicalSides {
+        top: length_percentage_px(computed.padding_top.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_top_style,
+                computed.border_top_width,
+                font_size,
+            ),
+        right: length_percentage_px(computed.padding_right.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_right_style,
+                computed.border_right_width,
+                font_size,
+            ),
+        bottom: length_percentage_px(computed.padding_bottom.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_bottom_style,
+                computed.border_bottom_width,
+                font_size,
+            ),
+        left: length_percentage_px(computed.padding_left.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_left_style,
+                computed.border_left_width,
+                font_size,
+            ),
+    };
+    let content_rect = |rect: PhysicalRect| PhysicalRect {
+        x: rect.x + decoration.left,
+        y: rect.y + decoration.top,
+        width: (rect.width - decoration.left - decoration.right).max(0.0),
+        height: (rect.height - decoration.top - decoration.bottom).max(0.0),
+    };
+    let first = content_rect(first);
+    let last = content_rect(last);
+    let edge = |side: PhysicalSide| {
+        let fragment = if side == flow.inline_start() || side == flow.block_start() {
+            first
+        } else {
+            last
+        };
+        match side {
+            PhysicalSide::Top => fragment.y,
+            PhysicalSide::Right => fragment.x + fragment.width,
+            PhysicalSide::Bottom => fragment.y + fragment.height,
+            PhysicalSide::Left => fragment.x,
+        }
+    };
+    let left = edge(PhysicalSide::Left);
+    let right = edge(PhysicalSide::Right);
+    let top = edge(PhysicalSide::Top);
+    let bottom = edge(PhysicalSide::Bottom);
+    Some(PhysicalRect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    })
 }
 
 /// Reformat an admitted auto-sized positioned root at Buckram's resolved
@@ -7759,6 +7888,211 @@ mod tests {
             ),
             (20.0, 5.0, 100.0, 100.0),
             "percentage sizes and auto insets resolve against the padding box"
+        );
+    }
+
+    #[test]
+    fn positioned_child_of_a_split_inline_uses_first_and_last_content_edges() {
+        let dom = StaticDocument::parse(
+            "<div id=host><span id=containing>one two three four five six <span id=start></span><span id=end></span></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { width: 70px; font-size: 10px; line-height: 10px; } \
+                 #containing { display: inline; position: relative; padding: 3px 7px 11px 13px; border: 2px solid; } \
+                 #start, #end { position: absolute; width: 1px; height: 1px; } \
+                 #start { top: 0; left: 0; } #end { right: 0; bottom: 0; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let containing_fragments = layout
+            .fragments()
+            .fragments_for_box(box_for("containing"))
+            .map(TreeFragment::physical_rect)
+            .collect::<Vec<_>>();
+        let positioned = |id| layout
+            .fragments()
+            .fragments_for_box(box_for(id))
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("positioned fragment");
+        assert!(
+            containing_fragments.len() >= 2,
+            "the positioned inline must fragment across multiple lines: {containing_fragments:?}"
+        );
+        let first = containing_fragments.first().expect("first fragment");
+        let last = containing_fragments.last().expect("last fragment");
+        assert_eq!(
+            positioned("start"),
+            PhysicalRect {
+                x: first.x + 15.0,
+                y: first.y + 5.0,
+                width: 1.0,
+                height: 1.0,
+            }
+        );
+        assert_eq!(
+            positioned("end"),
+            PhysicalRect {
+                x: last.x + last.width - 10.0,
+                y: last.y + last.height - 14.0,
+                width: 1.0,
+                height: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn positioned_child_of_inline_split_by_a_block_uses_all_continuations() {
+        let dom = StaticDocument::parse(
+            "<div id=container><div id=before></div>B<span id=containing><div id=split></div>AA<span id=positioned></span></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #container { font-size: 20px; line-height: 20px; width: 100px; height: 100px; } \
+                 #before { height: 60px; } #split { height: 0; } \
+                 #containing { display: inline; position: relative; } \
+                 #positioned { position: absolute; left: 0; top: -60px; width: 100px; height: 100px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let first_containing_fragment = layout
+            .fragments()
+            .fragments_for_box(box_for("containing"))
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("first containing fragment");
+        let positioned = box_for("positioned");
+        assert_eq!(
+            layout
+                .boxes()
+                .boxes_for_node(node_by_id(&dom, dom.document(), "containing").expect("containing"))
+                .len(),
+            2,
+            "the in-flow block produces a generated inline continuation"
+        );
+        assert_eq!(
+            layout
+                .fragments()
+                .fragments_for_box(positioned)
+            .next()
+            .map(TreeFragment::physical_rect),
+            Some(PhysicalRect {
+                x: first_containing_fragment.x,
+                y: first_containing_fragment.y - 60.0,
+                width: 100.0,
+                height: 100.0,
+            }),
+            "the -60px top inset resolves from the first continuation, not the child-owning continuation"
+        );
+    }
+
+    #[test]
+    fn absolute_siblings_in_one_inline_keep_an_empty_first_fragment() {
+        let dom = StaticDocument::parse(
+            "<div id=container><span id=prefix>BBBBBB</span> <span id=containing><div id=first></div>AA A AA AAAA<div id=second></div></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #container { font-size: 20px; line-height: 20px; width: 100px; height: 100px; } \
+                 #containing { display: inline; position: relative; } \
+                 #first, #second { position: absolute; top: 0; width: 50px; height: 100px; } \
+                 #first { left: -30px; } #second { left: -80px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let rect_for = |id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_for(id))
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment")
+        };
+        let prefix = layout
+            .fragments()
+            .fragments_for_box(box_for("prefix"))
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("prefix fragment");
+        let containing_fragments = layout
+            .fragments()
+            .fragments_for_box(box_for("containing"))
+            .map(TreeFragment::physical_rect)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rect_for("first"),
+            PhysicalRect {
+                x: prefix.x + prefix.width - 30.0,
+                y: prefix.y,
+                width: 50.0,
+                height: 100.0,
+            },
+            "prefix={prefix:?}, containing={containing_fragments:?}"
+        );
+        assert_eq!(
+            rect_for("second"),
+            PhysicalRect {
+                x: prefix.x + prefix.width - 80.0,
+                y: prefix.y,
+                width: 50.0,
+                height: 100.0,
+            }
         );
     }
 
