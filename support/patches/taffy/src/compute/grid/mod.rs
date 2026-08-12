@@ -826,14 +826,6 @@ pub struct DetailedGridTracksInfo {
     pub gutters: Vec<f32>,
     /// The used size of the tracks
     pub sizes: Vec<f32>,
-    /// Physical offsets for every interleaved track and gutter slot.
-    ///
-    /// A grid line at OriginZero coordinate `line` has index
-    /// `2 * (line + negative_implicit_tracks)` when it is within the final
-    /// implicit-grid bounds. Keeping the interleaved representation makes the
-    /// value usable for the same absolute-positioned grid-area lookup as the
-    /// layout algorithm, without exposing its internal track vector.
-    pub offsets: Vec<f32>,
 }
 
 #[cfg(feature = "detailed_layout_info")]
@@ -860,11 +852,6 @@ impl DetailedGridTracksInfo {
         DetailedGridTracksInfo::grid_track_base_size_of_kind(grid_tracks, GridTrackKind::Track)
     }
 
-    /// Get the physical offsets of the interleaved tracks and gutters.
-    fn offsets_from_grid_track_layout(grid_tracks: &[GridTrack]) -> Vec<f32> {
-        grid_tracks.iter().map(|track| track.offset).collect()
-    }
-
     /// Construct DetailedGridTracksInfo from TrackCounts and GridTracks
     fn from_grid_tracks_and_track_count(track_count: TrackCounts, grid_tracks: Vec<GridTrack>) -> Self {
         DetailedGridTracksInfo {
@@ -873,7 +860,6 @@ impl DetailedGridTracksInfo {
             positive_implicit_tracks: track_count.positive_implicit,
             gutters: DetailedGridTracksInfo::gutters_from_grid_track_layout(&grid_tracks),
             sizes: DetailedGridTracksInfo::sizes_from_grid_track_layout(&grid_tracks),
-            offsets: DetailedGridTracksInfo::offsets_from_grid_track_layout(&grid_tracks),
         }
     }
 }

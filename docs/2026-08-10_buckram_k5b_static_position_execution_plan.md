@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-10
 
-**Status:** Accepted. K5a supplies the containing-block graph; K5b supplies
-the distinct static rectangle and source fragment that K5d will consume.
+**Status:** Partially implemented. K5a supplies the containing-block graph;
+K5b records the source fragment and static rectangle for block, inline, and
+table paths. Direct flex/grid static rectangles remain a re-opened K5b seam.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5b. **Prerequisite:** [K5a containing-block graph](2026-08-10_buckram_k5a_containing_blocks_execution_plan.md).
@@ -56,9 +57,8 @@ paint.
   containing block is elsewhere in the tree.
 - Inline-source, block-source, flex-source, grid-source, table-source, and
   table-part fixtures cover both the record and its coordinate-space identity.
-- No source cache or formatter child static-coordinate is used to reconstruct
-  static positions. A read-only finalized grid-track result supplied during the
-  same formatter pass is permitted for grid-area selection.
+- No completed backend child location is relabeled as a Buckram static
+  rectangle.
 - Paint, hit test, and accessibility continue to read ordinary fragments;
   K5d will turn this record into final positioned fragment geometry.
 
@@ -70,17 +70,30 @@ block beside the formatting fragment that emitted an absolute or fixed box.
 Block, inline, atomic-inline, and table structural emission paths all use the
 same record API.
 
-Buckram's private algorithm adapter keeps a formatter-provided pre-inset
-location separate from final layout where that is the still-admitted boundary.
-For direct flex/grid children, Buckram replaces that temporary value before
-readback: flex uses the final formatter rectangles for its alignment equation,
-and grid receives finalized read-only track offsets during the same algorithm
-pass, then resolves its own numeric line/span static area and self-alignment.
-The flex receipt uses center/end alignment plus explicit insets, proving the
-record preserves the aligned static coordinate rather than copying the final
-inset coordinate. The retained inline formatter emits an inline-origin
-positioned child against its owning line fragment, and K4h table structural
-fragments emit wrapper and part records from their own logical rectangles.
+Buckram's private algorithm adapter carries a formatter-provided pre-inset
+location separately from final layout. It remains the temporary direct
+flex/grid input while the actual rectangle model is completed. It must not be
+credited as a Buckram-owned rectangle: the adapter currently transports a
+point and measured child size, while the specifications require a rectangle
+and alignment-sensitive resolution.
+
+The 2026-08-12 WPT comparison invalidated an attempted post-layout rewrite of
+that point. CSS Flexbox defines cross-axis static-rectangle edges as the flex
+container's content edges and defines the main-axis edges using the child as a
+sole fixed-size flex item with automatic margins treated as zero. CSS Grid
+uses the grid parent's content edges unless that grid also establishes the
+actual containing block, in which case the placement area applies. The old
+rewrite could not see the K5a containing-block relationship and substituted
+one scalar coordinate for those distinct rectangles.
+
+The next K5b slice must pass the selected K5a containing block into flex/grid
+static-rectangle construction, retain both logical edges, and carry the
+applicable alignment inputs into K5d. It may use finalized grid track offsets
+only for the grid-containing-block case. Until then, the formatter's direct
+flex/grid result remains the compatibility boundary and is not a K5b closure
+receipt. The retained inline formatter emits an inline-origin positioned child
+against its owning line fragment, and K4h table structural fragments emit
+wrapper and part records from their own logical rectangles.
 
 K5b does not calculate final absolute or fixed geometry. K5d now consumes the
 wrapper, caption, row-group, row, and cell records through the shared

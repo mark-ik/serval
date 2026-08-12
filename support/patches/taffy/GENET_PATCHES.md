@@ -142,21 +142,3 @@ The `stylo_taffy` full-style literal initializes the additive field to false,
 preserving the incumbent Stylo route until it opts into the seam. Native
 receipts cover block, flex, grid, horizontal inline-size, and vertical
 inline-size containers.
-
-### 0005 — detailed grid-track offsets
-
-**Files:** `src/compute/grid/mod.rs`
-**Upstream status:** additive and genet-only so far. The API should be reviewed
-alongside taffy's existing detailed-layout output before upstreaming.
-
-`DetailedGridTracksInfo` previously exposed each used track size and gutter,
-but not the physical offset of the grid lines after track sizing and
-content-distribution alignment. An embedding layout engine therefore could not
-form the static grid area for an absolutely positioned item without consuming
-taffy's private child-placement result.
-
-This adds `offsets: Vec<f32>` retaining the final offset of every interleaved
-track/gutter slot. The documented index is the same one the grid algorithm uses
-for a resolved OriginZero grid line. It changes no grid layout: Buckram consumes
-the read-only data to resolve its own numeric `grid-row`/`grid-column` static
-area, while taffy continues to own track sizing and alignment.
