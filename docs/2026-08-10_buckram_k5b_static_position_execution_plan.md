@@ -56,7 +56,9 @@ paint.
   containing block is elsewhere in the tree.
 - Inline-source, block-source, flex-source, grid-source, table-source, and
   table-part fixtures cover both the record and its coordinate-space identity.
-- No source cache or post-Taffy query is used to reconstruct static positions.
+- No source cache or formatter child static-coordinate is used to reconstruct
+  static positions. A read-only finalized grid-track result supplied during the
+  same formatter pass is permitted for grid-area selection.
 - Paint, hit test, and accessibility continue to read ordinary fragments;
   K5d will turn this record into final positioned fragment geometry.
 
@@ -68,10 +70,13 @@ block beside the formatting fragment that emitted an absolute or fixed box.
 Block, inline, atomic-inline, and table structural emission paths all use the
 same record API.
 
-Buckram's private algorithm adapter now carries a formatter-provided
-pre-inset location separately from final layout. Block, flex, and grid routes
-publish that location before an explicit inset changes final placement. The
-flex receipt uses center/end alignment plus explicit insets, proving the
+Buckram's private algorithm adapter keeps a formatter-provided pre-inset
+location separate from final layout where that is the still-admitted boundary.
+For direct flex/grid children, Buckram replaces that temporary value before
+readback: flex uses the final formatter rectangles for its alignment equation,
+and grid receives finalized read-only track offsets during the same algorithm
+pass, then resolves its own numeric line/span static area and self-alignment.
+The flex receipt uses center/end alignment plus explicit insets, proving the
 record preserves the aligned static coordinate rather than copying the final
 inset coordinate. The retained inline formatter emits an inline-origin
 positioned child against its owning line fragment, and K4h table structural

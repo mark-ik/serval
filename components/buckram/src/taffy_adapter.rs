@@ -7,12 +7,13 @@
 use std::{marker::PhantomData, slice};
 
 use taffy::{
-    AlignContentKeyword, AlignItems, AlignItemsKeyword, BlockContext, Cache, CacheTree, Direction,
-    FlexDirection, FlexWrap, GridPlacement, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, Point, RoundTree,
-    RunMode, SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
-    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
-    compute_leaf_layout, compute_root_layout, round_layout,
+    AlignContentKeyword, AlignItems, AlignItemsKeyword, BlockContext, Cache, CacheTree,
+    DetailedGridInfo, DetailedGridTracksInfo, Direction, FlexDirection, FlexWrap, GridPlacement,
+    Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput,
+    LayoutOutput, LayoutPartialTree, NodeId, Point, RoundTree, RunMode, SizingMode, Style,
+    TraversePartialTree, TraverseTree, compute_block_layout, compute_cached_layout,
+    compute_flexbox_layout, compute_grid_layout, compute_hidden_layout, compute_leaf_layout,
+    compute_root_layout, round_layout,
 };
 
 use crate::block::FloatContextState;
@@ -143,6 +144,7 @@ struct AlgorithmNode<S, Context, Source> {
     cache: Cache,
     unrounded_layout: Layout,
     final_layout: Layout,
+    grid_info: Option<DetailedGridInfo>,
     baselines: Baselines,
 }
 
@@ -249,6 +251,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
+            grid_info: None,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -316,10 +319,10 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     /// supply the local measured subtree that K5d later repositions.
     ///
     /// The provider is deliberately unavailable outside a flex or grid
-    /// parent. Buckram replaces the flex K5b static coordinate after layout;
-    /// grid retains its track-area provider until it has an equivalent Buckram
-    /// query. Ordinary block, inline, and table-internal out-of-flow routes
-    /// have separate Buckram formatting boundaries.
+    /// parent. Buckram replaces the flex/grid K5b static coordinate after
+    /// layout; this adapter role only admits the detached local formatter.
+    /// Ordinary block, inline, and table-internal out-of-flow routes have
+    /// separate Buckram formatting boundaries.
     pub fn enable_flex_grid_static_position_provider(&mut self, id: AlgorithmNodeId)
     where
         S: AlgorithmStyle,
@@ -738,10 +741,13 @@ where
         // device-pixel grid.
         run.tree.replace_flex_static_locations();
         // An automatically placed grid child has the grid container's padding
-        // area as its static grid area. That K5b result needs no track query,
-        // so Buckram can replace it directly; explicit grid lines remain on
-        // the named renderer track-area boundary below.
+        // area as its static grid area. That K5b result needs no track query.
         run.tree.replace_default_grid_static_locations();
+        // A placed grid child instead uses finalized grid-track offsets from
+        // the formatter. Buckram resolves the CSS line/span rules against that
+        // read-only grid result, rather than consuming the formatter's child
+        // static coordinate.
+        run.tree.replace_explicit_grid_static_locations();
         round_layout(&mut run, root.into_taffy());
         run.tree.propagate_baselines();
     }
@@ -750,7 +756,7 @@ where
     /// alignment result from the finalized formatter boxes. This preserves
     /// the direct absolute/fixed child exclusion boundary while moving the
     /// K5b coordinate selection out of the renderer's absolute-position
-    /// result. Grid still has its own track-area provider.
+    /// result. Grid resolves its track area through the detailed grid query.
     fn replace_flex_static_locations(&mut self) {
         for child_index in 0..self.nodes.len() {
             let child = AlgorithmNodeId(child_index as u32);
@@ -776,11 +782,10 @@ where
         }
     }
 
-    /// Replace the renderer static coordinate for a grid child whose row and
-    /// column lines are both automatic. CSS gives that item the grid
+    /// Replace the temporary formatter static coordinate for a grid child whose
+    /// row and column lines are both automatic. CSS gives that item the grid
     /// container's padding area without needing the grid track-selection
-    /// algorithm. Explicit lines and spans deliberately keep the separate
-    /// track-area provider.
+    /// algorithm.
     fn replace_default_grid_static_locations(&mut self) {
         for child_index in 0..self.nodes.len() {
             let child = AlgorithmNodeId(child_index as u32);
@@ -795,7 +800,8 @@ where
             {
                 continue;
             }
-            let child_style = sealed::AlgorithmStyle::as_taffy_style(&self.nodes[child_index].style);
+            let child_style =
+                sealed::AlgorithmStyle::as_taffy_style(&self.nodes[child_index].style);
             if !uses_automatic_grid_static_area(child_style) {
                 continue;
             }
@@ -806,6 +812,47 @@ where
                 self.nodes[parent.index()].unrounded_layout,
                 self.nodes[child_index].unrounded_layout,
             );
+            self.nodes[child.index()].unrounded_layout.static_location = static_location;
+        }
+    }
+
+    /// Replace the formatter static coordinate for a direct absolute/fixed
+    /// grid child with an explicit numeric line or span. The formatter remains
+    /// authoritative for track sizing and alignment, while Buckram owns the
+    /// grid-area selection and item-alignment calculation that produces K5b's
+    /// pre-inset location.
+    fn replace_explicit_grid_static_locations(&mut self) {
+        for child_index in 0..self.nodes.len() {
+            let child = AlgorithmNodeId(child_index as u32);
+            let Some(parent) = self.nodes[child_index].parent else {
+                continue;
+            };
+            if self.nodes[parent.index()].kind != AlgorithmKind::Grid
+                || !matches!(
+                    self.nodes[child_index].block_style.position,
+                    crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+                )
+            {
+                continue;
+            }
+
+            let static_location = {
+                let parent_node = &self.nodes[parent.index()];
+                let child_node = &self.nodes[child_index];
+                let Some(grid_info) = parent_node.grid_info.as_ref() else {
+                    continue;
+                };
+                explicit_grid_static_location(
+                    sealed::AlgorithmStyle::as_taffy_style(&parent_node.style),
+                    sealed::AlgorithmStyle::as_taffy_style(&child_node.style),
+                    parent_node.unrounded_layout,
+                    child_node.unrounded_layout,
+                    grid_info,
+                )
+            };
+            let Some(static_location) = static_location else {
+                continue;
+            };
             self.nodes[child.index()].unrounded_layout.static_location = static_location;
         }
     }
@@ -969,8 +1016,7 @@ fn flex_static_location(
 
 /// Whether the absolute grid item is assigned the whole grid padding area.
 ///
-/// Named, line, and span placement all need the final explicit track offsets,
-/// which are an intentionally separate K5b query.
+/// Named, line, and span placement all need the final explicit track offsets.
 fn uses_automatic_grid_static_area(style: &Style) -> bool {
     matches!(
         (
@@ -1012,6 +1058,215 @@ fn default_grid_static_location(
     };
     let top = container.border.top;
     let bottom = container.size.height - container.border.bottom - container.scrollbar_size.height;
+    grid_static_location_in_area(
+        container_style,
+        child_style,
+        child,
+        left,
+        right,
+        top,
+        bottom,
+    )
+}
+
+/// K5b's static coordinate for a direct absolute/fixed grid child that names
+/// at least one numeric line or span. The offsets carry the formatter's final
+/// track sizing and content alignment; this function owns only CSS grid-area
+/// resolution and self-alignment of the detached child.
+fn explicit_grid_static_location(
+    container_style: &Style,
+    child_style: &Style,
+    container: Layout,
+    child: Layout,
+    grid_info: &DetailedGridInfo,
+) -> Option<Point<f32>> {
+    let direction = container_style.direction;
+    let columns = grid_static_track_indexes(
+        &child_style.grid_column,
+        &grid_info.columns,
+        direction == Direction::Rtl,
+    )?;
+    let rows = grid_static_track_indexes(&child_style.grid_row, &grid_info.rows, false)?;
+    if columns.start.is_none()
+        && columns.end.is_none()
+        && rows.start.is_none()
+        && rows.end.is_none()
+    {
+        return None;
+    }
+
+    let (default_left, default_right) = if direction == Direction::Rtl {
+        (
+            container.border.left + container.scrollbar_size.width,
+            container.size.width - container.border.right,
+        )
+    } else {
+        (
+            container.border.left,
+            container.size.width - container.border.right - container.scrollbar_size.width,
+        )
+    };
+    let default_top = container.border.top;
+    let default_bottom =
+        container.size.height - container.border.bottom - container.scrollbar_size.height;
+    let left = columns
+        .start
+        .and_then(|index| grid_info.columns.offsets.get(index).copied())
+        .unwrap_or(default_left);
+    let right = columns
+        .end
+        .and_then(|index| grid_info.columns.offsets.get(index).copied())
+        .unwrap_or(default_right);
+    let top = rows
+        .start
+        .and_then(|index| grid_info.rows.offsets.get(index).copied())
+        .unwrap_or(default_top);
+    let bottom = rows
+        .end
+        .and_then(|index| grid_info.rows.offsets.get(index).copied())
+        .unwrap_or(default_bottom);
+
+    Some(grid_static_location_in_area(
+        container_style,
+        child_style,
+        child,
+        left,
+        right,
+        top,
+        bottom,
+    ))
+}
+
+/// Resolve an absolute grid placement into indexes in the detailed track
+/// vector. A `None` side means the corresponding border-box edge, matching the
+/// grid algorithm's treatment of automatic or out-of-range lines. Named lines
+/// remain unavailable through Buckram's numeric style lowering and are left to
+/// the formatter if a different adapter admits them.
+fn grid_static_track_indexes(
+    placement: &taffy::Line<GridPlacement>,
+    tracks: &DetailedGridTracksInfo,
+    rtl_columns: bool,
+) -> Option<taffy::Line<Option<usize>>> {
+    let lines = grid_static_origin_lines(placement, tracks.explicit_tracks)?;
+    let index = |line: Option<i16>| {
+        line.and_then(|line| {
+            let line = if rtl_columns {
+                tracks.explicit_tracks as i16 - line
+            } else {
+                line
+            };
+            grid_static_track_index(line, tracks)
+        })
+    };
+    let indexes = taffy::Line {
+        start: index(lines.start),
+        end: index(lines.end),
+    };
+    Some(if rtl_columns {
+        taffy::Line {
+            start: indexes.end,
+            end: indexes.start,
+        }
+    } else {
+        indexes
+    })
+}
+
+/// Resolve numeric CSS grid lines and spans into zero-origin line coordinates.
+/// This mirrors Taffy's absolute-grid-item rule without accessing its private
+/// placement types.
+fn grid_static_origin_lines(
+    placement: &taffy::Line<GridPlacement>,
+    explicit_tracks: u16,
+) -> Option<taffy::Line<Option<i16>>> {
+    use GridPlacement::{Auto, Line, NamedLine, NamedSpan, Span};
+
+    if matches!(placement.start, NamedLine(..) | NamedSpan(..))
+        || matches!(placement.end, NamedLine(..) | NamedSpan(..))
+    {
+        return None;
+    }
+
+    let line = |line: i16| grid_static_origin_line(line, explicit_tracks);
+    match (&placement.start, &placement.end) {
+        (Line(start), Line(end)) => {
+            let start = line(start.as_i16())?;
+            let end = line(end.as_i16())?;
+            Some(if start == end {
+                taffy::Line {
+                    start: Some(start),
+                    end: Some(start + 1),
+                }
+            } else {
+                taffy::Line {
+                    start: Some(start.min(end)),
+                    end: Some(start.max(end)),
+                }
+            })
+        },
+        (Line(start), Span(span)) => {
+            let start = line(start.as_i16())?;
+            Some(taffy::Line {
+                start: Some(start),
+                end: Some(start + *span as i16),
+            })
+        },
+        (Line(start), Auto) => Some(taffy::Line {
+            start: Some(line(start.as_i16())?),
+            end: None,
+        }),
+        (Span(span), Line(end)) => {
+            let end = line(end.as_i16())?;
+            Some(taffy::Line {
+                start: Some(end - *span as i16),
+                end: Some(end),
+            })
+        },
+        (Auto, Line(end)) => Some(taffy::Line {
+            start: None,
+            end: Some(line(end.as_i16())?),
+        }),
+        (Auto, Auto) | (Auto, Span(_)) | (Span(_), Auto) | (Span(_), Span(_)) => {
+            Some(taffy::Line {
+                start: None,
+                end: None,
+            })
+        },
+        _ => None,
+    }
+}
+
+/// Convert a non-zero CSS grid line into zero-origin coordinates.
+fn grid_static_origin_line(line: i16, explicit_tracks: u16) -> Option<i16> {
+    match line.cmp(&0) {
+        std::cmp::Ordering::Greater => Some(line - 1),
+        std::cmp::Ordering::Less => Some(line + explicit_tracks as i16 + 1),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+/// Reproduce Taffy's fallible absolute-grid line lookup over the public
+/// detailed track description.
+fn grid_static_track_index(line: i16, tracks: &DetailedGridTracksInfo) -> Option<usize> {
+    if line < -(tracks.negative_implicit_tracks as i16)
+        || line > (tracks.explicit_tracks + tracks.positive_implicit_tracks) as i16
+    {
+        return None;
+    }
+    let index = 2 * (line + tracks.negative_implicit_tracks as i16) as usize;
+    tracks.offsets.get(index).map(|_| index)
+}
+
+/// Align an absolute grid item inside a resolved grid area.
+fn grid_static_location_in_area(
+    container_style: &Style,
+    child_style: &Style,
+    child: Layout,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+) -> Point<f32> {
     Point {
         x: grid_static_axis(
             left,
@@ -1022,7 +1277,7 @@ fn default_grid_static_location(
             child_style
                 .justify_self
                 .unwrap_or(container_style.justify_items.unwrap_or(AlignItems::STRETCH)),
-            direction,
+            container_style.direction,
         ),
         y: grid_static_axis(
             top,
@@ -2809,6 +3064,11 @@ where
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
         self.style(child_node_id)
     }
+
+    fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
+        self.tree.nodes[AlgorithmNodeId::from_taffy(node_id).index()].grid_info =
+            Some(detailed_grid_info);
+    }
 }
 
 impl<S, Context, Source, Measure> RoundTree for AlgorithmRun<'_, S, Context, Source, Measure>
@@ -2828,7 +3088,7 @@ where
 mod tests {
     use taffy::{
         geometry::Rect,
-        prelude::{Dimension, Display, Position, Style, fr, length},
+        prelude::{Dimension, Display, Position, Style, fr, length, line, span},
         style::{AlignItems, JustifyContent},
     };
 
@@ -2992,6 +3252,72 @@ mod tests {
         assert_eq!(tree.layout(positioned).y, 9.0);
         assert_eq!(tree.static_layout(positioned).x, 0.0);
         assert_eq!(tree.static_layout(positioned).y, 0.0);
+    }
+
+    #[test]
+    fn grid_explicit_static_layout_resolves_numeric_lines_and_spans_before_insets() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: span(1),
+                },
+                grid_row: taffy::Line {
+                    start: span(1),
+                    end: line(3),
+                },
+                inset: Rect {
+                    left: length(18.0_f32),
+                    top: length(9.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                grid_template_columns: vec![length(80.0_f32), length(120.0_f32)],
+                grid_template_rows: vec![length(40.0_f32), length(60.0_f32)],
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!(
+            (tree.layout(positioned).x, tree.layout(positioned).y),
+            (98.0, 49.0),
+            "insets still place the final child rectangle",
+        );
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
+            (80.0, 40.0),
+            "K5b resolves line/span grid-area origins independently of the final inset rectangle",
+        );
     }
 
     #[test]
@@ -3170,7 +3496,50 @@ mod tests {
         };
         assert!(
             !uses_automatic_grid_static_area(&explicit_tracks),
-            "a line or span continues to require the explicit-track provider"
+            "a line or span requires the detailed track query"
+        );
+    }
+
+    #[test]
+    fn buckram_grid_static_track_indexes_match_rtl_and_out_of_range_grid_lines() {
+        let tracks = DetailedGridTracksInfo {
+            negative_implicit_tracks: 1,
+            explicit_tracks: 2,
+            positive_implicit_tracks: 1,
+            gutters: vec![0.0; 4],
+            sizes: vec![0.0; 4],
+            offsets: vec![0.0; 9],
+        };
+        let second_track = taffy::Line {
+            start: line(1),
+            end: span(1),
+        };
+        assert_eq!(
+            grid_static_track_indexes(&second_track, &tracks, false),
+            Some(taffy::Line {
+                start: Some(2),
+                end: Some(4),
+            }),
+        );
+        assert_eq!(
+            grid_static_track_indexes(&second_track, &tracks, true),
+            Some(taffy::Line {
+                start: Some(4),
+                end: Some(6),
+            }),
+            "RTL mirrors the requested lines before restoring physical start/end",
+        );
+        let out_of_range = taffy::Line {
+            start: line(9),
+            end: GridPlacement::Auto,
+        };
+        assert_eq!(
+            grid_static_track_indexes(&out_of_range, &tracks, false),
+            Some(taffy::Line {
+                start: None,
+                end: None,
+            }),
+            "nonexistent absolute grid lines fall back to their border-box edge",
         );
     }
 
