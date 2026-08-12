@@ -106,6 +106,10 @@ pub struct Fragment {
     pub logical_rect: LogicalRect,
     pub continuation: Option<BreakToken>,
     pub baselines: Baselines,
+    /// The fragment's own logical ink/scrollable extent before structural
+    /// descendants contribute theirs. K5h needs this source value to shrink
+    /// an ancestor's aggregate overflow after it replaces one subtree.
+    own_overflow: LogicalRect,
     pub overflow: LogicalRect,
     flow: FlowAxes,
     physical_rect: PhysicalRect,
@@ -124,6 +128,7 @@ impl Fragment {
             logical_rect,
             continuation: None,
             baselines: Baselines::default(),
+            own_overflow: logical_rect,
             overflow: logical_rect,
             flow: FlowAxes::HORIZONTAL_LTR,
             physical_rect: rect,
@@ -146,6 +151,7 @@ impl Fragment {
             logical_rect,
             continuation: None,
             baselines: Baselines::default(),
+            own_overflow: logical_rect,
             overflow: logical_rect,
             flow,
             physical_rect: flow.physical_rect(logical_rect, containing_block),
@@ -170,6 +176,7 @@ impl Fragment {
             logical_rect,
             continuation: None,
             baselines: Baselines::default(),
+            own_overflow: logical_rect,
             overflow: logical_rect,
             flow,
             physical_rect,
@@ -231,6 +238,7 @@ pub struct FragmentTree {
     fragments: Vec<Fragment>,
     ids: Vec<FragmentId>,
     slots: HashMap<FragmentId, usize>,
+    next_id: u32,
     by_box: HashMap<BoxId, Vec<FragmentId>>,
     static_positions: HashMap<BoxId, StaticPosition>,
 }
@@ -297,12 +305,7 @@ impl FragmentTree {
         parent: Option<FragmentId>,
         containing_fragment: Option<FragmentId>,
     ) -> FragmentId {
-        let id = FragmentId(
-            self.fragments
-                .len()
-                .try_into()
-                .expect("a fragment tree exceeded u32::MAX fragments"),
-        );
+        let id = self.allocate_fragment_id();
         fragment.id = id;
         fragment.parent = parent;
         fragment.containing_fragment = containing_fragment;
@@ -316,6 +319,37 @@ impl FragmentTree {
             self.roots.push(id);
         }
         id
+    }
+
+    fn allocate_fragment_id(&mut self) -> FragmentId {
+        let id = FragmentId(self.next_id);
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("a fragment tree exceeded u32::MAX fragments");
+        id
+    }
+
+    /// Rebuild aggregate overflow from each fragment's own extent and its
+    /// current structural children. This is intentionally tree-owned rather
+    /// than a paint-side union so a later K5h subtree replacement can shrink
+    /// as well as extend an ancestor's scrollable overflow.
+    fn recompute_overflow(&mut self) {
+        for fragment in &mut self.fragments {
+            fragment.overflow = fragment.own_overflow;
+        }
+        for child in self.ids.clone().into_iter().rev() {
+            let Some(parent) = self.get(child).and_then(Fragment::parent) else {
+                continue;
+            };
+            let child_overflow = self
+                .get(child)
+                .expect("a live fragment has overflow")
+                .overflow;
+            let parent_fragment = &mut self.fragments[self.slots[&parent]];
+            parent_fragment.overflow =
+                union_logical_rects(parent_fragment.overflow, child_overflow);
+        }
     }
 
     /// Attach a positioned fragment to the fragment selected by the K5a
@@ -344,19 +378,8 @@ impl FragmentTree {
         let Some(fragment) = self.fragments.get_mut(slot) else {
             return;
         };
-        fragment.overflow = overflow;
-        let mut child = id;
-        while let Some(parent) = self.get(child).and_then(Fragment::parent) {
-            let child_overflow = self
-                .get(child)
-                .expect("a fragment parent keeps its child")
-                .overflow;
-            let parent_slot = self.slots[&parent];
-            let parent_fragment = &mut self.fragments[parent_slot];
-            parent_fragment.overflow =
-                union_logical_rects(parent_fragment.overflow, child_overflow);
-            child = parent;
-        }
+        fragment.own_overflow = overflow;
+        self.recompute_overflow();
     }
 
     /// Translate one emitted fragment and every structural descendant.
@@ -392,26 +415,15 @@ impl FragmentTree {
             let logical = fragment.flow.logical_offset(offset);
             fragment.logical_rect.inline_start += logical.inline;
             fragment.logical_rect.block_start += logical.block;
+            fragment.own_overflow.inline_start += logical.inline;
+            fragment.own_overflow.block_start += logical.block;
             fragment.overflow.inline_start += logical.inline;
             fragment.overflow.block_start += logical.block;
             fragment.physical_rect.x += offset.x;
             fragment.physical_rect.y += offset.y;
         }
 
-        // A relative box can add a new scrollable extent outside the normal
-        // flow position. Preserve the existing extent and union each moved
-        // fragment into its structural ancestors.
-        for child in self.ids.clone().into_iter().rev() {
-            let Some(parent) = self.get(child).and_then(Fragment::parent) else {
-                continue;
-            };
-            let overflow = self
-                .get(child)
-                .expect("a live fragment has overflow")
-                .overflow;
-            let parent_fragment = &mut self.fragments[self.slots[&parent]];
-            parent_fragment.overflow = union_logical_rects(parent_fragment.overflow, overflow);
-        }
+        self.recompute_overflow();
     }
 
     /// Replace a leaf fragment's border-box size while preserving its retained
@@ -433,11 +445,176 @@ impl FragmentTree {
         let logical_size = fragment.flow.logical_size(size);
         fragment.logical_rect.inline_size = logical_size.inline;
         fragment.logical_rect.block_size = logical_size.block;
+        fragment.own_overflow.inline_size = logical_size.inline;
+        fragment.own_overflow.block_size = logical_size.block;
         fragment.overflow.inline_size = logical_size.inline;
         fragment.overflow.block_size = logical_size.block;
         fragment.physical_rect.width = size.width;
         fragment.physical_rect.height = size.height;
+        self.recompute_overflow();
         true
+    }
+
+    /// Replace one unfragmented structural subtree with fragments produced by
+    /// a newly formatted compatible root. The caller reconciles box identity
+    /// before this boundary; this operation preserves every fragment outside
+    /// `root`, assigns fresh identities to replacement descendants, repairs
+    /// the fragment indices, and replaces static-position records atomically.
+    ///
+    /// An incoming descendant may not refer to a source or containing
+    /// fragment outside its replacement subtree. Such a cross-root dependency
+    /// needs a wider dirty root, so this bounded K5h primitive declines it.
+    pub fn replace_subtree(
+        &mut self,
+        root: FragmentId,
+        replacement: &Self,
+        replacement_root: FragmentId,
+    ) -> Option<FragmentId> {
+        let previous_root = self.get(root)?.clone();
+        let replacement_root_fragment = replacement.get(replacement_root)?;
+        if replacement_root_fragment.box_id != previous_root.box_id {
+            return None;
+        }
+        let retired = self.subtree_ids(root);
+        let retired_set = retired.iter().copied().collect::<HashSet<_>>();
+        let retired_boxes = retired
+            .iter()
+            .map(|id| self.get(*id).expect("a live retired fragment has a box").box_id)
+            .collect::<HashSet<_>>();
+        let incoming = replacement.subtree_ids(replacement_root);
+        let incoming_set = incoming.iter().copied().collect::<HashSet<_>>();
+        let replacement_boxes = incoming
+            .iter()
+            .map(|id| {
+                replacement
+                    .get(*id)
+                    .expect("a live replacement fragment has a box")
+                    .box_id
+            })
+            .collect::<HashSet<_>>();
+
+        // Fragmentation can give one box several structural fragments. A
+        // bounded replacement cannot discard only some of those fragments:
+        // their shared box and static-position records would become
+        // ambiguous. K6 may widen this to a fragmentation-aware splice.
+        if retired_boxes.iter().any(|box_id| {
+            self.by_box
+                .get(box_id)
+                .is_some_and(|ids| ids.iter().any(|id| !retired_set.contains(id)))
+        }) || replacement_boxes.iter().any(|box_id| {
+            replacement
+                .by_box
+                .get(box_id)
+                .is_some_and(|ids| ids.iter().any(|id| !incoming_set.contains(id)))
+        }) {
+            return None;
+        }
+
+        for source in &incoming {
+            let fragment = replacement.get(*source)?;
+            if *source != replacement_root
+                && (fragment.parent.is_none()
+                    || fragment
+                        .parent
+                        .is_some_and(|parent| !incoming_set.contains(&parent))
+                    || fragment
+                        .containing_fragment
+                        .is_some_and(|containing| !incoming_set.contains(&containing)))
+            {
+                return None;
+            }
+        }
+        if self.static_positions.values().any(|position| {
+            !retired_boxes.contains(&position.box_id)
+                && matches!(position.source, StaticPositionSource::Fragment(source) if retired_set.contains(&source))
+        }) {
+            return None;
+        }
+        if replacement.static_positions.values().any(|position| {
+            replacement_boxes.contains(&position.box_id)
+                && matches!(position.source, StaticPositionSource::Fragment(source) if !incoming_set.contains(&source))
+        }) {
+            return None;
+        }
+        if replacement.static_positions.values().any(|position| {
+            !replacement_boxes.contains(&position.box_id)
+                && matches!(position.source, StaticPositionSource::Fragment(source) if incoming_set.contains(&source))
+        }) {
+            return None;
+        }
+
+        let mut identifiers = HashMap::new();
+        identifiers.insert(replacement_root, root);
+        for source in incoming.iter().copied().filter(|id| *id != replacement_root) {
+            identifiers.insert(source, self.allocate_fragment_id());
+        }
+
+        let mut imported = HashMap::new();
+        for source in &incoming {
+            let mut fragment = replacement
+                .get(*source)
+                .expect("a checked replacement source stays live")
+                .clone();
+            fragment.id = identifiers[source];
+            if *source == replacement_root {
+                fragment.parent = previous_root.parent;
+                fragment.containing_fragment = previous_root.containing_fragment;
+            } else {
+                fragment.parent = fragment.parent.map(|parent| identifiers[&parent]);
+                fragment.containing_fragment = fragment
+                    .containing_fragment
+                    .map(|containing| identifiers[&containing]);
+            }
+            imported.insert(fragment.id, fragment);
+        }
+
+        let mut fragments = Vec::with_capacity(self.fragments.len() - retired.len() + incoming.len());
+        let mut ids = Vec::with_capacity(fragments.capacity());
+        for id in self.ids.clone() {
+            if id == root {
+                fragments.push(
+                    imported
+                        .remove(&root)
+                        .expect("the replacement root has one imported fragment"),
+                );
+                ids.push(root);
+                for source in incoming.iter().copied().filter(|id| *id != replacement_root) {
+                    let id = identifiers[&source];
+                    fragments.push(
+                        imported
+                            .remove(&id)
+                            .expect("each replacement descendant imports once"),
+                    );
+                    ids.push(id);
+                }
+            } else if !retired_set.contains(&id) {
+                fragments.push(self.get(id).expect("a retained fragment stays live").clone());
+                ids.push(id);
+            }
+        }
+        debug_assert!(imported.is_empty());
+        self.fragments = fragments;
+        self.ids = ids;
+
+        self.static_positions.retain(|box_id, position| {
+            !replacement_boxes.contains(box_id)
+                && !matches!(position.source, StaticPositionSource::Fragment(source) if retired_set.contains(&source))
+        });
+        for position in replacement.static_positions.values() {
+            if !replacement_boxes.contains(&position.box_id) {
+                continue;
+            }
+            let mut position = *position;
+            if let StaticPositionSource::Fragment(source) = position.source {
+                position.source = StaticPositionSource::Fragment(identifiers[&source]);
+            }
+            self.static_positions.insert(position.box_id, position);
+        }
+        self.rebuild_indices();
+        self.recompute_overflow();
+        #[cfg(any(debug_assertions, test))]
+        self.assert_invariants();
+        Some(root)
     }
 
     /// Rekey dense construction identifiers against retained fragments after
@@ -524,6 +701,41 @@ impl FragmentTree {
             .collect()
     }
 
+    fn subtree_ids(&self, root: FragmentId) -> Vec<FragmentId> {
+        self.ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                let mut cursor = Some(*id);
+                while let Some(candidate) = cursor {
+                    if candidate == root {
+                        return true;
+                    }
+                    cursor = self.get(candidate).and_then(Fragment::parent);
+                }
+                false
+            })
+            .collect()
+    }
+
+    fn rebuild_indices(&mut self) {
+        self.slots.clear();
+        self.by_box.clear();
+        self.roots.clear();
+        for (slot, fragment) in self.fragments.iter().enumerate() {
+            let id = fragment.id;
+            assert_eq!(self.ids[slot], id);
+            assert!(
+                self.slots.insert(id, slot).is_none(),
+                "a fragment id cannot occupy two slots"
+            );
+            self.by_box.entry(fragment.box_id).or_default().push(id);
+            if fragment.parent.is_none() {
+                self.roots.push(id);
+            }
+        }
+    }
+
     fn remap_box_identifiers(&mut self, box_ids: &HashMap<BoxId, BoxId>) {
         for fragment in &mut self.fragments {
             fragment.box_id = box_ids[&fragment.box_id];
@@ -573,6 +785,10 @@ impl FragmentTree {
                 position.source = StaticPositionSource::Fragment(mapping[&source]);
             }
         }
+        self.next_id = self.ids.iter().map(|id| id.0).max().map_or(0, |id| {
+            id.checked_add(1)
+                .expect("a fragment tree exceeded u32::MAX fragments")
+        });
     }
 
     #[cfg(any(debug_assertions, test))]
@@ -744,6 +960,27 @@ where
 mod tests {
     use super::*;
     use crate::{BoxOrigin, ContainingBlock, CssBox, DisplayRole, PositioningScheme};
+
+    fn push_block_box(
+        boxes: &mut CssBoxTree<u8>,
+        node: u8,
+        parent: Option<BoxId>,
+        containing_block: ContainingBlock,
+    ) -> BoxId {
+        boxes.push(
+            CssBox::new(
+                BoxOrigin::Element(node),
+                DisplayRole::BLOCK_FLOW,
+                FlowAxes::HORIZONTAL_LTR,
+                PositioningScheme::Static,
+                false,
+                None,
+                containing_block,
+            ),
+            parent,
+            true,
+        )
+    }
 
     #[test]
     fn one_box_owns_many_tree_fragments() {
@@ -971,6 +1208,272 @@ mod tests {
         assert_eq!(next.roots(), &[inserted, previous_root_fragment]);
         assert_eq!(inserted_fragment.index(), 0, "the test starts dense before reconciliation");
         assert_eq!(next_child_fragment.index(), 2, "the test starts dense before reconciliation");
+    }
+
+    #[test]
+    fn replacing_a_subtree_preserves_outside_identity_and_rebuilds_indices() {
+        let mut boxes = CssBoxTree::default();
+        let outer_box = push_block_box(&mut boxes, 1, None, ContainingBlock::Initial);
+        let root_box = push_block_box(
+            &mut boxes,
+            2,
+            Some(outer_box),
+            ContainingBlock::Box(outer_box),
+        );
+        let child_box = push_block_box(
+            &mut boxes,
+            3,
+            Some(root_box),
+            ContainingBlock::Box(root_box),
+        );
+        let sibling_box = push_block_box(
+            &mut boxes,
+            4,
+            Some(outer_box),
+            ContainingBlock::Box(outer_box),
+        );
+
+        let mut tree = FragmentTree::default();
+        let outer = tree.push(
+            Fragment::from_horizontal_physical(
+                outer_box,
+                PhysicalRect {
+                    width: 100.0,
+                    height: 20.0,
+                    ..PhysicalRect::default()
+                },
+            ),
+            None,
+            None,
+        );
+        let root = tree.push(
+            Fragment::from_horizontal_physical(
+                root_box,
+                PhysicalRect {
+                    width: 100.0,
+                    height: 30.0,
+                    ..PhysicalRect::default()
+                },
+            ),
+            Some(outer),
+            Some(outer),
+        );
+        let old_child = tree.push(
+            Fragment::from_horizontal_physical(
+                child_box,
+                PhysicalRect {
+                    width: 100.0,
+                    height: 40.0,
+                    ..PhysicalRect::default()
+                },
+            ),
+            Some(root),
+            Some(root),
+        );
+        let sibling = tree.push(
+            Fragment::from_horizontal_physical(
+                sibling_box,
+                PhysicalRect {
+                    y: 30.0,
+                    width: 100.0,
+                    height: 10.0,
+                    ..PhysicalRect::default()
+                },
+            ),
+            Some(outer),
+            Some(outer),
+        );
+        tree.set_overflow(
+            old_child,
+            LogicalRect {
+                inline_start: 0.0,
+                block_start: 0.0,
+                inline_size: 100.0,
+                block_size: 200.0,
+            },
+        );
+        tree.record_static_position(StaticPosition {
+            box_id: child_box,
+            source: StaticPositionSource::Fragment(old_child),
+            containing_block: ContainingBlock::Box(root_box),
+            logical_rect: LogicalRect::default(),
+        });
+        assert_eq!(tree.get(outer).map(|fragment| fragment.overflow.block_size), Some(200.0));
+
+        let mut replacement = FragmentTree::default();
+        let replacement_root = replacement.push(
+            Fragment::from_horizontal_physical(
+                root_box,
+                PhysicalRect {
+                    x: 5.0,
+                    y: 7.0,
+                    width: 90.0,
+                    height: 30.0,
+                },
+            ),
+            None,
+            None,
+        );
+        let replacement_child = replacement.push(
+            Fragment::from_horizontal_physical(
+                child_box,
+                PhysicalRect {
+                    x: 5.0,
+                    y: 7.0,
+                    width: 90.0,
+                    height: 40.0,
+                },
+            ),
+            Some(replacement_root),
+            Some(replacement_root),
+        );
+        replacement.record_static_position(StaticPosition {
+            box_id: child_box,
+            source: StaticPositionSource::Fragment(replacement_child),
+            containing_block: ContainingBlock::Box(root_box),
+            logical_rect: LogicalRect {
+                inline_start: 4.0,
+                block_start: 6.0,
+                inline_size: 0.0,
+                block_size: 0.0,
+            },
+        });
+
+        assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), Some(root));
+        let new_child = tree.fragment_ids_for_box(child_box)[0];
+
+        assert_ne!(new_child, old_child);
+        assert!(tree.get(old_child).is_none());
+        assert_eq!(tree.len(), 4);
+        assert_eq!(tree.roots(), &[outer]);
+        assert_eq!(tree.ids, vec![outer, root, new_child, sibling]);
+        assert_eq!(tree.fragment_ids_for_box(root_box), &[root]);
+        assert_eq!(tree.fragment_ids_for_box(child_box), &[new_child]);
+        assert_eq!(tree.fragment_ids_for_box(sibling_box), &[sibling]);
+        assert_eq!(tree.get(root).and_then(Fragment::parent), Some(outer));
+        assert_eq!(tree.get(root).and_then(Fragment::containing_fragment), Some(outer));
+        assert_eq!(tree.get(new_child).and_then(Fragment::parent), Some(root));
+        assert_eq!(
+            tree.get(root).map(Fragment::physical_rect),
+            Some(PhysicalRect {
+                x: 5.0,
+                y: 7.0,
+                width: 90.0,
+                height: 30.0,
+            })
+        );
+        assert_eq!(tree.get(outer).map(|fragment| fragment.overflow.block_size), Some(47.0));
+        assert_eq!(
+            tree.static_position_for_box(child_box),
+            Some(&StaticPosition {
+                box_id: child_box,
+                source: StaticPositionSource::Fragment(new_child),
+                containing_block: ContainingBlock::Box(root_box),
+                logical_rect: LogicalRect {
+                    inline_start: 4.0,
+                    block_start: 6.0,
+                    inline_size: 0.0,
+                    block_size: 0.0,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn replacing_a_subtree_rejects_a_cross_root_static_position_source() {
+        let mut boxes = CssBoxTree::default();
+        let root_box = push_block_box(&mut boxes, 1, None, ContainingBlock::Initial);
+        let child_box = push_block_box(
+            &mut boxes,
+            2,
+            Some(root_box),
+            ContainingBlock::Box(root_box),
+        );
+        let external_box = push_block_box(&mut boxes, 3, None, ContainingBlock::Initial);
+
+        let mut tree = FragmentTree::default();
+        let root = tree.push(
+            Fragment::from_horizontal_physical(
+                root_box,
+                PhysicalRect {
+                    width: 20.0,
+                    height: 10.0,
+                    ..PhysicalRect::default()
+                },
+            ),
+            None,
+            None,
+        );
+
+        let mut replacement = FragmentTree::default();
+        let replacement_root = replacement.push(
+            Fragment::from_horizontal_physical(root_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+        replacement.push(
+            Fragment::from_horizontal_physical(child_box, PhysicalRect::default()),
+            Some(replacement_root),
+            Some(replacement_root),
+        );
+        let external = replacement.push(
+            Fragment::from_horizontal_physical(external_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+        replacement.record_static_position(StaticPosition {
+            box_id: child_box,
+            source: StaticPositionSource::Fragment(external),
+            containing_block: ContainingBlock::Box(root_box),
+            logical_rect: LogicalRect::default(),
+        });
+
+        assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), None);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(
+            tree.get(root).map(Fragment::physical_rect),
+            Some(PhysicalRect {
+                width: 20.0,
+                height: 10.0,
+                ..PhysicalRect::default()
+            })
+        );
+    }
+
+    #[test]
+    fn replacing_a_subtree_rejects_an_outgoing_static_position_dependency() {
+        let mut boxes = CssBoxTree::default();
+        let root_box = push_block_box(&mut boxes, 1, None, ContainingBlock::Initial);
+        let external_box = push_block_box(&mut boxes, 2, None, ContainingBlock::Initial);
+
+        let mut tree = FragmentTree::default();
+        let root = tree.push(
+            Fragment::from_horizontal_physical(root_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+        let external = tree.push(
+            Fragment::from_horizontal_physical(external_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+
+        let mut replacement = FragmentTree::default();
+        let replacement_root = replacement.push(
+            Fragment::from_horizontal_physical(root_box, PhysicalRect::default()),
+            None,
+            None,
+        );
+        replacement.record_static_position(StaticPosition {
+            box_id: external_box,
+            source: StaticPositionSource::Fragment(replacement_root),
+            containing_block: ContainingBlock::Initial,
+            logical_rect: LogicalRect::default(),
+        });
+
+        assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), None);
+        assert_eq!(tree.roots(), &[root, external]);
+        assert_eq!(tree.len(), 2);
     }
 
     #[test]

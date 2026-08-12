@@ -3,8 +3,9 @@
 **Date:** 2026-08-11
 
 **Status:** In progress. K5h now has an explicit damage record,
-final-document equivalence harness, and one narrow paint-only retained path.
-It has not replaced a formatting-context subtree yet.
+final-document equivalence harness, a narrow paint-only retained path, and a
+conservative Buckram fragment-subtree splice. It has not replaced a real
+formatting-context subtree through Livery yet.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -62,6 +63,16 @@ rejected because its changed containing size requires reformatting.
 leaf in an `overflow: auto` container. Its changed width, height, and inset
 update the retained scroll range, which remains equal to a fresh final layout.
 
+`FragmentTree::replace_subtree` now supplies the bounded Buckram-side splice:
+it preserves the selected root's `FragmentId`, gives incoming descendants fresh
+identities, restores the old root's structural parent and containing fragment,
+rebuilds fragment box indices, replaces the selected static-position records,
+and recomputes aggregate overflow from each fragment's own extent. It refuses
+an incompatible root box, a partially selected fragmented box, and either
+incoming or outgoing static-position dependencies that cross the selected
+root. This is not a formatter route yet, and it does not publish Livery's
+separate table-paint or node side data.
+
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
@@ -73,9 +84,9 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Make Buckram replace the selected formatting-context fragment subtree,
-   including parent, containing-fragment, by-box, by-node, static-position,
-   table-paint, and overflow indices.
+1. Thread Buckram's selected-root splice through Livery's formatter and
+   publish its concurrent by-node and table-paint side data with the fragment,
+   static-position, and overflow updates.
 2. Recompute a selected root against its retained containing inputs.
 3. Propagate changed used size or overflow to the first dependent ancestor.
    Escalate to a wider root only when that dependency actually changes.
