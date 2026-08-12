@@ -2972,6 +2972,81 @@ mod tests {
     }
 
     #[test]
+    fn sticky_table_row_moves_its_cell_subtree_without_relayout() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=scroller><div id=content><div id=spacer></div><table id=table><tbody><tr id=sticky-row><td id=sticky-cell>sticky</td></tr><tr><td id=tail-cell></td></tr></tbody></table></div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #scroller { height: 80px; overflow-y: auto; } \
+                 #spacer { height: 120px; } \
+                 table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 100px; } \
+                 #sticky-row { position: sticky; top: 0; height: 20px; background: red; } \
+                 #tail-cell { height: 180px; background: blue; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("initial table frame");
+        let scroller = by_id(document.dom(), "scroller");
+        let table = by_id(document.dom(), "table");
+        let sticky_row = by_id(document.dom(), "sticky-row");
+        let sticky_cell = by_id(document.dom(), "sticky-cell");
+        let row_ids_before = generated_ids(&document, sticky_row);
+        let cell_ids_before = generated_ids(&document, sticky_cell);
+        let table_wrapper_before = table_wrapper_fragment_id(&document, table);
+        let static_row = document
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.get(sticky_row))
+            .map(|fragment| fragment.physical_rect())
+            .expect("static table row fragment");
+        assert_eq!(static_row.y, 120.0);
+        assert!(
+            !document
+                .table_shadow_ledger()
+                .expect("table ledger")
+                .positioning_gaps
+                .iter()
+                .any(|record| record.gap == crate::table_shadow::TablePositioningGap::Sticky),
+            "row sticky uses the shared retained sticky solver",
+        );
+
+        assert!(document.scroll_at(10.0, 10.0, 0.0, 150.0));
+        document.frame(160, 120).expect("scrolled table frame");
+
+        let active = document.sticky_layout(document.layout.as_ref().expect("retained layout"));
+        let row_rect = active
+            .get(sticky_row)
+            .map(|fragment| fragment.physical_rect())
+            .expect("active table row fragment");
+        let cell_rect = active
+            .get(sticky_cell)
+            .map(|fragment| fragment.physical_rect())
+            .expect("active table cell fragment");
+        assert_eq!(row_rect.y, 150.0);
+        assert_eq!(cell_rect.y, 150.0);
+        assert_eq!(row_rect.y - document.element_scroll()[&scroller].1, 0.0);
+        assert_eq!(generated_ids(&document, sticky_row), row_ids_before);
+        assert_eq!(generated_ids(&document, sticky_cell), cell_ids_before);
+        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            document
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.fragments.get(sticky_row))
+                .map(|fragment| fragment.physical_rect()),
+            Some(static_row),
+            "scrolling keeps the retained table row base layout unchanged",
+        );
+    }
+
+    #[test]
     fn retained_disjoint_formatting_roots_publish_atomically() {
         let initial = "<html><body><div id=first><div id=first-child>one</div></div><div id=second><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=first style=\"width: 160px\"><div id=first-child>one</div></div><div id=second style=\"width: 180px\"><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";

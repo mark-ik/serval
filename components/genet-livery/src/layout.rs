@@ -80,6 +80,15 @@ pub(crate) struct StickyScrollport {
     pub offset: PhysicalOffset,
 }
 
+fn supports_retained_sticky_table_part(role: InternalTableRole) -> bool {
+    matches!(
+        role,
+        InternalTableRole::Wrapper
+            | InternalTableRole::Row
+            | InternalTableRole::Cell
+    )
+}
+
 #[derive(Clone, Debug)]
 struct AtomicSubtree {
     root: BoxId,
@@ -426,12 +435,10 @@ where
             .iter()
             .filter_map(|(box_id, css_box)| {
                 if css_box.positioning != PositioningScheme::Sticky
-                    || matches!(
-                        css_box.display.internal_table,
-                        Some(role)
-                            if role != InternalTableRole::Wrapper
-                                && role != InternalTableRole::Cell
-                    )
+                    || css_box
+                        .display
+                        .internal_table
+                        .is_some_and(|role| !supports_retained_sticky_table_part(role))
                 {
                     return None;
                 }
@@ -452,13 +459,14 @@ where
                             .is_none_or(|parent| parent.box_id() != box_id)
                     })?;
                 let current = self.buckram.fragments().get(root)?.physical_rect();
-                // A cell's generated parent is an internal table row. That
-                // row is only as tall as the cell, so it would clamp a sticky
-                // translation to zero. Its sticky containing block is the
-                // table wrapper: the nearest block-level table ancestor that
-                // owns the cell's full scrollable table extent.
-                let table_wrapper = if css_box.display.internal_table == Some(InternalTableRole::Cell)
-                {
+                // A table-internal box's generated parent can be a row or
+                // row group that is only as tall as that part. It would clamp
+                // a sticky translation to zero. Its sticky containing block
+                // is the table wrapper: the nearest block-level table
+                // ancestor that owns the table's full scrollable extent.
+                let table_wrapper = if css_box.display.internal_table.is_some_and(|role| {
+                    role != InternalTableRole::Wrapper && supports_retained_sticky_table_part(role)
+                }) {
                     let mut ancestor = css_box.parent();
                     loop {
                         let candidate = ancestor?;
@@ -5253,7 +5261,10 @@ fn apply_relative_table_part_offsets<Id>(
             CssPosition::Fixed => Some(TablePositioningGap::Fixed),
             CssPosition::Sticky
                 if part == table
-                    || boxes[part].display.internal_table == Some(InternalTableRole::Cell) =>
+                    || boxes[part]
+                        .display
+                        .internal_table
+                        .is_some_and(supports_retained_sticky_table_part) =>
             {
                 None
             },
