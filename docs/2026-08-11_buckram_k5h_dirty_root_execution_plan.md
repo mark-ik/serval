@@ -66,9 +66,10 @@ The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
 second pass; an out-of-flow subtree no longer makes its ordinary block parent
-fall back to Taffy. Flex, grid, inline, and table-internal static-position
-routes remain separate, and the source-side Taffy position mapping is not yet
-deleted.
+fall back to Taffy. Flex and grid retain the one remaining backend
+static-position provider; inline and table-internal routes remain separate.
+The generic source lowering is deleted, but the scoped flex/grid provider must
+be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
@@ -80,8 +81,8 @@ deleted.
    Escalate to a wider root only when that dependency actually changes.
 4. Compare each incremental result with the fresh-final-document harness.
 5. Move flex, grid, inline, and table-internal out-of-flow participation to
-   equivalent Buckram-owned routes before deleting the remaining Taffy
-   position mapping.
+   equivalent Buckram-owned routes before deleting the remaining flex/grid
+   backend position provider.
 
 ## Stop rules
 

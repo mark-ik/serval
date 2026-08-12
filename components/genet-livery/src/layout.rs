@@ -2204,7 +2204,8 @@ where
                     child_containing_size,
                 )?;
                 let table_handoff = self.pending_table_handoff.take();
-                let mut taffy_style = to_taffy_style(&computed, font_size);
+                let mut taffy_style =
+                    taffy_style_for_box(self.boxes, box_id, &computed, font_size);
                 apply_replaced_image_size(
                     &mut taffy_style,
                     self.dom,
@@ -2308,7 +2309,8 @@ where
                         }
                         children.push(child_node);
                     }
-                    let mut taffy_style = to_taffy_style(&computed, font_size);
+                    let mut taffy_style =
+                        taffy_style_for_box(self.boxes, box_id, &computed, font_size);
                     let logical_wrapper =
                         wrapper_uses_logical_block_axis(&mut taffy_style, self.boxes[box_id].flow);
                     if wrapper_needs_float_fallback(self.boxes, box_id, &taffy_style) {
@@ -3196,7 +3198,8 @@ where
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 };
-                let mut taffy_style = to_taffy_style(&computed, font_size);
+                let mut taffy_style =
+                    taffy_style_for_box(self.boxes, box_id, &computed, font_size);
                 taffy_style.size.width =
                     dimension_with_basis(computed.width, font_size, containing_size.0);
                 taffy_style.size.height =
@@ -3358,7 +3361,8 @@ where
                         }
                         children.push(child_node);
                     }
-                    let mut taffy_style = to_taffy_style(&computed, font_size);
+                    let mut taffy_style =
+                        taffy_style_for_box(self.boxes, box_id, &computed, font_size);
                     let logical_wrapper =
                         wrapper_uses_logical_block_axis(&mut taffy_style, self.boxes[box_id].flow);
                     if wrapper_needs_float_fallback(self.boxes, box_id, &taffy_style) {
@@ -5575,13 +5579,10 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             x: overflow(computed.overflow_x),
             y: overflow(computed.overflow_y),
         },
-        position: match computed.position {
-            CssPosition::Absolute | CssPosition::Fixed => Position::Absolute,
-            // Taffy has only in-flow versus absolute. Sticky remains an
-            // in-flow transport value here; Buckram keeps and applies its
-            // distinct scroll-dependent semantic below the formatter.
-            _ => Position::Relative,
-        },
+        // Buckram owns every CSS positioning category. The generic scratch
+        // formatter always receives an in-flow value; the narrow flex/grid
+        // static-position provider opts into its backend item role below.
+        position: Position::Relative,
         // Sticky geometry is a retained Buckram scroll constraint. The
         // scratch formatter receives no inset so it produces only the normal
         // flow rectangle, rather than selecting a sticky offset itself.
@@ -5690,6 +5691,35 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
         },
         ..Style::default()
     }
+}
+
+/// Taffy's absolute item role survives only where its flex/grid algorithms
+/// still provide the K5b static rectangle. Ordinary block, inline, and table
+/// routes retain their out-of-flow participation in Buckram and never lower
+/// it through the backend style.
+fn taffy_style_for_box<Id>(
+    boxes: &buckram::CssBoxTree<Id>,
+    box_id: BoxId,
+    computed: &ComputedValues,
+    font_size: f32,
+) -> Style
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut style = to_taffy_style(computed, font_size);
+    let needs_flex_or_grid_static_provider = matches!(
+        boxes[box_id].positioning,
+        PositioningScheme::Absolute | PositioningScheme::Fixed
+    ) && boxes[box_id].parent().is_some_and(|parent| {
+        matches!(
+            boxes[parent].display.inside,
+            Some(DisplayInside::Flex | DisplayInside::Grid)
+        )
+    });
+    if needs_flex_or_grid_static_provider {
+        style.position = Position::Absolute;
+    }
+    style
 }
 
 fn grid_auto_flow(value: CssGridAutoFlow) -> GridAutoFlow {
