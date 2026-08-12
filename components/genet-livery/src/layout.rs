@@ -7517,7 +7517,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_flex_and_grid_children_keep_their_native_static_rectangles() {
+    fn absolute_flex_and_automatic_grid_children_keep_buckram_static_rectangles() {
         let dom = StaticDocument::parse(
             "<div id=flex><div id=flex-positioned>flex</div></div>\
              <div id=grid><div id=grid-positioned>grid</div></div>",
@@ -7527,7 +7527,8 @@ mod tests {
             &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #flex { position: relative; display: flex; width: 200px; height: 100px; \
                          justify-content: center; align-items: end; } \
-                 #grid { position: relative; display: grid; width: 200px; height: 100px; } \
+                 #grid { position: relative; display: grid; width: 200px; height: 100px; \
+                         justify-items: center; align-items: end; } \
                  #flex-positioned, #grid-positioned { position: absolute; left: 18px; top: 9px; \
                                                        width: 30px; height: 20px; }"]),
             &Device::screen(320.0, 240.0),
@@ -7576,8 +7577,8 @@ mod tests {
                 grid_static.logical_rect.inline_start,
                 grid_static.logical_rect.block_start
             ),
-            (0.0, 0.0),
-            "the grid formatter contributes its grid-area static rectangle"
+            (85.0, 80.0),
+            "Buckram owns the automatic grid static area before K5d applies insets"
         );
 
         let flex_rect = rect_for(flex);

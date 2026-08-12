@@ -208,16 +208,18 @@ coordinate after that formatting pass with Buckram's own alignment calculation,
 including reverse/RTL, padding, borders, scrollbars, and resolved margins;
 `buckram_flex_static_position_keeps_rtl_reverse_padding_and_margins`,
 `flex_static_layout_keeps_alignment_when_insets_place_the_item`, and
-`absolute_flex_and_grid_children_keep_their_native_static_rectangles` pin that
-unit and live result. Grid still receives its static area from the renderer's
-track selection (`grid_static_layout_uses_the_item_area_before_insets`), which
-must remain explicit until Buckram has an equivalent track-area query.
+`absolute_flex_and_automatic_grid_children_keep_buckram_static_rectangles` pin
+that unit and live result. Buckram also owns the automatic-grid padding-area
+case (`buckram_default_grid_static_position_uses_padding_area_and_auto_margins`);
+only explicit grid lines and spans still receive a static area from the
+renderer track selection (`grid_static_layout_uses_the_item_area_before_insets`)
+until Buckram has an equivalent track-area query.
 
 ## Next replacement seam
 
 1. Compare each incremental result with the fresh-final-document harness.
-2. Replace the remaining private grid track-area provider with an equivalent
-   Buckram static-position query.
+2. Replace the remaining private explicit-grid track-area provider with an
+   equivalent Buckram static-position query.
 
 ## Stop rules
 

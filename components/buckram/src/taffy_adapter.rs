@@ -8,7 +8,7 @@ use std::{marker::PhantomData, slice};
 
 use taffy::{
     AlignContentKeyword, AlignItems, AlignItemsKeyword, BlockContext, Cache, CacheTree, Direction,
-    FlexDirection, FlexWrap, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
+    FlexDirection, FlexWrap, GridPlacement, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
     LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, Point, RoundTree,
     RunMode, SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
@@ -737,6 +737,11 @@ where
         // this before rounding so final and static layouts land on the same
         // device-pixel grid.
         run.tree.replace_flex_static_locations();
+        // An automatically placed grid child has the grid container's padding
+        // area as its static grid area. That K5b result needs no track query,
+        // so Buckram can replace it directly; explicit grid lines remain on
+        // the named renderer track-area boundary below.
+        run.tree.replace_default_grid_static_locations();
         round_layout(&mut run, root.into_taffy());
         run.tree.propagate_baselines();
     }
@@ -764,6 +769,40 @@ where
             let static_location = flex_static_location(
                 sealed::AlgorithmStyle::as_taffy_style(&self.nodes[parent.index()].style),
                 sealed::AlgorithmStyle::as_taffy_style(&self.nodes[child_index].style),
+                self.nodes[parent.index()].unrounded_layout,
+                self.nodes[child_index].unrounded_layout,
+            );
+            self.nodes[child.index()].unrounded_layout.static_location = static_location;
+        }
+    }
+
+    /// Replace the renderer static coordinate for a grid child whose row and
+    /// column lines are both automatic. CSS gives that item the grid
+    /// container's padding area without needing the grid track-selection
+    /// algorithm. Explicit lines and spans deliberately keep the separate
+    /// track-area provider.
+    fn replace_default_grid_static_locations(&mut self) {
+        for child_index in 0..self.nodes.len() {
+            let child = AlgorithmNodeId(child_index as u32);
+            let Some(parent) = self.nodes[child_index].parent else {
+                continue;
+            };
+            if self.nodes[parent.index()].kind != AlgorithmKind::Grid
+                || !matches!(
+                    self.nodes[child_index].block_style.position,
+                    crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+                )
+            {
+                continue;
+            }
+            let child_style = sealed::AlgorithmStyle::as_taffy_style(&self.nodes[child_index].style);
+            if !uses_automatic_grid_static_area(child_style) {
+                continue;
+            }
+
+            let static_location = default_grid_static_location(
+                sealed::AlgorithmStyle::as_taffy_style(&self.nodes[parent.index()].style),
+                child_style,
                 self.nodes[parent.index()].unrounded_layout,
                 self.nodes[child_index].unrounded_layout,
             );
@@ -926,6 +965,125 @@ fn flex_static_location(
             y: static_main,
         }
     }
+}
+
+/// Whether the absolute grid item is assigned the whole grid padding area.
+///
+/// Named, line, and span placement all need the final explicit track offsets,
+/// which are an intentionally separate K5b query.
+fn uses_automatic_grid_static_area(style: &Style) -> bool {
+    matches!(
+        (
+            &style.grid_column.start,
+            &style.grid_column.end,
+            &style.grid_row.start,
+            &style.grid_row.end,
+        ),
+        (
+            GridPlacement::Auto,
+            GridPlacement::Auto,
+            GridPlacement::Auto,
+            GridPlacement::Auto,
+        )
+    )
+}
+
+/// K5b's static coordinate for an automatically placed absolute/fixed grid
+/// child. Its static area is the grid container's padding area, so this is an
+/// alignment calculation over final formatter rectangles rather than a track
+/// lookup.
+fn default_grid_static_location(
+    container_style: &Style,
+    child_style: &Style,
+    container: Layout,
+    child: Layout,
+) -> Point<f32> {
+    let direction = container_style.direction;
+    let (left, right) = if direction == Direction::Rtl {
+        (
+            container.border.left + container.scrollbar_size.width,
+            container.size.width - container.border.right,
+        )
+    } else {
+        (
+            container.border.left,
+            container.size.width - container.border.right - container.scrollbar_size.width,
+        )
+    };
+    let top = container.border.top;
+    let bottom = container.size.height - container.border.bottom - container.scrollbar_size.height;
+    Point {
+        x: grid_static_axis(
+            left,
+            right,
+            child.size.width,
+            (!child_style.margin.left.is_auto()).then_some(child.margin.left),
+            (!child_style.margin.right.is_auto()).then_some(child.margin.right),
+            child_style
+                .justify_self
+                .unwrap_or(container_style.justify_items.unwrap_or(AlignItems::STRETCH)),
+            direction,
+        ),
+        y: grid_static_axis(
+            top,
+            bottom,
+            child.size.height,
+            (!child_style.margin.top.is_auto()).then_some(child.margin.top),
+            (!child_style.margin.bottom.is_auto()).then_some(child.margin.bottom),
+            child_style
+                .align_self
+                .unwrap_or(container_style.align_items.unwrap_or(AlignItems::STRETCH)),
+            Direction::Ltr,
+        ),
+    }
+}
+
+/// Align an automatically placed absolute grid item inside its static area.
+/// This is the no-inset branch of grid's item-alignment equation.
+fn grid_static_axis(
+    start: f32,
+    end: f32,
+    size: f32,
+    margin_start: Option<f32>,
+    margin_end: Option<f32>,
+    alignment: AlignItems,
+    direction: Direction,
+) -> f32 {
+    let non_auto_start = margin_start.unwrap_or(0.0);
+    let non_auto_end = margin_end.unwrap_or(0.0);
+    let area_size = (end - start).max(0.0);
+    let free_space = (area_size - size - non_auto_start - non_auto_end).max(0.0);
+    let auto_margins = usize::from(margin_start.is_none()) + usize::from(margin_end.is_none());
+    let auto_margin = (auto_margins > 0).then_some(free_space / auto_margins as f32);
+    let resolved_start = margin_start.or(auto_margin).unwrap_or(0.0);
+    let resolved_end = margin_end.or(auto_margin).unwrap_or(0.0);
+    let overflows = size + non_auto_start + non_auto_end > area_size;
+    let keyword = if alignment.is_safe() && overflows {
+        AlignItemsKeyword::Start
+    } else {
+        alignment.keyword()
+    };
+    let offset = match keyword {
+        AlignItemsKeyword::Start
+        | AlignItemsKeyword::FlexStart
+        | AlignItemsKeyword::Baseline
+        | AlignItemsKeyword::Stretch => {
+            if direction == Direction::Rtl {
+                area_size - size - resolved_end
+            } else {
+                resolved_start
+            }
+        },
+        AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => {
+            if direction == Direction::Rtl {
+                resolved_start
+            } else {
+                area_size - size - resolved_end
+            }
+        },
+        AlignItemsKeyword::Center => (area_size - size + resolved_start - resolved_end) / 2.0,
+    };
+    start + offset
 }
 
 fn to_taffy_available(value: AlgorithmAvailableSpace) -> taffy::AvailableSpace {
@@ -2940,6 +3098,79 @@ mod tests {
             flex_static_location(&container_style, &child_style, container, child),
             taffy::Point { x: 17.0, y: 57.0 },
             "K5b computes flex alignment from the formatter boxes, not the renderer static output",
+        );
+    }
+
+    #[test]
+    fn buckram_default_grid_static_position_uses_padding_area_and_auto_margins() {
+        let container_style = Style {
+            display: Display::Grid,
+            direction: taffy::Direction::Rtl,
+            justify_items: Some(AlignItems::CENTER),
+            align_items: Some(AlignItems::CENTER),
+            ..Style::default()
+        };
+        let child_style = Style {
+            margin: Rect {
+                left: taffy::LengthPercentageAuto::auto(),
+                right: length(6.0_f32),
+                top: length(11.0_f32),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            },
+            ..Style::default()
+        };
+        let container = Layout {
+            size: taffy::Size {
+                width: 200.0,
+                height: 100.0,
+            },
+            padding: Rect {
+                left: 17.0,
+                right: 19.0,
+                top: 23.0,
+                bottom: 29.0,
+            },
+            border: Rect {
+                left: 3.0,
+                right: 5.0,
+                top: 5.0,
+                bottom: 7.0,
+            },
+            scrollbar_size: taffy::Size {
+                width: 4.0,
+                height: 6.0,
+            },
+            ..Layout::new()
+        };
+        let child = Layout {
+            size: taffy::Size {
+                width: 30.0,
+                height: 20.0,
+            },
+            margin: Rect {
+                right: 6.0,
+                top: 11.0,
+                ..Rect::ZERO
+            },
+            ..Layout::new()
+        };
+
+        assert_eq!(
+            default_grid_static_location(&container_style, &child_style, container, child),
+            taffy::Point { x: 159.0, y: 16.0 },
+            "K5b resolves the automatic grid area and alignment without a renderer track result",
+        );
+        assert!(uses_automatic_grid_static_area(&child_style));
+        let explicit_tracks = Style {
+            grid_column: taffy::Line {
+                start: GridPlacement::Span(1),
+                end: GridPlacement::Auto,
+            },
+            ..Style::default()
+        };
+        assert!(
+            !uses_automatic_grid_static_area(&explicit_tracks),
+            "a line or span continues to require the explicit-track provider"
         );
     }
 
