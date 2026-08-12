@@ -277,11 +277,16 @@ impl TableGrid {
         }
 
         if let Some(wrapper) = table.wrapper {
-            table
-                .captions
-                .extend(boxes[wrapper].children().iter().copied().filter(|child| {
-                    boxes[*child].display.internal_table == Some(InternalTableRole::Caption)
-                }));
+            table.captions.extend(
+                boxes[wrapper]
+                    .children()
+                    .iter()
+                    .copied()
+                    .filter(|child| {
+                        boxes[*child].display.internal_table == Some(InternalTableRole::Caption)
+                            && boxes[*child].positioning.is_in_flow()
+                    }),
+            );
         }
 
         let mut headers = Vec::new();
@@ -289,7 +294,9 @@ impl TableGrid {
         let mut footers = Vec::new();
         for child in boxes[grid].children().iter().copied() {
             match boxes[child].display.internal_table {
-                Some(InternalTableRole::Caption) => table.captions.push(child),
+                Some(InternalTableRole::Caption) if boxes[child].positioning.is_in_flow() => {
+                    table.captions.push(child)
+                },
                 Some(InternalTableRole::ColumnGroup) => {
                     table.add_column_group(boxes, child, inputs);
                 },

@@ -23,13 +23,9 @@ use buckram::{
     TableSeparatedBorderMetrics, TableTrackVisibility, TableTrackVisibilityState,
     measure_automatic_columns, size_automatic_table_inline, size_fixed_table_inline,
 };
-use layout_dom_api::LayoutDom;
 use livery::{
     ComputedValues,
-    values::{
-        BorderCollapse, ComputedColor, Display as CssDisplay, TableLayout as CssTableLayout,
-        Visibility,
-    },
+    values::{BorderCollapse, ComputedColor, TableLayout as CssTableLayout, Visibility},
 };
 
 use crate::{
@@ -344,13 +340,11 @@ pub struct PendingTable<Id> {
 /// CSS 2.1 fallback of a fixed-layout table whose width is not definite.
 /// `None` means Buckram declined; the reason is recorded in the ledger.
 #[expect(clippy::too_many_arguments, reason = "one call site per route")]
-pub(crate) fn buckram_table_columns<D>(
-    dom: &D,
-    boxes: &GeneratedBoxTree<D::NodeId>,
-    styles: &StylePlane<D::NodeId>,
+pub(crate) fn buckram_table_columns<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
     grid: &TableGrid,
     table: BoxId,
-    table_node: D::NodeId,
     computed: &ComputedValues,
     collapsed_border_metrics: Option<&CollapsedBorderMetrics>,
     font_size: f32,
@@ -360,8 +354,7 @@ pub(crate) fn buckram_table_columns<D>(
     ledger: &mut TableShadowLedger,
 ) -> Option<TableInlineSizingResult>
 where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
+    Id: Copy + Eq + Hash,
 {
     // K4g produces the winner grid before either Buckram algorithm runs. A
     // lowering failure is already recorded as `CollapsedBorder` by the caller;
@@ -372,11 +365,9 @@ where
 
     if computed.table_layout == CssTableLayout::Fixed {
         let input = match fixed_input(
-            dom,
             boxes,
             styles,
             grid,
-            table_node,
             computed,
             collapsed_border_metrics,
             font_size,
@@ -404,12 +395,10 @@ where
         }
     }
     automatic_columns(
-        dom,
         boxes,
         styles,
         grid,
         table,
-        table_node,
         computed,
         collapsed_border_metrics,
         font_size,
@@ -421,13 +410,11 @@ where
 }
 
 #[expect(clippy::too_many_arguments, reason = "one call site")]
-fn automatic_columns<D>(
-    dom: &D,
-    boxes: &GeneratedBoxTree<D::NodeId>,
-    styles: &StylePlane<D::NodeId>,
+fn automatic_columns<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
     grid: &TableGrid,
     table: BoxId,
-    table_node: D::NodeId,
     computed: &ComputedValues,
     collapsed_border_metrics: Option<&CollapsedBorderMetrics>,
     font_size: f32,
@@ -437,15 +424,12 @@ fn automatic_columns<D>(
     ledger: &mut TableShadowLedger,
 ) -> Option<TableInlineSizingResult>
 where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
+    Id: Copy + Eq + Hash,
 {
     let sizing = match sizing_input(
-        dom,
         boxes,
         styles,
         grid,
-        table_node,
         computed,
         collapsed_border_metrics,
         font_size,
@@ -466,7 +450,7 @@ where
                 table_inline_constraints(style, font_size, LIVE_ROOT_FONT_SIZE)
             })
     });
-    let cells = match lowered_cells::<D>(
+    let cells = match lowered_cells(
         boxes,
         styles,
         grid,
@@ -635,12 +619,10 @@ where
     clippy::too_many_arguments,
     reason = "the shared lowering both algorithms call; every argument is a               distinct CSS input rather than a group with a name"
 )]
-fn sizing_input<'a, D>(
-    dom: &D,
-    boxes: &GeneratedBoxTree<D::NodeId>,
-    styles: &StylePlane<D::NodeId>,
+fn sizing_input<'a, Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
     grid: &'a TableGrid,
-    table_node: D::NodeId,
     computed: &ComputedValues,
     collapsed_border_metrics: Option<&CollapsedBorderMetrics>,
     font_size: f32,
@@ -648,8 +630,7 @@ fn sizing_input<'a, D>(
     caption_min: Option<f32>,
 ) -> Result<buckram::TableInlineSizingInput<'a>, TableInlineSizingError>
 where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
+    Id: Copy + Eq + Hash,
 {
     let axes = buckram::FlowAxes::HORIZONTAL_LTR;
     let root_font_size = LIVE_ROOT_FONT_SIZE;
@@ -675,19 +656,16 @@ where
         },
     };
 
-    // K4e3 measures every caption through the live intrinsic machinery before
-    // table sizing. A missing value violates that completed provider contract;
-    // K4h intentionally has no caption-sizing deferral left to revive.
-    let caption_min = if dom.dom_children(table_node).into_iter().any(|child| {
-        styles
-            .get(child)
-            .is_some_and(|style| style.display == CssDisplay::TableCaption)
-    }) {
+    // K4e3 measures every in-flow caption through the live intrinsic
+    // machinery before table sizing. The generated table topology, not the
+    // DOM display value, decides participation: an absolute or fixed caption
+    // is out of flow and therefore cannot put a sizing floor under the grid.
+    let caption_min = if grid.captions.is_empty() {
+        CaptionMinContribution::NoCaption
+    } else {
         CaptionMinContribution::Measured(
             caption_min.expect("K4e supplies a caption minimum before Buckram table sizing"),
         )
-    } else {
-        CaptionMinContribution::NoCaption
     };
 
     Ok(buckram::TableInlineSizingInput {
@@ -702,9 +680,9 @@ where
 
 /// Lower every grid cell, supplying each content pair from `content_for` by
 /// K4b cell index.
-fn lowered_cells<D>(
-    boxes: &GeneratedBoxTree<D::NodeId>,
-    styles: &StylePlane<D::NodeId>,
+fn lowered_cells<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
     grid: &TableGrid,
     font_size: f32,
     collapsed_border_metrics: Option<&CollapsedBorderMetrics>,
@@ -715,8 +693,7 @@ fn lowered_cells<D>(
     ) -> Result<IntrinsicSizes, TableInlineSizingError>,
 ) -> Result<Vec<TableCellInlineMeasure>, TableInlineSizingError>
 where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
+    Id: Copy + Eq + Hash,
 {
     let axes = buckram::FlowAxes::HORIZONTAL_LTR;
     let mut cells = Vec::with_capacity(grid.cells.len());
@@ -759,12 +736,10 @@ where
     clippy::too_many_arguments,
     reason = "lowering takes the whole context"
 )]
-fn fixed_input<'a, D>(
-    dom: &D,
-    boxes: &GeneratedBoxTree<D::NodeId>,
-    styles: &StylePlane<D::NodeId>,
+fn fixed_input<'a, Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
     grid: &'a TableGrid,
-    table_node: D::NodeId,
     computed: &ComputedValues,
     collapsed_border_metrics: Option<&CollapsedBorderMetrics>,
     font_size: f32,
@@ -772,16 +747,13 @@ fn fixed_input<'a, D>(
     caption_min: Option<f32>,
 ) -> Result<TableFixedInlineSizingInput<'a>, TableInlineSizingError>
 where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
+    Id: Copy + Eq + Hash,
 {
     let root_font_size = LIVE_ROOT_FONT_SIZE;
     let sizing = sizing_input(
-        dom,
         boxes,
         styles,
         grid,
-        table_node,
         computed,
         collapsed_border_metrics,
         font_size,
@@ -800,7 +772,7 @@ where
         })
     });
     // Fixed layout never consults content, by definition of the algorithm.
-    let cells = lowered_cells::<D>(
+    let cells = lowered_cells(
         boxes,
         styles,
         grid,

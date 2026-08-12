@@ -182,7 +182,9 @@ pub enum PositioningScheme {
 }
 
 impl PositioningScheme {
-    fn is_in_flow(self) -> bool {
+    /// Whether this positioning scheme participates in its parent's normal
+    /// formatting flow.
+    pub fn is_in_flow(self) -> bool {
         matches!(self, Self::Static | Self::Relative | Self::Sticky)
     }
 }

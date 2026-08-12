@@ -168,25 +168,36 @@ the body row-group subtree follows the same route, and
 it for captions. `sticky_table_header_group_moves_its_row_subtree_without_relayout`
 and `sticky_table_footer_group_uses_the_scrollport_end_without_relayout` cover
 the header and footer row groups. The retained sticky route now covers every
-position-applicable in-flow table part; absolute and fixed table parts remain
-explicit gaps.
+position-applicable in-flow table part.
+
+`absolute_table_caption_uses_shared_k5d_wrapper_geometry` and
+`fixed_table_caption_uses_shared_k5d_initial_geometry` admit captions to the
+shared K5d placement route. Their static rectangles and fragments are already
+emitted outside table track construction, so the absolute case uses the wrapper
+containing block and its fragment link, while the fixed case uses the initial
+containing block. Neither widens the grid or wrapper. Row-group, row, and cell
+absolute/fixed participation remain explicit gaps.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
 second pass; an out-of-flow subtree no longer makes its ordinary block parent
 fall back to Taffy. Flex and grid retain the one remaining backend
-static-position provider; inline and table-internal absolute/fixed routes
-remain separate.
+static-position provider; inline and remaining table-internal absolute/fixed
+routes remain separate.
 The generic source lowering is deleted, but the scoped flex/grid provider must
 be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
 1. Compare each incremental result with the fresh-final-document harness.
-2. Move flex, grid, inline, and table-internal out-of-flow participation to
-   equivalent Buckram-owned routes before deleting the remaining flex/grid
-   backend position provider.
+2. Move flex, grid, inline, and the remaining table-internal out-of-flow
+   participation to equivalent Buckram-owned routes before deleting the
+   remaining flex/grid backend position provider. Table row groups, rows, and
+   cells need an explicit zero-track placeholder plus a post-track local
+   formatting/static-position pass; admitting them to the current shared route
+   would let an out-of-flow cell contribute to track sizing and would use a
+   grid-relative rectangle from the wrong source space.
 
 ## Stop rules
 

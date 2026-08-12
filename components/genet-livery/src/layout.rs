@@ -93,6 +93,17 @@ fn supports_retained_sticky_table_part(role: InternalTableRole) -> bool {
     )
 }
 
+/// Table parts whose absolute/fixed fragment and static-position source are
+/// already emitted outside the table-track pipeline. Other internal parts
+/// need their own out-of-flow table participation model before they can join
+/// the shared K5d solver.
+fn supports_shared_positioned_table_part(role: InternalTableRole) -> bool {
+    matches!(
+        role,
+        InternalTableRole::Wrapper | InternalTableRole::Caption
+    )
+}
+
 #[derive(Clone, Debug)]
 struct AtomicSubtree {
     root: BoxId,
@@ -2945,6 +2956,12 @@ where
                         };
                         if self.boxes[child].display.internal_table
                             == Some(InternalTableRole::Caption)
+                            && matches!(
+                                self.boxes[child].positioning,
+                                PositioningScheme::Static
+                                    | PositioningScheme::Relative
+                                    | PositioningScheme::Sticky
+                            )
                         {
                             let caption = self
                                 .boxes
@@ -3187,12 +3204,10 @@ where
                     .collect::<Vec<_>>();
                 let caption_min = self.measure_caption_min(text, &pending.captions.clone());
                 let columns = buckram_table_columns(
-                    self.dom,
                     self.boxes,
                     self.styles,
                     &pending.grid,
                     pending.table,
-                    pending.node,
                     &computed,
                     pending.collapsed_border_metrics.as_ref(),
                     pending.font_size,
@@ -3628,12 +3643,10 @@ where
                     .collect::<Vec<_>>();
                 let caption_min = self.measure_caption_min(&pending.captions.clone());
                 let columns = buckram_table_columns(
-                    self.dom,
                     self.boxes,
                     self.styles,
                     &pending.grid,
                     pending.table,
-                    pending.node,
                     &computed,
                     pending.collapsed_border_metrics.as_ref(),
                     pending.font_size,
@@ -4007,6 +4020,12 @@ where
                         };
                         if self.boxes[child].display.internal_table
                             == Some(InternalTableRole::Caption)
+                            && matches!(
+                                self.boxes[child].positioning,
+                                PositioningScheme::Static
+                                    | PositioningScheme::Relative
+                                    | PositioningScheme::Sticky
+                            )
                         {
                             let caption = self
                                 .boxes
@@ -4271,7 +4290,7 @@ where
                 PositioningScheme::Absolute | PositioningScheme::Fixed
             ) || matches!(
                 css_box.display.internal_table,
-                Some(role) if role != InternalTableRole::Wrapper
+                Some(role) if !supports_shared_positioned_table_part(role)
             ) {
                 return None;
             }
@@ -7321,6 +7340,138 @@ mod tests {
             ledger.block.laid_out, 1,
             "the table stays on Buckram: {ledger:?}"
         );
+    }
+
+    #[test]
+    fn absolute_table_caption_uses_shared_k5d_wrapper_geometry() {
+        let dom = StaticDocument::parse(
+            "<table id=table><caption id=caption>caption</caption><tbody><tr><td>cell</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   caption { display: table-caption; position: absolute; left: 31px; top: 14px; width: 240px; height: 20px; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }"#,
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let caption = node_by_id(&dom, dom.document(), "caption").expect("caption");
+        let table_grid = layout.boxes().principal_box(table).expect("table grid");
+        let wrapper = layout.boxes()[table_grid].parent().expect("table wrapper");
+        let caption_box = layout.boxes().principal_box(caption).expect("caption box");
+        assert_eq!(
+            layout.boxes()[caption_box].positioning,
+            PositioningScheme::Absolute,
+        );
+        let wrapper_fragment = layout
+            .fragments()
+            .fragments_for_box(wrapper)
+            .next()
+            .expect("wrapper fragment");
+        let grid_fragment = layout
+            .fragments()
+            .fragments_for_box(table_grid)
+            .next()
+            .expect("grid fragment");
+        let caption_fragment = layout
+            .fragments()
+            .fragments_for_box(caption_box)
+            .next()
+            .expect("caption fragment");
+        let caption_static = layout
+            .fragments()
+            .static_position_for_box(caption_box)
+            .expect("caption static-position record");
+
+        assert_eq!(
+            (caption_fragment.x, caption_fragment.y),
+            (wrapper_fragment.x + 31.0, wrapper_fragment.y + 14.0),
+            "the caption uses the wrapper containing block rather than table tracks",
+        );
+        assert_eq!(
+            wrapper_fragment.width, grid_fragment.width,
+            "the out-of-flow caption must not widen the table wrapper",
+        );
+        // The cell's 80px content width plus its initial 1px inline borders;
+        // the 240px out-of-flow caption does not participate in this width.
+        assert_eq!(grid_fragment.width, 82.0);
+        assert_eq!(caption_fragment.width, 240.0);
+        assert_eq!(caption_static.containing_block, ContainingBlock::Box(wrapper));
+        assert_eq!(
+            caption_fragment.containing_fragment(),
+            layout
+                .fragments()
+                .fragment_ids_for_box(wrapper)
+                .first()
+                .copied(),
+        );
+        assert_eq!(layout.table_shadow_ledger().block.laid_out, 1);
+    }
+
+    #[test]
+    fn fixed_table_caption_uses_shared_k5d_initial_geometry() {
+        let dom = StaticDocument::parse(
+            "<table id=table><caption id=caption>caption</caption><tbody><tr><td>cell</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   caption { display: table-caption; position: fixed; left: 31px; top: 14px; width: 240px; height: 20px; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }"#,
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let caption = node_by_id(&dom, dom.document(), "caption").expect("caption");
+        let table_grid = layout.boxes().principal_box(table).expect("table grid");
+        let wrapper = layout.boxes()[table_grid].parent().expect("table wrapper");
+        let caption_box = layout.boxes().principal_box(caption).expect("caption box");
+        let wrapper_fragment = layout
+            .fragments()
+            .fragments_for_box(wrapper)
+            .next()
+            .expect("wrapper fragment");
+        let grid_fragment = layout
+            .fragments()
+            .fragments_for_box(table_grid)
+            .next()
+            .expect("grid fragment");
+        let caption_fragment = layout
+            .fragments()
+            .fragments_for_box(caption_box)
+            .next()
+            .expect("caption fragment");
+        let caption_static = layout
+            .fragments()
+            .static_position_for_box(caption_box)
+            .expect("caption static-position record");
+
+        assert_eq!(
+            layout.boxes()[caption_box].positioning,
+            PositioningScheme::Fixed,
+        );
+        assert_eq!((caption_fragment.x, caption_fragment.y), (31.0, 14.0));
+        assert_eq!(
+            wrapper_fragment.width, grid_fragment.width,
+            "the out-of-flow caption must not widen the table wrapper",
+        );
+        // The cell's 80px content width plus its initial 1px inline borders;
+        // the 240px out-of-flow caption does not participate in this width.
+        assert_eq!(grid_fragment.width, 82.0);
+        assert_eq!(caption_static.containing_block, ContainingBlock::Initial);
+        assert_eq!(caption_fragment.containing_fragment(), None);
+        assert_eq!(layout.table_shadow_ledger().block.laid_out, 1);
     }
 
     #[test]
