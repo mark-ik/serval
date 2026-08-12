@@ -523,12 +523,13 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             Option<&FloatLineConstraints>,
         ) -> AlgorithmSize<f32>,
     {
-        if self.nodes[id.index()].kind != AlgorithmKind::Block
-            || !matches!(
-                self.nodes[id.index()].block_style.position,
-                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
-            )
-        {
+        if !matches!(
+            self.nodes[id.index()].kind,
+            AlgorithmKind::Block | AlgorithmKind::Leaf
+        ) || !matches!(
+            self.nodes[id.index()].block_style.position,
+            crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+        ) {
             return None;
         }
 
@@ -559,7 +560,11 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         }
         match node.kind {
             AlgorithmKind::Hidden => true,
-            AlgorithmKind::Leaf => node.context.is_some(),
+            // A context-free leaf represents an empty formatting root. Its
+            // min-content and max-content contributions are both zero, so it
+            // is safe to admit without asking a formatter callback to infer a
+            // normal-flow fallback rectangle.
+            AlgorithmKind::Leaf => true,
             AlgorithmKind::Block | AlgorithmKind::Flex | AlgorithmKind::Grid => node
                 .children
                 .iter()
@@ -1379,6 +1384,9 @@ where
             // K4d6 supplies table intrinsics from the accepted K4c query
             // contract; nothing constructs the tag before then.
             AlgorithmKind::Hidden | AlgorithmKind::Table => {
+                IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
+            },
+            AlgorithmKind::Leaf if self.tree.nodes[node.index()].context.is_none() => {
                 IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
             },
             AlgorithmKind::Leaf => {
@@ -2661,6 +2669,29 @@ mod tests {
         assert_eq!(tree.layout(positioned).y, 0.0);
         assert_eq!(tree.static_layout(positioned).x, 0.0);
         assert_eq!(tree.static_layout(positioned).y, 0.0);
+    }
+
+    #[test]
+    fn positioned_empty_leaf_has_zero_intrinsic_inline_contributions() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+
+        assert_eq!(
+            tree.positioned_intrinsic_inline_sizes(positioned, zero_measure),
+            IntrinsicSizes::new(0.0, 0.0),
+        );
     }
 
     #[test]

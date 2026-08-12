@@ -55,8 +55,10 @@ width/height hints and decoded intrinsic dimensions to Buckram. The solver
 keeps a replaced automatic width at its intrinsic size even when both inline
 insets are definite, and derives the automatic opposite axis from the usable
 intrinsic or CSS ratio. Its final border-box size replaces the retained leaf
-fragment's size before the K5a translation. This is intentionally only the
-leaf subset: it does not make normal-flow replaced sizing or replaced
+fragment's size before the K5a translation. An empty non-replaced positioned
+leaf admits zero intrinsic contributions, so Buckram can resolve its automatic
+inline size and Livery can reformat it at that used width. This remains only
+the leaf subset: it does not make normal-flow replaced sizing or positioned
 subtrees a Buckram formatting context.
 
 Livery gives the scratch formatter auto insets for absolute and fixed boxes,
@@ -136,6 +138,8 @@ not treated as final K5 behavior.
   differ, including a transform or containment fixed trigger.
 - `left/right/width`, `top/bottom/height`, percentage, auto-margin,
   shrink-to-fit, min/max, replaced, and aspect-ratio receipts are explicit.
+- An empty non-replaced positioned leaf admits zero intrinsic contributions and
+  reformats at Buckram's resolved border-box width.
 - Direction and every supported writing mode keep the same logical equation.
 - A non-inline positioned ancestor with asymmetric borders supplies a
   padding-box percentage basis and padding-edge origin.

@@ -2141,7 +2141,7 @@ where
             matches!(
                 boxes[*box_id].positioning,
                 PositioningScheme::Absolute | PositioningScheme::Fixed
-            )
+            ) && boxes[*box_id].display.internal_table.is_none()
         })
         .collect::<Vec<_>>();
     let positioned_intrinsics = positioned_intrinsic_sizes(
@@ -2716,7 +2716,7 @@ where
             matches!(
                 boxes[*box_id].positioning,
                 PositioningScheme::Absolute | PositioningScheme::Fixed
-            )
+            ) && boxes[*box_id].display.internal_table.is_none()
         })
         .collect::<Vec<_>>();
     let positioned_intrinsics = {
@@ -7480,6 +7480,40 @@ mod tests {
 
         assert_eq!(fragment.width, 170.0);
         assert_eq!(fragment.x, 10.0);
+    }
+
+    #[test]
+    fn absolute_empty_leaf_uses_buckrams_resolved_border_box() {
+        let dom = StaticDocument::parse("<div id=containing><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; height: 100px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; top: 7px; height: 30px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            fragment.physical_rect(),
+            PhysicalRect {
+                x: 10.0,
+                y: 7.0,
+                width: 170.0,
+                height: 30.0,
+            }
+        );
     }
 
     #[test]
