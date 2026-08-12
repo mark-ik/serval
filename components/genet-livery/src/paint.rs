@@ -1031,6 +1031,82 @@ mod collapsed_border_paint_tests {
     }
 }
 
+#[cfg(test)]
+mod positioned_paint_tests {
+    use super::*;
+    use crate::{Device, InteractionStates, StyleSet, layout, resolve_styles};
+    use genet_static_dom::StaticDocument;
+
+    fn render(html: &str, css: &str) -> LiveryPaintList {
+        let document = StaticDocument::parse(html);
+        let styles = resolve_styles(
+            &document,
+            &StyleSet::cambium(&[css]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let fragments = layout(&document, &styles, 320.0, 240.0).expect("positioned layout");
+        emit_paint_list(
+            &document,
+            &styles,
+            &fragments,
+            DeviceIntSize::new(320, 240),
+            1,
+        )
+    }
+
+    fn first_rect(list: &LiveryPaintList, color: ColorF) -> usize {
+        list.commands()
+            .iter()
+            .position(|command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == color))
+            .expect("the fixture color paints")
+    }
+
+    #[test]
+    fn positioned_numeric_z_indices_wrap_the_normal_paint_phase() {
+        let list = render(
+            "<div id=host><div id=behind></div><div id=normal></div><div id=front></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #host { position: relative; width: 100px; height: 100px; } \
+             #behind, #front { position: absolute; left: 0; top: 0; width: 80px; height: 80px; } \
+             #behind { z-index: -1; background: #f00; } \
+             #normal { width: 80px; height: 80px; background: #00f; } \
+             #front { z-index: 1; background: #0f0; }",
+        );
+        let behind = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let normal = first_rect(&list, ColorF::new(0.0, 0.0, 1.0, 1.0));
+        let front = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            behind < normal && normal < front,
+            "negative positioned content paints before normal flow and positive content after it: {behind}, {normal}, {front}"
+        );
+    }
+
+    #[test]
+    fn positioned_stacking_item_keeps_its_overflow_clip() {
+        let list = render(
+            "<div id=clip><div id=overlay></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #clip { position: relative; width: 50px; height: 50px; overflow-x: hidden; overflow-y: hidden; } \
+             #overlay { position: absolute; left: 0; top: 0; width: 100px; height: 100px; \
+                        z-index: 1; background: #f00; }",
+        );
+        let overlay = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let push = list.commands()[..overlay]
+            .iter()
+            .rposition(|command| matches!(command, PaintCmd::PushClip(_)))
+            .expect("the overflow clip encloses the positioned paint");
+        let pop = list.commands()[overlay + 1..]
+            .iter()
+            .position(|command| matches!(command, PaintCmd::PopClip))
+            .map(|index| overlay + index + 1)
+            .expect("the positioned paint closes the overflow clip");
+
+        assert!(push < overlay && overlay < pop);
+    }
+}
+
 /// A blank `<td>` is not inferred from its rectangle. Text, replacement
 /// content, and visible descendant decoration make it non-empty; whitespace
 /// and empty inline wrappers do not.

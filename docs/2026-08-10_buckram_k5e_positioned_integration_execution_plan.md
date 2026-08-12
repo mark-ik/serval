@@ -21,7 +21,9 @@ The live receipts currently cover:
 - a table root using its wrapper's shared K5d route;
 - positioned descendants contributing their final fragment geometry to a
   nested scroll container's scrollable overflow; and
-- document paint and hit testing consuming the same retained fragment plane.
+- document paint and hit testing consuming the same retained fragment plane;
+- numeric positioned stacking levels bracketing the normal paint phase; and
+- a flattened positioned stacking item retaining its ancestor overflow clip.
 
 ## Evidence
 
@@ -31,14 +33,21 @@ The live receipts currently cover:
   root no longer carries a duplicate table-positioning gap.
 - `positioned_descendant_extends_its_scroll_container_range` verifies an
   absolute descendant produces nested scroll range from its final fragment.
+- `positioned_numeric_z_indices_wrap_the_normal_paint_phase` verifies the
+  negative, normal, and positive paint phases share the positioned fragment
+  plane in that order.
+- `positioned_stacking_item_keeps_its_overflow_clip` verifies a positive
+  positioned descendant retains the `overflow-x`/`overflow-y` clip that would
+  otherwise be lost when its stacking context is flattened.
 
 ## Remaining boundary
 
 Internal table parts still appear in `TableShadowLedger::positioning_gaps`.
 Their table-size participation and internal structural fragments need an
 explicit out-of-flow route before they can use the generic K5d geometry
-solver. Positioned paint-order and clipping coverage remain a separate K5e
-matrix. These are open work, not fallback-free behavior.
+solver. Full CSS stacking-context ordering and clipping remain a separate K5e
+matrix; the current receipts cover only numeric positioned levels and the
+supported overflow longhands. These are open work, not fallback-free behavior.
 
 ## Stop rules
 
