@@ -296,35 +296,35 @@ where
         replaced_nodes: &HashSet<Id>,
         dom_text_order: &[Id],
     ) -> bool {
-        let Some(root_box) = self
-            .buckram
-            .boxes()
-            .boxes_for_node(node)
-            .iter()
-            .copied()
-            .find(|box_id| {
-                matches!(
-                    self.buckram.boxes()[*box_id].formatting_context,
-                    Some(
-                        FormattingContextKind::Block
-                            | FormattingContextKind::Flex
-                            | FormattingContextKind::Grid
-                    )
-                )
-            })
-        else {
+        let Some(root_box) = retained_root_box(self.buckram.boxes(), node) else {
             return false;
         };
-        let Some(fresh_root_box) = fresh
-            .buckram
-            .boxes()
-            .boxes_for_node(node)
-            .iter()
-            .copied()
-            .find(|box_id| *box_id == root_box)
-        else {
+        let Some(fresh_root_box) = retained_root_box(fresh.buckram.boxes(), node) else {
             return false;
         };
+        if fresh_root_box != root_box {
+            return false;
+        }
+        let table_root = self.buckram.boxes()[root_box].display.internal_table
+            == Some(InternalTableRole::Wrapper);
+        if table_root
+            && (self.table_paint.tables.is_empty()
+                || fresh.table_paint.tables.is_empty()
+                || !self
+                    .table_paint
+                    .tables
+                    .keys()
+                    .all(|grid| box_is_descendant_of(self.buckram.boxes(), *grid, root_box))
+                || !table_grids_are_within(self.buckram.boxes(), root_box)
+                || !fresh
+                    .table_paint
+                    .tables
+                    .keys()
+                    .all(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box))
+                || !table_grids_are_within(fresh.buckram.boxes(), fresh_root_box))
+        {
+            return false;
+        }
         let root = match self.buckram.fragments().fragment_ids_for_box(root_box) {
             [root] => *root,
             _ => return false,
@@ -360,6 +360,13 @@ where
                 replaced_nodes,
                 dom_text_order,
             );
+        if table_root {
+            // This first table-root admission owns every live table plane.
+            // Until ledgers carry a per-table partition, an outside table
+            // would make selective replacement observationally ambiguous.
+            self.table_paint = fresh.table_paint.clone();
+            self.table_shadow = fresh.table_shadow.clone();
+        }
         true
     }
 
@@ -1290,23 +1297,18 @@ where
     }
 
     let boxes = GeneratedBoxTree::from_dom(dom, styles);
-    let Some(root_box) = boxes.principal_box(node) else {
+    let Some(root_box) = retained_root_box(&boxes, node) else {
         return Ok(RetainedRootFormatting::Unsupported);
     };
-    if !matches!(
-        boxes[root_box].formatting_context,
-        Some(
-            FormattingContextKind::Block
-                | FormattingContextKind::Flex
-                | FormattingContextKind::Grid
-        )
-    ) || !supports_retained_root_formatting(&boxes, root_box)
+    let table_root = boxes[root_box].display.internal_table == Some(InternalTableRole::Wrapper);
+    if !(table_root && supports_retained_table_root_formatting(&boxes, root_box)
+        || !table_root && supports_retained_root_formatting(&boxes, root_box))
         || !retained_ancestor_styles_unchanged(&boxes, styles, previous_styles, root_box)
     {
         return Ok(RetainedRootFormatting::Unsupported);
     }
 
-    let Some(previous_root_box) = previous.boxes().principal_box(node) else {
+    let Some(previous_root_box) = retained_root_box(previous.boxes(), node) else {
         return Ok(RetainedRootFormatting::Unsupported);
     };
     let [previous_root] = previous
@@ -1384,6 +1386,7 @@ where
         &[formatted_root],
         Vec::new(),
     );
+    state.apply_buckram_table_layout(text);
     state.tree.compute_layout_with_measure(
         formatter_root,
         AlgorithmSize::new(
@@ -1412,7 +1415,8 @@ where
     let mut output = FragmentOutput {
         fragments: &mut fragments,
     };
-    let tables = TablePaintPlane::default();
+    let table_paint = state.table_paint_plane();
+    let tables = table_paint.fragments();
     collect_inline_fragments(
         &state.tree,
         &boxes,
@@ -1427,11 +1431,23 @@ where
             },
             parent: None,
         },
-        &tables.fragments(),
+        &tables,
         &mut output,
         &mut text_frame,
         styles,
     )?;
+    state.verify_table_layout(|box_id| {
+        fragments
+            .fragments_for_box(box_id)
+            .next()
+            .map(|fragment| Fragment {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    });
+    let table_shadow = std::mem::take(&mut state.table_shadow);
     let [local_root] = fragments.fragment_ids_for_box(root_box) else {
         return Ok(RetainedRootFormatting::Unsupported);
     };
@@ -1459,8 +1475,8 @@ where
             buckram: buckram_blocks,
             taffy: taffy_blocks,
         },
-        TablePaintPlane::default(),
-        TableShadowLedger::default(),
+        table_paint,
+        table_shadow,
     ))))
 }
 
@@ -1497,6 +1513,116 @@ where
     }
 
     visit(boxes, root)
+}
+
+fn retained_root_box<Id>(boxes: &buckram::CssBoxTree<Id>, node: Id) -> Option<BoxId>
+where
+    Id: Copy + Eq + Hash,
+{
+    let principal = boxes.principal_box(node)?;
+    if boxes[principal].display.internal_table == Some(InternalTableRole::Grid) {
+        let wrapper = boxes[principal].parent()?;
+        (boxes[wrapper].display.internal_table == Some(InternalTableRole::Wrapper))
+            .then_some(wrapper)
+    } else if matches!(
+        boxes[principal].formatting_context,
+        Some(
+            FormattingContextKind::Block | FormattingContextKind::Flex | FormattingContextKind::Grid
+        )
+    ) {
+        Some(principal)
+    } else {
+        None
+    }
+}
+
+/// A table row, group, or cell mutation is owned by the element whose grid is
+/// wrapped into the formatting root. The damaged part cannot be spliced on its
+/// own because the table paint plane and wrapper width belong to that owner.
+pub(crate) fn retained_table_owner<Id>(
+    boxes: &buckram::CssBoxTree<Id>,
+    node: Id,
+) -> Option<Id>
+where
+    Id: Copy + Eq + Hash,
+{
+    for source in boxes.boxes_for_node(node) {
+        let mut current = Some(*source);
+        while let Some(box_id) = current {
+            if boxes[box_id].display.internal_table == Some(InternalTableRole::Grid)
+                && let BoxOrigin::Element(owner) = boxes[box_id].origin
+            {
+                return Some(owner);
+            }
+            current = boxes[box_id].parent();
+        }
+    }
+    None
+}
+
+fn box_is_descendant_of<Id>(boxes: &buckram::CssBoxTree<Id>, box_id: BoxId, root: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut current = Some(box_id);
+    while let Some(box_id) = current {
+        if box_id == root {
+            return true;
+        }
+        current = boxes[box_id].parent();
+    }
+    false
+}
+
+fn table_grids_are_within<Id>(boxes: &buckram::CssBoxTree<Id>, root: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    boxes
+        .iter()
+        .filter(|(_, css_box)| css_box.display.internal_table == Some(InternalTableRole::Grid))
+        .all(|(grid, _)| box_is_descendant_of(boxes, grid, root))
+}
+
+fn supports_retained_table_root_formatting<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    root: BoxId,
+) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId, root: BoxId) -> bool
+    where
+        Id: Copy + Eq + Hash,
+    {
+        let css_box = &boxes[box_id];
+        if !matches!(
+            css_box.origin,
+            BoxOrigin::Element(_) | BoxOrigin::Text(_) | BoxOrigin::Anonymous { .. }
+        ) || css_box.positioning != PositioningScheme::Static
+            || css_box.float != FloatSide::None
+            || (css_box.display.outside == Some(DisplayOutside::Inline)
+                && !matches!(css_box.origin, BoxOrigin::Text(_)))
+        {
+            return false;
+        }
+        if box_id != root
+            && css_box.display.internal_table == Some(InternalTableRole::Wrapper)
+        {
+            return false;
+        }
+        if css_box.display.internal_table == Some(InternalTableRole::Caption) {
+            return false;
+        }
+        css_box
+            .children()
+            .iter()
+            .copied()
+            .all(|child| visit(boxes, child, root))
+    }
+
+    boxes[root].display.internal_table == Some(InternalTableRole::Wrapper)
+        && visit(boxes, root, root)
 }
 
 fn retained_ancestor_styles_unchanged<Id>(

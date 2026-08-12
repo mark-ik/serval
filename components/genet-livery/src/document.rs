@@ -20,7 +20,7 @@ use crate::{
     emit_paint_list_with_text_system_scrolled_with_images, hit_test_with_scroll,
     layout::{
         RetainedRootFormatting, StickyScrollport, layout_retained_formatting_root,
-        layout_with_text_system,
+        layout_with_text_system, retained_table_owner,
         resolve_container_query_styles,
         resolve_container_query_styles_with_images,
     },
@@ -657,7 +657,7 @@ where
             let previous_styles = previous.styles.clone();
             let previous_fragments = previous.fragments.clone();
             let dom_text_order = text_sources_in_dom_order(&self.dom);
-            let mut candidate = root;
+            let mut candidate = retained_table_owner(previous_fragments.boxes(), root).unwrap_or(root);
             loop {
                 let mut replaced_nodes = nodes_in_subtree(&self.dom, candidate);
                 replaced_nodes.extend(previous_fragments.generated_subtree_nodes(candidate));
@@ -1870,6 +1870,29 @@ mod tests {
         }
     }
 
+    fn table_wrapper_fragment_id(
+        document: &LiveryDocument<ScriptedDom>,
+        node: NodeId,
+    ) -> buckram::FragmentId {
+        let layout = document.layout.as_ref().expect("completed frame");
+        let grid = layout
+            .fragments
+            .boxes()
+            .principal_box(node)
+            .expect("table grid box");
+        let wrapper = layout.fragments.boxes()[grid]
+            .parent()
+            .expect("table wrapper box");
+        assert_eq!(
+            layout.fragments.boxes()[wrapper].display.internal_table,
+            Some(buckram::InternalTableRole::Wrapper),
+        );
+        match layout.fragments.fragments().fragment_ids_for_box(wrapper) {
+            [fragment] => *fragment,
+            fragments => panic!("one table wrapper fragment, got {fragments:?}"),
+        }
+    }
+
     #[test]
     fn retained_relayout_keeps_unrelated_and_table_generated_ids_after_sibling_insertion() {
         let mut dom = ScriptedDom::from_serialized_document(
@@ -2644,6 +2667,79 @@ mod tests {
             format!("{:?}", retained_paint.commands()),
             format!("{:?}", fresh_paint.commands()),
             "the stable ancestor paints like a fresh final document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
+    fn retained_root_formatter_replaces_a_fixed_size_table_and_its_paint_plane() {
+        let initial = "<html><body><table id=table><tbody><tr id=row><td id=first></td></tr></tbody></table><div id=outside></div></body></html>";
+        let final_document = "<html><body><table id=table><tbody><tr id=row><td id=first></td><td id=second></td></tr></tbody></table><div id=outside></div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 180.0));
+        retained.frame(240, 180).expect("initial retained frame");
+        let table = by_id(retained.dom(), "table");
+        let row = by_id(retained.dom(), "row");
+        let first = by_id(retained.dom(), "first");
+        let outside = by_id(retained.dom(), "outside");
+        let wrapper_before = table_wrapper_fragment_id(&retained, table);
+        let table_before = generated_ids(&retained, table);
+        let first_before = generated_ids(&retained, first);
+        let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
+        assert_table_paint_sources_are_live(&retained, table);
+
+        retained.mutate_dom(|dom| {
+            let row = by_id(dom, "row");
+            let cell = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("td"),
+            ));
+            dom.set_attribute(cell, attr("id"), "second");
+            dom.append_child(row, cell);
+        });
+        assert_eq!(
+            retained.last_layout_damage(),
+            Some(&LayoutDamage {
+                kind: LayoutDamageKind::Dom,
+                roots: vec![row],
+                full_document: false,
+            })
+        );
+        let retained_paint = retained.frame(240, 180).expect("retained table frame");
+
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "the fixed-size table uses the selected-root formatter",
+        );
+        assert_eq!(table_wrapper_fragment_id(&retained, table), wrapper_before);
+        assert_ne!(generated_ids(&retained, table), table_before);
+        assert_ne!(generated_ids(&retained, first), first_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+        assert_table_paint_sources_are_live(&retained, table);
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 180.0));
+        let fresh_paint = fresh.frame(240, 180).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "the retained table paint plane matches a fresh final document",
         );
         assert_eq!(retained.content_height(0), fresh.content_height(0));
     }

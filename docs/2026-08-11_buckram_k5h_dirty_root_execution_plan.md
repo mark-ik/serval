@@ -5,8 +5,9 @@
 **Status:** In progress. K5h now has an explicit damage record,
 final-document equivalence harness, a narrow paint-only retained path, and a
 conservative Buckram fragment-subtree splice. Livery has one true
-selected-root formatter for a closed static block/flex/grid case and falls
-back to a fresh complete layout outside that boundary.
+selected-root formatter for a closed static block/flex/grid case plus a narrow
+table-root case, and falls back to a fresh complete layout outside that
+boundary.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
@@ -140,6 +141,19 @@ matches fresh final paint and extent.
 proves a second auto-sized parent can grow before the retained replacement
 settles at its stable ancestor.
 
+A static, caption-free table can now be the local replacement root when it
+owns every current table-paint plane. Damage to an internal row, group, or cell
+maps to the owning table element; the selected fragment root is its anonymous
+wrapper, while the element's grid and table parts receive fresh identities.
+The local formatter runs the normal Buckram column, block, fragment, paint, and
+verification sequence before publication. It replaces the table-paint model and
+shadow ledger together with the fragment splice, preserving the wrapper and
+outside non-table identities. `retained_root_formatter_replaces_a_fixed_size_table_and_its_paint_plane`
+proves a fixed-size table can gain a cell with equal fresh final paint and
+extent. A caption, out-of-flow descendant, nested table, or any unrelated live
+table still takes the complete path because table verification state is not yet
+partitioned per table.
+
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
@@ -151,8 +165,8 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Extend to table roots only with their required
-   parent-flow and table side-plane replacement.
+1. Partition table-paint and table-shadow ownership so a table root can update
+   while an unrelated table stays retained.
 2. Compare each incremental result with the fresh-final-document harness.
 3. Move flex, grid, inline, and table-internal out-of-flow participation to
    equivalent Buckram-owned routes before deleting the remaining flex/grid
