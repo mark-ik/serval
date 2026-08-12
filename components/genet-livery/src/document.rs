@@ -540,6 +540,44 @@ where
             && self.layout_dirty
             && self.transitions.is_empty()
             && self.keyframe_animation.is_none()
+            && let Some(node) = self.layout.as_ref().and_then(|layout| {
+                styles.only_positioned_leaf_geometry_changed(&layout.styles)
+            })
+            && self.layout.as_mut().is_some_and(|layout| {
+                layout.fragments.resize_positioned_leaf(
+                    &self.dom,
+                    &styles,
+                    &self.image_sources,
+                    node,
+                    width as f32,
+                    height as f32,
+                )
+            })
+        {
+            let (content_width, content_height) = self
+                .layout
+                .as_ref()
+                .map(|layout| self.document_content_extent(&styles, &layout.fragments))
+                .expect("a resized retained layout is still live");
+            let layout = self
+                .layout
+                .as_mut()
+                .expect("a resized retained layout is still live");
+            layout.styles = styles;
+            layout.content_width = content_width;
+            layout.content_height = content_height;
+            self.identity_source = None;
+            self.layout_dirty = false;
+            self.layout_generation = self.layout_generation.saturating_add(1);
+            self.clamp_scroll();
+            self.clamp_nested_scroll();
+            self.generation = self.generation.saturating_add(1);
+            return self.paint_active_layout(width, height);
+        }
+        if !viewport_changed
+            && self.layout_dirty
+            && self.transitions.is_empty()
+            && self.keyframe_animation.is_none()
             && self.layout.as_ref().is_some_and(|layout| {
                 styles.differs_only_in_background_color(&layout.styles)
             })
@@ -1989,6 +2027,62 @@ mod tests {
             fresh.scroll_extent(fresh_layout, fresh_scroller),
             "retained repositioning must keep nested scrolling equal to a fresh final layout",
         );
+    }
+
+    #[test]
+    fn positioned_leaf_geometry_mutation_resizes_the_retained_fragment() {
+        let initial = "<html><body><div id=containing><canvas id=positioned width=\"80\" height=\"40\"></canvas></div><div id=outside>outside</div></body></html>";
+        let final_document = "<html><body><div id=containing><canvas id=positioned width=\"80\" height=\"40\" style=\"left: 70px; width: 120px; height: 60px\"></canvas></div><div id=outside>outside</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; height: 80px; } \
+                 #positioned { position: absolute; left: 10px; top: 5px; } \
+                 #outside { width: 80px; height: 20px; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 120.0));
+        retained.frame(240, 120).expect("initial retained frame");
+        let positioned = by_id(retained.dom(), "positioned");
+        let outside = by_id(retained.dom(), "outside");
+        let positioned_ids = generated_ids(&retained, positioned);
+        let outside_ids = generated_ids(&retained, outside);
+        let layout_generation = retained.layout_generation();
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(
+                by_id(dom, "positioned"),
+                attr("style"),
+                "left: 70px; width: 120px; height: 60px",
+            );
+        });
+        let retained_paint = retained.frame(240, 120).expect("resized frame");
+
+        assert_eq!(retained.layout_generation(), layout_generation + 1);
+        assert_eq!(generated_ids(&retained, positioned), positioned_ids);
+        assert_eq!(generated_ids(&retained, outside), outside_ids);
+        let rect = retained
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.get(positioned))
+            .map(|fragment| fragment.physical_rect())
+            .expect("resized fragment");
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (70.0, 5.0, 120.0, 60.0));
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 120.0));
+        let fresh_paint = fresh.frame(240, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "retained leaf resize must match a fresh final-document layout",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
     }
 
     #[test]

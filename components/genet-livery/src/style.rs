@@ -623,6 +623,48 @@ where
         changed
     }
 
+    /// Return the sole absolute/fixed element whose insets and preferred
+    /// physical size changed, but no other computed value did. This admission
+    /// is for a retained leaf only: a descendant-bearing formatting root must
+    /// be reformatted rather than have its border box resized in place.
+    pub(crate) fn only_positioned_leaf_geometry_changed(&self, previous: &Self) -> Option<Id>
+    where
+        Id: Copy,
+    {
+        if self.values.len() != previous.values.len()
+            || self.custom != previous.custom
+            || self.inline_diagnostics != previous.inline_diagnostics
+            || self.color_context != previous.color_context
+        {
+            return None;
+        }
+
+        let mut changed = None;
+        for (id, current) in &self.values {
+            let previous = previous.values.get(id)?;
+            if current == previous {
+                continue;
+            }
+            if !matches!(current.position, Position::Absolute | Position::Fixed)
+                || current.position != previous.position
+                || (current.width == previous.width && current.height == previous.height)
+            {
+                return None;
+            }
+            let mut normalized = previous.clone();
+            normalized.top = current.top;
+            normalized.right = current.right;
+            normalized.bottom = current.bottom;
+            normalized.left = current.left;
+            normalized.width = current.width;
+            normalized.height = current.height;
+            if normalized != *current || changed.replace(*id).is_some() {
+                return None;
+            }
+        }
+        changed
+    }
+
     /// Resolve contextual colors for one element using the exact palette and
     /// used `color-scheme` that created this style plane.
     pub(crate) fn used_color_context(&self, id: Id) -> Option<UsedColorContext> {

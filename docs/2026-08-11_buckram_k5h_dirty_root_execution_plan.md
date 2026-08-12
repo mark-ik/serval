@@ -52,6 +52,12 @@ and emits the same output as a fresh final document.
 kind of subtree inside an `overflow: auto` container and verifies the retained
 scroll range equals a fresh final layout.
 
+`positioned_leaf_geometry_mutation_resizes_the_retained_fragment` changes the
+insets and CSS width/height of a positioned canvas. Buckram supplies the new
+used rectangle, the retained leaf changes size in place, and the result is
+compared with a fresh final document. A root with descendants is intentionally
+rejected because its changed containing size requires reformatting.
+
 ## Next replacement seam
 
 1. Make Buckram replace the selected formatting-context fragment subtree,
@@ -66,8 +72,11 @@ scroll range equals a fresh final layout.
 
 - Do not use `RestyleStats` as evidence of incremental geometry.
 - Do not retain stale table paint or static-position source records.
-- Do not admit an inset mutation when Buckram changes its used border-box
-  size; that case requires constrained reformatting rather than translation.
+- Do not admit an inset mutation that changes its used border-box size unless
+  it is the documented descendant-free leaf resize; every other case requires
+  constrained reformatting rather than translation.
+- Do not resize a retained root with descendants; its children must receive a
+  fresh containing size through the later formatting-root replacement route.
 - Do not call K5h complete until a real root is replaced and compared against
   fresh geometry across mutation, style, resource, interaction, and resize
   cases.

@@ -314,36 +314,16 @@ where
         D: LayoutDom<NodeId = Id>,
         D::NodeId: Copy + Eq + Hash,
     {
-        let intrinsic_sizes = HashMap::new();
-        let mut placements = positioned_placements(
-            self.buckram.fragments(),
-            self.buckram.boxes(),
-            styles,
+        let Some(placement) = self.positioned_placement_for_node(
             dom,
+            styles,
             image_sources,
-            &intrinsic_sizes,
+            node,
             viewport_width,
             viewport_height,
-        )
-        .into_iter()
-        .filter(|placement| self.buckram.boxes()[placement.box_id].origin.node() == Some(node));
-        let Some(placement) = placements.next() else {
+        ) else {
             return false;
         };
-        if placements.next().is_some()
-            || self.buckram.boxes()[placement.box_id]
-                .display
-                .internal_table
-                .is_some()
-            || self
-                .buckram
-                .fragments()
-                .fragment_ids_for_box(placement.box_id)
-                .len()
-                != 1
-        {
-            return false;
-        }
         let target = placement.target_rect();
         if (target.width - placement.current.width).abs() > 0.001
             || (target.height - placement.current.height).abs() > 0.001
@@ -361,6 +341,94 @@ where
         fragments.translate_subtree(placement.root, offset);
         fragments.set_containing_fragment(placement.root, placement.containing_fragment);
         true
+    }
+
+    /// Resize and reposition one retained absolute or fixed leaf after its
+    /// declared width or height changed. The leaf-only precondition prevents
+    /// a stale child containing block: any subtree with descendants continues
+    /// through the ordinary full-layout path.
+    pub(crate) fn resize_positioned_leaf<D>(
+        &mut self,
+        dom: &D,
+        styles: &StylePlane<D::NodeId>,
+        image_sources: &ImageSources,
+        node: D::NodeId,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool
+    where
+        D: LayoutDom<NodeId = Id>,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        let Some(placement) = self.positioned_placement_for_node(
+            dom,
+            styles,
+            image_sources,
+            node,
+            viewport_width,
+            viewport_height,
+        ) else {
+            return false;
+        };
+        let target = placement.target_rect();
+        let offset = PhysicalOffset {
+            x: placement.containing_rect.x + target.x - placement.current.x,
+            y: placement.containing_rect.y + target.y - placement.current.y,
+        };
+        let fragments = self.buckram.fragments_mut();
+        if !fragments.resize_leaf(
+            placement.root,
+            PhysicalSize {
+                width: target.width,
+                height: target.height,
+            },
+        ) {
+            return false;
+        }
+        fragments.translate_subtree(placement.root, offset);
+        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        true
+    }
+
+    fn positioned_placement_for_node<D>(
+        &self,
+        dom: &D,
+        styles: &StylePlane<D::NodeId>,
+        image_sources: &ImageSources,
+        node: D::NodeId,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Option<PositionedPlacement>
+    where
+        D: LayoutDom<NodeId = Id>,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        let intrinsic_sizes = HashMap::new();
+        let mut placements = positioned_placements(
+            self.buckram.fragments(),
+            self.buckram.boxes(),
+            styles,
+            dom,
+            image_sources,
+            &intrinsic_sizes,
+            viewport_width,
+            viewport_height,
+        )
+        .into_iter()
+        .filter(|placement| self.buckram.boxes()[placement.box_id].origin.node() == Some(node));
+        let placement = placements.next()?;
+        (placements.next().is_none()
+            && self.buckram.boxes()[placement.box_id]
+                .display
+                .internal_table
+                .is_none()
+            && self
+                .buckram
+                .fragments()
+                .fragment_ids_for_box(placement.box_id)
+                .len()
+                == 1)
+        .then_some(placement)
     }
 
     pub fn fragments_for_node(&self, node: Id) -> impl Iterator<Item = &TreeFragment> {
