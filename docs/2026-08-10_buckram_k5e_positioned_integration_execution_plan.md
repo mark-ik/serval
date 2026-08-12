@@ -16,8 +16,9 @@ without rerunning the flex, grid, inline, or table-root parent formatter.
 
 The live receipts currently cover:
 
-- flex alignment and grid-area static rectangles surviving the later Buckram
-  inset equation;
+- flex alignment and grid-content static rectangles surviving the later Buckram
+  inset equation, while a placed grid area remains the containing block for
+  positioned insets;
 - same-flow `self-end` grid self-alignment reaching the formatter instead of
   being discarded as an invalid value;
 - a table root using its wrapper's shared K5d route;
@@ -34,6 +35,20 @@ The live receipts currently cover:
 - `absolute_grid_self_end_uses_the_grid_content_end` verifies that a same-flow
   `align-self: self-end` absolute grid child reaches the grid content end
   instead of falling back to the static start edge.
+- `absolute_grid_static_position_uses_content_edges_not_placed_area` keeps the
+  static rectangle separate from the placed grid-area containing block, as
+  [CSS Grid 9.1](https://drafts.csswg.org/css-grid-1/#abspos) and
+  [9.2](https://drafts.csswg.org/css-grid-1/#static-position) require.
+- `vertical_grid_static_alignment_uses_the_content_block_end` is the first
+  current-spec same-writing-mode vertical receipt: `align-self: end` uses the
+  grid content's physical left edge in vertical-rl and physical right edge in
+  vertical-lr.
+- The legacy WPT
+  `grid-abspos-staticpos-align-self-vertWM-001.html` reference instead places
+  the static rectangle in the assigned grid area. The current-source runner
+  fails that reference. It remains useful historical interoperability
+  diagnostics, but conflicts with the current Grid 9.2 content-edge rule and
+  is not a current-spec acceptance receipt.
 - `absolute_table_root_uses_shared_k5d_wrapper_geometry` verifies the table
   root no longer carries a duplicate table-positioning gap.
 - `absolute_table_track_parts_use_zero_track_static_anchors` and
@@ -67,8 +82,10 @@ CSS stacking-context ordering and clipping remain a separate K5e matrix; the
 current receipts cover only numeric positioned levels and the supported
 `overflow` shorthand and longhands. Generic inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
-subset; unsupported writing modes and unadmitted descendants remain explicit
-fallbacks. The renderer still supplies the narrow flex/grid static-position
+subset; direct same-writing-mode vertical grid static alignment is now
+admitted, while cross-writing-mode `self-start`/`self-end`, grid-area
+coordinate transforms, and unadmitted descendants remain explicit fallbacks.
+The renderer still supplies the narrow flex/grid static-position
 provider, so its private position role cannot disappear until Buckram has an
 equivalent flex/grid static-position algorithm. These are open work, not
 fallback-free behavior.

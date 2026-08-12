@@ -6952,52 +6952,60 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
     container_node: AlgorithmNodeId,
 ) where
     Id: Copy + Eq + Hash,
-    Source: AlgorithmSourceBox,
 {
-    if !matches!(
-        boxes[container].display.inside,
-        Some(DisplayInside::Flex | DisplayInside::Grid)
-    ) {
+    let inside = boxes[container].display.inside;
+    if !matches!(inside, Some(DisplayInside::Flex | DisplayInside::Grid)) {
         return;
     }
+    let grid_flow = (inside == Some(DisplayInside::Grid)).then_some(boxes[container].flow);
     let children = tree.children(container_node).to_vec();
     for child in children {
         if matches!(
             tree.block_style(child).position,
             BuckramBlockPosition::Absolute | BuckramBlockPosition::Fixed
         ) {
-            tree.enable_flex_grid_static_position_provider(child);
-            if boxes[container].display.inside == Some(DisplayInside::Grid)
-                && tree.source(child).single_box().is_some_and(|box_id| {
-                    boxes[box_id].containing_block == ContainingBlock::Box(container)
-                })
-            {
-                tree.use_grid_area_for_static_position(child);
+            if let Some(flow) = grid_flow.filter(|flow| !flow.is_horizontal()) {
+                map_vertical_grid_static_alignment(tree.style_mut(child), flow);
             }
+            tree.enable_flex_grid_static_position_provider(child);
         }
     }
 }
 
-/// The static-position provider only needs a generated box identity for the
-/// direct child it is admitting. Inline grouping can carry several source
-/// boxes, but no such group is a single positioned grid child.
-trait AlgorithmSourceBox {
-    fn single_box(&self) -> Option<BoxId>;
+/// Taffy's grid static-position hook has physical horizontal/vertical axes.
+/// A vertical CSS grid therefore has to trade its block-axis self-alignment
+/// onto Taffy's horizontal self-alignment before it supplies the K5b rectangle.
+/// This is deliberately limited to direct out-of-flow grid children: normal
+/// vertical grid layout and cross-writing-mode `self-*` semantics remain their
+/// own formatting work.
+fn map_vertical_grid_static_alignment(style: &mut Style, flow: FlowAxes) {
+    let align_self = style.align_self.take();
+    let justify_self = style.justify_self.take();
+    style.align_self = if flow.inline_start() == PhysicalSide::Bottom {
+        reverse_self_alignment(justify_self)
+    } else {
+        justify_self
+    };
+    style.justify_self = if flow.block_start() == PhysicalSide::Right {
+        reverse_self_alignment(align_self)
+    } else {
+        align_self
+    };
 }
 
-impl AlgorithmSourceBox for Option<BoxId> {
-    fn single_box(&self) -> Option<BoxId> {
-        *self
-    }
-}
-
-impl AlgorithmSourceBox for Vec<BoxId> {
-    fn single_box(&self) -> Option<BoxId> {
-        match self.as_slice() {
-            [box_id] => Some(*box_id),
-            _ => None,
-        }
-    }
+fn reverse_self_alignment(alignment: Option<AlignItems>) -> Option<AlignItems> {
+    alignment.map(|mut alignment| {
+        alignment.keyword = match alignment.keyword {
+            AlignItemsKeyword::Start => AlignItemsKeyword::End,
+            AlignItemsKeyword::End => AlignItemsKeyword::Start,
+            AlignItemsKeyword::FlexStart => AlignItemsKeyword::FlexEnd,
+            AlignItemsKeyword::FlexEnd => AlignItemsKeyword::FlexStart,
+            AlignItemsKeyword::Center
+            | AlignItemsKeyword::Baseline
+            | AlignItemsKeyword::Stretch => alignment.keyword,
+        };
+        alignment
+    })
 }
 
 fn grid_auto_flow(value: CssGridAutoFlow) -> GridAutoFlow {
@@ -7996,6 +8004,124 @@ mod tests {
                 .is_some(),
             "the grid static-position route retains its K5b record",
         );
+    }
+
+    #[test]
+    fn absolute_grid_static_position_uses_content_edges_not_placed_area() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #grid { position: relative; display: grid; width: 100px; height: 100px; \
+                         grid-template-columns: 20px 80px; grid-template-rows: 30px 70px; } \
+                 #positioned { position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                               width: 20px; height: 10px; align-self: self-end; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let grid = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+            .expect("grid box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+            .expect("positioned box");
+        let grid_rect = layout
+            .fragments()
+            .fragments_for_box(grid)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("grid fragment");
+        let positioned_rect = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("positioned fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("grid static position");
+
+        assert_eq!(
+            (
+                static_position.logical_rect.inline_start,
+                static_position.logical_rect.block_start,
+            ),
+            (0.0, 90.0),
+            "the static rectangle is the aligned grid content rectangle, not the placed area"
+        );
+        assert_eq!(
+            static_position.containing_block_area,
+            Some(LogicalRect {
+                inline_start: 20.0,
+                block_start: 30.0,
+                inline_size: 80.0,
+                block_size: 70.0,
+            }),
+            "the placed grid area remains the containing block for positioned insets"
+        );
+        assert_eq!(
+            (positioned_rect.x, positioned_rect.y),
+            (grid_rect.x, grid_rect.y + 90.0),
+        );
+    }
+
+    #[test]
+    fn vertical_grid_static_alignment_uses_the_content_block_end() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        for (writing_mode, expected_x) in [("vertical-rl", 0.0), ("vertical-lr", 80.0)] {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[
+                    &format!(
+                        "html, body, div {{ margin: 0; padding: 0; }} \
+                         #grid {{ position: relative; display: grid; writing-mode: {writing_mode}; \
+                                 width: 100px; height: 80px; \
+                                 grid-template-columns: 20px 60px; grid-template-rows: 30px 70px; }} \
+                         #positioned {{ position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                                       width: 20px; height: 10px; align-self: end; }}"
+                    ),
+                ]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+
+            let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+            let grid = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+                .expect("grid box");
+            let positioned = layout
+                .boxes()
+                .principal_box(
+                    node_by_id(&dom, dom.document(), "positioned").expect("positioned node"),
+                )
+                .expect("positioned box");
+            let grid_rect = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("grid fragment");
+            let positioned_rect = layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment");
+
+            assert_eq!(
+                (positioned_rect.x, positioned_rect.y),
+                (grid_rect.x + expected_x, grid_rect.y),
+                "{writing_mode} block-end alignment uses the grid content's physical end edge"
+            );
+        }
     }
 
     #[test]

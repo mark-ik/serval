@@ -143,7 +143,6 @@ struct AlgorithmNode<S, Context, Source> {
     unrounded_layout: Layout,
     final_layout: Layout,
     grid_info: Option<DetailedGridInfo>,
-    grid_static_position_uses_grid_area: bool,
     baselines: Baselines,
 }
 
@@ -251,7 +250,6 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             grid_info: None,
-            grid_static_position_uses_grid_area: false,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -343,29 +341,6 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         );
         sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[id.index()].style).position =
             taffy::Position::Absolute;
-    }
-
-    /// Select this direct grid child's finalized grid area as its static
-    /// position rectangle. Callers make this selection only when the K5a
-    /// containing-block graph chose the same grid; otherwise CSS Positioned
-    /// Layout uses the grid's content box.
-    pub fn use_grid_area_for_static_position(&mut self, id: AlgorithmNodeId) {
-        let parent = self.nodes[id.index()]
-            .parent
-            .expect("a grid static-position area requires an attached direct child");
-        assert_eq!(
-            self.nodes[parent.index()].kind,
-            AlgorithmKind::Grid,
-            "only a direct grid child can use a grid-area static-position rectangle"
-        );
-        assert!(
-            matches!(
-                self.nodes[id.index()].block_style.position,
-                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
-            ),
-            "the grid-area static-position rectangle requires an absolute or fixed child"
-        );
-        self.nodes[id.index()].grid_static_position_uses_grid_area = true;
     }
 
     /// Supply the resolved CSS inline size to a detached absolute/fixed
@@ -2520,13 +2495,15 @@ where
         &self,
         _container_node_id: NodeId,
         child_node_id: NodeId,
-        grid_area: taffy::geometry::Rect<f32>,
+        _grid_area: taffy::geometry::Rect<f32>,
         content_box: taffy::geometry::Rect<f32>,
     ) -> taffy::geometry::Rect<f32> {
-        self.tree.nodes[AlgorithmNodeId::from_taffy(child_node_id).index()]
-            .grid_static_position_uses_grid_area
-            .then_some(grid_area)
-            .unwrap_or(content_box)
+        let _ = child_node_id;
+        // CSS Grid §9.2 treats the direct absolute child as the sole grid item
+        // in an area formed by the grid container's content edges. Its
+        // grid-placement area still belongs to the positioned containing-block
+        // calculation, which is retained separately in `grid_positioned_area`.
+        content_box
     }
 
     fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
@@ -2695,7 +2672,7 @@ mod tests {
     }
 
     #[test]
-    fn grid_static_layout_uses_the_item_area_before_insets() {
+    fn grid_static_layout_uses_content_box_before_insets() {
         let mut tree = AlgorithmTree::<Style, (), u8>::new();
         let positioned = tree.new_with_children_and_block_style(
             AlgorithmKind::Leaf,
@@ -2713,6 +2690,14 @@ mod tests {
                     width: Dimension::length(30.0),
                     height: Dimension::length(20.0),
                 },
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                grid_row: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
                 ..Style::default()
             },
             &[],
@@ -2726,6 +2711,8 @@ mod tests {
                     width: Dimension::length(200.0),
                     height: Dimension::length(100.0),
                 },
+                grid_template_columns: vec![length(80.0_f32), length(120.0_f32)],
+                grid_template_rows: vec![length(40.0_f32), length(60.0_f32)],
                 ..Style::default()
             },
             &[positioned],
@@ -2735,10 +2722,20 @@ mod tests {
 
         tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
 
-        assert_eq!(tree.layout(positioned).x, 18.0);
-        assert_eq!(tree.layout(positioned).y, 9.0);
+        assert_eq!(tree.layout(positioned).x, 98.0);
+        assert_eq!(tree.layout(positioned).y, 49.0);
         assert_eq!(tree.static_layout(positioned).x, 0.0);
         assert_eq!(tree.static_layout(positioned).y, 0.0);
+        assert_eq!(
+            tree.grid_positioned_area(positioned),
+            Some(PhysicalRect {
+                x: 80.0,
+                y: 40.0,
+                width: 120.0,
+                height: 60.0,
+            }),
+            "the grid area remains available to the positioned containing-block route"
+        );
     }
 
     #[test]
