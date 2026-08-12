@@ -62,6 +62,14 @@ rejected because its changed containing size requires reformatting.
 leaf in an `overflow: auto` container. Its changed width, height, and inset
 update the retained scroll range, which remains equal to a fresh final layout.
 
+The ordinary block route now keeps absolute and fixed children outside its
+normal-flow cursor. Buckram records their static rectangle, formats their
+local block subtree, and receives a K5d-resolved inline size for an admitted
+second pass; an out-of-flow subtree no longer makes its ordinary block parent
+fall back to Taffy. Flex, grid, inline, and table-internal static-position
+routes remain separate, and the source-side Taffy position mapping is not yet
+deleted.
+
 ## Next replacement seam
 
 1. Make Buckram replace the selected formatting-context fragment subtree,
@@ -71,6 +79,9 @@ update the retained scroll range, which remains equal to a fresh final layout.
 3. Propagate changed used size or overflow to the first dependent ancestor.
    Escalate to a wider root only when that dependency actually changes.
 4. Compare each incremental result with the fresh-final-document harness.
+5. Move flex, grid, inline, and table-internal out-of-flow participation to
+   equivalent Buckram-owned routes before deleting the remaining Taffy
+   position mapping.
 
 ## Stop rules
 

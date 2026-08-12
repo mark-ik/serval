@@ -303,6 +303,25 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         &mut self.nodes[id.index()].style
     }
 
+    /// Supply the resolved CSS inline size to a detached absolute/fixed
+    /// formatting root before its second formatting pass. The positioned
+    /// solver owns the value; this scratch-tree setter merely gives the local
+    /// formatter the same constraint without asking Taffy to select a
+    /// containing block or out-of-flow participation.
+    pub fn set_positioned_inline_size(&mut self, id: AlgorithmNodeId, size: f32) {
+        assert!(
+            size.is_finite() && size >= 0.0,
+            "a positioned formatting width must be finite and non-negative"
+        );
+        let style = &mut self.nodes[id.index()].block_style;
+        let size = BlockSizeValue::Length(FlowLength::px(size));
+        if style.flow.is_horizontal() {
+            style.size.width = size;
+        } else {
+            style.size.height = size;
+        }
+    }
+
     /// Clear formatter state after a standards-owned used size changes a
     /// detached formatting root. The next tree walk must visit that root and
     /// its ancestors rather than reuse the pre-positioning layout cache.
@@ -895,6 +914,7 @@ struct PendingBlockChildLayout {
     border: PhysicalSides<f32>,
     margin: PhysicalSides<f32>,
     logical_rect: LogicalRect,
+    static_position: bool,
 }
 
 impl<S, Context, Source, Measure> AlgorithmRun<'_, S, Context, Source, Measure>
@@ -953,6 +973,12 @@ where
         for child in self.tree.nodes[node.index()].children.iter().copied() {
             let child_node = &self.tree.nodes[child.index()];
             let child_style = child_node.block_style;
+            if child_style.is_out_of_flow() {
+                // The parent preserves this child's static rectangle and
+                // formats it locally below. It does not participate in the
+                // normal-flow cursor or make the whole parent fall back.
+                continue;
+            }
             if let Some(deferral) = child_style.deferral() {
                 let admitted_shrink_to_fit = child_node.intrinsic_shrink_to_fit_enabled
                     && matches!(
@@ -1210,6 +1236,23 @@ where
         self.line_constraints = previous_line_constraints;
         self.nested_float_state = previous_nested_float_state;
         self.resolved_shrink_to_fit = previous_resolved_shrink_to_fit;
+        output
+    }
+
+    /// Format one out-of-flow child in its own local coordinate space. The
+    /// caller owns its participation and static position, so its root may use
+    /// Buckram's ordinary block algorithm after temporarily removing only the
+    /// root's position deferral.
+    fn compute_out_of_flow_block_child(
+        &mut self,
+        child: AlgorithmNodeId,
+        input: BlockChildInput,
+    ) -> LayoutOutput {
+        let original_position = self.tree.nodes[child.index()].block_style.position;
+        self.tree.nodes[child.index()].block_style.position = crate::BlockPosition::Static;
+        self.clear_subtree_cache(child);
+        let output = self.compute_block_child(child, input, None, None);
+        self.tree.nodes[child.index()].block_style.position = original_position;
         output
     }
 
@@ -1639,6 +1682,54 @@ where
                     content_block.map_or(own_available.height, AlgorithmAvailableSpace::Definite),
                 ),
             };
+            if child_style.is_out_of_flow() {
+                let child_output = self.compute_out_of_flow_block_child(
+                    child,
+                    BlockChildInput {
+                        border_box_inline_size: None,
+                        ..default_child_input
+                    },
+                );
+                let child_size = PhysicalSize {
+                    width: child_output.size.width,
+                    height: child_output.size.height,
+                };
+                let child_margin_state = self.child_margin_state(
+                    child,
+                    child_style,
+                    child_size,
+                    content_inline,
+                    child_containing_block_size,
+                )?;
+                let static_logical_rect = LogicalRect {
+                    inline_start: inline.margin_start,
+                    block_start: formatting_context
+                        .hypothetical_in_flow_block_start(child_style, child_margin_state),
+                    inline_size: style.flow.logical_size(child_size).inline,
+                    block_size: style.flow.logical_size(child_size).block,
+                };
+                let child_padding = child_style.resolved_padding(content_inline);
+                let child_border = child_style.border;
+                let logical_margin = LogicalSides {
+                    inline_start: inline.margin_start,
+                    inline_end: inline.margin_end,
+                    block_start: 0.0,
+                    block_end: 0.0,
+                };
+                placed_children.push(PendingBlockChildLayout {
+                    child,
+                    order: order
+                        .try_into()
+                        .expect("block child order exceeded u32::MAX"),
+                    output: child_output,
+                    padding: child_padding,
+                    border: child_border,
+                    margin: style.flow.physical_sides(logical_margin),
+                    logical_rect: static_logical_rect,
+                    static_position: true,
+                });
+                continue;
+            }
             let mut child_output = if avoids_floats {
                 let mut measured_block_size = 0.0;
                 let attempts = formatting_context.float_exclusion_count() * 2 + 3;
@@ -1820,6 +1911,7 @@ where
                 border: child_border,
                 margin: child_margin,
                 logical_rect: placement.logical_rect,
+                static_position: false,
             });
         }
 
@@ -1886,6 +1978,9 @@ where
                 x: padding_border.left + rect.x,
                 y: padding_border.top + rect.y,
             };
+            if child.static_position {
+                child_layout.static_location = child_layout.location;
+            }
             child_layout.size = child.output.size;
             child_layout.scrollbar_size = taffy::Size::ZERO;
             child_layout.padding = to_taffy_rect(child.padding);
@@ -2414,7 +2509,7 @@ mod tests {
     }
 
     #[test]
-    fn static_layout_survives_an_absolute_inset() {
+    fn buckram_block_parent_keeps_absolute_child_at_its_static_position() {
         let mut tree = AlgorithmTree::<Style, (), u8>::new();
         let positioned = tree.new_with_children_and_block_style(
             AlgorithmKind::Leaf,
@@ -2454,8 +2549,9 @@ mod tests {
 
         tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
 
-        assert_eq!(tree.layout(positioned).x, 40.0);
-        assert_eq!(tree.layout(positioned).y, 12.0);
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.layout(positioned).x, 0.0);
+        assert_eq!(tree.layout(positioned).y, 0.0);
         assert_eq!(tree.static_layout(positioned).x, 0.0);
         assert_eq!(tree.static_layout(positioned).y, 0.0);
     }

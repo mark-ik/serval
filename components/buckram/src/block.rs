@@ -202,6 +202,14 @@ impl BlockStyle {
         }
     }
 
+    /// Whether this box is excluded from its parent's normal-flow cursor.
+    /// Its contents still need a local formatting pass, but the parent must
+    /// retain the static-position rectangle rather than make a backend
+    /// `Position` value decide participation.
+    pub fn is_out_of_flow(self) -> bool {
+        matches!(self.position, BlockPosition::Absolute | BlockPosition::Fixed)
+    }
+
     /// Name the first feature that requires a later owned algorithm.
     pub fn deferral(self) -> Option<BlockDeferral> {
         if matches!(

@@ -3764,6 +3764,7 @@ fn apply_admitted_positioned_inline_sizes<Context, Source>(
             continue;
         };
         tree.style_mut(*node).size.width = Dimension::length(size);
+        tree.set_positioned_inline_size(*node, size);
         changed = true;
     }
     if changed {
@@ -6170,6 +6171,49 @@ mod tests {
 
         assert_eq!(fragment.width, 170.0);
         assert_eq!(fragment.x, 10.0);
+    }
+
+    #[test]
+    fn ordinary_block_flow_keeps_an_absolute_subtree_out_of_its_cursor() {
+        let dom = StaticDocument::parse(
+            "<div id=host><div id=before></div><div id=positioned><div id=inside></div></div><div id=after></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div { margin: 0; padding: 0; } \
+                 #host { position: relative; width: 200px; } \
+                 #before { height: 20px; } \
+                 #positioned { position: absolute; left: 25px; width: 80px; } \
+                 #inside { height: 30px; } \
+                 #after { height: 10px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect = |id| {
+            layout
+                .get(node_by_id(&dom, dom.document(), id).expect("node"))
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+        let host = rect("host");
+        let positioned = rect("positioned");
+        let after = rect("after");
+        let algorithms = layout.block_algorithm_counts();
+
+        assert_eq!(host.height, 30.0, "the absolute child does not size its block parent");
+        assert_eq!((after.x - host.x, after.y - host.y), (0.0, 20.0));
+        assert_eq!(
+            (positioned.x - host.x, positioned.y - host.y, positioned.width, positioned.height),
+            (25.0, 20.0, 80.0, 30.0),
+        );
+        assert_eq!(
+            algorithms.taffy, 0,
+            "an ordinary block parent and its positioned block subtree stay on Buckram's cursor",
+        );
     }
 
     #[test]
