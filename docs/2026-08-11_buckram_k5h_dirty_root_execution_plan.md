@@ -96,9 +96,9 @@ and the final paint remains equal to a fresh document.
 
 `layout_retained_formatting_root` is the first actual selected-root formatter.
 It regenerates box ownership for the final DOM but builds and computes only one
-unchanged, unfragmented flex or grid root, using its retained parent's content
-size and translating the accepted local result back to the retained root
-origin. The root and its ancestor style inputs must be unchanged. The root and
+unchanged, unfragmented block, flex, or grid root, using its retained parent's
+content size and translating the accepted local result back to the retained
+root origin. The root and its ancestor style inputs must be unchanged. The root and
 every descendant must be a static, non-floating element, text, or anonymous
 box, with no inline element, table part, or positioned content. The root's used size
 must remain unchanged. `TextFrame::replace_subtree_from` replaces prepared
@@ -125,6 +125,16 @@ its own box. The local formatter preserves the root and outside identities,
 retained ancestors, and document extent and paint remain equal to a fresh final
 document. A changed used root size still requires parent-flow replacement.
 
+When an unchanged flex or grid root's child-driven used size changes, Livery
+attempts its direct DOM parent as the one wider local root. A root style change
+retains the established complete-layout publication path. The parent must be an
+admitted block, flex, or grid formatting context whose own used size remains
+unchanged; otherwise the complete-layout fallback remains authoritative.
+`retained_root_formatter_promotes_a_changed_size_to_its_block_parent` proves
+that promotion recomputes the changed flex child and following parent sibling,
+preserves the parent root identity, retains a sibling outside the parent, and
+matches fresh final paint and extent.
+
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted
@@ -136,10 +146,9 @@ be replaced before Taffy's position role can vanish entirely.
 
 ## Next replacement seam
 
-1. Extend the flex/grid route to changed root size and overflow by propagating
-   only to the first dependent parent-flow root, escalating only when that
-   dependency actually changes.
-2. Extend to ordinary-block and table roots only with their required
+1. Extend direct-parent promotion to the first actual dependent ancestor,
+   escalating only when that ancestor's used inputs change.
+2. Extend to table roots only with their required
    parent-flow and table side-plane replacement.
 3. Compare each incremental result with the fresh-final-document harness.
 4. Move flex, grid, inline, and table-internal out-of-flow participation to

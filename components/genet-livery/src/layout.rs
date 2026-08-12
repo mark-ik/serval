@@ -296,7 +296,11 @@ where
             .find(|box_id| {
                 matches!(
                     self.buckram.boxes()[*box_id].formatting_context,
-                    Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+                    Some(
+                        FormattingContextKind::Block
+                            | FormattingContextKind::Flex
+                            | FormattingContextKind::Grid
+                    )
                 )
             })
         else {
@@ -1252,8 +1256,9 @@ where
     Ok((styles, fragments))
 }
 
-/// Reformat exactly one retained flex or grid root against its existing
-/// parent content box. This is intentionally narrower than complete layout:
+/// Reformat exactly one retained block, flex, or grid root against its
+/// existing parent content box. This is intentionally narrower than complete
+/// layout:
 /// tables, inline atoms, floats, and positioned descendants retain the
 /// full-document path until their side planes have an equivalent replacement
 /// primitive. Its local text frame is shaped with the document's retained
@@ -1281,7 +1286,11 @@ where
     };
     if !matches!(
         boxes[root_box].formatting_context,
-        Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+        Some(
+            FormattingContextKind::Block
+                | FormattingContextKind::Flex
+                | FormattingContextKind::Grid
+        )
     ) || !supports_retained_root_formatting(&boxes, root_box)
         || !retained_ancestor_styles_unchanged(&boxes, styles, previous_styles, root_box)
     {
