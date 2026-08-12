@@ -2924,7 +2924,13 @@ where
                     &children,
                     vec![box_id],
                 );
-                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
                 if let Some((grid, cell_nodes, out_of_flow_parts)) = table_handoff {
                     self.pending_tables.push(PendingTable {
                         table: box_id,
@@ -3044,6 +3050,7 @@ where
                     );
                     enable_flex_grid_static_position_provider(
                         &mut self.tree,
+                        self.styles,
                         self.boxes,
                         box_id,
                         node,
@@ -3070,7 +3077,13 @@ where
                     &children,
                     vec![box_id],
                 );
-                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
                 if supports_nested_float_state(&self.boxes[box_id], block_style, kind) {
                     self.tree.enable_nested_float_state(node);
                 }
@@ -4148,7 +4161,13 @@ where
                     &children,
                     Some(box_id),
                 );
-                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
                 // K4c5b: Buckram owns this table's columns. They are computed
                 // before the main layout pass, once the whole tree exists and
                 // intrinsic queries can run, and pinned as explicit tracks.
@@ -4314,6 +4333,7 @@ where
                     );
                     enable_flex_grid_static_position_provider(
                         &mut self.tree,
+                        self.styles,
                         self.boxes,
                         box_id,
                         node,
@@ -4346,7 +4366,13 @@ where
                     &children,
                     Some(box_id),
                 );
-                enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
                 if supports_nested_float_state(&self.boxes[box_id], block_style, kind) {
                     self.tree.enable_nested_float_state(node);
                 }
@@ -6947,11 +6973,13 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
 /// rectangle it yields for the later K5d equation.
 fn enable_flex_grid_static_position_provider<Id, Context, Source>(
     tree: &mut AlgorithmTree<Style, Context, Source>,
+    styles: &StylePlane<Id>,
     boxes: &GeneratedBoxTree<Id>,
     container: BoxId,
     container_node: AlgorithmNodeId,
 ) where
     Id: Copy + Eq + Hash,
+    Source: DirectBoxSource,
 {
     let inside = boxes[container].display.inside;
     if !matches!(inside, Some(DisplayInside::Flex | DisplayInside::Grid)) {
@@ -6964,10 +6992,51 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
             tree.block_style(child).position,
             BuckramBlockPosition::Absolute | BuckramBlockPosition::Fixed
         ) {
-            if let Some(flow) = grid_flow.filter(|flow| !flow.is_horizontal()) {
-                map_vertical_grid_static_alignment(tree.style_mut(child), flow);
+            if let Some(container_flow) = grid_flow {
+                let subject_alignment = tree.source(child).direct_box().and_then(|box_id| {
+                    let css_box = &boxes[box_id];
+                    css_box.origin.node().and_then(|node| {
+                        styles.get(node).map(|computed| {
+                            (css_box.flow, computed.align_self, computed.justify_self)
+                        })
+                    })
+                });
+                let style = tree.style_mut(child);
+                if !container_flow.is_horizontal() {
+                    map_vertical_grid_static_alignment(style, container_flow);
+                }
+                if let Some((subject_flow, align_self, justify_self)) = subject_alignment {
+                    map_grid_static_self_alignment(
+                        style,
+                        container_flow,
+                        subject_flow,
+                        align_self,
+                        justify_self,
+                    );
+                }
             }
             tree.enable_flex_grid_static_position_provider(child);
+        }
+    }
+}
+
+/// The source forms used by the block and inline scratch trees. Only a direct
+/// generated box has an unambiguous subject writing mode for CSS `self-*`.
+trait DirectBoxSource {
+    fn direct_box(&self) -> Option<BoxId>;
+}
+
+impl DirectBoxSource for Option<BoxId> {
+    fn direct_box(&self) -> Option<BoxId> {
+        *self
+    }
+}
+
+impl DirectBoxSource for Vec<BoxId> {
+    fn direct_box(&self) -> Option<BoxId> {
+        match self.as_slice() {
+            [box_id] => Some(*box_id),
+            _ => None,
         }
     }
 }
@@ -6975,9 +7044,9 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
 /// Taffy's grid static-position hook has physical horizontal/vertical axes.
 /// A vertical CSS grid therefore has to trade its block-axis self-alignment
 /// onto Taffy's horizontal self-alignment before it supplies the K5b rectangle.
-/// This is deliberately limited to direct out-of-flow grid children: normal
-/// vertical grid layout and cross-writing-mode `self-*` semantics remain their
-/// own formatting work.
+/// This is deliberately limited to direct out-of-flow grid children. The
+/// `self-*` repair below supplies the distinct subject-writing-mode rule.
+/// Normal vertical grid layout remains its own formatting work.
 fn map_vertical_grid_static_alignment(style: &mut Style, flow: FlowAxes) {
     let align_self = style.align_self.take();
     let justify_self = style.justify_self.take();
@@ -6991,6 +7060,82 @@ fn map_vertical_grid_static_alignment(style: &mut Style, flow: FlowAxes) {
     } else {
         align_self
     };
+}
+
+/// CSS Align gives `self-start` and `self-end` the subject's start and end
+/// sides, while `start` and `end` use the containing block's writing mode.
+/// Taffy's static-position hook has only physical axes, so repair the two
+/// explicit `self-*` values after the ordinary vertical-grid axis mapping.
+fn map_grid_static_self_alignment(
+    style: &mut Style,
+    container_flow: FlowAxes,
+    subject_flow: FlowAxes,
+    align_self: CssAlignment,
+    justify_self: CssAlignment,
+) {
+    if let Some(alignment) = self_alignment_for_axis(
+        align_self,
+        subject_flow,
+        container_flow.block_start(),
+    ) {
+        set_physical_self_alignment(style, container_flow.block_start(), alignment);
+    }
+    if let Some(alignment) = self_alignment_for_axis(
+        justify_self,
+        subject_flow,
+        container_flow.inline_start(),
+    ) {
+        set_physical_self_alignment(style, container_flow.inline_start(), alignment);
+    }
+}
+
+fn self_alignment_for_axis(
+    alignment: CssAlignment,
+    subject_flow: FlowAxes,
+    axis_side: PhysicalSide,
+) -> Option<AlignItems> {
+    let subject_side = match alignment {
+        CssAlignment::SelfStart => subject_side_on_axis(subject_flow, axis_side, true),
+        CssAlignment::SelfEnd => subject_side_on_axis(subject_flow, axis_side, false),
+        _ => return None,
+    };
+    Some(align_items(match subject_side {
+        PhysicalSide::Top | PhysicalSide::Left => CssAlignment::Start,
+        PhysicalSide::Right | PhysicalSide::Bottom => CssAlignment::End,
+    }))
+}
+
+fn subject_side_on_axis(
+    subject_flow: FlowAxes,
+    axis_side: PhysicalSide,
+    start: bool,
+) -> PhysicalSide {
+    let inline_start = subject_flow.inline_start();
+    if same_physical_axis(inline_start, axis_side) {
+        return if start {
+            inline_start
+        } else {
+            subject_flow.inline_end()
+        };
+    }
+    debug_assert!(same_physical_axis(subject_flow.block_start(), axis_side));
+    if start {
+        subject_flow.block_start()
+    } else {
+        subject_flow.block_end()
+    }
+}
+
+fn same_physical_axis(first: PhysicalSide, second: PhysicalSide) -> bool {
+    matches!(first, PhysicalSide::Left | PhysicalSide::Right)
+        == matches!(second, PhysicalSide::Left | PhysicalSide::Right)
+}
+
+fn set_physical_self_alignment(style: &mut Style, axis_side: PhysicalSide, alignment: AlignItems) {
+    match axis_side {
+        PhysicalSide::Left | PhysicalSide::Right => style.justify_self = Some(alignment),
+        PhysicalSide::Top | PhysicalSide::Bottom => style.align_self = Some(alignment),
+    }
 }
 
 fn reverse_self_alignment(alignment: Option<AlignItems>) -> Option<AlignItems> {
@@ -7076,8 +7221,8 @@ fn align_items(value: CssAlignment) -> AlignItems {
         keyword: match value {
             CssAlignment::Start => AlignItemsKeyword::Start,
             CssAlignment::End => AlignItemsKeyword::End,
-            // Same-flow grid items share their container's corresponding
-            // self edge. K5e's cross-writing-mode matrix remains open.
+            // Taffy has no subject-writing-mode self edge. The narrow direct
+            // positioned-grid provider repairs it from the generated box.
             CssAlignment::SelfStart => AlignItemsKeyword::Start,
             CssAlignment::SelfEnd => AlignItemsKeyword::End,
             CssAlignment::FlexStart => AlignItemsKeyword::FlexStart,
@@ -8120,6 +8265,105 @@ mod tests {
                 (positioned_rect.x, positioned_rect.y),
                 (grid_rect.x + expected_x, grid_rect.y),
                 "{writing_mode} block-end alignment uses the grid content's physical end edge"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_static_self_alignment_uses_the_subject_writing_mode() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        let scenarios = [
+            (
+                "vertical grid, horizontal subject self-start",
+                "writing-mode: vertical-rl;",
+                "writing-mode: horizontal-tb; align-self: self-start;",
+                (0.0, 0.0),
+            ),
+            (
+                "vertical grid, horizontal subject self-end",
+                "writing-mode: vertical-rl;",
+                "writing-mode: horizontal-tb; align-self: self-end;",
+                (80.0, 0.0),
+            ),
+            (
+                "horizontal grid, vertical rtl subject self-start",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; direction: rtl; align-self: self-start;",
+                (0.0, 70.0),
+            ),
+            (
+                "horizontal grid, vertical rtl subject self-end",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; direction: rtl; align-self: self-end;",
+                (0.0, 0.0),
+            ),
+            (
+                "horizontal grid, vertical rl subject justify self-start",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; justify-self: self-start;",
+                (80.0, 0.0),
+            ),
+            (
+                "horizontal grid, vertical rl subject justify self-end",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; justify-self: self-end;",
+                (0.0, 0.0),
+            ),
+            (
+                "vertical grid, vertical rtl subject justify self-start",
+                "writing-mode: vertical-rl;",
+                "writing-mode: vertical-rl; direction: rtl; justify-self: self-start;",
+                (0.0, 70.0),
+            ),
+            (
+                "vertical grid, vertical rtl subject justify self-end",
+                "writing-mode: vertical-rl;",
+                "writing-mode: vertical-rl; direction: rtl; justify-self: self-end;",
+                (0.0, 0.0),
+            ),
+        ];
+
+        for (description, grid_writing_mode, subject_writing_mode, expected) in scenarios {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[&format!(
+                    "html, body, div {{ margin: 0; padding: 0; }} \
+                     #grid {{ position: relative; display: grid; {grid_writing_mode} \
+                             width: 100px; height: 80px; }} \
+                     #positioned {{ position: absolute; {subject_writing_mode} \
+                                   width: 20px; height: 10px; }}"
+                )]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+            let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+            let grid = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+                .expect("grid box");
+            let positioned = layout
+                .boxes()
+                .principal_box(
+                    node_by_id(&dom, dom.document(), "positioned").expect("positioned node"),
+                )
+                .expect("positioned box");
+            let grid_rect = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("grid fragment");
+            let positioned_rect = layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment");
+
+            assert_eq!(
+                (positioned_rect.x - grid_rect.x, positioned_rect.y - grid_rect.y),
+                expected,
+                "{description} aligns to the subject's corresponding start or end side",
             );
         }
     }

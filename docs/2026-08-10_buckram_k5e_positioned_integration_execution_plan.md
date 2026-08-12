@@ -72,6 +72,9 @@ The live receipts currently cover:
 - `positioned_hit_test_respects_stacking_level_and_ancestor_clip` verifies
   the retained hit walk picks the same positive stacking item and excludes it
   outside its ancestor overflow clip.
+- `grid_static_self_alignment_uses_the_subject_writing_mode` verifies direct
+  positioned grid children resolve `self-start`/`self-end` from the subject's
+  writing mode on both grid axes, including orthogonal and RTL vertical flows.
 
 ## Remaining boundary
 
@@ -82,9 +85,10 @@ CSS stacking-context ordering and clipping remain a separate K5e matrix; the
 current receipts cover only numeric positioned levels and the supported
 `overflow` shorthand and longhands. Generic inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
-subset; direct same-writing-mode vertical grid static alignment is now
-admitted, while cross-writing-mode `self-start`/`self-end`, grid-area
-coordinate transforms, and unadmitted descendants remain explicit fallbacks.
+subset; direct grid static alignment admits `self-start`/`self-end` across
+writing modes, using the positioned subject's corresponding physical edge.
+Grid-area coordinate transforms and unadmitted descendants remain explicit
+fallbacks.
 The renderer still supplies the narrow flex/grid static-position
 provider, so its private position role cannot disappear until Buckram has an
 equivalent flex/grid static-position algorithm. These are open work, not
