@@ -74,15 +74,18 @@ incoming or outgoing static-position dependencies that cross the selected
 root. This is not a formatter route yet, and it does not publish Livery's
 separate table-paint or node side data on its own.
 
-Livery now admits exactly one DOM damage root when the fresh layout reconciles
-to the identical generated box tree. It preserves that root's fragment ID,
-replaces its descendants through `FragmentTree::replace_subtree`, retains
-unrelated fragment identities, and installs fresh text, table-paint, and table
-shadow planes together. The receipt changes a flex root's width and proves the
-new child fragment identity, preserved outside identity, fresh-final paint,
-and document extent. This is a publication proof only: formatter work still
-recomputes the complete document, while structural DOM or display changes and
-cross-root fragment dependencies fall back to the full replacement path.
+Livery now admits a nonempty disjoint DOM damage set when the fresh layout
+reconciles to the identical generated box tree. It preserves each selected
+root's fragment ID, replaces its descendants through
+`FragmentTree::replace_subtree`, retains unrelated fragment identities, and
+installs fresh text, table-paint, and table-shadow planes together. The update
+is all-or-nothing: a rejected root discards the candidate retained publication.
+The receipts change one and two flex roots' widths, prove fresh child fragment
+identities and preserved outside identities, and compare paint and document
+extent with a fresh final document. This is a publication proof only:
+formatter work still recomputes the complete document, while structural DOM or
+display changes and cross-root fragment dependencies fall back to the full
+replacement path.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their

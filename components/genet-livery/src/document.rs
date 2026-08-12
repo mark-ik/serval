@@ -610,16 +610,14 @@ where
         if let Some(previous) = previous.as_ref() {
             fragments.reconcile_identifiers(&previous.fragments);
         }
-        let replacement_root = self.last_layout_damage.as_ref().and_then(|damage| {
-            (!damage.full_document
-                && damage.kind == LayoutDamageKind::Dom
-                && damage.roots.len() == 1)
-                .then_some(damage.roots[0])
+        let replacement_roots = self.last_layout_damage.as_ref().and_then(|damage| {
+            (!damage.full_document && damage.kind == LayoutDamageKind::Dom && !damage.roots.is_empty())
+                .then(|| damage.roots.clone())
         });
-        if let (Some(mut previous), Some(root)) = (previous, replacement_root)
+        if let (Some(mut previous), Some(roots)) = (previous, replacement_roots)
             && previous
                 .fragments
-                .replace_reconciled_formatting_subtree_from(&fragments, root)
+                .replace_reconciled_formatting_subtrees_from(&fragments, &roots)
         {
             fragments = previous.fragments;
         }
@@ -1946,6 +1944,67 @@ mod tests {
             format!("{:?}", retained_paint.commands()),
             format!("{:?}", fresh_paint.commands()),
             "the spliced root must paint like a fresh final document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
+    fn retained_disjoint_formatting_roots_publish_atomically() {
+        let initial = "<html><body><div id=first><div id=first-child>one</div></div><div id=second><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
+        let final_document = "<html><body><div id=first style=\"width: 160px\"><div id=first-child>one</div></div><div id=second style=\"width: 180px\"><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #first, #second { display: flex; width: 100px; height: 30px; background: red; } \
+                 #first-child, #second-child { width: 40px; height: 20px; background: blue; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 160.0));
+        retained.frame(240, 160).expect("initial retained frame");
+        let first = by_id(retained.dom(), "first");
+        let first_child = by_id(retained.dom(), "first-child");
+        let second = by_id(retained.dom(), "second");
+        let second_child = by_id(retained.dom(), "second-child");
+        let outside = by_id(retained.dom(), "outside");
+        let first_before = generated_ids(&retained, first);
+        let first_child_before = generated_ids(&retained, first_child);
+        let second_before = generated_ids(&retained, second);
+        let second_child_before = generated_ids(&retained, second_child);
+        let outside_before = generated_ids(&retained, outside);
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(by_id(dom, "first"), attr("style"), "width: 160px");
+            dom.set_attribute(by_id(dom, "second"), attr("style"), "width: 180px");
+        });
+        assert_eq!(
+            retained.last_layout_damage(),
+            Some(&LayoutDamage {
+                kind: LayoutDamageKind::Dom,
+                roots: vec![first, second],
+                full_document: false,
+            })
+        );
+        let retained_paint = retained.frame(240, 160).expect("spliced retained frame");
+
+        assert_eq!(generated_ids(&retained, first), first_before);
+        assert_ne!(generated_ids(&retained, first_child), first_child_before);
+        assert_eq!(generated_ids(&retained, second), second_before);
+        assert_ne!(generated_ids(&retained, second_child), second_child_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 160.0));
+        let fresh_paint = fresh.frame(240, 160).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "every spliced root must publish as one fresh final document",
         );
         assert_eq!(retained.content_height(0), fresh.content_height(0));
     }

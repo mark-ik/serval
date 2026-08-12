@@ -242,6 +242,27 @@ where
         true
     }
 
+    /// Publish a disjoint K5h damage set as one retained-layout update. A
+    /// failed root leaves `self` untouched, so callers can safely fall back
+    /// to the complete fresh result without exposing a partial publication.
+    pub(crate) fn replace_reconciled_formatting_subtrees_from(
+        &mut self,
+        fresh: &Self,
+        roots: &[Id],
+    ) -> bool {
+        if roots.is_empty() {
+            return false;
+        }
+        let mut replacement = self.clone();
+        for root in roots {
+            if !replacement.replace_reconciled_formatting_subtree_from(fresh, *root) {
+                return false;
+            }
+        }
+        *self = replacement;
+        true
+    }
+
     /// Apply retained scroll-dependent sticky constraints to this otherwise
     /// normal-flow layout snapshot. Callers clone the static layout first, so
     /// scroll changes never accumulate into the next frame's base geometry.
