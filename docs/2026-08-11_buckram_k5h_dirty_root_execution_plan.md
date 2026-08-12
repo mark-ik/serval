@@ -82,11 +82,12 @@ table-shadow planes. That permits added or retired descendant boxes without
 invalidating node-to-box lookup, while unrelated fragment identities remain
 retained. The update is all-or-nothing: a rejected root discards the candidate
 retained publication. The receipts change one and two flex roots' widths and
-insert a flex child, prove fresh child fragment identities and preserved outside
-identities, and compare paint and document extent with a fresh final document.
-This is a publication proof only: formatter work still recomputes the complete
-document, while ordinary-block/table roots, changed root display, and cross-root
-fragment dependencies fall back to the full replacement path.
+insert flex and grid children, prove fresh child fragment identities and
+preserved outside identities, and compare paint and document extent with a
+fresh final document. This is a publication proof only: formatter work still
+recomputes the complete document, while ordinary-block/table roots, changed
+root display, and cross-root fragment dependencies fall back to the full
+replacement path.
 
 `retained_root_splice_keeps_an_unrelated_table_paint_plane_live` adds the
 side-plane receipt: a flex-root splice preserves an unrelated table's generated
