@@ -1620,9 +1620,6 @@ where
         {
             return false;
         }
-        if css_box.display.internal_table == Some(InternalTableRole::Caption) {
-            return false;
-        }
         css_box
             .children()
             .iter()

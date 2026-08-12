@@ -2745,6 +2745,76 @@ mod tests {
     }
 
     #[test]
+    fn retained_root_formatter_replaces_a_captioned_fixed_size_table() {
+        let initial = "<html><body><table id=table><caption id=caption>caption</caption><tbody><tr id=row><td id=first></td></tr></tbody></table><div id=outside></div></body></html>";
+        let final_document = "<html><body><table id=table><caption id=caption>caption</caption><tbody><tr id=row><td id=first></td><td id=second></td></tr></tbody></table><div id=outside></div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
+                 caption { display: table-caption; width: 120px; height: 20px; background: red; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 200.0));
+        retained.frame(240, 200).expect("initial retained frame");
+        let table = by_id(retained.dom(), "table");
+        let row = by_id(retained.dom(), "row");
+        let caption = by_id(retained.dom(), "caption");
+        let outside = by_id(retained.dom(), "outside");
+        let wrapper_before = table_wrapper_fragment_id(&retained, table);
+        let caption_before = generated_ids(&retained, caption);
+        let outside_before = generated_ids(&retained, outside);
+        let local_generation = retained.retained_root_relayout_generation;
+
+        retained.mutate_dom(|dom| {
+            let row = by_id(dom, "row");
+            let cell = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("td"),
+            ));
+            dom.set_attribute(cell, attr("id"), "second");
+            dom.append_child(row, cell);
+        });
+        assert_eq!(
+            retained.last_layout_damage(),
+            Some(&LayoutDamage {
+                kind: LayoutDamageKind::Dom,
+                roots: vec![row],
+                full_document: false,
+            })
+        );
+        let retained_paint = retained.frame(240, 200).expect("retained table frame");
+
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "a stable table wrapper admits its caption and grid together",
+        );
+        assert_eq!(table_wrapper_fragment_id(&retained, table), wrapper_before);
+        assert_ne!(generated_ids(&retained, caption), caption_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 200.0));
+        let fresh_paint = fresh.frame(240, 200).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "the captioned table paints like a fresh final document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
     fn retained_table_root_keeps_an_unrelated_table_paint_plane_live() {
         let initial = "<html><body><table id=changed><tbody><tr id=row><td id=first></td></tr></tbody></table><table id=other><tbody><tr><td id=other-cell></td></tr></tbody></table></body></html>";
         let final_document = "<html><body><table id=changed><tbody><tr id=row><td id=first></td><td id=second></td></tr></tbody></table><table id=other><tbody><tr><td id=other-cell></td></tr></tbody></table></body></html>";

@@ -141,9 +141,9 @@ matches fresh final paint and extent.
 proves a second auto-sized parent can grow before the retained replacement
 settles at its stable ancestor.
 
-A static, caption-free table can now be the local replacement root. Damage to
-an internal row, group, or cell maps to the owning table element; the selected
-fragment root is its anonymous wrapper, while the element's grid and table
+A static table can now be the local replacement root. Damage to an internal
+row, group, or cell maps to the owning table element; the selected fragment
+root is its anonymous wrapper, while the element's grid, captions, and table
 parts receive fresh identities. The local formatter runs the normal Buckram
 column, block, fragment, paint, and verification sequence before publication.
 It replaces just the selected table-paint model and per-table shadow-ledger
@@ -153,7 +153,9 @@ proves a fixed-size table can gain a cell with equal fresh final paint and
 extent. `retained_table_root_keeps_an_unrelated_table_paint_plane_live` proves
 the two-table case preserves the untouched table's wrapper, fragments, paint
 sources, and sticky table-part K5 record. A caption, out-of-flow descendant,
-or nested table inside the selected root still takes the complete path.
+`retained_root_formatter_replaces_a_captioned_fixed_size_table` proves the
+same replacement includes a stable caption. An out-of-flow descendant or
+nested table inside the selected root still takes the complete path.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
