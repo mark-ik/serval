@@ -31,6 +31,11 @@ The live receipts currently cover:
   verifies flex and grid static rectangles and final inset geometry.
 - `absolute_table_root_uses_shared_k5d_wrapper_geometry` verifies the table
   root no longer carries a duplicate table-positioning gap.
+- `absolute_table_track_parts_use_zero_track_static_anchors` and
+  `fixed_table_track_parts_use_zero_track_static_anchors` verify row groups,
+  rows, and cells leave K4b/K4d track topology, retain a zero-track static
+  anchor, and resolve through the same K5d geometry path without widening the
+  in-flow grid.
 - `positioned_descendant_extends_its_scroll_container_range` verifies an
   absolute descendant produces nested scroll range from its final fragment.
 - `positioned_numeric_z_indices_wrap_the_normal_paint_phase` verifies the
@@ -45,13 +50,13 @@ The live receipts currently cover:
 
 ## Remaining boundary
 
-Internal table parts still appear in `TableShadowLedger::positioning_gaps`.
-Their table-size participation and internal structural fragments need an
-explicit out-of-flow route before they can use the generic K5d geometry
-solver. Full CSS stacking-context ordering and clipping remain a separate K5e
-matrix; the current receipts cover only numeric positioned levels and the
-supported `overflow` shorthand and longhands. These are open work, not
-fallback-free behavior.
+The supported table parts, including row groups, rows, and cells, no longer
+appear in `TableShadowLedger::positioning_gaps`: their explicit out-of-flow
+route formats the detached structural subtree after table tracks settle. Full
+CSS stacking-context ordering and clipping remain a separate K5e matrix; the
+current receipts cover only numeric positioned levels and the supported
+`overflow` shorthand and longhands. Generic inline out-of-flow participation
+also remains open. These are open work, not fallback-free behavior.
 
 ## Stop rules
 

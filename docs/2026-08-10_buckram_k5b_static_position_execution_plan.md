@@ -77,9 +77,11 @@ inset coordinate. The retained inline formatter emits an inline-origin
 positioned child against its owning line fragment, and K4h table structural
 fragments emit wrapper and part records from their own logical rectangles.
 
-K5b does not calculate final absolute or fixed geometry. In particular, the
-existing positioned-table geometry gap remains named until K5d consumes these
-records through the shared used-geometry path.
+K5b does not calculate final absolute or fixed geometry. K5d now consumes the
+wrapper, caption, row-group, row, and cell records through the shared
+used-geometry path; row-group, row, and cell records use a zero-track anchor
+and a post-track local formatting pass so they cannot contribute to table
+sizing.
 
 ## Stop rules
 

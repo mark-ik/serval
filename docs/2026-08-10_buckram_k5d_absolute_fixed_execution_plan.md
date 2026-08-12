@@ -70,9 +70,12 @@ transform-established fixed containing block.
 
 Taffy still excludes the out-of-flow box, and remains the measured fallback
 for unadmitted descendants, the non-replaced block axis, flex/grid roots,
-replaced non-leaves or missing contributions, and internal table parts. K5d
-remains open until those routes and out-of-flow participation itself are
-Buckram-owned. Those gaps are not treated as final K5 behavior.
+replaced non-leaves or missing contributions, and generic inline participants.
+Table wrappers, captions, row groups, rows, and cells now supply their K5b
+records to the shared K5d path; detached row-group, row, and cell subtrees are
+formatted only after K4d track work. K5d remains open until the remaining
+routes and out-of-flow participation itself are Buckram-owned. Those gaps are
+not treated as final K5 behavior.
 
 ## Work
 
