@@ -152,10 +152,11 @@ entry, then rebuilds the existing aggregate ledger from all retained entries.
 proves a fixed-size table can gain a cell with equal fresh final paint and
 extent. `retained_table_root_keeps_an_unrelated_table_paint_plane_live` proves
 the two-table case preserves the untouched table's wrapper, fragments, paint
-sources, and absolute table-part K5 record. A caption, out-of-flow descendant,
-`retained_root_formatter_replaces_a_captioned_fixed_size_table` proves the
-same replacement includes a stable caption. An out-of-flow descendant or
-nested table inside the selected root still takes the complete path.
+sources, and absolute-only table model. It also proves that the detached cell
+does not leave a table-positioning gap. `retained_root_formatter_replaces_a_captioned_fixed_size_table`
+proves the same replacement includes a stable caption. An out-of-flow
+descendant or nested table inside the selected root still takes the complete
+path.
 
 `sticky_table_cell_uses_its_nested_scrollport_without_relayout` proves a
 sticky table cell uses the retained sticky solver and the table wrapper's
@@ -175,8 +176,16 @@ position-applicable in-flow table part.
 shared K5d placement route. Their static rectangles and fragments are already
 emitted outside table track construction, so the absolute case uses the wrapper
 containing block and its fragment link, while the fixed case uses the initial
-containing block. Neither widens the grid or wrapper. Row-group, row, and cell
-absolute/fixed participation remain explicit gaps.
+containing block. Neither widens the grid or wrapper.
+
+Absolute and fixed row groups, rows, and cells now take the same K5d placement
+route after their outermost table part has been removed from K4b/K4d topology.
+When that leaves no column, Buckram installs a source-less,
+zero-contribution column so a fixed-layout table retains its own grid and paint
+model. Livery locally formats each detached structural subtree after K4d,
+records a zero-track static rectangle, and lets K5d resolve it against the
+structural containing block or initial containing block. The absolute and fixed
+receipts cover a row group, row, and cell without widening the in-flow grid.
 
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
@@ -201,12 +210,8 @@ Buckram has an equivalent flex/grid static-position algorithm.
 
 1. Compare each incremental result with the fresh-final-document harness.
 2. Replace the remaining private flex/grid renderer provider with an
-   equivalent Buckram static-position algorithm. Move inline and the remaining
-   table-internal out-of-flow participation to their own equivalent routes.
-   Table row groups, rows, and cells need an explicit zero-track placeholder
-   plus a post-track local formatting/static-position pass; admitting them to
-   the current shared route would let an out-of-flow cell contribute to track
-   sizing and would use a grid-relative rectangle from the wrong source space.
+   equivalent Buckram static-position algorithm. Move inline out-of-flow
+   participation to its own equivalent route.
 
 ## Stop rules
 

@@ -2843,10 +2843,14 @@ mod tests {
         assert_table_paint_sources_are_live(&retained, other);
         let initial_ledger = retained.table_shadow_ledger().expect("completed table ledger");
         assert_eq!(initial_ledger.assigned, 2, "one contribution per live table");
-        assert_eq!(initial_ledger.honored, 2, "both tables remain verified");
+        assert_eq!(
+            initial_ledger.honored,
+            1,
+            "the zero-contribution table has no cell track to verify",
+        );
         assert!(
-            !initial_ledger.positioning_gaps.is_empty(),
-            "the untouched table keeps a noncanonical K5 table-part record",
+            initial_ledger.positioning_gaps.is_empty(),
+            "the untouched table's absolute cell has a shared K5 route",
         );
 
         retained.mutate_dom(|dom| {
@@ -2884,10 +2888,14 @@ mod tests {
         assert_table_paint_sources_are_live(&retained, other);
         let retained_ledger = retained.table_shadow_ledger().expect("retained table ledger");
         assert_eq!(retained_ledger.assigned, 2, "aggregate keeps both table entries");
-        assert_eq!(retained_ledger.honored, 2, "both table entries remain verified");
+        assert_eq!(
+            retained_ledger.honored,
+            1,
+            "the untouched zero-contribution table has no cell track to verify",
+        );
         assert!(
-            !retained_ledger.positioning_gaps.is_empty(),
-            "the untouched table's absolute record remains in the aggregate ledger",
+            retained_ledger.positioning_gaps.is_empty(),
+            "the untouched table keeps its shared K5 positioning route",
         );
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);

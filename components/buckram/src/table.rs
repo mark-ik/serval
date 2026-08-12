@@ -89,6 +89,10 @@ pub struct TableGrid {
     pub cells: Vec<TableCell>,
     /// Caption boxes, retained separately from the grid's topology.
     pub captions: Vec<BoxId>,
+    /// Absolute and fixed row-group, row, and cell roots. They are retained
+    /// outside tracks so the K5 post-track formatter can give each one a
+    /// zero-track static-position anchor without changing table sizing.
+    pub out_of_flow_parts: Vec<BoxId>,
     /// One entry for every row/column slot after placement.
     pub slots: Vec<TableSlot>,
     /// Malformed model inputs retained as deterministic diagnostics.
@@ -267,6 +271,7 @@ impl TableGrid {
             columns: Vec::new(),
             cells: Vec::new(),
             captions: Vec::new(),
+            out_of_flow_parts: Vec::new(),
             slots: Vec::new(),
             errors: Vec::new(),
         };
@@ -304,16 +309,18 @@ impl TableGrid {
                     let span = inputs.column(child, &mut table.errors).span;
                     table.add_columns(child, None, span);
                 },
-                Some(InternalTableRole::HeaderGroup) => {
+                Some(InternalTableRole::HeaderGroup) if boxes[child].positioning.is_in_flow() => {
                     headers.push((child, TableTrackGroupKind::Header))
                 },
-                Some(InternalTableRole::RowGroup) => {
+                Some(InternalTableRole::RowGroup) if boxes[child].positioning.is_in_flow() => {
                     bodies.push((child, TableTrackGroupKind::Body))
                 },
-                Some(InternalTableRole::FooterGroup) => {
+                Some(InternalTableRole::FooterGroup) if boxes[child].positioning.is_in_flow() => {
                     footers.push((child, TableTrackGroupKind::Footer))
                 },
-                Some(InternalTableRole::Row) => bodies.push((child, TableTrackGroupKind::Body)),
+                Some(InternalTableRole::Row) if boxes[child].positioning.is_in_flow() => {
+                    bodies.push((child, TableTrackGroupKind::Body))
+                },
                 _ => {},
             }
         }
@@ -323,7 +330,24 @@ impl TableGrid {
             table.add_row_group(boxes, group, kind, &mut pending);
         }
         table.place_cells(inputs, pending);
+        table.out_of_flow_parts = out_of_flow_table_parts(boxes, grid);
+        table.ensure_zero_contribution_column();
         table
+    }
+
+    /// A fixed-layout table still needs a column to distribute its own used
+    /// width across. When every structural cell is out of flow, retain one
+    /// source-less column: it carries no cell constraints or intrinsic
+    /// contribution, but keeps the table's in-flow grid and paint model live.
+    fn ensure_zero_contribution_column(&mut self) {
+        if self.out_of_flow_parts.is_empty() || !self.columns.is_empty() {
+            return;
+        }
+        self.columns.push(TableTrack {
+            source: None,
+            index: 0,
+            group: None,
+        });
     }
 
     fn add_column_group<Id>(
@@ -391,6 +415,7 @@ impl TableGrid {
                 .copied()
                 .filter(|child| {
                     boxes[*child].display.internal_table == Some(InternalTableRole::Row)
+                        && boxes[*child].positioning.is_in_flow()
                 })
                 .collect()
         };
@@ -408,6 +433,7 @@ impl TableGrid {
                     .copied()
                     .filter(|child| {
                         boxes[*child].display.internal_table == Some(InternalTableRole::Cell)
+                            && boxes[*child].positioning.is_in_flow()
                     })
                     .map(|source| PendingCell {
                         source,
@@ -514,6 +540,45 @@ impl TableGrid {
             span
         }
     }
+}
+
+/// Retain only the outermost absolute or fixed row-group, row, and cell in a
+/// table subtree. Its descendants are formatted together after K4d has
+/// emitted the in-flow tracks, so none of them can enter sizing through a
+/// second topology path.
+fn out_of_flow_table_parts<Id>(boxes: &CssBoxTree<Id>, grid: BoxId) -> Vec<BoxId>
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &CssBoxTree<Id>, box_id: BoxId, parts: &mut Vec<BoxId>)
+    where
+        Id: Copy + Eq + Hash,
+    {
+        let role = boxes[box_id].display.internal_table;
+        let detached = matches!(
+            role,
+            Some(
+                InternalTableRole::HeaderGroup
+                    | InternalTableRole::RowGroup
+                    | InternalTableRole::FooterGroup
+                    | InternalTableRole::Row
+                    | InternalTableRole::Cell
+            )
+        ) && !boxes[box_id].positioning.is_in_flow();
+        if detached {
+            parts.push(box_id);
+            return;
+        }
+        for child in boxes[box_id].children() {
+            visit(boxes, *child, parts);
+        }
+    }
+
+    let mut parts = Vec::new();
+    for child in boxes[grid].children() {
+        visit(boxes, *child, &mut parts);
+    }
+    parts
 }
 
 fn lookup_input<T: Copy>(
@@ -807,6 +872,88 @@ mod tests {
                 .map(|cell| tree.origin_node(cell.source))
                 .collect::<Vec<_>>(),
             vec![Some(10), Some(7), Some(4)]
+        );
+    }
+
+    #[test]
+    fn out_of_flow_table_parts_are_detached_from_every_track() {
+        let mut detached_cell = node(5, InternalTableRole::Cell, vec![]);
+        detached_cell.positioning = PositioningScheme::Absolute;
+        let mut detached_row = node(
+            6,
+            InternalTableRole::Row,
+            vec![node(7, InternalTableRole::Cell, vec![])],
+        );
+        detached_row.positioning = PositioningScheme::Fixed;
+        let mut detached_group = node(
+            8,
+            InternalTableRole::RowGroup,
+            vec![node(
+                9,
+                InternalTableRole::Row,
+                vec![node(10, InternalTableRole::Cell, vec![])],
+            )],
+        );
+        detached_group.positioning = PositioningScheme::Absolute;
+        let tree = table(vec![
+            node(
+                2,
+                InternalTableRole::RowGroup,
+                vec![node(
+                    3,
+                    InternalTableRole::Row,
+                    vec![node(4, InternalTableRole::Cell, vec![]), detached_cell, detached_row],
+                )],
+            ),
+            detached_group,
+        ]);
+
+        let grid = TableGrid::from_box_tree(&tree, grid(&tree), &TableGridInputs::default());
+
+        assert_eq!(grid.row_groups.len(), 1);
+        assert_eq!(grid.rows.len(), 1);
+        assert_eq!(grid.columns.len(), 1);
+        assert_eq!(
+            grid.cells.iter().map(|cell| cell.source).collect::<Vec<_>>(),
+            vec![tree.principal_box(4).expect("in-flow cell")]
+        );
+        assert_eq!(
+            grid.out_of_flow_parts,
+            [5, 6, 8]
+                .into_iter()
+                .map(|node| tree.principal_box(node).expect("detached part"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_out_of_flow_only_cell_gets_a_zero_contribution_column() {
+        let mut detached_cell = node(4, InternalTableRole::Cell, vec![]);
+        detached_cell.positioning = PositioningScheme::Absolute;
+        let tree = table(vec![node(
+            2,
+            InternalTableRole::RowGroup,
+            vec![node(3, InternalTableRole::Row, vec![detached_cell])],
+        )]);
+        let grid = TableGrid::from_box_tree(
+            &tree,
+            grid(&tree),
+            &TableGridInputs::default(),
+        );
+
+        assert_eq!(grid.rows.len(), 1);
+        assert!(grid.cells.is_empty());
+        assert_eq!(
+            grid.columns,
+            [TableTrack {
+                source: None,
+                index: 0,
+                group: None,
+            }]
+        );
+        assert_eq!(
+            grid.out_of_flow_parts,
+            [tree.principal_box(4).expect("detached cell")]
         );
     }
 }

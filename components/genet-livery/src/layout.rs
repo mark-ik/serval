@@ -60,8 +60,9 @@ use crate::{
         commit_table_block, table_block_inputs, verify_table_block,
     },
     table_shadow::{
-        LIVE_ROOT_FONT_SIZE, PendingTable, TablePositioningGap, TablePositioningGapRecord,
-        TableShadowLedger, buckram_table_columns, verify_assigned_columns,
+        DetachedTablePart, LIVE_ROOT_FONT_SIZE, PendingTable, TablePositioningGap,
+        TablePositioningGapRecord, TableShadowLedger, buckram_table_columns,
+        verify_assigned_columns,
     },
     table_sizing::collapsed_table_borders,
     table_wrapper::{grid_style, wrapper_style},
@@ -93,14 +94,30 @@ fn supports_retained_sticky_table_part(role: InternalTableRole) -> bool {
     )
 }
 
-/// Table parts whose absolute/fixed fragment and static-position source are
-/// already emitted outside the table-track pipeline. Other internal parts
-/// need their own out-of-flow table participation model before they can join
-/// the shared K5d solver.
+/// Table parts whose absolute/fixed fragments and static-position sources are
+/// emitted outside K4d track sizing. Row groups, rows, and cells arrive from
+/// the post-track zero-anchor formatter rather than from the table grid.
 fn supports_shared_positioned_table_part(role: InternalTableRole) -> bool {
     matches!(
         role,
-        InternalTableRole::Wrapper | InternalTableRole::Caption
+        InternalTableRole::Wrapper
+            | InternalTableRole::Caption
+            | InternalTableRole::RowGroup
+            | InternalTableRole::HeaderGroup
+            | InternalTableRole::FooterGroup
+            | InternalTableRole::Row
+            | InternalTableRole::Cell
+    )
+}
+
+fn uses_zero_track_static_anchor(role: InternalTableRole) -> bool {
+    matches!(
+        role,
+        InternalTableRole::RowGroup
+            | InternalTableRole::HeaderGroup
+            | InternalTableRole::FooterGroup
+            | InternalTableRole::Row
+            | InternalTableRole::Cell
     )
 }
 
@@ -1218,9 +1235,14 @@ struct InlineBuildState<'a, D: LayoutDom> {
     image_sources: &'a ImageSources,
     table_shadow: TableShadowLedger,
     pending_tables: Vec<PendingTable<D::NodeId>>,
-    /// The grid and cell nodes for the table `build_children` just processed,
-    /// consumed by `build_box` when it creates the table's algorithm node.
-    pending_table_handoff: Option<(TableGrid, Vec<Option<AlgorithmNodeId>>)>,
+    /// The grid, in-flow cell nodes, and detached table-part nodes for the
+    /// table `build_children` just processed, consumed by `build_box` when it
+    /// creates the table's algorithm node.
+    pending_table_handoff: Option<(
+        TableGrid,
+        Vec<Option<AlgorithmNodeId>>,
+        Vec<DetachedTablePart>,
+    )>,
 }
 
 type ResolvedLayout<Id> = (StylePlane<Id>, LiveryLayout<Id>);
@@ -2110,6 +2132,7 @@ where
         &tables,
         &mut output,
     )?;
+    state.collect_out_of_flow_table_parts(&mut fragments, &tables)?;
     let positioned = state
         .tree
         .node_ids()
@@ -2173,6 +2196,7 @@ where
             &tables,
             &mut output,
         )?;
+        state.collect_out_of_flow_table_parts(&mut fragments, &tables)?;
     }
     state.verify_table_layout(|box_id| {
         fragments
@@ -2673,6 +2697,13 @@ where
         &mut text_frame,
         styles,
     )?;
+    state.collect_out_of_flow_table_parts(
+        text,
+        &mut fragments,
+        &tables,
+        &mut text_frame,
+        &mut intrinsic_sizes,
+    )?;
     let positioned = state
         .tree
         .node_ids()
@@ -2776,6 +2807,13 @@ where
             &mut output,
             &mut text_frame,
             styles,
+        )?;
+        state.collect_out_of_flow_table_parts(
+            text,
+            &mut fragments,
+            &tables,
+            &mut text_frame,
+            &mut intrinsic_sizes,
         )?;
     }
     state.verify_table_layout(|box_id| {
@@ -2886,7 +2924,7 @@ where
                     vec![box_id],
                 );
                 enable_flex_grid_static_position_provider(&mut self.tree, self.boxes, box_id, node);
-                if let Some((grid, cell_nodes)) = table_handoff {
+                if let Some((grid, cell_nodes, out_of_flow_parts)) = table_handoff {
                     self.pending_tables.push(PendingTable {
                         table: box_id,
                         node: dom_node,
@@ -2897,6 +2935,7 @@ where
                         collapsed_borders: None,
                         collapsed_border_metrics: None,
                         cell_nodes,
+                        out_of_flow_parts,
                         font_size,
                         containing_width: containing_size.0,
                         containing_height: containing_size.1,
@@ -3373,6 +3412,84 @@ where
         }
     }
 
+    /// Format each detached table part only after K4d has emitted its
+    /// in-flow structural parent. The parent fragment is the zero-track
+    /// static-position source; the local root itself never joins the table
+    /// algorithm tree or changes a row/column measurement.
+    fn collect_out_of_flow_table_parts(
+        &mut self,
+        text: &mut TextSystem,
+        fragments: &mut FragmentTree,
+        tables: &TableFragmentPlane,
+        text_frame: &mut TextFrame<D::NodeId>,
+        intrinsic_sizes: &mut IntrinsicSizeCache,
+    ) -> Result<(), LayoutError> {
+        let Self {
+            dom,
+            styles,
+            boxes,
+            atomic,
+            tree,
+            pending_tables,
+            ..
+        } = self;
+        let parts = pending_tables
+            .iter()
+            .flat_map(|table| table.out_of_flow_parts.iter().copied())
+            .collect::<Vec<_>>();
+        for part in parts {
+            let Some(parent_box) = boxes[part.box_id].parent() else {
+                continue;
+            };
+            let Some(parent) = fragments.fragment_ids_for_box(parent_box).last().copied() else {
+                continue;
+            };
+            let Some(containing) = fragments.get(parent).map(TreeFragment::physical_rect) else {
+                continue;
+            };
+            tree.compute_layout_with_measure(
+                part.node,
+                AlgorithmSize::new(
+                    AlgorithmAvailableSpace::Definite(containing.width),
+                    AlgorithmAvailableSpace::Definite(containing.height),
+                ),
+                |known, available, _, context, line_constraints| {
+                    measure_inline_algorithm_node(
+                        text,
+                        *dom,
+                        *styles,
+                        *boxes,
+                        atomic,
+                        intrinsic_sizes,
+                        known,
+                        available,
+                        context,
+                        line_constraints,
+                    )
+                },
+            );
+            let mut output = FragmentOutput { fragments };
+            collect_inline_fragments(
+                tree,
+                *boxes,
+                part.node,
+                FragmentCursor {
+                    origin: Point {
+                        x: containing.x,
+                        y: containing.y,
+                    },
+                    containing,
+                    parent: Some(parent),
+                },
+                tables,
+                &mut output,
+                text_frame,
+                *styles,
+            )?;
+        }
+        Ok(())
+    }
+
     fn build_children(
         &mut self,
         parent: BoxId,
@@ -3402,10 +3519,25 @@ where
                 };
                 children.push(node);
             }
+            let mut out_of_flow_parts = Vec::with_capacity(table.out_of_flow_parts.len());
+            for part in &table.out_of_flow_parts {
+                let Some(node) = self.build_box(
+                    *part,
+                    Some(parent_style),
+                    parent_font_size,
+                    containing_size,
+                )? else {
+                    continue;
+                };
+                out_of_flow_parts.push(DetachedTablePart {
+                    box_id: *part,
+                    node,
+                });
+            }
             // K4c5b: hand the grid to build_box, which creates the table's
             // algorithm node and notes the table for Buckram column
             // assignment before the main layout pass.
-            self.pending_table_handoff = Some((table, cell_nodes));
+            self.pending_table_handoff = Some((table, cell_nodes, out_of_flow_parts));
             return Ok(children);
         }
         self.build_flow_children(
@@ -3807,6 +3939,60 @@ where
         }
     }
 
+    /// Format each detached table part only after K4d has emitted its
+    /// in-flow structural parent. The parent fragment is the zero-track
+    /// static-position source; the local root itself never joins the table
+    /// algorithm tree or changes a row/column measurement.
+    fn collect_out_of_flow_table_parts(
+        &mut self,
+        fragments: &mut FragmentTree,
+        tables: &TableFragmentPlane,
+    ) -> Result<(), LayoutError> {
+        let parts = self
+            .pending_tables
+            .iter()
+            .flat_map(|table| table.out_of_flow_parts.iter().copied())
+            .collect::<Vec<_>>();
+        for part in parts {
+            let Some(parent_box) = self.boxes[part.box_id].parent() else {
+                continue;
+            };
+            let Some(parent) = fragments.fragment_ids_for_box(parent_box).last().copied() else {
+                continue;
+            };
+            let Some(containing) = fragments.get(parent).map(TreeFragment::physical_rect) else {
+                continue;
+            };
+            self.tree.compute_layout_with_measure(
+                part.node,
+                AlgorithmSize::new(
+                    AlgorithmAvailableSpace::Definite(containing.width),
+                    AlgorithmAvailableSpace::Definite(containing.height),
+                ),
+                |known, available, _, context, _| {
+                    measure_text_algorithm_node(known, available, context)
+                },
+            );
+            let mut output = FragmentOutput { fragments };
+            collect_fragments(
+                &self.tree,
+                self.boxes,
+                part.node,
+                FragmentCursor {
+                    origin: Point {
+                        x: containing.x,
+                        y: containing.y,
+                    },
+                    containing,
+                    parent: Some(parent),
+                },
+                tables,
+                &mut output,
+            )?;
+        }
+        Ok(())
+    }
+
     fn build_box(
         &mut self,
         box_id: BoxId,
@@ -3847,6 +4033,7 @@ where
                 ))
                 .then(|| build_table_grid(self.boxes, self.dom, box_id));
                 let mut table_cell_nodes = Vec::new();
+                let mut table_out_of_flow_parts = Vec::new();
                 let children = if let Some(table) = table.as_ref() {
                     let mut children = Vec::with_capacity(table.cells.len());
                     for cell in &table.cells {
@@ -3861,6 +4048,20 @@ where
                             continue;
                         };
                         children.push(taffy_node);
+                    }
+                    for part in &table.out_of_flow_parts {
+                        let Some(node) = self.build_box(
+                            *part,
+                            Some(&computed),
+                            font_size,
+                            child_containing_size,
+                        )? else {
+                            continue;
+                        };
+                        table_out_of_flow_parts.push(DetachedTablePart {
+                            box_id: *part,
+                            node,
+                        });
                     }
                     children
                 } else {
@@ -3924,6 +4125,7 @@ where
                         collapsed_borders: None,
                         collapsed_border_metrics: None,
                         cell_nodes: std::mem::take(&mut table_cell_nodes),
+                        out_of_flow_parts: std::mem::take(&mut table_out_of_flow_parts),
                         font_size,
                         containing_width: containing_size.0,
                         containing_height: containing_size.1,
@@ -4145,7 +4347,15 @@ fn record_static_position<Id>(
             StaticPositionSource::Fragment,
         ),
         containing_block: boxes[box_id].containing_block,
-        logical_rect,
+        logical_rect: if boxes[box_id]
+            .display
+            .internal_table
+            .is_some_and(uses_zero_track_static_anchor)
+        {
+            LogicalRect::default()
+        } else {
+            logical_rect
+        },
     });
 }
 
@@ -7484,6 +7694,132 @@ mod tests {
         assert_eq!(caption_static.containing_block, ContainingBlock::Initial);
         assert_eq!(caption_fragment.containing_fragment(), None);
         assert_eq!(layout.table_shadow_ledger().block.laid_out, 1);
+    }
+
+    #[test]
+    fn absolute_table_track_parts_use_zero_track_static_anchors() {
+        let dom = StaticDocument::parse(
+            "<table id=cell-table><tbody><tr><td>flow</td><td id=cell>cell</td></tr></tbody></table>\
+             <table id=row-table><tbody><tr><td>flow</td></tr><tr id=row><td>row</td></tr></tbody></table>\
+             <table id=group-table><tbody><tr><td>flow</td></tr></tbody><tbody id=group><tr><td>group</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }
+                   #cell, #row, #group { position: absolute; left: 31px; top: 14px; width: 240px; height: 20px; }"#,
+            ]),
+            &Device::screen(640.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 640.0, 240.0).expect("layout");
+        for (table_id, part_id) in [
+            ("cell-table", "cell"),
+            ("row-table", "row"),
+            ("group-table", "group"),
+        ] {
+            let table = node_by_id(&dom, dom.document(), table_id).expect("table");
+            let part = node_by_id(&dom, dom.document(), part_id).expect("detached table part");
+            let grid = layout.boxes().principal_box(table).expect("table grid");
+            let wrapper = layout.boxes()[grid].parent().expect("table wrapper");
+            let part_box = layout.boxes().principal_box(part).expect("part box");
+            let wrapper_fragment = layout
+                .fragments()
+                .fragments_for_box(wrapper)
+                .next()
+                .expect("wrapper fragment");
+            let grid_fragment = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .expect("grid fragment");
+            let part_fragment = layout
+                .fragments()
+                .fragments_for_box(part_box)
+                .next()
+                .expect("detached part fragment");
+            let static_position = layout
+                .fragments()
+                .static_position_for_box(part_box)
+                .expect("zero-track static position");
+
+            assert_eq!(
+                (part_fragment.x, part_fragment.y),
+                (wrapper_fragment.x + 31.0, wrapper_fragment.y + 14.0),
+                "{part_id} resolves through the wrapper containing block",
+            );
+            assert_eq!(grid_fragment.width, 82.0, "{part_id} does not widen the grid");
+            assert_eq!(static_position.logical_rect, LogicalRect::default());
+        }
+        assert!(
+            layout.table_shadow_ledger().positioning_gaps.is_empty(),
+            "post-track parts must not retain a K5 positioning gap: {:?}",
+            layout.table_shadow_ledger(),
+        );
+    }
+
+    #[test]
+    fn fixed_table_track_parts_use_zero_track_static_anchors() {
+        let dom = StaticDocument::parse(
+            "<table id=cell-table><tbody><tr><td>flow</td><td id=cell>cell</td></tr></tbody></table>\
+             <table id=row-table><tbody><tr><td>flow</td></tr><tr id=row><td>row</td></tr></tbody></table>\
+             <table id=group-table><tbody><tr><td>flow</td></tr></tbody><tbody id=group><tr><td>group</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }
+                   #cell, #row, #group { position: fixed; left: 31px; top: 14px; width: 240px; height: 20px; }"#,
+            ]),
+            &Device::screen(640.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 640.0, 240.0).expect("layout");
+        for (table_id, part_id) in [
+            ("cell-table", "cell"),
+            ("row-table", "row"),
+            ("group-table", "group"),
+        ] {
+            let table = node_by_id(&dom, dom.document(), table_id).expect("table");
+            let part = node_by_id(&dom, dom.document(), part_id).expect("detached table part");
+            let grid = layout.boxes().principal_box(table).expect("table grid");
+            let part_box = layout.boxes().principal_box(part).expect("part box");
+            let grid_fragment = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .expect("grid fragment");
+            let part_fragment = layout
+                .fragments()
+                .fragments_for_box(part_box)
+                .next()
+                .expect("detached part fragment");
+            let static_position = layout
+                .fragments()
+                .static_position_for_box(part_box)
+                .expect("zero-track static position");
+
+            assert_eq!(
+                (part_fragment.x, part_fragment.y),
+                (31.0, 14.0),
+                "{part_id} resolves against the initial containing block",
+            );
+            assert_eq!(grid_fragment.width, 82.0, "{part_id} does not widen the grid");
+            assert_eq!(static_position.logical_rect, LogicalRect::default());
+            assert_eq!(static_position.containing_block, ContainingBlock::Initial);
+            assert_eq!(part_fragment.containing_fragment(), None);
+        }
+        assert!(
+            layout.table_shadow_ledger().positioning_gaps.is_empty(),
+            "post-track parts must not retain a K5 positioning gap: {:?}",
+            layout.table_shadow_ledger(),
+        );
     }
 
     #[test]

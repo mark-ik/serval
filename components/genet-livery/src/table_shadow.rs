@@ -318,6 +318,10 @@ pub struct PendingTable<Id> {
     pub collapsed_border_metrics: Option<CollapsedBorderMetrics>,
     /// One entry per K4b grid cell, in topology order.
     pub cell_nodes: Vec<Option<AlgorithmNodeId>>,
+    /// Absolute and fixed table-part roots formatted after K4d has emitted
+    /// every in-flow track. Their static anchors are zero-track placeholders,
+    /// so they cannot re-enter table sizing.
+    pub out_of_flow_parts: Vec<DetachedTablePart>,
     pub font_size: f32,
     pub containing_width: Option<f32>,
     pub containing_height: Option<f32>,
@@ -329,6 +333,13 @@ pub struct PendingTable<Id> {
     pub assigned: Option<TableInlineSizingResult>,
     /// The block-axis result, once the K4d pipeline has run.
     pub block: Option<TableBlockLayout>,
+}
+
+/// One table-internal absolute/fixed root detached from K4b/K4d track work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DetachedTablePart {
+    pub box_id: BoxId,
+    pub node: AlgorithmNodeId,
 }
 
 /// Compute Buckram's authoritative inline result for one live table.
