@@ -58,6 +58,10 @@ used rectangle, the retained leaf changes size in place, and the result is
 compared with a fresh final document. A root with descendants is intentionally
 rejected because its changed containing size requires reformatting.
 
+`positioned_leaf_resize_updates_nested_scroll_range` places the same admitted
+leaf in an `overflow: auto` container. Its changed width, height, and inset
+update the retained scroll range, which remains equal to a fresh final layout.
+
 ## Next replacement seam
 
 1. Make Buckram replace the selected formatting-context fragment subtree,
