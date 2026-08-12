@@ -118,6 +118,13 @@ cannot retain a shaped run or find target. Tables, inline/atomic content,
 positioned descendants, root-size changes, multiple roots, and changed root
 style still take the full replacement path.
 
+`retained_root_formatter_updates_fixed_root_overflow` adds the first overflow
+receipt: a fixed-height flex root gains a non-shrinking child that extends past
+its own box. The local formatter preserves the root and outside identities,
+`FragmentTree::replace_subtree` recomputes aggregate overflow through the
+retained ancestors, and document extent and paint remain equal to a fresh final
+document. A changed used root size still requires parent-flow replacement.
+
 The ordinary block route now keeps absolute and fixed children outside its
 normal-flow cursor. Buckram records their static rectangle, formats their
 local block subtree, and receives a K5d-resolved inline size for an admitted

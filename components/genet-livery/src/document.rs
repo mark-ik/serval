@@ -2424,6 +2424,65 @@ mod tests {
     }
 
     #[test]
+    fn retained_root_formatter_updates_fixed_root_overflow() {
+        let initial = "<html><body><div id=flex><div id=existing></div></div><div id=outside></div></body></html>";
+        let final_document = "<html><body><div id=flex><div id=existing></div><div id=inserted></div></div><div id=outside></div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #flex { display: flex; flex-direction: column; width: 100px; height: 40px; background: red; } \
+                 #existing { flex-shrink: 0; width: 100px; height: 20px; background: blue; } \
+                 #inserted { flex-shrink: 0; width: 100px; height: 100px; background: blue; } \
+                 #outside { width: 80px; height: 20px; background: green; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(160.0, 120.0));
+        retained.frame(160, 120).expect("initial retained frame");
+        let flex = by_id(retained.dom(), "flex");
+        let outside = by_id(retained.dom(), "outside");
+        let flex_before = generated_ids(&retained, flex);
+        let outside_before = generated_ids(&retained, outside);
+        let content_height = retained.content_height(0);
+        let local_generation = retained.retained_root_relayout_generation;
+
+        retained.mutate_dom(|dom| {
+            let flex = by_id(dom, "flex");
+            let inserted = dom.create_element(QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from("div"),
+            ));
+            dom.set_attribute(inserted, attr("id"), "inserted");
+            dom.append_child(flex, inserted);
+        });
+        let retained_paint = retained.frame(160, 120).expect("locally formatted frame");
+
+        assert_eq!(
+            retained.retained_root_relayout_generation,
+            local_generation + 1,
+            "fixed-size overflow takes the selected-root formatter",
+        );
+        assert_eq!(generated_ids(&retained, flex), flex_before);
+        assert_eq!(generated_ids(&retained, outside), outside_before);
+        assert!(retained.content_height(0) > content_height);
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(160.0, 120.0));
+        let fresh_paint = fresh.frame(160, 120).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "overflow from the locally formatted root paints like a fresh document",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
     fn retained_disjoint_formatting_roots_publish_atomically() {
         let initial = "<html><body><div id=first><div id=first-child>one</div></div><div id=second><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=first style=\"width: 160px\"><div id=first-child>one</div></div><div id=second style=\"width: 180px\"><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
