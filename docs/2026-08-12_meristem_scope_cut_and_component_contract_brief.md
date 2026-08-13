@@ -150,9 +150,11 @@ Validation receipts:
   Cambium instead exposes `caret_field_children`, the non-editing projection
   beneath the editable field; Turnstone consumes it without acquiring a second
   text authority.
-- Compile-time measurement was run against the turnstone settings pane and
-  found no improvement; see that section. No compile-time claim is made for
-  the boundary.
+- Compile-time was measured twice and improved neither time: wall-clock
+  against the turnstone settings pane, then `cargo llvm-lines` against the
+  graph canvas, which showed the boundary relocates monomorphization rather
+  than reducing it. No compile-time claim is made for the boundary; see the
+  settings-pane section for both measurements.
 
 ## Memo boundary (landed 2026-08-12)
 
@@ -211,7 +213,53 @@ which asserts 5 rows, 5 labels, 5 applies, 1 slider track, 1 toggle, and 7
 radios. The component-shaped row reproduces the hand-rolled row's structure
 exactly.
 
-**Compile-time measurement: no improvement, claim retracted.** Protocol:
+**Monomorphization measurement (2026-08-13, `cargo llvm-lines`): the
+compile-time case is dead, and now for a reason rather than a null result.**
+
+The wall-clock experiment below was inconclusive because a per-crate rebuild
+swamps one pane. `cargo llvm-lines` measures the thing directly, and it says
+the component boundary does not reduce monomorphization at all — it *relocates*
+it.
+
+The clean A/B is inside `woodshed-views`, which today uses both forms of the
+same control: the Set graph through the component `graph_canvas`, and Related
+through the callback-per-axis `graph_canvas_swatch`. The swatch entry point is
+instantiated 11 times in each form and costs almost exactly the same:
+
+| Form | Instantiated at | Copies | LLVM lines |
+| --- | --- | --- | --- |
+| callback (`graph_canvas_swatch`) | `UiState` (the app's state) | 11 | 1,670 |
+| component (`graph_canvas`) | `GraphCanvasLocal<CardId>` | 11 | 1,636 |
+
+Two percent apart, which is nothing. The boundary moves the instantiation off
+the app's state type and onto a Cambium-owned local, and the hoped-for saving
+was that consumers would then *share* that one copy. They do not, for two
+independent reasons: the local is still `GraphCanvasLocal<Id>` with the
+application's own id type (`CardId` here, `Uuid` in Turnstone), and the
+applications are separate binaries that never share a monomorphization
+anyway. Sharing would require the same binary *and* the same `Id`.
+
+For scale, the catalog binary (434,501 lines, 13,855 copies) puts **61% of all
+instantiation at `CatalogState`**, and the graph-swatch family alone accounts
+for 109,003 lines with 96% of that at `CatalogState`. That is where a
+consumer's compile time actually goes: its own view tree, monomorphized over
+its own state type. No component boundary touches it. The only lever that
+would is type erasure through `Box<dyn AnyView>` — which Cambium already
+offers, and which trades compile time for dynamic dispatch at every erased
+node.
+
+So: adopt the boundary for state ownership and for keeping app structs free of
+other people's interaction state. Do not adopt it expecting faster builds.
+That question is now closed with numbers.
+
+A second finding from the same pass, worth more than the measurement:
+`related.rs` cannot adopt the component form, because its `related_hover` is
+shared with the neighbor list — the graph and the rows cross-highlight each
+other. That is exactly the "an application that genuinely wants to own
+emphasis" case the callback family was kept for, and it is now a live example
+rather than a hypothetical.
+
+**Wall-clock measurement: no improvement, claim retracted.** Protocol:
 touch `settings_pane.rs`, time a warm `cargo build`, three runs each side.
 Baseline 71.8 / 73.2 / 72.6 (mean 72.5s); adopted 69.2 / 73.8 / 72.6 (mean
 71.9s). The 0.6s difference is inside the run-to-run spread and is not a

@@ -950,7 +950,14 @@ struct GraphCanvasLocal<Id> {
 ///
 /// The parent receives only [`GraphCanvasEvent`]s. For the callback-per-axis
 /// form (an application that genuinely wants to own emphasis, e.g. to mirror it
-/// across two views), the `graph_canvas_swatch*` family remains.
+/// across two views), the `graph_canvas_swatch*` family remains. Woodshed's
+/// Related panel is that case: its hover is shared with a neighbor list, and
+/// the two cross-highlight.
+///
+/// This is a state-ownership boundary, not a compile-time one. Measured with
+/// `cargo llvm-lines`, the swatch costs the same either way (~1.6k lines, 11
+/// instantiations); the boundary moves that instantiation from the app's state
+/// type onto `GraphCanvasLocal<Id>` rather than removing it.
 pub fn graph_canvas<State, A, Id, Kind, F>(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_event: F,

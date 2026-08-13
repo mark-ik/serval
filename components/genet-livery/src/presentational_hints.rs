@@ -11,8 +11,9 @@ use livery::{
     PropertyId, PropertyValue,
     cascade::{Declaration, DeclaredValue},
     values::{
-        BorderCollapse, BorderStyle, BorderWidth, CaptionSide, ComputedColor, Float, Length,
-        LengthPercentage, Margin, Padding, Size, TableBorderSpacing, TextAlign,
+        AspectRatio, BorderCollapse, BorderStyle, BorderWidth, CaptionSide, ComputedColor, Float,
+        Length, LengthPercentage, Margin, Padding, Size, TableBorderSpacing, TextAlign,
+        VerticalAlign,
     },
 };
 
@@ -151,7 +152,7 @@ where
         self.by_node.is_empty() && self.descendant_alignment.is_empty()
     }
 
-    /// Collect the bounded HTML table attributes admitted through PH3.
+    /// Collect the bounded HTML attributes admitted through PH4.
     ///
     /// `cellpadding` is expanded onto each cell belonging to its table. The
     /// traversal stops at nested tables so a nested table's cells never inherit
@@ -172,6 +173,7 @@ where
             let mut child_alignment = inherited_alignment;
             if dom.kind(id) == NodeKind::Element {
                 collect_table_part_hints(dom, id, hints);
+                collect_replaced_content_hints(dom, id, hints);
                 collect_text_alignment_hint(dom, id, hints);
                 let (has_own_alignment, owned_alignment) = legacy_alignment_behavior(dom, id);
                 if !has_own_alignment && let Some(alignment) = inherited_alignment {
@@ -194,6 +196,248 @@ where
         let mut hints = Self::default();
         visit(dom, dom.document(), None, &mut hints);
         hints
+    }
+}
+
+fn collect_replaced_content_hints<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(name) = dom.element_name(id) else {
+        return;
+    };
+    if name.ns.as_ref() != "http://www.w3.org/1999/xhtml" {
+        return;
+    }
+    let local = name.local.as_ref().to_ascii_lowercase();
+    let image_input = local == "input"
+        && html_attribute(dom, id, "type").is_some_and(|value| value.eq_ignore_ascii_case("image"));
+
+    if matches!(
+        local.as_str(),
+        "img" | "embed" | "iframe" | "object" | "video"
+    ) || image_input
+    {
+        collect_dimension_hint(dom, id, hints, "width", PropertyId::Width, false);
+        collect_dimension_hint(dom, id, hints, "height", PropertyId::Height, false);
+    }
+
+    if matches!(local.as_str(), "img" | "video") || image_input {
+        collect_dimension_aspect_ratio_hint(dom, id, hints);
+    } else if local == "canvas" {
+        collect_integer_aspect_ratio_hint(dom, id, hints);
+    }
+
+    if matches!(local.as_str(), "embed" | "iframe" | "img" | "object") || image_input {
+        collect_replaced_alignment_hint(dom, id, hints);
+    }
+
+    if matches!(local.as_str(), "embed" | "img" | "object") || image_input {
+        collect_spacing_hint(
+            dom,
+            id,
+            hints,
+            "hspace",
+            [PropertyId::MarginLeft, PropertyId::MarginRight],
+        );
+        collect_spacing_hint(
+            dom,
+            id,
+            hints,
+            "vspace",
+            [PropertyId::MarginTop, PropertyId::MarginBottom],
+        );
+    }
+
+    if matches!(local.as_str(), "img" | "object") || image_input {
+        collect_replaced_border_hint(dom, id, hints);
+    }
+    if local == "iframe" {
+        collect_frameborder_hint(dom, id, hints);
+    }
+}
+
+fn collect_dimension_aspect_ratio_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let (Some(width), Some(height)) = (
+        html_attribute(dom, id, "width"),
+        html_attribute(dom, id, "height"),
+    ) else {
+        return;
+    };
+    let (Some(HtmlDimension::Length(width)), Some(HtmlDimension::Length(height))) =
+        (parse_dimension(width), parse_dimension(height))
+    else {
+        return;
+    };
+    push_value(
+        hints.declarations_for_mut(id),
+        PropertyId::AspectRatio,
+        PropertyValue::AspectRatio(AspectRatio::AutoRatio { width, height }),
+    );
+}
+
+fn collect_integer_aspect_ratio_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let (Some(width), Some(height)) = (
+        html_attribute(dom, id, "width"),
+        html_attribute(dom, id, "height"),
+    ) else {
+        return;
+    };
+    let (Some(width), Some(height)) = (
+        parse_non_negative_integer_px(width),
+        parse_non_negative_integer_px(height),
+    ) else {
+        return;
+    };
+    push_value(
+        hints.declarations_for_mut(id),
+        PropertyId::AspectRatio,
+        PropertyValue::AspectRatio(AspectRatio::AutoRatio { width, height }),
+    );
+}
+
+fn collect_replaced_alignment_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "align") else {
+        return;
+    };
+    let declarations = hints.declarations_for_mut(id);
+    match raw.to_ascii_lowercase().as_str() {
+        "left" => push_value(
+            declarations,
+            PropertyId::Float,
+            PropertyValue::Float(Float::Left),
+        ),
+        "right" => push_value(
+            declarations,
+            PropertyId::Float,
+            PropertyValue::Float(Float::Right),
+        ),
+        "top" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::Top),
+        ),
+        "baseline" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::Baseline),
+        ),
+        "texttop" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::TextTop),
+        ),
+        "absmiddle" | "abscenter" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::Middle),
+        ),
+        "middle" | "center" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::MiddleWithBaseline),
+        ),
+        "bottom" | "absbottom" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::Bottom),
+        ),
+        _ => {},
+    }
+}
+
+fn collect_spacing_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+    attribute: &'static str,
+    properties: [PropertyId; 2],
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, attribute) else {
+        return;
+    };
+    let Some(value) = parse_dimension(raw) else {
+        hints
+            .declarations_for_mut(id)
+            .invalid_dimension(attribute, raw, false);
+        return;
+    };
+    let value = Margin::Value(value.into_css_value());
+    for property in properties {
+        push_value(
+            hints.declarations_for_mut(id),
+            property,
+            PropertyValue::Margin(value),
+        );
+    }
+}
+
+fn collect_replaced_border_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "border") else {
+        return;
+    };
+    let Some(width) = parse_non_negative_integer_px(raw) else {
+        hints
+            .declarations_for_mut(id)
+            .invalid_non_negative_integer("border", raw);
+        return;
+    };
+    if width <= 0.0 {
+        return;
+    }
+    let declarations = hints.declarations_for_mut(id);
+    push_border_widths(declarations, BorderWidth::Length(Length::px(width)));
+    push_border_styles(declarations, [BorderStyle::Solid; 4]);
+}
+
+fn collect_frameborder_hint<D>(dom: &D, id: D::NodeId, hints: &mut PresentationalHints<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "frameborder") else {
+        return;
+    };
+    if parse_integer(raw).is_none_or(|value| value == 0) {
+        push_border_widths(
+            hints.declarations_for_mut(id),
+            BorderWidth::Length(Length::px(0.0)),
+        );
     }
 }
 
@@ -887,11 +1131,39 @@ where
     dom.attribute(id, &Namespace::from(""), &LocalName::from(local))
 }
 
+/// HTML's integer parser consumes a signed decimal prefix after leading ASCII
+/// whitespace. Trailing legacy text does not invalidate that prefix.
+fn parse_integer(input: &str) -> Option<i64> {
+    let bytes = input.as_bytes();
+    let mut position = 0;
+    while bytes
+        .get(position)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        position += 1;
+    }
+    let negative = matches!(bytes.get(position), Some(b'-'));
+    if negative || matches!(bytes.get(position), Some(b'+')) {
+        position += 1;
+    }
+    let start = position;
+    while bytes
+        .get(position)
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        position += 1;
+    }
+    let value = (position > start)
+        .then(|| input[start..position].parse::<i64>().ok())
+        .flatten()?;
+    negative.then(|| value.checked_neg()).unwrap_or(Some(value))
+}
+
 /// HTML's bounded non-negative integer parser for PH1. This intentionally
 /// does not call Livery's CSS value parser: HTML accepts an optional plus sign
 /// and consumes the leading digit sequence even when legacy trailing text
 /// remains.
-fn parse_non_negative_integer_px(input: &str) -> Option<f32> {
+pub(crate) fn parse_non_negative_integer_px(input: &str) -> Option<f32> {
     let bytes = input.as_bytes();
     let mut position = 0;
     while bytes
@@ -1512,6 +1784,233 @@ mod tests {
     }
 
     #[test]
+    fn replaced_and_embedded_attributes_project_typed_css() {
+        let dom = StaticDocument::parse(
+            r#"
+                <img id="img" width="80" height="40" align="middle" hspace="5" vspace="10" border="3">
+                <input id="image-input" type="ImAgE" width="25%" height="10" align="right" hspace="4" vspace="6" border="2">
+                <input id="text-input" type="text" width="91" height="92" align="right" hspace="7" vspace="8" border="9">
+                <embed id="embed" width="70" height="30" align="texttop" hspace="11" vspace="12">
+                <object id="object" width="60" height="20" align="abscenter" hspace="13" vspace="14" border="4"></object>
+                <iframe id="zero-frame" width="90" height="45" align="top" frameborder="error"></iframe>
+                <iframe id="default-frame" frameborder="-1"></iframe>
+                <video id="video" width="160" height="90"></video>
+                <canvas id="canvas" width="250" height="100"></canvas>
+            "#,
+        );
+        let by_id = |id| node_by_id(&dom, dom.document(), id).unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        let img = styles.get(by_id("img")).unwrap();
+        assert_eq!(
+            img.width,
+            Size::Value(LengthPercentage::Length(Length::px(80.0)))
+        );
+        assert_eq!(
+            img.height,
+            Size::Value(LengthPercentage::Length(Length::px(40.0)))
+        );
+        assert_eq!(
+            img.aspect_ratio,
+            AspectRatio::AutoRatio {
+                width: 80.0,
+                height: 40.0,
+            }
+        );
+        assert_eq!(img.vertical_align, VerticalAlign::MiddleWithBaseline);
+        assert_eq!(
+            img.margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(5.0)))
+        );
+        assert_eq!(
+            img.margin_right,
+            Margin::Value(LengthPercentage::Length(Length::px(5.0)))
+        );
+        assert_eq!(
+            img.margin_top,
+            Margin::Value(LengthPercentage::Length(Length::px(10.0)))
+        );
+        assert_eq!(
+            img.margin_bottom,
+            Margin::Value(LengthPercentage::Length(Length::px(10.0)))
+        );
+        assert_eq!(img.border_top_width, BorderWidth::Length(Length::px(3.0)));
+        assert_eq!(img.border_top_style, BorderStyle::Solid);
+
+        let image_input = styles.get(by_id("image-input")).unwrap();
+        assert_eq!(
+            image_input.width,
+            Size::Value(LengthPercentage::Percentage(0.25))
+        );
+        assert_eq!(
+            image_input.height,
+            Size::Value(LengthPercentage::Length(Length::px(10.0)))
+        );
+        assert_eq!(image_input.aspect_ratio, AspectRatio::Auto);
+        assert_eq!(image_input.float, Float::Right);
+        assert_eq!(
+            image_input.border_left_width,
+            BorderWidth::Length(Length::px(2.0))
+        );
+
+        let text_input = styles.get(by_id("text-input")).unwrap();
+        assert_eq!(text_input.width, Size::Auto);
+        assert_eq!(text_input.height, Size::Auto);
+        assert_eq!(text_input.aspect_ratio, AspectRatio::Auto);
+        assert_eq!(text_input.float, Float::None);
+        assert_eq!(text_input.border_top_width, BorderWidth::Medium);
+
+        let embed = styles.get(by_id("embed")).unwrap();
+        assert_eq!(embed.vertical_align, VerticalAlign::TextTop);
+        assert_eq!(
+            embed.margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(11.0)))
+        );
+        let object = styles.get(by_id("object")).unwrap();
+        assert_eq!(object.vertical_align, VerticalAlign::Middle);
+        assert_eq!(
+            object.border_right_width,
+            BorderWidth::Length(Length::px(4.0))
+        );
+
+        let zero_frame = styles.get(by_id("zero-frame")).unwrap();
+        assert_eq!(
+            zero_frame.border_top_width,
+            BorderWidth::Length(Length::px(0.0))
+        );
+        assert_eq!(zero_frame.border_top_style, BorderStyle::Inset);
+        assert_eq!(zero_frame.vertical_align, VerticalAlign::Top);
+        let default_frame = styles.get(by_id("default-frame")).unwrap();
+        assert_eq!(
+            default_frame.border_top_width,
+            BorderWidth::Length(Length::px(2.0))
+        );
+        assert_eq!(default_frame.border_top_style, BorderStyle::Inset);
+
+        assert_eq!(
+            styles.get(by_id("video")).unwrap().aspect_ratio,
+            AspectRatio::AutoRatio {
+                width: 160.0,
+                height: 90.0,
+            }
+        );
+        assert_eq!(
+            styles.get(by_id("canvas")).unwrap().aspect_ratio,
+            AspectRatio::AutoRatio {
+                width: 250.0,
+                height: 100.0,
+            }
+        );
+    }
+
+    #[test]
+    fn author_css_overrides_replaced_presentational_hints() {
+        let dom = StaticDocument::parse(
+            r#"<img id="img" width="80" height="40" align="left" hspace="5" border="3">"#,
+        );
+        let img = node_by_id(&dom, dom.document(), "img").unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#img { width: 120px; aspect-ratio: 3 / 2; float: right; margin-left: 1px; border-top-width: 7px; }",
+            ]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let style = styles.get(img).unwrap();
+
+        assert_eq!(
+            style.width,
+            Size::Value(LengthPercentage::Length(Length::px(120.0)))
+        );
+        assert_eq!(
+            style.height,
+            Size::Value(LengthPercentage::Length(Length::px(40.0)))
+        );
+        assert_eq!(style.aspect_ratio, AspectRatio::Ratio(1.5));
+        assert_eq!(style.float, Float::Right);
+        assert_eq!(
+            style.margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(1.0)))
+        );
+        assert_eq!(
+            style.margin_right,
+            Margin::Value(LengthPercentage::Length(Length::px(5.0)))
+        );
+        assert_eq!(style.border_top_width, BorderWidth::Length(Length::px(7.0)));
+        assert_eq!(
+            style.border_right_width,
+            BorderWidth::Length(Length::px(3.0))
+        );
+    }
+
+    #[test]
+    fn replaced_attribute_mutation_restyles_one_computed_style_path() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            r#"<img id="img" width="80" height="40" align="left" hspace="5" border="3">"#,
+        );
+        let img = node_by_id(&dom, dom.document(), "img").unwrap();
+        let style_set = StyleSet::cambium(&[]);
+        let device = Device::screen(800.0, 600.0);
+        let states = InteractionStates::default();
+        let mut session = IncrementalStyle::new();
+        session.update(&dom, &style_set, &device, &states, &[]);
+
+        for (attribute, value) in [
+            ("width", "120"),
+            ("height", "30"),
+            ("align", "right"),
+            ("hspace", "8"),
+            ("border", "1"),
+        ] {
+            dom.set_attribute(
+                img,
+                layout_dom_api::QualName::new(
+                    None,
+                    Namespace::from(""),
+                    LocalName::from(attribute),
+                ),
+                value,
+            );
+        }
+        let mut mutations = Vec::new();
+        dom.drain_mutations(&mut mutations);
+        let stats = session.update(&dom, &style_set, &device, &states, &mutations);
+        assert!(!stats.full_document);
+        let style = session.styles().get(img).unwrap();
+
+        assert_eq!(
+            style.width,
+            Size::Value(LengthPercentage::Length(Length::px(120.0)))
+        );
+        assert_eq!(
+            style.height,
+            Size::Value(LengthPercentage::Length(Length::px(30.0)))
+        );
+        assert_eq!(
+            style.aspect_ratio,
+            AspectRatio::AutoRatio {
+                width: 120.0,
+                height: 30.0,
+            }
+        );
+        assert_eq!(style.float, Float::Right);
+        assert_eq!(
+            style.margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(8.0)))
+        );
+        assert_eq!(
+            style.border_left_width,
+            BorderWidth::Length(Length::px(1.0))
+        );
+    }
+
+    #[test]
     fn table_color_border_frame_and_rules_project_typed_css() {
         let dom = StaticDocument::parse(
             r##"
@@ -1874,6 +2373,15 @@ mod tests {
         assert_eq!(parse_non_negative_integer_px("-0legacy"), Some(0.0));
         assert_eq!(parse_non_negative_integer_px("-1"), None);
         assert_eq!(parse_non_negative_integer_px("px7"), None);
+    }
+
+    #[test]
+    fn html_integer_parser_keeps_signed_prefixes_for_frameborder() {
+        assert_eq!(parse_integer("  +10legacy"), Some(10));
+        assert_eq!(parse_integer("-10legacy"), Some(-10));
+        assert_eq!(parse_integer("-0"), Some(0));
+        assert_eq!(parse_integer("0.5e1"), Some(0));
+        assert_eq!(parse_integer("none"), None);
     }
 
     #[test]

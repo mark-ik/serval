@@ -1324,6 +1324,10 @@ pub enum VerticalAlign {
     TextTop,
     TextBottom,
     Middle,
+    /// HTML's legacy `align=middle|center` behavior for replaced content:
+    /// align the element's center with the parent's baseline. This differs
+    /// from CSS `middle`, which also includes half the parent's x-height.
+    MiddleWithBaseline,
     Top,
     Bottom,
     Length(LengthPercentage),
@@ -1356,6 +1360,7 @@ impl fmt::Display for VerticalAlign {
             Self::TextTop => formatter.write_str("text-top"),
             Self::TextBottom => formatter.write_str("text-bottom"),
             Self::Middle => formatter.write_str("middle"),
+            Self::MiddleWithBaseline => formatter.write_str("middle"),
             Self::Top => formatter.write_str("top"),
             Self::Bottom => formatter.write_str("bottom"),
             Self::Length(value) => value.fmt(formatter),
@@ -1828,6 +1833,33 @@ impl fmt::Display for GridPlacement {
 pub enum AspectRatio {
     Auto,
     Ratio(f32),
+    /// HTML dimension attributes contribute `auto <ratio>`. The operands are
+    /// retained separately because HTML permits zero in this mapping even
+    /// though an authored CSS `<ratio>` requires two positive numbers.
+    AutoRatio {
+        width: f32,
+        height: f32,
+    },
+}
+
+impl AspectRatio {
+    /// Return the usable preferred ratio. Degenerate HTML ratios remain
+    /// serializable computed values but do not enter layout arithmetic.
+    pub fn preferred_ratio(self) -> Option<f32> {
+        let ratio = match self {
+            Self::Auto => return None,
+            Self::Ratio(ratio) => ratio,
+            Self::AutoRatio { width, height } => width / height,
+        };
+        ratio
+            .is_finite()
+            .then_some(ratio)
+            .filter(|ratio| *ratio > 0.0)
+    }
+
+    pub const fn uses_natural_ratio(self) -> bool {
+        matches!(self, Self::Auto | Self::AutoRatio { .. })
+    }
 }
 
 impl FromStr for AspectRatio {
@@ -1838,6 +1870,17 @@ impl FromStr for AspectRatio {
         if input.eq_ignore_ascii_case("auto") {
             return Ok(Self::Auto);
         }
+        let lowercase = input.to_ascii_lowercase();
+        let (auto, input) =
+            if lowercase.starts_with("auto") && input[4..].starts_with(char::is_whitespace) {
+                (true, input[4..].trim())
+            } else if lowercase.ends_with("auto")
+                && input[..input.len() - 4].ends_with(char::is_whitespace)
+            {
+                (true, input[..input.len() - 4].trim())
+            } else {
+                (false, input)
+            };
         let (width, height) = input
             .split_once('/')
             .map_or((input, "1"), |(width, height)| {
@@ -1853,7 +1896,11 @@ impl FromStr for AspectRatio {
             .ok()
             .filter(|value| value.is_finite() && *value > 0.0)
             .ok_or_else(|| ParseError::expected("a positive aspect-ratio"))?;
-        Ok(Self::Ratio(width / height))
+        if auto {
+            Ok(Self::AutoRatio { width, height })
+        } else {
+            Ok(Self::Ratio(width / height))
+        }
     }
 }
 
@@ -1862,6 +1909,12 @@ impl fmt::Display for AspectRatio {
         match self {
             Self::Auto => formatter.write_str("auto"),
             Self::Ratio(value) => formatter.write_str(&format_number(*value)),
+            Self::AutoRatio { width, height } => write!(
+                formatter,
+                "auto {} / {}",
+                format_number(*width),
+                format_number(*height)
+            ),
         }
     }
 }

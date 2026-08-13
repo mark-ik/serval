@@ -127,6 +127,17 @@ img {
     display: inline-block;
 }
 
+iframe {
+    border-top-width: 2px;
+    border-right-width: 2px;
+    border-bottom-width: 2px;
+    border-left-width: 2px;
+    border-top-style: inset;
+    border-right-style: inset;
+    border-bottom-style: inset;
+    border-left-style: inset;
+}
+
 head, title, meta, link, style, script, template {
     display: none;
 }

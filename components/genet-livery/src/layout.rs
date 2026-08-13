@@ -25,7 +25,7 @@ use livery::{
     media::{Device, ViewportSizes},
     stylesheet::ContainerSnapshot,
     values::{
-        Alignment as CssAlignment, AspectRatio, BorderCollapse, BorderStyle, BorderWidth,
+        Alignment as CssAlignment, BorderCollapse, BorderStyle, BorderWidth,
         BoxSizing as CssBoxSizing, CaptionSide, Clear as CssClear, ComputedColor, ContainerType,
         Display as CssDisplay, FlexDirection as CssFlexDirection, FlexWrap as CssFlexWrap,
         Float as CssFloat, FontSize, Gap as CssGap, GridAutoFlow as CssGridAutoFlow,
@@ -1673,7 +1673,7 @@ where
                 )?;
                 let table_handoff = self.pending_table_handoff.take();
                 let mut taffy_style = to_taffy_style(&computed, font_size);
-                apply_replaced_image_size(
+                apply_replaced_intrinsic_size(
                     &mut taffy_style,
                     self.dom,
                     node,
@@ -2679,7 +2679,7 @@ where
                     dimension_with_basis(computed.max_width, font_size, containing_size.0);
                 taffy_style.max_size.height =
                     dimension_with_basis(computed.max_height, font_size, containing_size.1);
-                apply_replaced_image_size(
+                apply_replaced_intrinsic_size(
                     &mut taffy_style,
                     self.dom,
                     node,
@@ -3102,10 +3102,7 @@ where
         shrink_to_fit: matches!(computed.width, CssSize::Auto)
             && (computed.display == CssDisplay::InlineBlock || computed.float != CssFloat::None),
         replaced: css_box.replaced,
-        aspect_ratio: match computed.aspect_ratio {
-            AspectRatio::Auto => None,
-            AspectRatio::Ratio(value) => Some(value),
-        },
+        aspect_ratio: computed.aspect_ratio.preferred_ratio(),
         size_containment,
         has_nonlinear_lengths: block_style_has_nonlinear_lengths(computed),
         overconstrained_inline_alignment: boxes
@@ -4307,7 +4304,7 @@ where
         })
 }
 
-fn apply_replaced_image_size<D>(
+fn apply_replaced_intrinsic_size<D>(
     style: &mut Style,
     dom: &D,
     id: D::NodeId,
@@ -4318,47 +4315,37 @@ fn apply_replaced_image_size<D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    let intrinsic = image_intrinsic_size(dom, id, image_sources)
-        .filter(|(width, height)| *width > 0.0 && *height > 0.0);
+    let intrinsic = replaced_intrinsic_size(dom, id, image_sources);
+    let natural_ratio = intrinsic
+        .filter(|(width, height)| *width > 0.0 && *height > 0.0)
+        .map(|(width, height)| width / height);
+    if computed.aspect_ratio.uses_natural_ratio() && natural_ratio.is_some() {
+        style.aspect_ratio = natural_ratio;
+    }
 
-    // HTML width/height attributes are presentational hints. A CSS value wins
-    // even when it is percentage-based; only an auto CSS dimension accepts
-    // the attribute. Legacy percentage attributes remain percentages so they
-    // resolve against the eventual containing block rather than against zero.
-    let width_hint = matches!(computed.width, CssSize::Auto)
-        .then(|| image_attribute_size(dom, id, "width"))
-        .flatten();
-    let height_hint = matches!(computed.height, CssSize::Auto)
-        .then(|| image_attribute_size(dom, id, "height"))
-        .flatten();
-    if let Some(width) = width_hint {
-        style.size.width = width.dimension();
-    }
-    if let Some(height) = height_hint {
-        style.size.height = height.dimension();
-    }
-    let width_specified = !matches!(computed.width, CssSize::Auto) || width_hint.is_some();
-    let height_specified = !matches!(computed.height, CssSize::Auto) || height_hint.is_some();
-    let width =
-        definite_size(computed.width, font_size).or_else(|| width_hint.and_then(|hint| hint.px()));
-    let height = definite_size(computed.height, font_size)
-        .or_else(|| height_hint.and_then(|hint| hint.px()));
-    if let Some((intrinsic_width, intrinsic_height)) = intrinsic
-        && style.aspect_ratio.is_none()
-        && !(width.is_some() && height.is_some())
-    {
-        style.aspect_ratio = Some(intrinsic_width / intrinsic_height);
-    }
-    match (width, height, width_specified, height_specified, intrinsic) {
-        (Some(width), _, true, false, Some((intrinsic_width, intrinsic_height))) => {
+    // Attribute-derived dimensions already reached `computed` through the
+    // presentational-hint origin. Layout owns only natural-size resolution.
+    let width_specified = !matches!(computed.width, CssSize::Auto);
+    let height_specified = !matches!(computed.height, CssSize::Auto);
+    let width = definite_size(computed.width, font_size);
+    let height = definite_size(computed.height, font_size);
+    match (
+        width,
+        height,
+        width_specified,
+        height_specified,
+        style.aspect_ratio,
+        intrinsic,
+    ) {
+        (Some(width), _, true, false, Some(ratio), _) => {
             style.size.width = Dimension::length(width);
-            style.size.height = Dimension::length(width * intrinsic_height / intrinsic_width);
+            style.size.height = Dimension::length(width / ratio);
         },
-        (_, Some(height), false, true, Some((intrinsic_width, intrinsic_height))) => {
-            style.size.width = Dimension::length(height * intrinsic_width / intrinsic_height);
+        (_, Some(height), false, true, Some(ratio), _) => {
+            style.size.width = Dimension::length(height * ratio);
             style.size.height = Dimension::length(height);
         },
-        (None, None, false, false, Some((intrinsic_width, intrinsic_height))) => {
+        (None, None, false, false, _, Some((intrinsic_width, intrinsic_height))) => {
             style.size.width = Dimension::length(intrinsic_width);
             style.size.height = Dimension::length(intrinsic_height);
         },
@@ -4366,58 +4353,7 @@ fn apply_replaced_image_size<D>(
     }
 }
 
-#[derive(Clone, Copy)]
-enum ImageAttributeSize {
-    Length(f32),
-    Percentage(f32),
-}
-
-impl ImageAttributeSize {
-    fn dimension(self) -> Dimension {
-        match self {
-            Self::Length(value) => Dimension::length(value),
-            Self::Percentage(value) => Dimension::percent(value),
-        }
-    }
-
-    fn px(self) -> Option<f32> {
-        match self {
-            Self::Length(value) => Some(value),
-            Self::Percentage(_) => None,
-        }
-    }
-}
-
-fn image_attribute_size<D>(dom: &D, id: D::NodeId, name: &str) -> Option<ImageAttributeSize>
-where
-    D: LayoutDom,
-    D::NodeId: Copy,
-{
-    dom.attributes(id).find_map(|attribute| {
-        (attribute.name.ns.as_ref().is_empty()
-            && attribute.name.local.as_ref().eq_ignore_ascii_case(name))
-        .then(|| {
-            let value = attribute.value.trim();
-            if let Some(percentage) = value.strip_suffix('%') {
-                percentage
-                    .trim()
-                    .parse::<f32>()
-                    .ok()
-                    .map(|value| ImageAttributeSize::Percentage(value / 100.0))
-            } else {
-                value.parse::<f32>().ok().map(ImageAttributeSize::Length)
-            }
-        })
-        .flatten()
-        .filter(|value| match value {
-            ImageAttributeSize::Length(value) | ImageAttributeSize::Percentage(value) => {
-                value.is_finite() && *value > 0.0
-            },
-        })
-    })
-}
-
-fn image_intrinsic_size<D>(
+fn replaced_intrinsic_size<D>(
     dom: &D,
     id: D::NodeId,
     image_sources: &ImageSources,
@@ -4426,11 +4362,17 @@ where
     D: LayoutDom,
     D::NodeId: Copy,
 {
-    if dom.kind(id) != NodeKind::Element
-        || !dom
-            .element_name(id)
-            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("img"))
-    {
+    if dom.kind(id) != NodeKind::Element {
+        return None;
+    }
+    let local = dom.element_name(id)?.local.as_ref().to_ascii_lowercase();
+    if local == "canvas" {
+        return Some((
+            canvas_intrinsic_dimension(dom, id, "width", 300.0),
+            canvas_intrinsic_dimension(dom, id, "height", 150.0),
+        ));
+    }
+    if local != "img" {
         return None;
     }
     let source = dom.attributes(id).find_map(|attribute| {
@@ -4445,6 +4387,25 @@ where
     };
     let image = image::load_from_memory(&bytes).ok()?;
     Some((image.width() as f32, image.height() as f32))
+}
+
+fn canvas_intrinsic_dimension<D>(dom: &D, id: D::NodeId, attribute: &str, default: f32) -> f32
+where
+    D: LayoutDom,
+    D::NodeId: Copy,
+{
+    dom.attributes(id)
+        .find_map(|candidate| {
+            (candidate.name.ns.as_ref().is_empty()
+                && candidate
+                    .name
+                    .local
+                    .as_ref()
+                    .eq_ignore_ascii_case(attribute))
+            .then_some(candidate.value)
+        })
+        .and_then(crate::presentational_hints::parse_non_negative_integer_px)
+        .unwrap_or(default)
 }
 
 fn definite_size(size: CssSize, font_size: f32) -> Option<f32> {
@@ -4556,10 +4517,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             width: dimension(computed.max_width, font_size),
             height: dimension(computed.max_height, font_size),
         },
-        aspect_ratio: match computed.aspect_ratio {
-            AspectRatio::Auto => None,
-            AspectRatio::Ratio(value) => Some(value),
-        },
+        aspect_ratio: computed.aspect_ratio.preferred_ratio(),
         size_containment: match computed.container_type {
             ContainerType::Normal => Size {
                 width: false,
@@ -7265,7 +7223,7 @@ mod tests {
     }
 
     #[test]
-    fn replaced_html_dimension_hints_keep_percentage_and_canvas_width() {
+    fn replaced_html_dimensions_use_computed_css_and_canvas_intrinsics() {
         fn find_by_name(
             dom: &StaticDocument,
             node: <StaticDocument as LayoutDom>::NodeId,
@@ -7294,6 +7252,26 @@ mod tests {
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
+        let image = find_by_name(&dom, dom.document(), "img").expect("img");
+        assert_eq!(
+            styles.get(image).unwrap().width,
+            CssSize::Value(CssLengthPercentage::Percentage(1.0))
+        );
+        assert_eq!(
+            styles.get(image).unwrap().height,
+            CssSize::Value(CssLengthPercentage::Length(Length::px(3.0)))
+        );
+        let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
+        assert_eq!(styles.get(canvas).unwrap().width, CssSize::Auto);
+        assert_eq!(styles.get(canvas).unwrap().height, CssSize::Auto);
+        assert_eq!(
+            styles.get(canvas).unwrap().aspect_ratio,
+            livery::values::AspectRatio::AutoRatio {
+                width: 100.0,
+                height: 100.0,
+            },
+            "canvas dimensions remain natural-size inputs rather than CSS dimensions"
+        );
         let mut text = TextSystem::new();
         let (_, layout) = layout_with_text_system(
             &dom,
@@ -7306,7 +7284,6 @@ mod tests {
         )
         .expect("layout");
 
-        let image = find_by_name(&dom, dom.document(), "img").expect("img");
         let image = layout.get(image).expect("image fragment").physical_rect();
         assert_eq!(
             (image.width, image.height),
@@ -7314,7 +7291,6 @@ mod tests {
             "the percentage hint resolves against the positioned containing block"
         );
 
-        let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
         let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
         assert_eq!((canvas.width, canvas.height), (100.0, 100.0));
     }
