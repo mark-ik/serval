@@ -11,10 +11,11 @@
 
 use sprigging::{ColorF, GraphCanvas, GraphGlyphNode, GraphViewport, Size};
 
+use crate::component::{ComponentView, component};
 use crate::{
-    FocusEvent, FocusPhase, GenetCtx, GenetElement, HoverEvent, HoverPhase, PointerClick,
-    PointerEvent, PointerPhase, View, custom_leaf, el, focusable, on_click, on_focus, on_hover,
-    on_pointer,
+    FocusEvent, FocusPhase, GenetCtx, GenetElement, HoverEvent, HoverPhase, OptionalAction,
+    PointerClick, PointerEvent, PointerPhase, View, custom_leaf, el, focusable, on_click, on_focus,
+    on_hover, on_pointer,
 };
 
 /// Structural classes emitted by [`graph_canvas_swatch`]. Hosts own the palette.
@@ -400,7 +401,7 @@ fn graph_position_at(
 /// the supplied id into [`GraphCanvasSwatch::hovered`] (and clears it on leave),
 /// after which the host refreshes the registered leaf. `on_expand` switches to
 /// the app's full-canvas route. The component does not invent those policies.
-pub fn graph_canvas_swatch<State, AppAction, Id, Kind, Click, Hover, Expand>(
+pub fn graph_canvas_swatch<State, AppAction, Id, Kind, Click, ClickOut, Hover, Expand, ExpandOut>(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
     on_node_hover: Hover,
@@ -410,9 +411,11 @@ where
     State: 'static,
     AppAction: 'static,
     Id: Clone + PartialEq + 'static,
-    Click: Fn(&mut State, Id) + Clone + 'static,
+    ClickOut: OptionalAction<AppAction>,
+    Click: Fn(&mut State, Id) -> ClickOut + Clone + 'static,
     Hover: Fn(&mut State, Option<Id>) + Clone + 'static,
-    Expand: Fn(&mut State) + Clone + 'static,
+    ExpandOut: OptionalAction<AppAction>,
+    Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
 {
     graph_canvas_swatch_with_focus_and_drag_and_relations(
         swatch,
@@ -430,7 +433,19 @@ where
 /// interaction variant of [`graph_canvas_swatch`]: click and hover retain their
 /// existing meanings while `on_node_drag` receives Down/Move/Up in normalized
 /// graph coordinates.
-pub fn graph_canvas_swatch_with_drag<State, AppAction, Id, Kind, Click, Hover, Drag, Expand>(
+pub fn graph_canvas_swatch_with_drag<
+    State,
+    AppAction,
+    Id,
+    Kind,
+    Click,
+    ClickOut,
+    Hover,
+    Drag,
+    DragOut,
+    Expand,
+    ExpandOut,
+>(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
     on_node_hover: Hover,
@@ -441,10 +456,13 @@ where
     State: 'static,
     AppAction: 'static,
     Id: Clone + PartialEq + 'static,
-    Click: Fn(&mut State, Id) + Clone + 'static,
+    ClickOut: OptionalAction<AppAction>,
+    Click: Fn(&mut State, Id) -> ClickOut + Clone + 'static,
     Hover: Fn(&mut State, Option<Id>) + Clone + 'static,
-    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) + Clone + 'static,
-    Expand: Fn(&mut State) + Clone + 'static,
+    DragOut: OptionalAction<AppAction>,
+    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) -> DragOut + Clone + 'static,
+    ExpandOut: OptionalAction<AppAction>,
+    Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
 {
     graph_canvas_swatch_with_focus_and_drag_and_relations(
         swatch,
@@ -463,7 +481,18 @@ where
 ///
 /// `on_node_focus` normally writes its value into
 /// [`GraphCanvasSwatch::focus`] before rebuilding the matching paint leaf.
-pub fn graph_canvas_swatch_with_focus<State, AppAction, Id, Kind, Click, Hover, Focus, Expand>(
+pub fn graph_canvas_swatch_with_focus<
+    State,
+    AppAction,
+    Id,
+    Kind,
+    Click,
+    ClickOut,
+    Hover,
+    Focus,
+    Expand,
+    ExpandOut,
+>(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
     on_node_hover: Hover,
@@ -474,10 +503,12 @@ where
     State: 'static,
     AppAction: 'static,
     Id: Clone + PartialEq + 'static,
-    Click: Fn(&mut State, Id) + Clone + 'static,
+    ClickOut: OptionalAction<AppAction>,
+    Click: Fn(&mut State, Id) -> ClickOut + Clone + 'static,
     Hover: Fn(&mut State, Option<Id>) + Clone + 'static,
     Focus: Fn(&mut State, Option<Id>) + Clone + 'static,
-    Expand: Fn(&mut State) + Clone + 'static,
+    ExpandOut: OptionalAction<AppAction>,
+    Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
 {
     graph_canvas_swatch_with_focus_and_drag_and_relations(
         swatch,
@@ -500,11 +531,15 @@ pub fn graph_canvas_swatch_with_drag_and_relations<
     Id,
     Kind,
     Click,
+    ClickOut,
     Hover,
     Drag,
+    DragOut,
     RelationClick,
+    RelationClickOut,
     RelationHover,
     Expand,
+    ExpandOut,
 >(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
@@ -518,12 +553,16 @@ where
     State: 'static,
     AppAction: 'static,
     Id: Clone + PartialEq + 'static,
-    Click: Fn(&mut State, Id) + Clone + 'static,
+    ClickOut: OptionalAction<AppAction>,
+    Click: Fn(&mut State, Id) -> ClickOut + Clone + 'static,
     Hover: Fn(&mut State, Option<Id>) + Clone + 'static,
-    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) + Clone + 'static,
-    RelationClick: Fn(&mut State, String) + Clone + 'static,
+    DragOut: OptionalAction<AppAction>,
+    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) -> DragOut + Clone + 'static,
+    RelationClickOut: OptionalAction<AppAction>,
+    RelationClick: Fn(&mut State, String) -> RelationClickOut + Clone + 'static,
     RelationHover: Fn(&mut State, Option<String>) + Clone + 'static,
-    Expand: Fn(&mut State) + Clone + 'static,
+    ExpandOut: OptionalAction<AppAction>,
+    Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
 {
     graph_canvas_swatch_with_focus_and_drag_and_relations(
         swatch,
@@ -548,10 +587,13 @@ pub fn graph_canvas_swatch_with_focus_and_drag<
     Id,
     Kind,
     Click,
+    ClickOut,
     Hover,
     Focus,
     Drag,
+    DragOut,
     Expand,
+    ExpandOut,
 >(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
@@ -564,11 +606,14 @@ where
     State: 'static,
     AppAction: 'static,
     Id: Clone + PartialEq + 'static,
-    Click: Fn(&mut State, Id) + Clone + 'static,
+    ClickOut: OptionalAction<AppAction>,
+    Click: Fn(&mut State, Id) -> ClickOut + Clone + 'static,
     Hover: Fn(&mut State, Option<Id>) + Clone + 'static,
     Focus: Fn(&mut State, Option<Id>) + Clone + 'static,
-    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) + Clone + 'static,
-    Expand: Fn(&mut State) + Clone + 'static,
+    DragOut: OptionalAction<AppAction>,
+    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) -> DragOut + Clone + 'static,
+    ExpandOut: OptionalAction<AppAction>,
+    Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
 {
     graph_canvas_swatch_with_focus_and_drag_and_relations(
         swatch,
@@ -590,12 +635,16 @@ pub fn graph_canvas_swatch_with_focus_and_drag_and_relations<
     Id,
     Kind,
     Click,
+    ClickOut,
     Hover,
     Focus,
     Drag,
+    DragOut,
     RelationClick,
+    RelationClickOut,
     RelationHover,
     Expand,
+    ExpandOut,
 >(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
@@ -610,13 +659,21 @@ where
     State: 'static,
     AppAction: 'static,
     Id: Clone + PartialEq + 'static,
-    Click: Fn(&mut State, Id) + Clone + 'static,
+    // The activating handlers may emit an action (returning `()` keeps them
+    // silent, which is what every state-mutating consumer does). The hover and
+    // focus handlers stay silent by construction: emphasis is presentation
+    // state, never an app-facing event.
+    ClickOut: OptionalAction<AppAction>,
+    Click: Fn(&mut State, Id) -> ClickOut + Clone + 'static,
     Hover: Fn(&mut State, Option<Id>) + Clone + 'static,
     Focus: Fn(&mut State, Option<Id>) + Clone + 'static,
-    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) + Clone + 'static,
-    RelationClick: Fn(&mut State, String) + Clone + 'static,
+    DragOut: OptionalAction<AppAction>,
+    Drag: Fn(&mut State, GraphCanvasNodeDrag<Id>) -> DragOut + Clone + 'static,
+    RelationClickOut: OptionalAction<AppAction>,
+    RelationClick: Fn(&mut State, String) -> RelationClickOut + Clone + 'static,
     RelationHover: Fn(&mut State, Option<String>) + Clone + 'static,
-    Expand: Fn(&mut State) + Clone + 'static,
+    ExpandOut: OptionalAction<AppAction>,
+    Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
 {
     let positions = swatch.projected_positions();
     let hit_size = swatch.hit_size.max(1.0);
@@ -703,7 +760,7 @@ where
             let hover_id = relation.id.clone();
             on_hover(
                 on_click(target, move |state: &mut State, _: PointerClick| {
-                    click(state, click_id.clone());
+                    click(state, click_id.clone())
                 }),
                 move |state: &mut State, event: HoverEvent| match event.phase {
                     HoverPhase::Enter => hover(state, Some(hover_id.clone())),
@@ -766,7 +823,7 @@ where
             on_pointer(focusable(on_focus(
                 on_hover(
                     on_click(target, move |state: &mut State, _: PointerClick| {
-                        click(state, click_id.clone());
+                        click(state, click_id.clone())
                     }),
                     move |state: &mut State, event: HoverEvent| match event.phase {
                         HoverPhase::Enter => hover(state, Some(enter_id.clone())),
@@ -792,7 +849,7 @@ where
                         phase: event.phase,
                         position,
                     },
-                );
+                )
             })
         })
         .collect();
@@ -856,6 +913,96 @@ where
             swatch.width, swatch.height
         ),
     )
+}
+
+/// What a [`graph_canvas`] reports to its parent. Hover, focus, and relation
+/// emphasis are deliberately absent: they are presentation state the component
+/// owns, not events an application needs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphCanvasEvent<Id> {
+    /// A node's hit target was activated.
+    Activate(Id),
+    /// The Expand affordance was activated.
+    Expand,
+    /// A node was dragged. `position` is in normalized graph coordinates.
+    Drag(GraphCanvasNodeDrag<Id>),
+    /// A relation cell was activated.
+    RelationActivate(String),
+}
+
+impl<Id> crate::Action for GraphCanvasEvent<Id> {}
+
+/// Component-owned interaction state for [`graph_canvas`].
+struct GraphCanvasLocal<Id> {
+    hovered: Option<Id>,
+    focus: Option<Id>,
+    hovered_relation: Option<String>,
+}
+
+/// A graph-canvas Swatch that owns its own emphasis.
+///
+/// Selection stays application truth and arrives on the `swatch` props (a node
+/// is selected because the graph says so). Hover, keyboard focus emphasis, and
+/// relation hover are pointer-and-focus presentation state, so they live in the
+/// component: an application no longer stores a hover field purely to route it
+/// back into the view on the next rebuild. The `hovered` and `focus` fields of
+/// the passed `swatch` are ignored for that reason.
+///
+/// The parent receives only [`GraphCanvasEvent`]s. For the callback-per-axis
+/// form (an application that genuinely wants to own emphasis, e.g. to mirror it
+/// across two views), the `graph_canvas_swatch*` family remains.
+pub fn graph_canvas<State, A, Id, Kind, F>(
+    swatch: &GraphCanvasSwatch<Id, Kind>,
+    on_event: F,
+) -> impl View<State, A, GenetCtx, Element = GenetElement> + use<State, A, Id, Kind, F>
+where
+    State: 'static,
+    A: 'static,
+    Id: Clone + PartialEq + 'static,
+    Kind: Clone + PartialEq + 'static,
+    F: Fn(&mut State, GraphCanvasEvent<Id>) -> A + 'static,
+{
+    component(
+        swatch.clone(),
+        |_props: &GraphCanvasSwatch<Id, Kind>| GraphCanvasLocal {
+            hovered: None,
+            focus: None,
+            hovered_relation: None,
+        },
+        // Emphasis is never parent-controlled: a props change (new graph data,
+        // a new selection) leaves the pointer where it is.
+        |_prev: &GraphCanvasSwatch<Id, Kind>,
+         _next: &GraphCanvasSwatch<Id, Kind>,
+         _local: &mut GraphCanvasLocal<Id>| {},
+        |props: &GraphCanvasSwatch<Id, Kind>, local: &GraphCanvasLocal<Id>| {
+            let mut swatch = props.clone();
+            swatch.hovered = local.hovered.clone();
+            swatch.focus = local.focus.clone();
+            if let Some(id) = &local.hovered_relation {
+                for relation in &mut swatch.relations {
+                    if &relation.id == id {
+                        relation.emphasized = true;
+                    }
+                }
+            }
+            Box::new(graph_canvas_swatch_with_focus_and_drag_and_relations(
+                &swatch,
+                |_: &mut GraphCanvasLocal<Id>, id: Id| GraphCanvasEvent::Activate(id),
+                |local: &mut GraphCanvasLocal<Id>, id: Option<Id>| local.hovered = id,
+                |local: &mut GraphCanvasLocal<Id>, id: Option<Id>| local.focus = id,
+                |_: &mut GraphCanvasLocal<Id>, drag: GraphCanvasNodeDrag<Id>| {
+                    GraphCanvasEvent::Drag(drag)
+                },
+                |_: &mut GraphCanvasLocal<Id>, id: String| GraphCanvasEvent::RelationActivate(id),
+                |local: &mut GraphCanvasLocal<Id>, id: Option<String>| {
+                    local.hovered_relation = id;
+                },
+                |_: &mut GraphCanvasLocal<Id>| GraphCanvasEvent::Expand,
+            )) as ComponentView<GraphCanvasLocal<Id>, GraphCanvasEvent<Id>>
+        },
+        on_event,
+    )
+    .memo()
 }
 
 #[cfg(test)]
@@ -1194,5 +1341,89 @@ mod tests {
             "every emitted event keeps the node id and clamps graph coordinates: {dragged:?}"
         );
         assert_eq!(runner.pointer_capture(), None, "Up releases capture");
+    }
+
+    /// The component form's app state: selection truth in, events out. There
+    /// is deliberately no hover or focus field here — that is the whole point.
+    #[derive(Default)]
+    struct AppState {
+        selected: Option<u8>,
+        events: Vec<GraphCanvasEvent<u8>>,
+    }
+
+    type AppView = Box<dyn AnyView<AppState, (), GenetCtx, GenetElement>>;
+
+    fn component_view(state: &AppState) -> AppView {
+        let mut swatch = model(None, None);
+        swatch.selected = state.selected;
+        Box::new(graph_canvas(
+            &swatch,
+            |state: &mut AppState, event: GraphCanvasEvent<u8>| {
+                if let GraphCanvasEvent::Activate(id) = &event {
+                    state.selected = Some(*id);
+                }
+                state.events.push(event);
+            },
+        ))
+    }
+
+    #[test]
+    fn component_owns_emphasis_and_reports_only_events() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
+            dom.clone(),
+            component_view,
+            AppState {
+                selected: Some(1),
+                events: Vec::new(),
+            },
+        );
+        let root = runner.root();
+        let second =
+            find_attr(&dom.borrow(), root, "aria-label", "Second node").expect("second node");
+
+        // Hover renders emphasis without the application storing anything.
+        runner.dispatch_hover(
+            second,
+            HoverEvent::new(HoverPhase::Enter, (2.0, 2.0), (20.0, 20.0)),
+        );
+        assert!(
+            runner.state().events.is_empty(),
+            "emphasis is not an application event"
+        );
+        assert_eq!(
+            attr(&dom.borrow(), second, "class"),
+            Some("graph-canvas-swatch-node hovered"),
+            "the component rendered its own hover emphasis"
+        );
+
+        runner.dispatch_hover(
+            second,
+            HoverEvent::new(HoverPhase::Leave, (2.0, 2.0), (20.0, 20.0)),
+        );
+        assert_eq!(
+            attr(&dom.borrow(), second, "class"),
+            Some("graph-canvas-swatch-node"),
+            "leaving clears the component's emphasis"
+        );
+
+        // Activation is an event, and the selection it drives is parent truth
+        // that comes back through props.
+        runner.dispatch_click(second, PointerClick::at((2.0, 2.0)));
+        assert_eq!(runner.state().events, [GraphCanvasEvent::Activate(2)]);
+        assert_eq!(runner.state().selected, Some(2));
+        assert_eq!(
+            attr(&dom.borrow(), second, "class"),
+            Some("graph-canvas-swatch-node selected focused"),
+            "parent-owned selection renders beside the component's own focus emphasis"
+        );
+
+        let expand =
+            find_attr(&dom.borrow(), root, "aria-label", "Expand graph").expect("expand target");
+        runner.dispatch_click(expand, PointerClick::at((2.0, 2.0)));
+        assert_eq!(
+            runner.state().events,
+            [GraphCanvasEvent::Activate(2), GraphCanvasEvent::Expand]
+        );
     }
 }

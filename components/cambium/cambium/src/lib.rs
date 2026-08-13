@@ -98,8 +98,9 @@ pub use disclosure::{
 };
 pub use editor::{EditHistory, pair_close, wrap_selection};
 pub use graph_canvas::{
-    GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasNode, GraphCanvasNodeDrag,
-    GraphCanvasRelation, GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas_swatch,
+    GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasEvent, GraphCanvasNode,
+    GraphCanvasNodeDrag, GraphCanvasRelation, GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas,
+    graph_canvas_swatch,
     graph_canvas_swatch_with_drag, graph_canvas_swatch_with_drag_and_relations,
     graph_canvas_swatch_with_focus, graph_canvas_swatch_with_focus_and_drag,
     graph_canvas_swatch_with_focus_and_drag_and_relations,
