@@ -209,8 +209,18 @@ per-control component-shaped signatures; see the 2026-08-12 brief in the
 repository root docs.
 
 Effects remain application-owned. `GenetAppRunner` returning `Vec<Action>` is
-the outward event seam; it is not a shared effect queue. Lift an effect contract
-only after another application duplicates Turnstone's action-to-effect shape.
+the outward event seam; it is not a shared effect queue. The gate was checked
+against Woodshed on 2026-08-12 and did not open: Turnstone's effects are
+correlated async requests (generation-counted actors), Woodshed's are
+fire-and-forget host command flags. Revisit when an application other than
+Turnstone grows a correlated async effect.
+
+**Component-shaped controls (2026-08-12).** `setting_row` and `graph_canvas`
+are the two built so far. The rule they establish: a control gains this shape
+when a consumer pulls, and the author decides the value/interaction split for
+that control specifically. `graph_canvas` also shows the compatible widening
+move — activating handlers return `OptionalAction` (unit already implements
+it, so existing callers are untouched) while emphasis handlers stay silent.
 
 ## Catalog refinements
 

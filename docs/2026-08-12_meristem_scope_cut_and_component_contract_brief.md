@@ -225,14 +225,58 @@ ownership and deleted plumbing, not on build times. The brief's earlier
 "compile-time delta measured before and after" validation item is retired
 as measured-and-negative rather than pending.
 
-## Next consumers
+## Graph canvas (landed 2026-08-12)
 
-- Graph canvas: selection stays app truth on NODE_SHEET; hover, preview, and
-  focus-emphasis state moves component-local (the catalog's
-  `graph_swatch_hovered`/`focused` threading is the receipt of the cost).
-- Woodshed: practice-tool controls (fretboard highlights, knob interaction)
-  as the second consumer app; its action-to-effect shape is also what arms
-  the consumer-pull gate on the shared effect contract.
+`cambium::graph_canvas` is the second component-shaped control and the first
+with two consumers. Selection arrives as parent truth in the props (a node is
+selected because the graph says so); hover, keyboard-focus emphasis, and
+relation hover live in the component. The parent receives only
+`GraphCanvasEvent` (Activate, Expand, Drag, RelationActivate).
+
+Enabling change: the activating handlers on the `graph_canvas_swatch*` family
+now return `OptionalAction` rather than unit. This is backward compatible,
+because `()` already implements `OptionalAction<A>` for every `A`, so all
+existing callback-per-axis consumers compile untouched. Hover and focus
+handlers deliberately did **not** widen: emphasis is presentation state and
+must never be an app-facing event. The callback family remains for an
+application that genuinely wants to own emphasis (mirroring it across two
+views); the component is the default.
+
+Adopters, both of which were storing emphasis purely to route it back into
+the view on the next rebuild:
+
+- Turnstone's swatch pane: `state.swatch.hovered = id` is gone. Its hover
+  test now reads the emphasis from the rendered node's class, where it is
+  now observable, rather than asserting an app-state field that should not
+  exist.
+- Woodshed's Set graph: `UiState::set_graph_hover` and `set_graph_focus` are
+  gone (two fields off a struct that carries the whole app's UI state). Its
+  probe scenario's `graph-focus` field now reads the focused node's
+  `data-key` from the DOM; left on the UiState field it would have reported
+  "none" forever, which is exactly the quietly-lying diagnostic the scenario
+  exists to prevent.
+
+## Effect contract: the gate did not open
+
+Woodshed was the second consumer that would arm the shared effect contract.
+It does not: the two applications solved effects differently, and for
+defensible reasons.
+
+- Turnstone: a typed `Effect` enum pushed onto a queue, processed by actors,
+  with generation counters for staleness. Its effects are **correlated async
+  requests** whose answers can arrive after the requester moved on (fetch a
+  page for a node that has since navigated away).
+- Woodshed: nine one-shot `bool` / `Option<f32>` request flags on `UiState`
+  (`preview_requested`, `calib_start_requested`, `song_record_toggle_requested`,
+  …), set by the view and consumed by the host after dispatch. Its effects are
+  **fire-and-forget host commands** with no answer to correlate.
+
+A shared contract would have to span both, and neither app is currently
+paying for the other's problem. So the gate stays shut and no `effects`
+module is lifted. The signal to revisit is woodshed growing a correlated
+async effect (an answer that can arrive stale), not the flag count rising.
+Woodshed's nine flags may still be worth a typed queue for its own sake;
+that is woodshed's refactor to make, not a Cambium contract.
 
 ## Layer ownership
 
@@ -250,7 +294,7 @@ as measured-and-negative rather than pending.
   in Mere only if the shared vocabulary is specifically graph-browser host
   orchestration.
 
-## Effect contract: document, do not build yet
+## Effect contract: original reasoning (superseded by the gate finding above)
 
 Turnstone's `Effect` enum (fetch, persist, session ops processed by actors
 with generation counters) is the validated in-house shape, and
