@@ -1,0 +1,12 @@
+Sweep note: this commit also carries the sprigging-to-netrender
+retained-fragment wiring (E4), which was uncommitted in the tree when
+this doc commit ran its whole-tree add. That work is:
+sprigging::RenderedLeaves::path_a_entries, LeafPaintSource::
+leaf_fragment + PlaceRetainedFragment markers at both genet-layout
+splice sites (with the chisel_leaf_with_fragment marker receipt), the
+cambium-genet-winit-host leaf_fragments sync (register/update/remove
+against the renderer registry, external-texture and shadow splices kept
+inline, map cleared with the surface), and the capture example's
+histogram arm. Receipts: genet-layout chisel_leaf 6/6, sprigging 17/17,
+host suites green. Companion netrender commit: 3a24f5696 (the marker
+vocabulary + translator arm + pixel e2e).
