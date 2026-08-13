@@ -256,7 +256,48 @@ the view on the next rebuild:
   "none" forever, which is exactly the quietly-lying diagnostic the scenario
   exists to prevent.
 
-## Effect contract: the gate did not open
+## Effect contract: the gate opened, and the answer is still no crate
+
+**Update, later on 2026-08-12.** Woodshed's nine request flags were refactored
+into a typed queue (`woodshed_core::audio::AudioRequest` +
+`UiState::audio_requests`, drained in one place in `sync.rs`). The refactor
+stands on its own merits, independent of any shared contract: a boolean per
+request coalesced two presses in a frame into one action (and
+`preview_note_requested: Option<f32>` silently dropped the earlier note),
+lost the order the user pressed things in, cleared inconsistently
+(`= false` at two sites, `mem::take` at five), and left no single list of
+what the app can ask its host to do. Two tests now hold the properties a
+flag could not provide: repeated requests all survive in order, and one
+drain site owns consumption. `midi.refresh_requested` deliberately stayed a
+flag — a port rescan is idempotent, so coalescing is correct there, which is
+exactly what is not true of two Preview presses.
+
+So the two applications' effect shapes now genuinely converge: a typed enum
+of commands, pushed in order onto a `Vec`, drained by one processor.
+
+**And that is precisely why no `effects` module should be lifted.** Ask what
+code a shared contract would contain, and the answer is `Vec::push` and
+`std::mem::take`. Everything with substance is app-specific: the effect types
+(`Effect` vs `AudioRequest`), the processors (generation-counted actors vs a
+backend match), and the correlation discipline (turnstone only, because only
+its answers arrive late and can be stale). A trait wrapping a push and a take
+would add ceremony without removing duplication, which is the complexity
+addiction this brief opened by diagnosing.
+
+What is worth sharing is the doctrine, and it now has two receipts:
+
+1. Continuous state is realized idempotently from app state every frame;
+   one-shot commands are queued and drained exactly once.
+2. Queue when repeats are meaningful (two previews must sound twice); a flag
+   is correct only when the request is idempotent (rescan the MIDI ports).
+3. Correlation identity belongs in the effect payload, not the queue, and
+   only when answers can arrive after the requester moved on.
+
+Revisit lifting code only if a third consumer needs turnstone's *correlation*
+machinery — generation-counted staleness is the one non-trivial piece here,
+and it is still single-consumer.
+
+## Effect contract: the earlier gate check (superseded by the update above)
 
 Woodshed was the second consumer that would arm the shared effect contract.
 It does not: the two applications solved effects differently, and for
