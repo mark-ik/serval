@@ -297,6 +297,45 @@ Revisit lifting code only if a third consumer needs turnstone's *correlation*
 machinery — generation-counted staleness is the one non-trivial piece here,
 and it is still single-consumer.
 
+### Applying the doctrine without a trait: a stack-wide audit
+
+Doctrine with no crate behind it is only worth something if it is actually
+applied, so the whole stack was swept for the flag-shaped smell (`*_requested:
+bool`, `*_requested: Option<T>`, one-shot `pending_*` booleans) across genet's
+components and ports, cambium, turnstone, mere, woodshed, isometry, hocket,
+and mesocosm.
+
+It found exactly **one** more instance, which is the useful result: the rule
+has teeth in both directions rather than licensing a sweep.
+
+Converted — `turnstone/src/knot_authoring.rs`: four toolbar flags
+(`save`/`resolve`/`run`/`reload`) became one `Vec<AuthoringRequest>` drained
+once. This instance was worse than woodshed's, because each flag was cleared
+through `runner.update`, and in Cambium that rebuilds the whole view tree; a
+click that set several verbs paid a rebuild per verb purely to reset booleans.
+The queue takes them in one `update`, so one rebuild, in press order.
+
+Deliberately left as flags, each for a reason the doctrine names:
+
+- `GenetCtx::focus_request: Option<NodeId>` (and the `focus_request` /
+  `focus_requested` fields in `radio.rs` and `disclosure.rs`): single-valued
+  by nature — only one node can hold focus — and consumed once per dispatch
+  through `take()`. "Last request wins" is the correct semantics, not a lost
+  repeat.
+- `cambium-genet-winit-host`'s `close_requested`: closing twice is closing
+  once. Idempotent, so coalescing is correct.
+- `woodshed`'s `midi.refresh_requested`: a port rescan is idempotent, same
+  reason.
+- `mere`'s `CommandPaletteViewModel::toggle_requested`: one flag behind an
+  authority type with an explicit `clear()`, not a sprawl with inconsistent
+  clearing. Converting it would be churn in another session's live area for
+  no property gained.
+
+The test for "is this flag wrong" is therefore not "is it a bool" but: **can
+two of these arrive before the drain, and would losing one or reordering them
+be a bug?** Nine audio commands and four toolbar verbs failed that test. A
+focus request and a window close pass it.
+
 ## Effect contract: the earlier gate check (superseded by the update above)
 
 Woodshed was the second consumer that would arm the shared effect contract.

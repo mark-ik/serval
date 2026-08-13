@@ -378,6 +378,13 @@ where
     pub(crate) sheet: String,
     pub(crate) leaves: sprigging::LeafRegistry<u64>,
     pub(crate) rendered: sprigging::RenderedLeaves,
+    /// Netrender roadmap E4 — leaf key → (retained `FragmentId`, epoch it was
+    /// translated at). Synced against `rendered` each redraw while a surface
+    /// (and therefore a renderer registry) exists; cleared when the surface is
+    /// gone, since the registry died with it. When a key is here,
+    /// `emit_paint_list_with_leaves` places a marker instead of splicing the
+    /// leaf's commands, and the renderer composes the cached lowering.
+    pub(crate) leaf_fragments: std::collections::HashMap<u64, (u64, u64)>,
     /// Cursor position in logical coordinates.
     pub(crate) cursor: (f32, f32),
     pub(crate) modifiers: ModifiersState,
@@ -439,6 +446,7 @@ where
             sheet: String::new(),
             leaves: sprigging::LeafRegistry::new(),
             rendered: sprigging::RenderedLeaves::new(),
+            leaf_fragments: std::collections::HashMap::new(),
             cursor: (0.0, 0.0),
             modifiers: ModifiersState::empty(),
             text_drag: None,

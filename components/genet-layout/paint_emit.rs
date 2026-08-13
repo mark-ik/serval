@@ -46,7 +46,8 @@ use paint_list_api::{
     ImageKey, ImageRendering, ImageResource, LayoutPoint, LayoutRect, LayoutSideOffsets,
     LayoutSize, LayoutTransform, LayoutVector2D, LinearGradientItem, LinearGradientPayload,
     MixBlendMode, NormalBorder, PaintCmd, PaintList, RadialGradientItem, RadialGradientPayload,
-    RectItem, RepeatMode, RepeatingImageItem, TextOptions, TextRunItem, TransformSpec,
+    RectItem, RepeatMode, RepeatingImageItem, RetainedFragmentRef, TextOptions, TextRunItem,
+    TransformSpec,
 };
 use parley::PositionedLayoutItem;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -72,6 +73,18 @@ pub trait LeafPaintSource {
     /// The Path-A commands for the leaf registered under `key`, in the leaf's
     /// local (border-box origin) coordinates, or `None` if absent.
     fn leaf_commands(&self, key: u64) -> Option<&[PaintCmd]>;
+
+    /// The renderer-registered retained fragment for `key`, if the host keeps
+    /// one (netrender roadmap E4). When this returns `Some(id)`, the emitter
+    /// places a `PaintCmd::PlaceRetainedFragment` marker at the leaf's box
+    /// instead of splicing `leaf_commands` inline — the renderer then composes
+    /// the leaf's cached lowering, so an unchanged leaf costs an append rather
+    /// than a re-translate + re-lower. Hosts without a fragment registry (the
+    /// headless `Harness`, wire producers) keep the default `None` and the
+    /// inline splice path, which stays pixel-identical.
+    fn leaf_fragment(&self, _key: u64) -> Option<u64> {
+        None
+    }
 }
 
 /// Clone the primary cascaded style (`ComputedValues`) for `id`, or `None` when
@@ -1440,9 +1453,17 @@ pub(crate) fn walk<Id>(
             // `<external-texture>` paint into. Offset by `content_offset`
             // (border + padding) so a leaf with CSS border/padding lands correctly.
             // Chained onto the replaced-content `if`/`else if` so a box paints at
-            // most one replaced payload.
-            if let Some(cmds) = em.leaves.and_then(|src| src.leaf_commands(leaf_key)) {
-                let (ox, oy) = content_offset;
+            // most one replaced payload. A host-retained fragment takes
+            // precedence over the inline splice: same pixels (receipted in
+            // paint_list_render's pe4 e2e), but the renderer reuses the leaf's
+            // cached lowering instead of re-translating the commands.
+            let (ox, oy) = content_offset;
+            if let Some(id) = em.leaves.and_then(|src| src.leaf_fragment(leaf_key)) {
+                commands.push(PaintCmd::PlaceRetainedFragment(RetainedFragmentRef {
+                    id,
+                    origin: LayoutPoint::new(ox, oy),
+                }));
+            } else if let Some(cmds) = em.leaves.and_then(|src| src.leaf_commands(leaf_key)) {
                 let shift = ox != 0.0 || oy != 0.0;
                 if shift {
                     commands.push(PaintCmd::PushTransform(TransformSpec {
@@ -1934,8 +1955,19 @@ fn emit_inline_content<NodeId: Copy + Eq + Hash>(
                         // coordinates with (0,0) at its own origin, so translate to the
                         // box origin — the inline twin of the block path's
                         // content-offset transform. Chained onto the replaced-payload
-                        // chain so an item paints at most one payload.
-                        if let Some(cmds) = leaves.and_then(|src| src.leaf_commands(leaf_key)) {
+                        // chain so an item paints at most one payload. As on the block
+                        // path, a host-retained fragment replaces the inline splice.
+                        if let Some(id) = leaves.and_then(|src| src.leaf_fragment(leaf_key)) {
+                            commands.push(PaintCmd::PlaceRetainedFragment(
+                                RetainedFragmentRef {
+                                    id,
+                                    origin: LayoutPoint::new(ox, oy),
+                                },
+                            ));
+                            emitted = true;
+                        } else if let Some(cmds) =
+                            leaves.and_then(|src| src.leaf_commands(leaf_key))
+                        {
                             commands.push(PaintCmd::PushTransform(TransformSpec {
                                 origin: LayoutPoint::new(ox, oy),
                                 transform: LayoutTransform::identity(),
@@ -4276,6 +4308,91 @@ mod tests {
             &empty,
         );
         assert!(!has_rect_rgb(&plist2, (0.1, 0.9, 0.2)));
+    }
+
+    /// A source that also offers a retained fragment for key 7 (netrender
+    /// roadmap E4): the host has translated the leaf's splice and registered
+    /// it with the renderer.
+    struct FragmentedLeaves(Vec<PaintCmd>);
+    impl LeafPaintSource for FragmentedLeaves {
+        fn leaf_commands(&self, key: u64) -> Option<&[PaintCmd]> {
+            (key == 7).then_some(self.0.as_slice())
+        }
+        fn leaf_fragment(&self, key: u64) -> Option<u64> {
+            (key == 7).then_some(42)
+        }
+    }
+
+    /// When the source offers a retained fragment, the emitter places a
+    /// `PlaceRetainedFragment` marker instead of splicing the leaf's commands:
+    /// the marker carries the content-box origin the inline path would have
+    /// pushed as a transform, and the leaf's own commands stay out of the list.
+    #[test]
+    fn chisel_leaf_with_fragment_emits_a_marker_not_a_splice() {
+        let document = StaticDocument::parse(
+            "<html><body><custom-leaf key='7' style='width:20px;height:10px;padding:10px;border:5px solid'></custom-leaf></body></html>",
+        );
+        let mut styles: StylePlane<StaticNodeId> = StylePlane::new();
+        run_cascade(
+            &document,
+            &mut styles,
+            euclid::Size2D::new(800.0, 600.0),
+            &[],
+            None,
+        );
+        let viewport = Size {
+            width: AvailableSpace::Definite(800.0),
+            height: AvailableSpace::Definite(600.0),
+        };
+        let (fragments, built, text_ctx) = layout(&document, &styles, &ImagePlane::new(), viewport);
+
+        let green = ColorF {
+            r: 0.1,
+            g: 0.9,
+            b: 0.2,
+            a: 1.0,
+        };
+        let leaves = FragmentedLeaves(vec![PaintCmd::DrawRect(RectItem {
+            placement: CommonPlacement::new(LayoutRect::new(
+                LayoutPoint::new(0.0, 0.0),
+                LayoutPoint::new(20.0, 10.0),
+            )),
+            color: green,
+        })]);
+        let plist = emit_paint_list_with_leaves(
+            &document,
+            &styles,
+            &fragments,
+            &built,
+            &text_ctx,
+            &ImagePlane::new(),
+            &BackgroundImagePlane::new(),
+            &FxHashMap::default(),
+            DeviceIntSize::new(800, 600),
+            &leaves,
+        );
+
+        let marker = plist
+            .commands()
+            .iter()
+            .find_map(|cmd| match cmd {
+                PaintCmd::PlaceRetainedFragment(fr) => Some(*fr),
+                _ => None,
+            })
+            .expect("a fragment-backed leaf emits a placement marker");
+        assert_eq!(marker.id, 42, "the marker carries the host's fragment id");
+        // border 5 + padding 10 on each side: content-box origin at (15,15)
+        // in the leaf's border-box space, same offset the inline path's
+        // PushTransform would carry.
+        assert_eq!(
+            (marker.origin.x, marker.origin.y),
+            (15.0, 15.0),
+            "the marker origin is the content-box offset"
+        );
+        assert!(
+            !has_rect_rgb(&plist, (0.1, 0.9, 0.2)),
+            "the leaf's own commands stay out of the list when a fragment is placed"
+        );
     }
 
     /// A chisel leaf with CSS border + padding paints in its content box: the
