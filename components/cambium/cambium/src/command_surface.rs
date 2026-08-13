@@ -356,6 +356,15 @@ fn command_row(
         ),
     )
     .attr("id", row_id)
+    // The item's own id, for targeting a row by identity. The DOM `id` above
+    // cannot serve: it is positional (`<surface>-item-3`), so it names where a
+    // row sits rather than which row it is, and it moves under filtering and
+    // reordering. Labels do not serve either, being neither unique nor stable
+    // against a rename. Emitted on every row rather than only when it differs
+    // from the label, so a driver never has to ask which kind of row it has.
+    // The twin of `graph_canvas`'s node key, and read the same way:
+    // `Selector::class("command-item").with_attr("data-key", ..)`.
+    .attr("data-key", item.id.clone())
     .attr(
         "class",
         if selected && kind == CommandSurfaceKind::Palette {
@@ -685,6 +694,74 @@ mod tests {
         }
         dom.dom_children(root)
             .find_map(|child| find_attr(dom, child, name, value))
+    }
+
+    /// The DOM id of the row carrying `key`, or `None` if no row does.
+    fn row_id_for_key(dom: &ScriptedDom, root: NodeId, key: &str) -> Option<String> {
+        let node = find_attr(dom, root, "data-key", key)?;
+        attr(dom, node, "id").map(str::to_string)
+    }
+
+    #[test]
+    fn every_row_carries_its_own_id_for_targeting() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let runner = GenetAppRunner::new(
+            dom.clone(),
+            |state: &CommandState| command_picker(state, &items()),
+            CommandState::default(),
+        );
+        let dom = dom.borrow();
+        for key in ["open", "export", "Close"] {
+            let node = find_attr(&dom, runner.root(), "data-key", key)
+                .unwrap_or_else(|| panic!("no row carries the key {key:?}"));
+            // Contains, not equals: the selected row also carries `selected`.
+            assert!(
+                attr(&dom, node, "class").is_some_and(|c| c.contains("command-item")),
+                "the key belongs to the row, not to something inside it"
+            );
+        }
+        // An item that was never given an explicit id still carries one: it
+        // defaults to the label, so a driver never has to know which kind of
+        // item it is looking at.
+        assert!(find_attr(&dom, runner.root(), "data-key", "Close").is_some());
+    }
+
+    #[test]
+    fn a_rows_key_holds_still_where_its_dom_id_does_not() {
+        // Why the key exists. `item_dom_id` names a row by its index in the
+        // caller's list, so a list that gains an entry ahead of it renames every
+        // row after. A roster sorted by id does that whenever a persona is
+        // added, and a driver targeting `...-item-1` would then be pointing at
+        // somebody else.
+        fn picker_over(names: Vec<&'static str>) -> (DomHandle, NodeId) {
+            let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+            let items: Vec<CommandItem> = names
+                .into_iter()
+                .map(|name| CommandItem::new(name).with_id(name))
+                .collect();
+            let runner = GenetAppRunner::new(
+                dom.clone(),
+                move |state: &CommandState| command_picker(state, &items),
+                CommandState::default(),
+            );
+            let root = runner.root();
+            (dom, root)
+        }
+
+        let (before, before_root) = picker_over(vec!["alt", "work"]);
+        let (after, after_root) = picker_over(vec!["alt", "burner", "work"]);
+
+        let before = before.borrow();
+        let after = after.borrow();
+        assert_ne!(
+            row_id_for_key(&before, before_root, "work"),
+            row_id_for_key(&after, after_root, "work"),
+            "the positional id moved, which is the hazard"
+        );
+        assert!(
+            row_id_for_key(&after, after_root, "work").is_some(),
+            "and the key still finds the same row after the move"
+        );
     }
 
     #[test]
