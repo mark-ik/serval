@@ -7,8 +7,8 @@
 use meristem::AnyView;
 
 use crate::{
-    Action, GenetCtx, GenetElement, Key, KeyEvent, NamedKey, PointerClick, View, el, on_click,
-    on_key,
+    Action, ElementView, GenetCtx, GenetElement, Key, KeyEvent, NamedKey, PointerClick, View, el,
+    on_click, on_key,
 };
 
 /// One entry in a command surface.
@@ -124,11 +124,21 @@ impl Action for CommandEvent {}
 type CommandView = Box<dyn AnyView<CommandState, CommandEvent, GenetCtx, GenetElement>>;
 
 /// Render `items` through the shared command interaction engine.
+///
+/// The return advertises [`ElementView`] as well as [`View`], because the
+/// concrete type is an `OnKey<El<..>>` and callers need that fact. Without it a
+/// command surface cannot be wrapped by any of the element-preserving
+/// combinators: [`request_focus`](crate::request_focus) in particular, which is
+/// what a picker opened as an application's first screen needs, since nothing
+/// else is on screen to hold the caret and its arrow keys would otherwise wait
+/// on a Tab the user has no reason to press.
 pub fn command_surface(
     state: &CommandState,
     items: &[CommandItem],
     kind: CommandSurfaceKind,
-) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement> + use<> {
+) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement>
++ ElementView<CommandState, CommandEvent>
++ use<> {
     let query = state.query.to_lowercase();
     let root: Vec<(usize, CommandItem)> = items
         .iter()
@@ -259,14 +269,18 @@ pub fn command_surface(
 pub fn command_palette(
     state: &CommandState,
     items: &[CommandItem],
-) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement> + use<> {
+) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement>
++ ElementView<CommandState, CommandEvent>
++ use<> {
     command_surface(state, items, CommandSurfaceKind::Palette)
 }
 
 pub fn command_picker(
     state: &CommandState,
     items: &[CommandItem],
-) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement> + use<> {
+) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement>
++ ElementView<CommandState, CommandEvent>
++ use<> {
     command_surface(state, items, CommandSurfaceKind::Picker)
 }
 
@@ -275,7 +289,9 @@ pub fn command_menu(
     items: &[CommandItem],
     x: f32,
     y: f32,
-) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement> + use<> {
+) -> impl View<CommandState, CommandEvent, GenetCtx, Element = GenetElement>
++ ElementView<CommandState, CommandEvent>
++ use<> {
     command_surface(state, items, CommandSurfaceKind::ContextMenu { x, y })
 }
 
