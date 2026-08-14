@@ -6465,6 +6465,28 @@ where
     (style.position != CssPosition::Static || is_flex_or_grid_item).then_some(level)
 }
 
+/// Return direct DOM children in CSS paint order for the admitted item
+/// containers. Flex and grid order by their computed `order` value while the
+/// stable sort preserves document order for equal values and anonymous text.
+pub(crate) fn order_modified_children<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    parent: D::NodeId,
+) -> Vec<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let mut children = dom.dom_children(parent).collect::<Vec<_>>();
+    let is_flex_or_grid = styles
+        .get(parent)
+        .is_some_and(|style| matches!(style.display, CssDisplay::Flex | CssDisplay::Grid));
+    if is_flex_or_grid {
+        children.sort_by_key(|child| styles.get(*child).map_or(0, |style| style.order.value()));
+    }
+    children
+}
+
 /// Hit-test a retained fragment plane after applying per-element scroll
 /// offsets to descendants. The ordinary [`hit_test`] path keeps the map empty;
 /// retained sessions use this variant for wheel-scrolled containers.
@@ -6579,7 +6601,7 @@ fn collect_hit_candidates<D>(
     if let Some(clip) = pushed_clip.as_ref() {
         state.clips.push(*clip);
     }
-    let children = state.dom.dom_children(id).collect::<Vec<_>>();
+    let children = order_modified_children(state.dom, state.styles, id);
     let next_scroll = state
         .scroll_offsets
         .get(&id)
@@ -8757,6 +8779,30 @@ mod tests {
             hit_test(&dom, &styles, &layout, 10.0, 10.0),
             Some(node_by_id(&dom, dom.document(), "normal").expect("normal node")),
             "a static block's numeric z-index does not outrank later normal content",
+        );
+    }
+
+    #[test]
+    fn grid_item_order_changes_the_topmost_hit_target() {
+        let dom = StaticDocument::parse(
+            "<div id=grid><div id=later></div><div id=earlier></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #grid { display: grid; width: 80px; height: 80px; \
+                         grid-template-columns: 80px; grid-template-rows: 80px; } \
+                 #later, #earlier { grid-area: 1 / 1 / 2 / 2; width: 80px; height: 80px; } \
+                 #later { order: 1; } #earlier { order: -1; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node_by_id(&dom, dom.document(), "later").expect("later node")),
+            "the item painted last in order-modified order receives the hit",
         );
     }
 

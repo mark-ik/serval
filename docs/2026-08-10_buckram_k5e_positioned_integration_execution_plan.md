@@ -27,6 +27,8 @@ The live receipts currently cover:
 - document paint and hit testing consuming the same retained fragment plane;
 - numeric positioned and direct static flex/grid item stacking levels bracketing
   the normal paint phase; and
+- direct flex/grid item paint and hit traversal using their order-modified
+  document order; and
 - a flattened positioned stacking item retaining its ancestor overflow clip.
 
 ## Evidence
@@ -72,6 +74,11 @@ The live receipts currently cover:
   static items with numeric levels establish the same negative, normal, and
   positive phases. `static_block_z_index_keeps_normal_hit_order` keeps that
   admission from leaking to ordinary static blocks.
+- `grid_items_paint_in_order_modified_document_order`,
+  `flex_items_paint_in_order_modified_document_order`, and
+  `grid_item_order_changes_the_topmost_hit_target` verify direct same-level
+  flex/grid items use order-modified document order in both paint and hit
+  traversal.
 - `positioned_stacking_item_keeps_its_overflow_clip` verifies a positive
   positioned descendant retains the `overflow` clip that would otherwise be
   lost when its stacking context is flattened.
@@ -93,9 +100,9 @@ appear in `TableShadowLedger::positioning_gaps`: their explicit out-of-flow
 route formats the detached structural subtree after table tracks settle. Full
 CSS stacking-context ordering and clipping remain a separate K5e matrix; the
 current receipts cover only numeric positioned and direct static flex/grid item
-levels and the supported `overflow` shorthand and longhands. Order-modified
-painting among same-level flex/grid items remains part of that matrix. Generic
-inline automatic-width roots now
+levels, direct flex/grid DOM-item order, and the supported `overflow` shorthand
+and longhands. Flattened or generated flex/grid item ordering remains part of
+that matrix. Generic inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
 subset; direct grid static alignment admits `self-start`/`self-end` across
 writing modes, using the positioned subject's corresponding physical edge.

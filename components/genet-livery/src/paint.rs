@@ -28,7 +28,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     LiveryLayout, StylePlane,
-    layout::{Fragment, TablePaintModel, border_width_px, z_index_stacking_level},
+    layout::{
+        Fragment, TablePaintModel, border_width_px, order_modified_children,
+        z_index_stacking_level,
+    },
     text::{TextFrame, TextSystem},
 };
 use buckram::{
@@ -1127,6 +1130,45 @@ mod positioned_paint_tests {
     }
 
     #[test]
+    fn grid_items_paint_in_order_modified_document_order() {
+        let list = render(
+            "<div id=grid><div id=later></div><div id=earlier></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #grid { display: grid; width: 80px; height: 80px; \
+                     grid-template-columns: 80px; grid-template-rows: 80px; } \
+             #later, #earlier { grid-area: 1 / 1 / 2 / 2; width: 80px; height: 80px; } \
+             #later { order: 1; background: #0f0; } \
+             #earlier { order: -1; background: #f00; }",
+        );
+        let earlier = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let later = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            earlier < later,
+            "grid item order changes normal-phase paint order: {earlier}, {later}"
+        );
+    }
+
+    #[test]
+    fn flex_items_paint_in_order_modified_document_order() {
+        let list = render(
+            "<div id=flex><div id=later></div><div id=earlier></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #flex { display: flex; flex-direction: column; width: 80px; height: 80px; } \
+             #later, #earlier { width: 80px; height: 80px; flex-shrink: 0; margin-bottom: -80px; } \
+             #later { order: 1; background: #0f0; } \
+             #earlier { order: -1; background: #f00; }",
+        );
+        let earlier = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let later = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            earlier < later,
+            "flex item order changes normal-phase paint order: {earlier}, {later}"
+        );
+    }
+
+    #[test]
     fn positioned_stacking_item_keeps_its_overflow_clip() {
         let list = render(
             "<div id=clip><div id=overlay></div></div>",
@@ -1355,7 +1397,7 @@ fn collect_stacking_items<D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    for child in dom.dom_children(parent) {
+    for child in order_modified_children(dom, styles, parent) {
         // A numeric positioned or flex/grid item starts a local context. Its
         // descendants are collected when that context is emitted, keeping it
         // atomic here.
@@ -1528,7 +1570,7 @@ fn emit_normal_children<'a, D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    let child_ids = dom.dom_children(parent).collect::<Vec<_>>();
+    let child_ids = order_modified_children(dom, styles, parent);
 
     let mut inline_group = Vec::new();
     for (index, child) in child_ids.iter().copied().enumerate() {
