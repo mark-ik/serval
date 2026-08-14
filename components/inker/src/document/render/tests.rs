@@ -277,3 +277,130 @@ fn to_text_flattens_structure_readably() {
     assert!(text.contains("2. second\n"));
     assert!(text.contains("> quoted"));
 }
+
+// ── html.rs (HTML body-fragment exporter) ───────────────────────────────────
+
+#[test]
+fn to_html_renders_structure_with_inline_markup() {
+    let document = doc(vec![
+        Block::Heading {
+            level: 1,
+            spans: vec![InlineSpan::Text("Hello".into())],
+        },
+        Block::Paragraph {
+            spans: vec![
+                InlineSpan::Text("see ".into()),
+                InlineSpan::Link {
+                    url: "https://x.test/".into(),
+                    title: None,
+                    spans: vec![InlineSpan::Strong(vec![InlineSpan::Text("docs".into())])],
+                    predicate: None,
+                },
+            ],
+        },
+        Block::List {
+            ordered: false,
+            items: vec![vec![Block::Paragraph {
+                spans: vec![InlineSpan::Text("item".into())],
+            }]],
+        },
+        Block::Rule,
+    ]);
+    let html = document.to_html();
+    assert!(html.contains("<h1>Hello</h1>"));
+    assert!(html.contains("<a href=\"https://x.test/\"><strong>docs</strong></a>"));
+    assert!(html.contains("<ul>\n<li><p>item</p>\n</li>\n</ul>"));
+    assert!(html.contains("<hr>"));
+}
+
+#[test]
+fn to_html_escapes_content_and_attributes() {
+    let document = doc(vec![
+        Block::Paragraph {
+            spans: vec![InlineSpan::Text("a < b & \"c\"".into())],
+        },
+        Block::CodeBlock {
+            language: Some("rust".into()),
+            text: "if a < b { }".into(),
+        },
+        Block::Image {
+            url: "https://x.test/?a=1&b=\"2\"".into(),
+            alt: "an <img>".into(),
+        },
+    ]);
+    let html = document.to_html();
+    assert!(html.contains("<p>a &lt; b &amp; \"c\"</p>"), "{html}");
+    assert!(html.contains("<pre><code class=\"language-rust\">if a &lt; b { }</code></pre>"));
+    assert!(html.contains("src=\"https://x.test/?a=1&amp;b=&quot;2&quot;\""));
+    assert!(html.contains("alt=\"an &lt;img&gt;\""));
+}
+
+#[test]
+fn to_html_renders_semantic_blocks_with_intent_classes() {
+    let document = doc(vec![
+        Block::FeedEntry {
+            title: "Title".into(),
+            date: Some("2026-05-08".into()),
+            summary: Some("Summary text.".into()),
+            article_url: Some("https://feed.test/x".into()),
+            source_url: None,
+        },
+        Block::MetadataRow {
+            label: "Login".into(),
+            value: "alice".into(),
+        },
+        Block::Badge {
+            text: "raw source".into(),
+        },
+    ]);
+    let html = document.to_html();
+    assert!(html.contains("<article class=\"feed-entry\">"));
+    assert!(html.contains("<h2>Title</h2>"));
+    assert!(html.contains("<p class=\"feed-date\"><em>2026-05-08</em></p>"));
+    assert!(html.contains("<a href=\"https://feed.test/x\">Open article</a>"));
+    assert!(html.contains("<dl class=\"metadata-row\"><dt>Login</dt><dd>alice</dd></dl>"));
+    assert!(html.contains("<p class=\"badge\"><em>raw source</em></p>"));
+}
+
+#[test]
+fn to_html_renders_table_with_alignment_and_quote_recursion() {
+    use super::super::TableAlignment;
+    let document = doc(vec![
+        Block::Table {
+            alignments: vec![TableAlignment::None, TableAlignment::Right],
+            header: vec![
+                vec![InlineSpan::Text("Name".into())],
+                vec![InlineSpan::Text("Count".into())],
+            ],
+            rows: vec![vec![
+                vec![InlineSpan::Text("a".into())],
+                vec![InlineSpan::Text("1".into())],
+            ]],
+        },
+        Block::Quote {
+            blocks: vec![Block::Paragraph {
+                spans: vec![InlineSpan::Text("quoted".into())],
+            }],
+        },
+    ]);
+    let html = document.to_html();
+    assert!(html.contains("<thead><tr><th>Name</th><th style=\"text-align:right\">Count</th></tr></thead>"));
+    assert!(html.contains("<tr><td>a</td><td style=\"text-align:right\">1</td></tr>"));
+    assert!(html.contains("<blockquote>\n<p>quoted</p>\n</blockquote>"));
+}
+
+#[test]
+fn to_html_carries_link_title_and_predicate() {
+    let document = doc(vec![Block::Paragraph {
+        spans: vec![InlineSpan::Link {
+            url: "mere://node/topic".into(),
+            title: Some("Topic".into()),
+            spans: vec![InlineSpan::Text("Topic".into())],
+            predicate: Some("schema:cites".into()),
+        }],
+    }]);
+    let html = document.to_html();
+    assert!(html.contains(
+        "<a href=\"mere://node/topic\" title=\"Topic\" data-predicate=\"schema:cites\">Topic</a>"
+    ));
+}

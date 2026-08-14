@@ -633,9 +633,11 @@ fn collect_link_targets(span: &InlineSpan, out: &mut Vec<(String, String)>) {
     }
 }
 
-// Gophermap + plain-text exporters live in `render/export.rs` (this file is
-// at the 600-LOC ceiling); tests live in `render/tests.rs`.
+// Gophermap + plain-text exporters live in `render/export.rs`, the HTML
+// exporter in `render/html.rs` (this file is at the 600-LOC ceiling); tests
+// live in `render/tests.rs`.
 mod export;
+mod html;
 pub use export::GophermapContext;
 
 // Tests live in `render/tests.rs` to keep this file under the 600-LOC ceiling.
