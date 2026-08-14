@@ -25,7 +25,8 @@ The live receipts currently cover:
 - positioned descendants contributing their final fragment geometry to a
   nested scroll container's scrollable overflow; and
 - document paint and hit testing consuming the same retained fragment plane;
-- numeric positioned stacking levels bracketing the normal paint phase; and
+- numeric positioned and direct static flex/grid item stacking levels bracketing
+  the normal paint phase; and
 - a flattened positioned stacking item retaining its ancestor overflow clip.
 
 ## Evidence
@@ -66,6 +67,11 @@ The live receipts currently cover:
 - `positioned_numeric_z_indices_wrap_the_normal_paint_phase` verifies the
   negative, normal, and positive paint phases share the positioned fragment
   plane in that order.
+- `static_grid_item_z_indices_wrap_the_normal_paint_phase` and
+  `static_flex_item_z_indices_wrap_the_normal_paint_phase` verify direct
+  static items with numeric levels establish the same negative, normal, and
+  positive phases. `static_block_z_index_keeps_normal_hit_order` keeps that
+  admission from leaking to ordinary static blocks.
 - `positioned_stacking_item_keeps_its_overflow_clip` verifies a positive
   positioned descendant retains the `overflow` clip that would otherwise be
   lost when its stacking context is flattened.
@@ -86,8 +92,10 @@ The supported table parts, including row groups, rows, and cells, no longer
 appear in `TableShadowLedger::positioning_gaps`: their explicit out-of-flow
 route formats the detached structural subtree after table tracks settle. Full
 CSS stacking-context ordering and clipping remain a separate K5e matrix; the
-current receipts cover only numeric positioned levels and the supported
-`overflow` shorthand and longhands. Generic inline automatic-width roots now
+current receipts cover only numeric positioned and direct static flex/grid item
+levels and the supported `overflow` shorthand and longhands. Order-modified
+painting among same-level flex/grid items remains part of that matrix. Generic
+inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
 subset; direct grid static alignment admits `self-start`/`self-end` across
 writing modes, using the positioned subject's corresponding physical edge.

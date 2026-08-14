@@ -12,7 +12,7 @@ use livery::{
         BackgroundImage, BackgroundRepeat, BorderCollapse, BorderStyle as CssBorderStyle,
         BoxShadow as CssBoxShadow, ComputedColor, Display, EmptyCells, FontSize, Length,
         LengthPercentage, LengthUnit, Matrix2D, Overflow as CssOverflow, Position, Radius,
-        Visibility, ZIndex,
+        Visibility,
     },
 };
 use paint_list_api::{
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     LiveryLayout, StylePlane,
-    layout::{Fragment, TablePaintModel, border_width_px},
+    layout::{Fragment, TablePaintModel, border_width_px, z_index_stacking_level},
     text::{TextFrame, TextSystem},
 };
 use buckram::{
@@ -1084,6 +1084,49 @@ mod positioned_paint_tests {
     }
 
     #[test]
+    fn static_grid_item_z_indices_wrap_the_normal_paint_phase() {
+        let list = render(
+            "<div id=grid><div id=front></div><div id=normal></div><div id=behind></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #grid { display: grid; width: 80px; height: 80px; \
+                     grid-template-columns: 80px; grid-template-rows: 80px; } \
+             #behind, #normal, #front { grid-area: 1 / 1 / 2 / 2; width: 80px; height: 80px; } \
+             #behind { z-index: -1; background: #f00; } \
+             #normal { background: #00f; } \
+             #front { z-index: 1; background: #0f0; }",
+        );
+        let behind = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let normal = first_rect(&list, ColorF::new(0.0, 0.0, 1.0, 1.0));
+        let front = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            behind < normal && normal < front,
+            "negative static grid items paint before normal items and positive items after them: {behind}, {normal}, {front}"
+        );
+    }
+
+    #[test]
+    fn static_flex_item_z_indices_wrap_the_normal_paint_phase() {
+        let list = render(
+            "<div id=flex><div id=front></div><div id=normal></div><div id=behind></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #flex { display: flex; flex-direction: column; width: 80px; height: 80px; } \
+             #behind, #normal, #front { width: 80px; height: 80px; flex-shrink: 0; margin-bottom: -80px; } \
+             #behind { z-index: -1; background: #f00; } \
+             #normal { background: #00f; } \
+             #front { z-index: 1; background: #0f0; }",
+        );
+        let behind = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let normal = first_rect(&list, ColorF::new(0.0, 0.0, 1.0, 1.0));
+        let front = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            behind < normal && normal < front,
+            "negative static flex items paint before normal items and positive items after them: {behind}, {normal}, {front}"
+        );
+    }
+
+    #[test]
     fn positioned_stacking_item_keeps_its_overflow_clip() {
         let list = render(
             "<div id=clip><div id=overlay></div></div>",
@@ -1313,9 +1356,10 @@ fn collect_stacking_items<D>(
     D::NodeId: Copy + Eq + Hash,
 {
     for child in dom.dom_children(parent) {
-        // A numeric positioned node starts a local context. Its descendants
-        // are collected when that context is emitted, keeping it atomic here.
-        if let Some(level) = stacking_level(styles, child) {
+        // A numeric positioned or flex/grid item starts a local context. Its
+        // descendants are collected when that context is emitted, keeping it
+        // atomic here.
+        if let Some(level) = stacking_level(dom, styles, child) {
             items.push(StackingItem {
                 id: child,
                 level,
@@ -1598,14 +1642,13 @@ fn same_fragment(left: &Fragment, right: &Fragment) -> bool {
         && (left.height - right.height).abs() <= 0.5
 }
 
-fn stacking_level<Id>(styles: &StylePlane<Id>, id: Id) -> Option<i32>
+fn stacking_level<D>(dom: &D, styles: &StylePlane<D::NodeId>, id: D::NodeId) -> Option<i32>
 where
-    Id: Copy + Eq + Hash,
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
 {
     let style = styles.get(id)?;
-    if style.position != Position::Static
-        && let ZIndex::Integer(level) = style.z_index
-    {
+    if let Some(level) = z_index_stacking_level(dom, styles, id) {
         return Some(level);
     }
     (style.opacity.value() < 1.0 || establishes_transform_context(style)).then_some(0)

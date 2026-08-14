@@ -6442,6 +6442,29 @@ where
     hit_test_with_scroll(dom, styles, fragments, &HashMap::new(), x, y)
 }
 
+/// Return a numeric stacking level only where CSS lets `z-index` establish a
+/// context: positioned boxes and direct flex/grid items. A static ordinary
+/// block keeps normal paint order even when it carries a numeric declaration.
+pub(crate) fn z_index_stacking_level<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    id: D::NodeId,
+) -> Option<i32>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let style = styles.get(id)?;
+    let livery::values::ZIndex::Integer(level) = style.z_index else {
+        return None;
+    };
+    let is_flex_or_grid_item = dom
+        .parent(id)
+        .and_then(|parent| styles.get(parent))
+        .is_some_and(|parent| matches!(parent.display, CssDisplay::Flex | CssDisplay::Grid));
+    (style.position != CssPosition::Static || is_flex_or_grid_item).then_some(level)
+}
+
 /// Hit-test a retained fragment plane after applying per-element scroll
 /// offsets to descendants. The ordinary [`hit_test`] path keeps the map empty;
 /// retained sessions use this variant for wheel-scrolled containers.
@@ -6531,12 +6554,7 @@ fn collect_hit_candidates<D>(
         && state.y >= fragment.y
         && state.y <= fragment.y + fragment.height
     {
-        let level = match style.z_index {
-            livery::values::ZIndex::Integer(level) => level,
-            // A z-index still deferred at hit-test time never got an element
-            // context; treat it as auto rather than guessing a stacking level.
-            livery::values::ZIndex::Auto | livery::values::ZIndex::Deferred(_) => 0,
-        };
+        let level = z_index_stacking_level(state.dom, state.styles, id).unwrap_or_default();
         state.candidates.push(HitCandidate {
             id,
             level,
@@ -8717,6 +8735,29 @@ mod tests {
         assert_eq!(hit_test(&dom, &styles, &layout, 10.0, 10.0), Some(node("front")));
         assert_eq!(hit_test(&dom, &styles, &layout, 10.0, 110.0), Some(node("overlay")));
         assert_ne!(hit_test(&dom, &styles, &layout, 75.0, 110.0), Some(node("overlay")));
+    }
+
+    #[test]
+    fn static_block_z_index_keeps_normal_hit_order() {
+        let dom = StaticDocument::parse(
+            "<div id=host><div id=front></div><div id=normal></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { width: 80px; height: 80px; } \
+                 #front { width: 80px; height: 80px; margin-bottom: -80px; z-index: 1; } \
+                 #normal { width: 80px; height: 80px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node_by_id(&dom, dom.document(), "normal").expect("normal node")),
+            "a static block's numeric z-index does not outrank later normal content",
+        );
     }
 
     #[test]
