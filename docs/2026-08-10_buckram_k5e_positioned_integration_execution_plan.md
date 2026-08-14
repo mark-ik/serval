@@ -75,6 +75,10 @@ The live receipts currently cover:
 - `grid_static_self_alignment_uses_the_subject_writing_mode` verifies direct
   positioned grid children resolve `self-start`/`self-end` from the subject's
   writing mode on both grid axes, including orthogonal and RTL vertical flows.
+- `positioned_grid_area_transforms_from_flow_relative_tracks_to_physical_insets`
+  verifies direct positioned grid children project their flow-relative
+  placement area before physical `top`/`right`/`bottom`/`left` insets resolve
+  against definite used dimensions, across vertical rl/lr and ltr/rtl flows.
 
 ## Remaining boundary
 
@@ -87,8 +91,7 @@ current receipts cover only numeric positioned levels and the supported
 have a distinct formatter root for the admitted horizontal absolute/fixed
 subset; direct grid static alignment admits `self-start`/`self-end` across
 writing modes, using the positioned subject's corresponding physical edge.
-Grid-area coordinate transforms and unadmitted descendants remain explicit
-fallbacks.
+Unadmitted descendants remain explicit fallbacks.
 The renderer still supplies the narrow flex/grid static-position
 provider, so its private position role cannot disappear until Buckram has an
 equivalent flex/grid static-position algorithm. These are open work, not

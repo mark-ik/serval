@@ -582,9 +582,10 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     }
 
     /// The grid area Taffy finalized for this direct absolutely positioned
-    /// child before it applied the child's insets and self-alignment. The
-    /// rectangle is relative to the grid container's border box and stays
-    /// separate from the child's static-position coordinate.
+    /// child before it applied the child's insets and self-alignment. Taffy
+    /// reports its grid-column and grid-row axes as horizontal X/Y; project
+    /// those track coordinates through the container flow before exposing the
+    /// physical rectangle that the K5 route consumes.
     pub fn grid_positioned_area(&self, id: AlgorithmNodeId) -> Option<PhysicalRect> {
         let parent = self.nodes[id.index()].parent?;
         if self.nodes[parent.index()].kind != AlgorithmKind::Grid {
@@ -597,12 +598,20 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             .iter()
             .find(|item| item.node == id.into_taffy())?
             .grid_area;
-        Some(PhysicalRect {
+        let track_area = LogicalRect::from_horizontal_physical(PhysicalRect {
             x: area.left,
             y: area.top,
             width: (area.right - area.left).max(0.0),
             height: (area.bottom - area.top).max(0.0),
-        })
+        });
+        let container = &self.nodes[parent.index()];
+        Some(container.block_style.flow.physical_rect(
+            track_area,
+            PhysicalSize {
+                width: container.final_layout.size.width,
+                height: container.final_layout.size.height,
+            },
+        ))
     }
 
     /// The rectangle an algorithm wrote, before the backend's rounding pass.
@@ -2790,6 +2799,102 @@ mod tests {
                 height: 100.0,
             })
         );
+    }
+
+    #[test]
+    fn grid_positioned_area_projects_track_axes_through_container_flow() {
+        use crate::{Direction, WritingMode};
+
+        for (flow, expected) in [
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+                PhysicalRect {
+                    x: 0.0,
+                    y: 20.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Ltr),
+                PhysicalRect {
+                    x: 30.0,
+                    y: 20.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Rtl),
+                PhysicalRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Rtl),
+                PhysicalRect {
+                    x: 30.0,
+                    y: 0.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+        ] {
+            let mut tree = AlgorithmTree::<Style, (), u8>::new();
+            let positioned = tree.new_with_children_and_block_style(
+                AlgorithmKind::Leaf,
+                BlockStyle {
+                    position: crate::BlockPosition::Absolute,
+                    ..BlockStyle::default()
+                },
+                Style {
+                    position: Position::Absolute,
+                    grid_column: taffy::Line {
+                        start: line(2),
+                        end: line(3),
+                    },
+                    grid_row: taffy::Line {
+                        start: line(2),
+                        end: line(3),
+                    },
+                    ..Style::default()
+                },
+                &[],
+                1,
+            );
+            let root = tree.new_with_children_and_block_style(
+                AlgorithmKind::Grid,
+                BlockStyle {
+                    flow,
+                    containing_flow: flow,
+                    establishes_bfc: true,
+                    ..BlockStyle::default()
+                },
+                Style {
+                    display: Display::Grid,
+                    size: taffy::Size {
+                        width: Dimension::length(100.0),
+                        height: Dimension::length(80.0),
+                    },
+                    grid_template_columns: vec![length(20.0_f32), length(60.0_f32)],
+                    grid_template_rows: vec![length(30.0_f32), length(70.0_f32)],
+                    ..Style::default()
+                },
+                &[positioned],
+                0,
+            );
+            tree.enable_flex_grid_static_position_provider(positioned);
+            tree.compute_layout_with_measure(root, available(100.0, 80.0), zero_measure);
+
+            assert_eq!(
+                tree.grid_positioned_area(positioned),
+                Some(expected),
+                "{flow:?}: track coordinates project through the grid flow"
+            );
+        }
     }
 
     #[test]

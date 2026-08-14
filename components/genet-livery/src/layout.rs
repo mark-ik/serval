@@ -8369,6 +8369,80 @@ mod tests {
     }
 
     #[test]
+    fn positioned_grid_area_transforms_from_flow_relative_tracks_to_physical_insets() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        for (writing_mode, direction, expected) in [
+            ("vertical-rl", "ltr", (10.0, 25.0)),
+            ("vertical-lr", "ltr", (40.0, 25.0)),
+            ("vertical-rl", "rtl", (10.0, 5.0)),
+            ("vertical-lr", "rtl", (40.0, 5.0)),
+        ] {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[&format!(
+                    "html, body, div {{ margin: 0; padding: 0; }} \
+                     #grid {{ position: relative; display: grid; writing-mode: {writing_mode}; \
+                             direction: {direction}; width: 100px; height: 80px; \
+                             grid-template-columns: 20px 60px; grid-template-rows: 30px 70px; }} \
+                     #positioned {{ position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                                   left: 10px; right: 20px; top: 5px; bottom: 15px; \
+                                   width: 40px; height: 40px; }}"
+                )]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+            let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+            let grid = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+                .expect("grid box");
+            let positioned = layout
+                .boxes()
+                .principal_box(
+                    node_by_id(&dom, dom.document(), "positioned").expect("positioned node"),
+                )
+                .expect("positioned box");
+            let grid_rect = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("grid fragment");
+            let positioned_rect = layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment");
+            let static_position = layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .expect("grid static position");
+
+            assert_eq!(
+                static_position.containing_block_area,
+                Some(LogicalRect {
+                    inline_start: 20.0,
+                    block_start: 30.0,
+                    inline_size: 60.0,
+                    block_size: 70.0,
+                }),
+                "{writing_mode} {direction}: the finalized area is stored in the grid's logical coordinates",
+            );
+            assert_eq!(
+                (
+                    positioned_rect.x - grid_rect.x,
+                    positioned_rect.y - grid_rect.y,
+                    positioned_rect.width,
+                    positioned_rect.height,
+                ),
+                (expected.0, expected.1, 40.0, 40.0),
+                "{writing_mode} {direction}: physical insets resolve inside the transformed grid area",
+            );
+        }
+    }
+
+    #[test]
     fn positioned_child_uses_the_positioned_ancestor_padding_box() {
         let dom = StaticDocument::parse("<div id=containing><div id=positioned></div></div>");
         let styles = resolve_styles(
