@@ -1958,12 +1958,10 @@ fn emit_inline_content<NodeId: Copy + Eq + Hash>(
                         // chain so an item paints at most one payload. As on the block
                         // path, a host-retained fragment replaces the inline splice.
                         if let Some(id) = leaves.and_then(|src| src.leaf_fragment(leaf_key)) {
-                            commands.push(PaintCmd::PlaceRetainedFragment(
-                                RetainedFragmentRef {
-                                    id,
-                                    origin: LayoutPoint::new(ox, oy),
-                                },
-                            ));
+                            commands.push(PaintCmd::PlaceRetainedFragment(RetainedFragmentRef {
+                                id,
+                                origin: LayoutPoint::new(ox, oy),
+                            }));
                             emitted = true;
                         } else if let Some(cmds) =
                             leaves.and_then(|src| src.leaf_commands(leaf_key))

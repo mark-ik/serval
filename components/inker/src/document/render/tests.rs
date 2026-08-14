@@ -384,7 +384,9 @@ fn to_html_renders_table_with_alignment_and_quote_recursion() {
         },
     ]);
     let html = document.to_html();
-    assert!(html.contains("<thead><tr><th>Name</th><th style=\"text-align:right\">Count</th></tr></thead>"));
+    assert!(html.contains(
+        "<thead><tr><th>Name</th><th style=\"text-align:right\">Count</th></tr></thead>"
+    ));
     assert!(html.contains("<tr><td>a</td><td style=\"text-align:right\">1</td></tr>"));
     assert!(html.contains("<blockquote>\n<p>quoted</p>\n</blockquote>"));
 }

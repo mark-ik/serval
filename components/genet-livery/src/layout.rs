@@ -4319,9 +4319,6 @@ fn apply_replaced_intrinsic_size<D>(
     let natural_ratio = intrinsic
         .filter(|(width, height)| *width > 0.0 && *height > 0.0)
         .map(|(width, height)| width / height);
-    if computed.aspect_ratio.uses_natural_ratio() && natural_ratio.is_some() {
-        style.aspect_ratio = natural_ratio;
-    }
 
     // Attribute-derived dimensions already reached `computed` through the
     // presentational-hint origin. Layout owns only natural-size resolution.
@@ -4329,6 +4326,15 @@ fn apply_replaced_intrinsic_size<D>(
     let height_specified = !matches!(computed.height, CssSize::Auto);
     let width = definite_size(computed.width, font_size);
     let height = definite_size(computed.height, font_size);
+    if computed.aspect_ratio.uses_natural_ratio()
+        && natural_ratio.is_some()
+        && !(width.is_some() && height.is_some())
+    {
+        // Taffy's aspect-ratio input participates in sizing even when both
+        // axes are definite. CSS's natural ratio does not, so only expose it
+        // while at least one axis still needs intrinsic resolution.
+        style.aspect_ratio = natural_ratio;
+    }
     match (
         width,
         height,
@@ -4708,11 +4714,12 @@ fn justify_content(value: CssAlignment) -> JustifyContent {
 }
 
 fn font_size_px(size: &FontSize, parent: f32) -> f32 {
-    match size {
-        FontSize::Medium => 16.0,
-        FontSize::Value(value) => absolute_length_percentage(*value, parent, 16.0, parent),
-    }
-    .max(0.0)
+    size.absolute_px()
+        .unwrap_or_else(|| match size {
+            FontSize::Value(value) => absolute_length_percentage(*value, parent, 16.0, parent),
+            _ => unreachable!("absolute font sizes returned a px value"),
+        })
+        .max(0.0)
 }
 
 pub(crate) fn line_height_px(height: &LineHeight, font_size: f32) -> f32 {

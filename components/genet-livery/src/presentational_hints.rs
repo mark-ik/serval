@@ -11,9 +11,9 @@ use livery::{
     PropertyId, PropertyValue,
     cascade::{Declaration, DeclaredValue},
     values::{
-        AspectRatio, BorderCollapse, BorderStyle, BorderWidth, CaptionSide, ComputedColor, Float,
-        Length, LengthPercentage, Margin, Padding, Size, TableBorderSpacing, TextAlign,
-        VerticalAlign,
+        AspectRatio, BorderCollapse, BorderStyle, BorderWidth, CaptionSide, Clear, ComputedColor,
+        Float, FontSize, Length, LengthPercentage, Margin, Padding, Size, TableBorderSpacing,
+        TextAlign, TextWrapMode, VerticalAlign, WhiteSpaceCollapse,
     },
 };
 
@@ -172,6 +172,7 @@ where
         {
             let mut child_alignment = inherited_alignment;
             if dom.kind(id) == NodeKind::Element {
+                collect_general_html_hints(dom, id, hints);
                 collect_table_part_hints(dom, id, hints);
                 collect_replaced_content_hints(dom, id, hints);
                 collect_text_alignment_hint(dom, id, hints);
@@ -197,6 +198,205 @@ where
         visit(dom, dom.document(), None, &mut hints);
         hints
     }
+}
+
+fn collect_general_html_hints<D>(dom: &D, id: D::NodeId, hints: &mut PresentationalHints<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(name) = dom.element_name(id) else {
+        return;
+    };
+    if name.ns.as_ref() != "http://www.w3.org/1999/xhtml" {
+        return;
+    }
+
+    match name.local.as_ref().to_ascii_lowercase().as_str() {
+        "body" => collect_body_hints(dom, id, hints),
+        "pre" if html_attribute(dom, id, "wrap").is_some() => {
+            let declarations = hints.declarations_for_mut(id);
+            push_value(
+                declarations,
+                PropertyId::WhiteSpaceCollapse,
+                PropertyValue::WhiteSpaceCollapse(WhiteSpaceCollapse::Preserve),
+            );
+            push_value(
+                declarations,
+                PropertyId::TextWrapMode,
+                PropertyValue::TextWrapMode(TextWrapMode::Wrap),
+            );
+        },
+        "br" => collect_break_clear_hint(dom, id, hints),
+        "font" => {
+            collect_legacy_color_hint(dom, id, hints, "color", PropertyId::Color);
+            collect_legacy_font_size_hint(dom, id, hints);
+        },
+        "hr" => collect_horizontal_rule_hints(dom, id, hints),
+        _ => {},
+    }
+}
+
+fn collect_body_hints<D>(dom: &D, body: D::NodeId, hints: &mut PresentationalHints<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    collect_first_pixel_margin_hint(
+        dom,
+        body,
+        hints,
+        ["marginheight", "topmargin"],
+        [PropertyId::MarginTop, PropertyId::MarginBottom],
+    );
+    collect_first_pixel_margin_hint(
+        dom,
+        body,
+        hints,
+        ["marginwidth", "leftmargin"],
+        [PropertyId::MarginLeft, PropertyId::MarginRight],
+    );
+    collect_legacy_color_hint(dom, body, hints, "bgcolor", PropertyId::BackgroundColor);
+    collect_legacy_color_hint(dom, body, hints, "text", PropertyId::Color);
+}
+
+fn collect_first_pixel_margin_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+    attributes: [&'static str; 2],
+    properties: [PropertyId; 2],
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some((attribute, raw)) = attributes
+        .into_iter()
+        .find_map(|attribute| html_attribute(dom, id, attribute).map(|raw| (attribute, raw)))
+    else {
+        return;
+    };
+    let Some(value) = parse_non_negative_integer_px(raw) else {
+        hints
+            .declarations_for_mut(id)
+            .invalid_non_negative_integer(attribute, raw);
+        return;
+    };
+    let value = Margin::Value(LengthPercentage::Length(Length::px(value)));
+    let declarations = hints.declarations_for_mut(id);
+    for property in properties {
+        push_value(declarations, property, PropertyValue::Margin(value));
+    }
+}
+
+fn collect_break_clear_hint<D>(dom: &D, id: D::NodeId, hints: &mut PresentationalHints<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "clear") else {
+        return;
+    };
+    let value = match raw.to_ascii_lowercase().as_str() {
+        "left" => Clear::Left,
+        "right" => Clear::Right,
+        "all" | "both" => Clear::Both,
+        _ => return,
+    };
+    push_value(
+        hints.declarations_for_mut(id),
+        PropertyId::Clear,
+        PropertyValue::Clear(value),
+    );
+}
+
+fn collect_legacy_font_size_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "size") else {
+        return;
+    };
+    let Some(value) = parse_legacy_font_size(raw) else {
+        return;
+    };
+    push_value(
+        hints.declarations_for_mut(id),
+        PropertyId::FontSize,
+        PropertyValue::FontSize(value),
+    );
+}
+
+fn collect_horizontal_rule_hints<D>(
+    dom: &D,
+    hr: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if let Some(raw) = html_attribute(dom, hr, "align") {
+        let zero = Margin::Value(LengthPercentage::ZERO);
+        let margins = match raw.to_ascii_lowercase().as_str() {
+            "left" => Some((zero, Margin::Auto)),
+            "right" => Some((Margin::Auto, zero)),
+            "center" => Some((Margin::Auto, Margin::Auto)),
+            _ => None,
+        };
+        if let Some((left, right)) = margins {
+            let declarations = hints.declarations_for_mut(hr);
+            push_value(
+                declarations,
+                PropertyId::MarginLeft,
+                PropertyValue::Margin(left),
+            );
+            push_value(
+                declarations,
+                PropertyId::MarginRight,
+                PropertyValue::Margin(right),
+            );
+        }
+    }
+
+    let has_color = html_attribute(dom, hr, "color").is_some();
+    let has_noshade = html_attribute(dom, hr, "noshade").is_some();
+    if has_color || has_noshade {
+        push_border_styles(hints.declarations_for_mut(hr), [BorderStyle::Solid; 4]);
+    }
+
+    if let Some(raw) = html_attribute(dom, hr, "size") {
+        if let Some(size) = parse_non_negative_integer_px(raw) {
+            let declarations = hints.declarations_for_mut(hr);
+            if has_color || has_noshade {
+                push_border_widths(declarations, BorderWidth::Length(Length::px(size / 2.0)));
+            } else if size == 1.0 {
+                push_value(
+                    declarations,
+                    PropertyId::BorderBottomWidth,
+                    PropertyValue::BorderWidth(BorderWidth::Length(Length::px(0.0))),
+                );
+            } else if size > 1.0 {
+                push_value(
+                    declarations,
+                    PropertyId::Height,
+                    PropertyValue::Size(Size::Value(LengthPercentage::Length(Length::px(
+                        size - 2.0,
+                    )))),
+                );
+            }
+        } else {
+            hints
+                .declarations_for_mut(hr)
+                .invalid_non_negative_integer("size", raw);
+        }
+    }
+
+    collect_dimension_hint(dom, hr, hints, "width", PropertyId::Width, false);
+    collect_legacy_color_hint(dom, hr, hints, "color", PropertyId::Color);
 }
 
 fn collect_replaced_content_hints<D>(
@@ -362,7 +562,12 @@ fn collect_replaced_alignment_hint<D>(
             PropertyId::VerticalAlign,
             PropertyValue::VerticalAlign(VerticalAlign::MiddleWithBaseline),
         ),
-        "bottom" | "absbottom" => push_value(
+        "bottom" => push_value(
+            declarations,
+            PropertyId::VerticalAlign,
+            PropertyValue::VerticalAlign(VerticalAlign::Bottom),
+        ),
+        "absbottom" => push_value(
             declarations,
             PropertyId::VerticalAlign,
             PropertyValue::VerticalAlign(VerticalAlign::Bottom),
@@ -551,12 +756,15 @@ where
             collect_legacy_color_hint(dom, id, hints, "bgcolor", PropertyId::BackgroundColor);
             collect_dimension_hint(dom, id, hints, "height", PropertyId::Height, false);
             collect_table_part_alignment_hint(dom, id, hints);
+            collect_table_part_vertical_alignment_hint(dom, id, hints);
         },
         "td" | "th" => {
             collect_legacy_color_hint(dom, id, hints, "bgcolor", PropertyId::BackgroundColor);
             collect_dimension_hint(dom, id, hints, "width", PropertyId::Width, true);
             collect_dimension_hint(dom, id, hints, "height", PropertyId::Height, true);
             collect_table_part_alignment_hint(dom, id, hints);
+            collect_table_part_vertical_alignment_hint(dom, id, hints);
+            collect_table_cell_nowrap_hint(dom, id, hints);
         },
         _ => {},
     }
@@ -711,6 +919,55 @@ fn collect_table_part_alignment_hint<D>(
         value: DeclaredValue::Value(PropertyValue::TextAlign(value)),
         important: false,
     });
+}
+
+fn collect_table_part_vertical_alignment_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "valign") else {
+        return;
+    };
+    let value = match raw.to_ascii_lowercase().as_str() {
+        "top" => VerticalAlign::Top,
+        "middle" => VerticalAlign::Middle,
+        "bottom" => VerticalAlign::Bottom,
+        "baseline" => VerticalAlign::Baseline,
+        _ => return,
+    };
+    push_value(
+        hints.declarations_for_mut(id),
+        PropertyId::VerticalAlign,
+        PropertyValue::VerticalAlign(value),
+    );
+}
+
+fn collect_table_cell_nowrap_hint<D>(
+    dom: &D,
+    id: D::NodeId,
+    hints: &mut PresentationalHints<D::NodeId>,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if html_attribute(dom, id, "nowrap").is_none() {
+        return;
+    }
+    let declarations = hints.declarations_for_mut(id);
+    push_value(
+        declarations,
+        PropertyId::WhiteSpaceCollapse,
+        PropertyValue::WhiteSpaceCollapse(WhiteSpaceCollapse::Collapse),
+    );
+    push_value(
+        declarations,
+        PropertyId::TextWrapMode,
+        PropertyValue::TextWrapMode(TextWrapMode::Nowrap),
+    );
 }
 
 impl<Id> PresentationalHintProvider<Id> for PresentationalHints<Id>
@@ -1156,7 +1413,11 @@ fn parse_integer(input: &str) -> Option<i64> {
     let value = (position > start)
         .then(|| input[start..position].parse::<i64>().ok())
         .flatten()?;
-    negative.then(|| value.checked_neg()).unwrap_or(Some(value))
+    if negative {
+        value.checked_neg()
+    } else {
+        Some(value)
+    }
 }
 
 /// HTML's bounded non-negative integer parser for PH1. This intentionally
@@ -1188,6 +1449,64 @@ pub(crate) fn parse_non_negative_integer_px(input: &str) -> Option<f32> {
         .flatten()
         .filter(|value| !negative || *value == 0)
         .map(|value| value as f32)
+}
+
+/// HTML's legacy `font[size]` parser. It consumes an optional relative sign
+/// and an ASCII-decimal prefix, then clamps the resulting HTML size to 1..=7.
+fn parse_legacy_font_size(input: &str) -> Option<FontSize> {
+    #[derive(Clone, Copy)]
+    enum Mode {
+        Absolute,
+        RelativePlus,
+        RelativeMinus,
+    }
+
+    let bytes = input.as_bytes();
+    let mut position = 0;
+    while bytes
+        .get(position)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        position += 1;
+    }
+    let mode = match bytes.get(position) {
+        Some(b'+') => {
+            position += 1;
+            Mode::RelativePlus
+        },
+        Some(b'-') => {
+            position += 1;
+            Mode::RelativeMinus
+        },
+        _ => Mode::Absolute,
+    };
+    let start = position;
+    while bytes
+        .get(position)
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        position += 1;
+    }
+    if position == start {
+        return None;
+    }
+    let parsed = input[start..position].parse::<u64>().unwrap_or(u64::MAX);
+    let value = match mode {
+        Mode::Absolute => parsed,
+        Mode::RelativePlus => parsed.saturating_add(3),
+        Mode::RelativeMinus => 3u64.saturating_sub(parsed),
+    }
+    .clamp(1, 7);
+    Some(match value {
+        1 => FontSize::XSmall,
+        2 => FontSize::Small,
+        3 => FontSize::Medium,
+        4 => FontSize::Large,
+        5 => FontSize::XLarge,
+        6 => FontSize::XXLarge,
+        7 => FontSize::XXXLarge,
+        _ => unreachable!("legacy font size was clamped to 1..=7"),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1581,6 +1900,54 @@ mod tests {
     }
 
     #[test]
+    fn table_part_valign_and_cell_nowrap_reach_computed_css() {
+        let dom = StaticDocument::parse(
+            r#"
+                <table>
+                  <thead id="head" valign="TOP"><tr><th id="middle" valign="middle" nowrap>head</th></tr></thead>
+                  <tbody><tr id="row" valign="bottom"><td id="baseline" valign="baseline" nowrap>cell</td></tr></tbody>
+                </table>
+            "#,
+        );
+        let by_id = |id| node_by_id(&dom, dom.document(), id).unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["#middle { vertical-align: bottom; white-space: pre-wrap; }"]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        assert_eq!(
+            styles.get(by_id("head")).unwrap().vertical_align,
+            VerticalAlign::Top
+        );
+        let middle = styles.get(by_id("middle")).unwrap();
+        assert_eq!(middle.vertical_align, VerticalAlign::Bottom);
+        assert_eq!(middle.white_space_collapse, WhiteSpaceCollapse::Preserve);
+        assert_eq!(middle.text_wrap_mode, TextWrapMode::Wrap);
+        assert_eq!(
+            styles.get(by_id("row")).unwrap().vertical_align,
+            VerticalAlign::Bottom
+        );
+        let baseline = styles.get(by_id("baseline")).unwrap();
+        assert_eq!(baseline.vertical_align, VerticalAlign::Baseline);
+        assert_eq!(baseline.white_space_collapse, WhiteSpaceCollapse::Collapse);
+        assert_eq!(baseline.text_wrap_mode, TextWrapMode::Nowrap);
+        assert_eq!(
+            styles
+                .computed_style(by_id("baseline"), "white-space-collapse")
+                .as_deref(),
+            Some("collapse")
+        );
+        assert_eq!(
+            styles
+                .computed_style(by_id("baseline"), "text-wrap-mode")
+                .as_deref(),
+            Some("nowrap")
+        );
+    }
+
+    #[test]
     fn deepest_applicable_alignment_owner_selects_descendant_used_margin_policy() {
         let dom = StaticDocument::parse(
             r#"
@@ -1788,6 +2155,8 @@ mod tests {
         let dom = StaticDocument::parse(
             r#"
                 <img id="img" width="80" height="40" align="middle" hspace="5" vspace="10" border="3">
+                <img id="bottom" align="bottom">
+                <img id="absbottom" align="absbottom">
                 <input id="image-input" type="ImAgE" width="25%" height="10" align="right" hspace="4" vspace="6" border="2">
                 <input id="text-input" type="text" width="91" height="92" align="right" hspace="7" vspace="8" border="9">
                 <embed id="embed" width="70" height="30" align="texttop" hspace="11" vspace="12">
@@ -1841,6 +2210,14 @@ mod tests {
         );
         assert_eq!(img.border_top_width, BorderWidth::Length(Length::px(3.0)));
         assert_eq!(img.border_top_style, BorderStyle::Solid);
+        assert_eq!(
+            styles.get(by_id("bottom")).unwrap().vertical_align,
+            VerticalAlign::Bottom
+        );
+        assert_eq!(
+            styles.get(by_id("absbottom")).unwrap().vertical_align,
+            VerticalAlign::Bottom
+        );
 
         let image_input = styles.get(by_id("image-input")).unwrap();
         assert_eq!(
@@ -2251,6 +2628,254 @@ mod tests {
     }
 
     #[test]
+    fn ph5_flow_page_font_and_horizontal_rule_hints_project_typed_css() {
+        let dom = StaticDocument::parse(
+            r##"
+                <body id="body" marginheight="+12legacy" topmargin="99" marginwidth="25"
+                      bgcolor="#102030" text="yellow">
+                  <pre id="pre" wrap>wrapped</pre>
+                  <br id="break" clear="ALL">
+                  <font id="font" color="fuchsia" size="+2legacy">font</font>
+                  <hr id="sized" align="right" color="green" size="5" width="50%">
+                  <hr id="one" size="1">
+                  <hr id="tall" size="10">
+                </body>
+            "##,
+        );
+        let by_id = |id| node_by_id(&dom, dom.document(), id).unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        let body = styles.get(by_id("body")).unwrap();
+        assert_eq!(
+            body.margin_top,
+            Margin::Value(LengthPercentage::Length(Length::px(12.0)))
+        );
+        assert_eq!(body.margin_bottom, body.margin_top);
+        assert_eq!(
+            body.margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(25.0)))
+        );
+        assert_eq!(body.margin_right, body.margin_left);
+        assert_eq!(body.background_color.to_srgb8(), Some((16, 32, 48, 255)));
+        assert_eq!(body.color.to_srgb8(), Some((255, 255, 0, 255)));
+
+        let pre = styles.get(by_id("pre")).unwrap();
+        assert_eq!(pre.white_space_collapse, WhiteSpaceCollapse::Preserve);
+        assert_eq!(pre.text_wrap_mode, TextWrapMode::Wrap);
+        assert_eq!(styles.get(by_id("break")).unwrap().clear, Clear::Both);
+        assert_eq!(
+            styles.get(by_id("font")).unwrap().color.to_srgb8(),
+            Some((255, 0, 255, 255))
+        );
+        assert_eq!(
+            styles.get(by_id("font")).unwrap().font_size,
+            FontSize::Value(LengthPercentage::Length(Length::px(24.0)))
+        );
+
+        let sized = styles.get(by_id("sized")).unwrap();
+        assert_eq!(sized.margin_left, Margin::Auto);
+        assert_eq!(sized.margin_right, Margin::Value(LengthPercentage::ZERO));
+        assert_eq!(sized.border_top_style, BorderStyle::Solid);
+        assert_eq!(sized.border_top_width, BorderWidth::Length(Length::px(2.5)));
+        assert_eq!(sized.width, Size::Value(LengthPercentage::Percentage(0.5)));
+        assert_eq!(sized.color.to_srgb8(), Some((0, 128, 0, 255)));
+        assert_eq!(
+            styles
+                .computed_style(by_id("sized"), "border-width")
+                .as_deref(),
+            Some("2.5px")
+        );
+
+        assert_eq!(
+            styles.get(by_id("one")).unwrap().border_bottom_width,
+            BorderWidth::Length(Length::px(0.0))
+        );
+        assert_eq!(
+            styles.get(by_id("tall")).unwrap().height,
+            Size::Value(LengthPercentage::Length(Length::px(8.0)))
+        );
+    }
+
+    #[test]
+    fn ph5_first_body_margin_source_and_author_precedence_are_preserved() {
+        let dom = StaticDocument::parse(
+            r#"
+                <body id="body" marginheight="bad" topmargin="40" marginwidth="4" leftmargin="9"
+                      bgcolor="red" text="red">
+                  <pre id="pre" wrap>wrapped</pre>
+                  <br id="break" clear="left">
+                  <font id="font" color="red" size="7">font</font>
+                  <hr id="rule" align="left" color="red" size="6" width="90">
+                </body>
+            "#,
+        );
+        let by_id = |id| node_by_id(&dom, dom.document(), id).unwrap();
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[r#"
+                #body { margin-left: 3px; color: white; background-color: black; }
+                #pre { white-space: normal; }
+                #break { clear: right; }
+                #font { color: blue; font-size: 20px; }
+                #rule { margin-right: 7px; border-top-width: 9px; width: 120px; color: blue; }
+            "#]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        let body_id = by_id("body");
+        let body = styles.get(body_id).unwrap();
+        assert_eq!(
+            body.margin_top,
+            Margin::Value(LengthPercentage::Length(Length::px(8.0))),
+            "an invalid first source falls back to the UA default instead of trying topmargin"
+        );
+        assert_eq!(
+            body.margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(3.0)))
+        );
+        assert_eq!(
+            body.margin_right,
+            Margin::Value(LengthPercentage::Length(Length::px(4.0)))
+        );
+        assert_eq!(body.color.to_srgb8(), Some((255, 255, 255, 255)));
+        assert_eq!(body.background_color.to_srgb8(), Some((0, 0, 0, 255)));
+        assert_eq!(
+            styles.presentational_hint_diagnostics(body_id),
+            [PresentationalHintDiagnostic::InvalidNonNegativeInteger {
+                attribute: "marginheight",
+                value: "bad".to_owned(),
+            }]
+        );
+
+        let pre = styles.get(by_id("pre")).unwrap();
+        assert_eq!(pre.white_space_collapse, WhiteSpaceCollapse::Collapse);
+        assert_eq!(pre.text_wrap_mode, TextWrapMode::Wrap);
+        assert_eq!(styles.get(by_id("break")).unwrap().clear, Clear::Right);
+        assert_eq!(
+            styles.get(by_id("font")).unwrap().color.to_srgb8(),
+            Some((0, 0, 255, 255))
+        );
+        assert_eq!(
+            styles.get(by_id("font")).unwrap().font_size,
+            FontSize::Value(LengthPercentage::Length(Length::px(20.0)))
+        );
+        let rule = styles.get(by_id("rule")).unwrap();
+        assert_eq!(
+            rule.margin_right,
+            Margin::Value(LengthPercentage::Length(Length::px(7.0)))
+        );
+        assert_eq!(rule.border_top_width, BorderWidth::Length(Length::px(9.0)));
+        assert_eq!(
+            rule.border_right_width,
+            BorderWidth::Length(Length::px(3.0))
+        );
+        assert_eq!(
+            rule.width,
+            Size::Value(LengthPercentage::Length(Length::px(120.0)))
+        );
+        assert_eq!(rule.color.to_srgb8(), Some((0, 0, 255, 255)));
+    }
+
+    #[test]
+    fn ph5_attribute_mutation_restyles_the_same_computed_style_path() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            r#"
+                <body id="body" marginwidth="10" bgcolor="red">
+                  <pre id="pre" wrap>pre</pre>
+                  <br id="break" clear="left">
+                  <font id="font" color="red" size="2">font</font>
+                  <hr id="rule" align="left" color="red" size="10">
+                  <table><tr><td id="cell" valign="top" nowrap>cell</td></tr></table>
+                </body>
+            "#,
+        );
+        let by_id = |dom: &ScriptedDom, id| node_by_id(dom, dom.document(), id).unwrap();
+        let body = by_id(&dom, "body");
+        let pre = by_id(&dom, "pre");
+        let break_node = by_id(&dom, "break");
+        let font = by_id(&dom, "font");
+        let rule = by_id(&dom, "rule");
+        let cell = by_id(&dom, "cell");
+        let style_set = StyleSet::cambium(&[]);
+        let device = Device::screen(800.0, 600.0);
+        let states = InteractionStates::default();
+        let mut session = IncrementalStyle::new();
+        session.update(&dom, &style_set, &device, &states, &[]);
+
+        for (node, attribute, value) in [
+            (body, "marginwidth", "20"),
+            (body, "bgcolor", "blue"),
+            (break_node, "clear", "right"),
+            (font, "color", "blue"),
+            (font, "size", "6"),
+            (rule, "align", "right"),
+            (rule, "color", "blue"),
+            (rule, "size", "4"),
+            (cell, "valign", "bottom"),
+        ] {
+            dom.set_attribute(
+                node,
+                layout_dom_api::QualName::new(
+                    None,
+                    Namespace::from(""),
+                    LocalName::from(attribute),
+                ),
+                value,
+            );
+        }
+        for (node, attribute) in [(pre, "wrap"), (cell, "nowrap")] {
+            dom.remove_attribute(
+                node,
+                layout_dom_api::QualName::new(
+                    None,
+                    Namespace::from(""),
+                    LocalName::from(attribute),
+                ),
+            );
+        }
+        let mut mutations = Vec::new();
+        dom.drain_mutations(&mut mutations);
+        session.update(&dom, &style_set, &device, &states, &mutations);
+
+        let styles = session.styles();
+        assert_eq!(
+            styles.get(body).unwrap().margin_left,
+            Margin::Value(LengthPercentage::Length(Length::px(20.0)))
+        );
+        assert_eq!(
+            styles.get(body).unwrap().background_color.to_srgb8(),
+            Some((0, 0, 255, 255))
+        );
+        assert_eq!(
+            styles.get(pre).unwrap().text_wrap_mode,
+            TextWrapMode::Nowrap
+        );
+        assert_eq!(styles.get(break_node).unwrap().clear, Clear::Right);
+        assert_eq!(
+            styles.get(font).unwrap().color.to_srgb8(),
+            Some((0, 0, 255, 255))
+        );
+        assert_eq!(
+            styles.get(font).unwrap().font_size,
+            FontSize::Value(LengthPercentage::Length(Length::px(32.0)))
+        );
+        let rule = styles.get(rule).unwrap();
+        assert_eq!(rule.margin_left, Margin::Auto);
+        assert_eq!(rule.margin_right, Margin::Value(LengthPercentage::ZERO));
+        assert_eq!(rule.border_left_width, BorderWidth::Length(Length::px(2.0)));
+        assert_eq!(rule.color.to_srgb8(), Some((0, 0, 255, 255)));
+        let cell = styles.get(cell).unwrap();
+        assert_eq!(cell.vertical_align, VerticalAlign::Bottom);
+        assert_eq!(cell.text_wrap_mode, TextWrapMode::Wrap);
+    }
+
+    #[test]
     fn outer_table_rules_do_not_cross_a_nested_table_boundary() {
         let dom = StaticDocument::parse(
             r#"
@@ -2382,6 +3007,20 @@ mod tests {
         assert_eq!(parse_integer("-0"), Some(0));
         assert_eq!(parse_integer("0.5e1"), Some(0));
         assert_eq!(parse_integer("none"), None);
+    }
+
+    #[test]
+    fn legacy_font_size_parser_keeps_html_relative_and_clamping_rules() {
+        assert_eq!(parse_legacy_font_size("1"), Some(FontSize::XSmall));
+        assert_eq!(parse_legacy_font_size("  +2legacy"), Some(FontSize::XLarge));
+        assert_eq!(parse_legacy_font_size("-2"), Some(FontSize::XSmall));
+        assert_eq!(parse_legacy_font_size("0"), Some(FontSize::XSmall));
+        assert_eq!(
+            parse_legacy_font_size("999999999999999999999999"),
+            Some(FontSize::XXXLarge)
+        );
+        assert_eq!(parse_legacy_font_size("+"), None);
+        assert_eq!(parse_legacy_font_size(""), None);
     }
 
     #[test]

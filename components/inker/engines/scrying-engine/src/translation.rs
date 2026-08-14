@@ -15,13 +15,16 @@
 
 use inker::{
     Cookie as InkerCookie, CookieAttributeCapabilities, CookieCapabilities,
-    CursorShape as InkerCursorShape, FocusReason as InkerFocusReason,
-    KeyboardEvent as InkerKeyboardEvent, KeyboardModifiers as InkerKeyboardModifiers,
-    MouseButton as InkerMouseButton, MouseEvent as InkerMouseEvent,
-    MouseEventKind as InkerMouseEventKind, NativeTextureHandle, NavigationEvent as InkerNavEvent,
-    PointerEvent as InkerPointerEvent, SameSite as InkerSameSite, ScriptCapabilities, SurfaceError,
-    SurfaceFrame, SurfaceSettings, SurfaceSyncHandle, WebFeatureStatus, WebFrameTransportMode,
-    WebMessage, WebSurfaceCapabilities as InkerWebSurfaceCapabilities, WebSurfaceEvent,
+    CursorShape as InkerCursorShape, DragDropCapabilities, FocusReason as InkerFocusReason,
+    FrameHandleOwnership, KeyboardEvent as InkerKeyboardEvent,
+    KeyboardModifiers as InkerKeyboardModifiers, MouseButton as InkerMouseButton,
+    MouseEvent as InkerMouseEvent, MouseEventKind as InkerMouseEventKind, NativeTextureHandle,
+    NavigationEvent as InkerNavEvent, PointerButtons, PointerEvent as InkerPointerEvent,
+    PointerInputCapabilities, PointerPhase as InkerPointerPhase, PointerType as InkerPointerType,
+    SameSite as InkerSameSite, ScriptCapabilities, SurfaceError, SurfaceFrame, SurfaceSettings,
+    SurfaceSyncHandle,
+    SurfaceTextureFormat, WebFeatureStatus, WebFrameTransportMode, WebMessage,
+    WebSurfaceCapabilities as InkerWebSurfaceCapabilities, WebSurfaceEvent,
 };
 use scrying::{
     CapabilityStatus as ScryingCapabilityStatus, CursorShape as ScryingCursorShape,
@@ -78,10 +81,14 @@ fn map_native_frame(frame: ScryingNativeFrame, fence_handle: Option<u64>) -> Opt
                 _ => SurfaceSyncHandle::None,
             };
             Some(SurfaceFrame {
-                texture: NativeTextureHandle::D3d12Shared(handle),
+                texture: NativeTextureHandle::D3d12Shared {
+                    handle,
+                    ownership: FrameHandleOwnership::Borrowed,
+                },
                 sync,
                 width: tex.size.width,
                 height: tex.size.height,
+                format: map_texture_format(tex.format),
                 resource_epoch: tex.generation,
             })
         },
@@ -95,6 +102,7 @@ fn map_native_frame(frame: ScryingNativeFrame, fence_handle: Option<u64>) -> Opt
                 sync: SurfaceSyncHandle::None,
                 width: tex.size.width,
                 height: tex.size.height,
+                format: map_texture_format(tex.format),
                 resource_epoch: tex.generation,
             })
         },
@@ -105,11 +113,22 @@ fn map_native_frame(frame: ScryingNativeFrame, fence_handle: Option<u64>) -> Opt
                 sync: SurfaceSyncHandle::None,
                 width: img.size.width,
                 height: img.size.height,
+                format: map_texture_format(img.format),
                 resource_epoch: img.generation,
             })
         },
         // `NativeFrame` is `#[non_exhaustive]`; future variants drop until mapped.
         _ => None,
+    }
+}
+
+fn map_texture_format(format: wgpu::TextureFormat) -> SurfaceTextureFormat {
+    match format {
+        wgpu::TextureFormat::Rgba8Unorm => SurfaceTextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb => SurfaceTextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Bgra8Unorm => SurfaceTextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb => SurfaceTextureFormat::Bgra8UnormSrgb,
+        other => SurfaceTextureFormat::Other(format!("{other:?}")),
     }
 }
 
@@ -177,29 +196,44 @@ fn mouse_buttons_to_scrying(button: Option<InkerMouseButton>) -> ScryingMouseVir
     vk
 }
 
-pub fn map_pointer(ev: InkerPointerEvent) -> ScryingPointerInput {
-    let (kind, _) = mouse_kind_to_scrying(ev.kind);
-    let kind = match kind {
-        ScryingMouseEventKind::LeftButtonDown
-        | ScryingMouseEventKind::RightButtonDown
-        | ScryingMouseEventKind::MiddleButtonDown => ScryingPointerEventKind::Down,
-        ScryingMouseEventKind::LeftButtonUp
-        | ScryingMouseEventKind::RightButtonUp
-        | ScryingMouseEventKind::MiddleButtonUp => ScryingPointerEventKind::Up,
-        ScryingMouseEventKind::Move => ScryingPointerEventKind::Update,
-        _ => ScryingPointerEventKind::Update,
+pub fn map_pointer(ev: InkerPointerEvent) -> Result<ScryingPointerInput, SurfaceError> {
+    let pointer_id = u32::try_from(ev.pointer_id).map_err(|_| {
+        SurfaceError::InputFailed(format!(
+            "Pointer Events pointerId must be non-negative for scrying: {}",
+            ev.pointer_id
+        ))
+    })?;
+    let kind = match ev.phase {
+        InkerPointerPhase::Down => ScryingPointerEventKind::Down,
+        InkerPointerPhase::Move => ScryingPointerEventKind::Update,
+        InkerPointerPhase::Up => ScryingPointerEventKind::Up,
+        InkerPointerPhase::Cancel => ScryingPointerEventKind::CaptureChanged,
     };
-    ScryingPointerInput {
+    let device = match ev.pointer_type {
+        InkerPointerType::Mouse => ScryingPointerDevice::Mouse,
+        InkerPointerType::Pen => ScryingPointerDevice::Pen,
+        InkerPointerType::Touch => ScryingPointerDevice::Touch,
+        InkerPointerType::Unknown => {
+            return Err(SurfaceError::Unsupported(
+                "scrying cannot dispatch an unidentified pointer type".into(),
+            ));
+        },
+    };
+    Ok(ScryingPointerInput {
         kind,
-        device: ScryingPointerDevice::Pen,
-        pointer_id: 1,
+        device,
+        pointer_id,
         point: (ev.position.x as i32, ev.position.y as i32),
-        pressure: ev.pressure.unwrap_or(0.0),
+        pressure: ev.pressure.unwrap_or(if ev.buttons != PointerButtons::NONE {
+            0.5
+        } else {
+            0.0
+        }),
         tilt: (
             ev.tilt_x.unwrap_or(0.0).to_radians(),
             ev.tilt_y.unwrap_or(0.0).to_radians(),
         ),
-    }
+    })
 }
 
 pub fn map_keyboard(ev: InkerKeyboardEvent) -> ScryingKeyboardInput {
@@ -290,6 +324,29 @@ pub fn map_capabilities(caps: ScryingCapabilities) -> InkerWebSurfaceCapabilitie
                 detail: "script exceptions are returned through the serialized engine result where available".into(),
             },
         },
+        pointer: PointerInputCapabilities {
+            mouse: WebFeatureStatus::Supported,
+            pen: WebFeatureStatus::Partial {
+                detail: "device kind, id, pressure, and tilt survive; concrete system webviews vary".into(),
+            },
+            touch: WebFeatureStatus::Partial {
+                detail: "multi-touch ids survive; concrete system webviews vary".into(),
+            },
+            contact_geometry: WebFeatureStatus::unsupported(
+                "scrying's portable PointerInput has no contact geometry",
+            ),
+            pressure: WebFeatureStatus::Supported,
+            tangential_pressure: WebFeatureStatus::unsupported(
+                "scrying's portable PointerInput has no tangential pressure",
+            ),
+            tilt: WebFeatureStatus::Supported,
+            twist: WebFeatureStatus::unsupported(
+                "scrying's portable PointerInput has no twist",
+            ),
+            altitude_azimuth: WebFeatureStatus::unsupported(
+                "scrying's portable PointerInput has no altitude/azimuth angles",
+            ),
+        },
         find_in_page: WebFeatureStatus::Partial {
             detail: "find support depends on the concrete system webview backend".into(),
         },
@@ -308,7 +365,20 @@ pub fn map_capabilities(caps: ScryingCapabilities) -> InkerWebSurfaceCapabilitie
         },
         auth: WebFeatureStatus::Supported,
         context_menus: WebFeatureStatus::Supported,
-        drag_drop: WebFeatureStatus::Supported,
+        drag_drop: DragDropCapabilities {
+            host_to_page: WebFeatureStatus::unsupported(
+                "scrying's portable DragInput does not carry DataTransfer items",
+            ),
+            page_to_host: WebFeatureStatus::unsupported(
+                "scrying does not expose a portable page drag-start event",
+            ),
+            file_items: WebFeatureStatus::unsupported(
+                "file payload forwarding requires a backend-native drag object",
+            ),
+            string_items: WebFeatureStatus::unsupported(
+                "string payload forwarding is not present in scrying's portable drag API",
+            ),
+        },
         ime_observability: WebFeatureStatus::Supported,
         accessibility: WebFeatureStatus::Partial {
             detail: "system-webview accessibility remains owned by the platform view".into(),
@@ -511,7 +581,47 @@ pub fn wrap_web_message(payload: String) -> WebMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inker::PhysicalPosition;
+    use inker::{PhysicalPosition, PointerButtons};
+
+    fn touch_pointer(pointer_id: i32, phase: InkerPointerPhase) -> InkerPointerEvent {
+        InkerPointerEvent {
+            pointer_id,
+            pointer_type: InkerPointerType::Touch,
+            is_primary: pointer_id == 2,
+            phase,
+            position: PhysicalPosition { x: 12.0, y: 34.0 },
+            button: None,
+            buttons: PointerButtons::PRIMARY,
+            width: 8.0,
+            height: 10.0,
+            pressure: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            altitude_angle: None,
+            azimuth_angle: None,
+            modifiers: InkerKeyboardModifiers::default(),
+        }
+    }
+
+    #[test]
+    fn touch_pointer_preserves_contact_id_and_uses_pointer_events_default_pressure() {
+        let first = map_pointer(touch_pointer(2, InkerPointerPhase::Down)).unwrap();
+        let second = map_pointer(touch_pointer(3, InkerPointerPhase::Down)).unwrap();
+        assert_eq!(first.pointer_id, 2);
+        assert_eq!(second.pointer_id, 3);
+        assert_eq!(first.device, ScryingPointerDevice::Touch);
+        assert_eq!(first.pressure, 0.5);
+    }
+
+    #[test]
+    fn negative_pointer_id_is_rejected_instead_of_wrapping() {
+        assert!(matches!(
+            map_pointer(touch_pointer(-1, InkerPointerPhase::Down)),
+            Err(SurfaceError::InputFailed(_))
+        ));
+    }
 
     #[test]
     fn mouse_press_maps_to_left_button_down() {

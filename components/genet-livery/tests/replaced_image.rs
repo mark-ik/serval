@@ -99,7 +99,7 @@ fn authored_auto_axis_uses_the_decoded_natural_ratio_not_the_attribute_ratio() {
         .flat_map(|html| document.dom_children(html))
         .flat_map(|body| document.dom_children(body))
         .find(|node| {
-            document.attribute(node, &Namespace::from(""), &LocalName::from("id")) == Some("image")
+            document.attribute(*node, &Namespace::from(""), &LocalName::from("id")) == Some("image")
         })
         .expect("image node");
     let computed = styles.get(image_node).expect("computed image style");

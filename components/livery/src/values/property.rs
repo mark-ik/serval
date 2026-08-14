@@ -1580,18 +1580,48 @@ impl fmt::Display for FontFamily {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FontSize {
+    XXSmall,
+    XSmall,
+    Small,
     Medium,
+    Large,
+    XLarge,
+    XXLarge,
+    XXXLarge,
     Value(LengthPercentage),
+}
+
+impl FontSize {
+    /// Resolve CSS's absolute-size keywords against Livery's 16px medium.
+    pub const fn absolute_px(self) -> Option<f32> {
+        match self {
+            Self::XXSmall => Some(9.6),
+            Self::XSmall => Some(12.0),
+            Self::Small => Some(13.333_333),
+            Self::Medium => Some(16.0),
+            Self::Large => Some(18.0),
+            Self::XLarge => Some(24.0),
+            Self::XXLarge => Some(32.0),
+            Self::XXXLarge => Some(48.0),
+            Self::Value(_) => None,
+        }
+    }
 }
 
 impl FromStr for FontSize {
     type Err = ParseError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        if input.trim().eq_ignore_ascii_case("medium") {
-            Ok(Self::Medium)
-        } else {
-            input.parse::<LengthPercentage>().map(Self::Value)
+        match input.trim().to_ascii_lowercase().as_str() {
+            "xx-small" => Ok(Self::XXSmall),
+            "x-small" => Ok(Self::XSmall),
+            "small" => Ok(Self::Small),
+            "medium" => Ok(Self::Medium),
+            "large" => Ok(Self::Large),
+            "x-large" => Ok(Self::XLarge),
+            "xx-large" => Ok(Self::XXLarge),
+            "xxx-large" => Ok(Self::XXXLarge),
+            _ => input.parse::<LengthPercentage>().map(Self::Value),
         }
     }
 }
@@ -1599,7 +1629,14 @@ impl FromStr for FontSize {
 impl fmt::Display for FontSize {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::XXSmall => formatter.write_str("xx-small"),
+            Self::XSmall => formatter.write_str("x-small"),
+            Self::Small => formatter.write_str("small"),
             Self::Medium => formatter.write_str("medium"),
+            Self::Large => formatter.write_str("large"),
+            Self::XLarge => formatter.write_str("x-large"),
+            Self::XXLarge => formatter.write_str("xx-large"),
+            Self::XXXLarge => formatter.write_str("xxx-large"),
             Self::Value(value) => value.fmt(formatter),
         }
     }

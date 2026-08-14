@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-08
 
-**Status:** PH0 through PH3 were implemented locally through 2026-08-12.
+**Status:** PH0 through PH5 were implemented locally through 2026-08-14.
+The checked-in census assigns every currently applicable HTML rendering
+surface, but the plan remains open at its stated K4 evidence wall.
 Table and table-part dimensions use HTML's
 legacy dimension algorithms, `table[align]` maps to float or harvested logical
 margins, and applicable legacy alignment owners carry HTML's separate
@@ -319,6 +321,65 @@ retain only intrinsic sizing against those computed inputs.
 **Receipt:** computed CSS, layout geometry, intrinsic aspect ratio, attribute
 mutation, and authored override all agree through one style path.
 
+**Implemented 2026-08-14:** the HTML adapter now projects the complete PH4
+declaration matrix at the author presentational-hint origin. Dimension
+attributes reach `width` and `height` on `img`, `embed`, `iframe`, `object`,
+`video`, and image buttons. The applicable image, video, image-button, and
+canvas pairs also produce HTML's `auto <width> / <height>` aspect-ratio form.
+Livery now preserves that computed form separately from a CSS ratio and uses
+its preferred ratio only when the natural ratio is unavailable.
+
+Legacy `align` projects floats or the exact vertical-alignment behavior,
+including a separate internal token for HTML's center-on-the-parent-baseline
+`middle` and `center` behavior. `hspace` and `vspace` project the four physical
+margins. Positive image/object borders project four solid border sides.
+`iframe[frameborder]` projects zero widths for zero or a signed-integer parse
+error, while the iframe's ordinary 2px inset border remains a UA-origin
+default. Authored CSS wins over every one of these declarations.
+
+`apply_replaced_image_size` and its direct `img[width]`/`img[height]` attribute
+reader are deleted. Image layout now sees attribute-derived dimensions only
+through computed CSS. Decoded image dimensions remain the natural-size and
+natural-ratio input; canvas bitmap dimensions remain intrinsic layout data.
+The adapter does not expose a natural ratio to the backend when both CSS axes
+are definite, because intrinsic ratio must not override two definite sizes.
+
+Static computed-style fixtures cover every element and attribute family.
+Retained mutation, authored precedence, decoded-natural-ratio, canvas
+intrinsics, shaped inline image, layout, and neutral paint receipts are green.
+The frameborder receipt also closed the computed-style surface needed to
+serialize absolute zero border widths as `0px` and reconstruct the computed
+`border-width`, `border-style`, and `border-color` four-side shorthands.
+The full `genet-livery --all-targets` suite and isolated
+`genet-livery --no-deps -D warnings` Clippy pass. The full `livery` test suite
+also passes; its joint strict-Clippy boundary remains the 146 pre-existing
+warnings named under PH3.
+
+The rebuilt 1.97.1 release WPT runner reports:
+
+| WPT | before | after |
+|---|---:|---:|
+| `embedded-and-images-presentational-hints-ascii-case-insensitive.html` | 0/3 | 3/3 |
+| `iframe-frameborder.html` | 0/13 | 13/13 |
+| `align.html` | 14/23 | 23/23 |
+| `canvas-aspect-ratio.html` | not measured | 13/13 |
+| `canvas-dimension-attributes.html` | not measured | pass |
+| `img-dim.html` | pass | pass |
+| `images/space.html` | fail | pass |
+| `dimension-attributes.html` | harness error, 0/0 | harness error, 0/0 |
+
+The broad dimension file still errors in the Boa DOM harness before it emits
+a subtest. That result does not contradict the direct computed-style, layout,
+and canvas intrinsic receipts above.
+
+The selected-source dimension source for `img` is still unimplemented because
+the adapter has no `picture`/`srcset` source-selection state. Actual embedded
+content for `embed`, `iframe`, `object`, `video`, and image buttons is likewise
+an element or browsing-context capability boundary: their computed hints are
+present, but PH4 does not invent replaced-content implementations. The UA
+`video { object-fit: contain }` default awaits an active `object-fit` property.
+PH5 must record these separately from missing mappings.
+
 ### PH5. Census and closure
 
 Build a checked-in census from the HTML rendering section, grouped by:
@@ -334,6 +395,61 @@ behavior to their owning plans instead of adding dormant declarations.
 
 Run absolute conformance and Stylo-differential ledgers separately. A family
 that matches Stylo but remains wrong against HTML is not a closure receipt.
+
+**Implemented 2026-08-14:** the
+[HTML rendering census](2026-08-14_livery_html_rendering_census.md) now keeps
+author presentational hints, UA defaults, used-value algorithms, and missing
+property/selector/document/element capabilities separate. In particular, it
+assigns background URL hints to the absent document/base-URL seam, body link
+colors to absent link/visited selector state, `font[face]` to the one-family
+grammar and consumer boundary, list hints to marker/counter work, and embedded
+contexts to their element hosts. It does not add declarations that cannot yet
+be consumed correctly.
+
+The low-cost active-property harvest now includes body margin and color hints,
+`pre[wrap]`, `br[clear]`, legacy font color and size, the complete `<hr>` hint
+family, table-part vertical alignment, and cell `nowrap`. Livery's `font-size`
+value now represents every CSS absolute-size keyword, resolves it through the
+same computed metric path as authored CSS, and round-trips it through CSSOM.
+The `<hr>` UA defaults are present at UA origin. The current HTML Standard's
+`align=bottom` mapping is `vertical-align: bottom`; the older checked-in WPT
+expects `baseline`, so that single differential remains deliberately red.
+
+Direct fixtures cover HTML parsing, invalid-first-source behavior, authored
+precedence, mutation removal and replacement, computed shorthand CSSOM, and
+layout geometry through one retained style plane. No new late attribute reader
+or Buckram-specific HTML branch was added.
+
+The rebuilt 1.97.1 release runner reports absolute Livery results separately
+from the Stylo differential:
+
+| WPT | Livery before | Livery after | Stylo current |
+|---|---:|---:|---:|
+| `<hr>` folder, runnable files | 2/4 | 4/4 | 2/4 |
+| `body_text_00ffff.xhtml` | fail | pass | fail |
+| legacy `font[size]` | 21/28 | 28/28 | 21/28 |
+| `table-attribute.html` | 41/58 | 42/58 | 0/58 |
+| replaced `align.html` | 23/23 at the PH4 snapshot | 22/23 current-standard mapping | 3/23 |
+| list hint ASCII casing | 0/2 | 0/2 assigned gap | 0/2 |
+| `pixel-length-attributes.html` | harness error, 0/0 | harness error, 0/0 | harness error, 0/0 |
+
+Three non-runnable files in the seven-file `<hr>` folder remain skipped. The
+16 broad table failures are seven background URL cases, one Boa DOM/script subtest error,
+percentage/used table sizing, cellpadding/table-column layout, and dynamic
+`th` default alignment. The table increase is one subtest; it is not evidence
+that K4 sizing is fixed.
+
+The full `livery` suite and `genet-livery --all-targets` suite pass. Isolated
+`genet-livery --no-deps -D warnings` Clippy, the release WPT build, explicit
+edition-2024 rustfmt check, and `git diff --check` pass. A forced clean-target
+joint Clippy run still stops on the same 146 pre-existing Livery selector and
+color-space diagnostics; the shared-target cache alone had incorrectly made
+that command appear clean.
+
+PH5 is complete as an implementation and assignment gate. The overall plan is
+still unfinished because the done condition also requires the 40-file
+anonymous-table family to pass for the attributed K4 reason. The rebuilt PH5
+runner remeasured it unchanged at 10 passed and 30 failed on 2026-08-14.
 
 ## Verification ladder
 

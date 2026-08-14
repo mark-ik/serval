@@ -218,21 +218,18 @@ fn write_html_table(
     rows: &[Vec<Vec<InlineSpan>>],
     out: &mut String,
 ) {
-    let cell =
-        |tag: &str, col: usize, spans: &[InlineSpan], out: &mut String| {
-            out.push('<');
-            out.push_str(tag);
-            if let Some(style) =
-                alignment_style(alignments.get(col).copied().unwrap_or_default())
-            {
-                out.push_str(style);
-            }
-            out.push('>');
-            write_inline_html(spans, out);
-            out.push_str("</");
-            out.push_str(tag);
-            out.push('>');
-        };
+    let cell = |tag: &str, col: usize, spans: &[InlineSpan], out: &mut String| {
+        out.push('<');
+        out.push_str(tag);
+        if let Some(style) = alignment_style(alignments.get(col).copied().unwrap_or_default()) {
+            out.push_str(style);
+        }
+        out.push('>');
+        write_inline_html(spans, out);
+        out.push_str("</");
+        out.push_str(tag);
+        out.push('>');
+    };
     out.push_str("<table>\n");
     if !header.is_empty() {
         out.push_str("<thead><tr>");

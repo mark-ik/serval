@@ -94,10 +94,7 @@ fn draft_for(spec: &SettingSpec) -> SettingDraft {
 /// The draft controls are `Action = ()` views that mutate the draft in place;
 /// the Apply button is the row's only emitter. This adapter carries the
 /// silent cluster into the row's `SettingValue`-typed tree.
-fn silence(
-    _: &mut SettingDraft,
-    result: MessageResult<()>,
-) -> MessageResult<SettingValue> {
+fn silence(_: &mut SettingDraft, result: MessageResult<()>) -> MessageResult<SettingValue> {
     match result {
         MessageResult::Action(()) | MessageResult::Nop => MessageResult::Nop,
         MessageResult::RequestRebuild => MessageResult::RequestRebuild,
@@ -124,18 +121,16 @@ fn editor_row(
     control: impl View<SettingDraft, (), GenetCtx, Element = GenetElement> + 'static,
     read: impl Fn(&SettingDraft) -> SettingValue + 'static,
 ) -> ComponentView<SettingDraft, SettingValue> {
-    let label = el::<_, SettingDraft, ()>("div", props.label.clone()).attr("class", "setting-label");
+    let label =
+        el::<_, SettingDraft, ()>("div", props.label.clone()).attr("class", "setting-label");
     let silenced = map_message_result(
         el::<_, SettingDraft, ()>("div", (label, control)).attr("class", "setting-editor"),
         silence,
     );
     Box::new(
-        el::<_, SettingDraft, SettingValue>(
-            "div",
-            (silenced, apply_button(&props.spec.id, read)),
-        )
-        .attr("class", "setting-row")
-        .attr("data-setting", props.spec.id.clone()),
+        el::<_, SettingDraft, SettingValue>("div", (silenced, apply_button(&props.spec.id, read)))
+            .attr("class", "setting-row")
+            .attr("data-setting", props.spec.id.clone()),
     )
 }
 

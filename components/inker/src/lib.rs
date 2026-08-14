@@ -73,12 +73,15 @@ pub use session_engine::{
 pub use sniff::sniff_content_type;
 pub use statements::{LinkStatement, link_statements};
 pub use surface_engine::{
-    Cookie, CookieAttributeCapabilities, CookieCapabilities, CursorShape, EngineProfileBinding,
-    FocusReason, KeyboardEvent, KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind,
-    NativeTextureHandle, NavigationEvent, PhysicalPosition, PointerEvent, SameSite,
-    ScriptCapabilities, SurfaceEngine, SurfaceEngineRegistry, SurfaceError, SurfaceFrame,
-    SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, SurfaceSyncHandle, WebFeatureStatus,
-    WebFrameTransportMode, WebMessage, WebSurface, WebSurfaceCapabilities, WebSurfaceEvent,
+    Cookie, CookieAttributeCapabilities, CookieCapabilities, CursorShape, DataTransfer,
+    DataTransferItem, DragDropCapabilities, DragEvent, DragOperationSet, DragPhase,
+    EngineProfileBinding, FocusReason, FrameHandleOwnership, KeyboardEvent, KeyboardModifiers,
+    MouseButton, MouseEvent, MouseEventKind, NativeTextureHandle, NavigationEvent,
+    PhysicalPosition, PointerButtons, PointerEvent, PointerInputCapabilities, PointerPhase,
+    PointerType, SameSite, ScriptCapabilities, SurfaceEngine, SurfaceEngineRegistry, SurfaceError,
+    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, SurfaceSyncHandle,
+    SurfaceTextureFormat, WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface,
+    WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// Crate version.

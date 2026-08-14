@@ -11,17 +11,17 @@ use std::rc::Rc;
 use cambium::{
     AccordionConfig, AccordionItem, AccordionState, Action, AnyView, COMPONENT_PROBE_ATTR,
     CommandEvent, CommandItem, CommandState, ComponentView, DetailPopoverMode, DetailPopoverState,
-    DisclosureState, DomHandle,
-    GenetAppRunner, GenetCtx, GenetElement, GraphCanvasEdge, GraphCanvasNode, GraphCanvasSubgraph,
-    GraphCanvasSwatch, GridColumn, GridSpec, GridView, HoverEvent, HoverPhase, Key, KeyEvent,
-    NamedKey, OverlayDismiss, OverlayRole, OverlaySurface, Placement, PointerClick, PointerEvent,
-    PointerPhase, RadioGroup, ReorderItem, ReorderMove, ReorderState, SelectState, SelectionItem,
-    SelectionState, Slider, StyleRange, SummaryBody, TabActivation, TextInput, TreeItem, TreeState,
-    accordion_with, button, button_with, checkbox, command_menu, command_palette, command_picker,
-    component, custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, frisket,
-    graph_canvas_swatch, graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer,
-    overlay_surface, radio_group, reorderable_list, segmented_control, select, setting_row, slider,
-    styled_textarea, summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
+    DisclosureState, DomHandle, GenetAppRunner, GenetCtx, GenetElement, GraphCanvasEdge,
+    GraphCanvasNode, GraphCanvasSubgraph, GraphCanvasSwatch, GridColumn, GridSpec, GridView,
+    HoverEvent, HoverPhase, Key, KeyEvent, NamedKey, OverlayDismiss, OverlayRole, OverlaySurface,
+    Placement, PointerClick, PointerEvent, PointerPhase, RadioGroup, ReorderItem, ReorderMove,
+    ReorderState, SelectState, SelectionItem, SelectionState, Slider, StyleRange, SummaryBody,
+    TabActivation, TextInput, TreeItem, TreeState, accordion_with, button, button_with, checkbox,
+    command_menu, command_palette, command_picker, component, custom_leaf, data_grid,
+    detail_popover, disclosure, el, filter_chips, frisket, graph_canvas_swatch,
+    graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer, overlay_surface,
+    radio_group, reorderable_list, segmented_control, select, setting_row, slider, styled_textarea,
+    summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
 };
 use genet_host_api::settings::{
     SettingControl, SettingMovement, SettingMutability, SettingOption, SettingScope,
@@ -620,9 +620,12 @@ fn counter_body(props: &CounterProps, count: &i64) -> ComponentView<i64, Counter
             (
                 el::<_, i64, CounterEvent>("output", count.to_string())
                     .attr("id", "catalog-counter-value"),
-                button(format!("+{step}"), move |count: &mut i64, _: PointerClick| {
-                    *count += step;
-                })
+                button(
+                    format!("+{step}"),
+                    move |count: &mut i64, _: PointerClick| {
+                        *count += step;
+                    },
+                )
                 .attr("id", "catalog-counter-up")
                 .attr("class", "catalog-button"),
                 button("Report", |count: &mut i64, _: PointerClick| {
@@ -759,11 +762,8 @@ fn catalog(state: &CatalogState) -> CatalogView {
                 )
                 .probe_id("catalog-counter")
             }),
-            el::<_, CatalogState, ()>(
-                "output",
-                format!("{} reports", state.counter_reports.len()),
-            )
-            .attr("id", "catalog-counter-reports"),
+            el::<_, CatalogState, ()>("output", format!("{} reports", state.counter_reports.len()))
+                .attr("id", "catalog-counter-reports"),
         ),
     )
     .attr("id", "component-section")

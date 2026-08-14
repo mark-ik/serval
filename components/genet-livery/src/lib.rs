@@ -70,6 +70,14 @@ div, blockquote, h1, h2, h3, h4, h5, h6, p, ul, ol, pre {
     display: block;
 }
 li { display: list-item; }
+hr {
+    display: block;
+    color: gray;
+    border-style: inset;
+    border-width: 1px;
+    margin: 0.5em auto;
+    overflow: hidden;
+}
 
 table { display: table; border-collapse: separate; border-spacing: 2px; }
 thead { display: table-header-group; vertical-align: middle; }

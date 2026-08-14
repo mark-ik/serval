@@ -122,6 +122,18 @@ fn color_values_round_trip() {
 
 #[test]
 fn catalog_property_values_round_trip() {
+    for value in [
+        "xx-small",
+        "x-small",
+        "small",
+        "medium",
+        "large",
+        "x-large",
+        "xx-large",
+        "xxx-large",
+    ] {
+        assert_round_trip::<FontSize>(value);
+    }
     assert_round_trip::<AnimationDelay>("-500000s");
     assert_round_trip::<Display>("inline-block");
     assert_round_trip::<Display>("inline-table");

@@ -412,7 +412,11 @@ mod tests {
         assert_eq!(body_runs.get(), 1, "build runs the body once");
 
         runner.update(|_| {});
-        assert_eq!(body_runs.get(), 1, "equal props and clean local skip the body");
+        assert_eq!(
+            body_runs.get(),
+            1,
+            "equal props and clean local skip the body"
+        );
 
         runner.update(|step| *step += 1);
         assert_eq!(body_runs.get(), 2, "changed props run the body");
@@ -426,6 +430,10 @@ mod tests {
         );
 
         runner.update(|_| {});
-        assert_eq!(body_runs.get(), 3, "the skip resumes once local is clean again");
+        assert_eq!(
+            body_runs.get(),
+            3,
+            "the skip resumes once local is clean again"
+        );
     }
 }

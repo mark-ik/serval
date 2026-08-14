@@ -5,14 +5,14 @@
 //! and [`WeldProducer`], the adapter satisfying `inker::SurfaceProducer`.
 
 use inker::{
-    Cookie, CursorShape, FocusReason, KeyboardEvent, MouseEvent, NativeTextureHandle,
-    NavigationEvent, PointerEvent, SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings,
-    SurfaceSyncHandle, WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface,
-    WebSurfaceCapabilities, WebSurfaceEvent,
+    Cookie, CursorShape, DragEvent, DragOperationSet, FocusReason, KeyboardEvent, MouseEvent,
+    NativeTextureHandle, NavigationEvent, PhysicalPosition, PointerEvent, SurfaceError,
+    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSyncHandle, SurfaceTextureFormat,
+    WebMessage, WebSurface, WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// A frame produced by a [`WeldSurface`]: the shared GPU texture handle the host
-/// imports, plus the import-once metadata that `inker::SurfaceFrame` omits.
+/// imports, plus all metadata needed for an exact host import.
 pub struct WeldFrame {
     /// The platform shared-texture handle for the weld-owned copy CEF's
     /// `OnAcceleratedPaint` produced (Windows: a DX12 shared HANDLE; Linux: a
@@ -23,6 +23,7 @@ pub struct WeldFrame {
     pub sync: SurfaceSyncHandle,
     pub width: u32,
     pub height: u32,
+    pub format: SurfaceTextureFormat,
     /// Monotonic generation of the owned shared allocation (from welding's
     /// `NativeFrame::generation`): bumps when weld (re)allocates (first frame /
     /// resize), constant while it overwrites the same allocation. Maps straight to
@@ -71,41 +72,33 @@ pub trait WeldSurface {
 
     fn notify_mouse(&mut self, ev: MouseEvent) -> Result<(), SurfaceError>;
     fn notify_pointer(&mut self, ev: PointerEvent) -> Result<(), SurfaceError>;
+    fn notify_drag(&mut self, ev: DragEvent) -> Result<(), SurfaceError>;
+    fn finish_drag_source(
+        &mut self,
+        position: PhysicalPosition,
+        operation: DragOperationSet,
+    ) -> Result<(), SurfaceError>;
     fn notify_keyboard(&mut self, ev: KeyboardEvent) -> Result<(), SurfaceError>;
     fn focus(&mut self, reason: FocusReason) -> Result<(), SurfaceError>;
 
     fn poll_navigation_event(&mut self) -> Option<NavigationEvent>;
     fn poll_cursor_shape(&mut self) -> Option<CursorShape>;
     fn poll_web_message(&mut self) -> Option<WebMessage>;
-
-    fn web_capabilities(&self) -> WebSurfaceCapabilities {
-        let mut caps = WebSurfaceCapabilities {
-            backend_name: "weld.cef".into(),
-            frame_transport: WebFrameTransportMode::ImportedTexture,
-            ..WebSurfaceCapabilities::default()
-        };
-        caps.script.execute = WebFeatureStatus::Supported;
-        caps.script.result = WebFeatureStatus::Partial {
-            detail: "result-bearing script requires the host WeldSurface to wire CEF eval response plumbing".into(),
-        };
-        caps.devtools = WebFeatureStatus::Supported;
-        caps.popups = WebFeatureStatus::Supported;
-        caps.context_menus = WebFeatureStatus::Partial {
-            detail: "CEF context-menu events require host-side client callback wiring".into(),
-        };
-        caps.auth = WebFeatureStatus::Partial {
-            detail: "CEF auth events require host-side request callback wiring".into(),
-        };
-        caps.downloads = WebFeatureStatus::Partial {
-            detail: "CEF download events require host-side download callback wiring".into(),
-        };
-        caps.snapshot = WebFeatureStatus::Partial {
-            detail: "snapshots are available when the host WeldSurface implements capture".into(),
-        };
-        caps.degradation_reasons
-            .push("weld-engine defaults to unsupported cookie/script-result controls until the host overrides them".into());
-        caps
+    /// The one host-facing event stream. Concrete hosts should override this
+    /// when their backend already owns a unified callback queue so event order
+    /// is retained across event kinds.
+    fn poll_web_event(&mut self) -> Option<WebSurfaceEvent> {
+        if let Some(event) = self.poll_navigation_event().map(nav_to_web_event) {
+            return Some(event);
+        }
+        self.poll_web_message().map(WebSurfaceEvent::WebMessage)
     }
+
+    /// The concrete host must project only the CEF operations it actually
+    /// forwards. This is deliberately required rather than a hopeful default:
+    /// an inker-only adapter cannot know whether the host connected the CEF
+    /// callback and control halves of a capability.
+    fn web_capabilities(&self) -> WebSurfaceCapabilities;
 
     fn set_cookie(&mut self, _cookie: &Cookie) -> Result<(), SurfaceError> {
         Err(SurfaceError::Unsupported(
@@ -165,6 +158,7 @@ impl SurfaceProducer for WeldProducer {
             sync: f.sync,
             width: f.width,
             height: f.height,
+            format: f.format,
             resource_epoch: f.resource_epoch,
         }))
     }
@@ -175,6 +169,18 @@ impl SurfaceProducer for WeldProducer {
 
     fn send_pointer_input(&mut self, ev: PointerEvent) -> Result<(), SurfaceError> {
         self.inner.notify_pointer(ev)
+    }
+
+    fn send_drag_input(&mut self, ev: DragEvent) -> Result<(), SurfaceError> {
+        self.inner.notify_drag(ev)
+    }
+
+    fn finish_drag_source(
+        &mut self,
+        position: PhysicalPosition,
+        operation: DragOperationSet,
+    ) -> Result<(), SurfaceError> {
+        self.inner.finish_drag_source(position, operation)
     }
 
     fn send_keyboard_input(&mut self, ev: KeyboardEvent) -> Result<(), SurfaceError> {
@@ -256,20 +262,7 @@ impl WebSurface for WeldProducer {
     }
 
     fn poll_web_event(&mut self) -> Option<WebSurfaceEvent> {
-        if let Some(event) = self.inner.poll_navigation_event().map(nav_to_web_event) {
-            return Some(event);
-        }
-        self.inner
-            .poll_web_message()
-            .map(WebSurfaceEvent::WebMessage)
-    }
-
-    fn poll_navigation_event(&mut self) -> Option<NavigationEvent> {
-        self.inner.poll_navigation_event()
-    }
-
-    fn poll_web_message(&mut self) -> Option<WebMessage> {
-        self.inner.poll_web_message()
+        self.inner.poll_web_event()
     }
 }
 

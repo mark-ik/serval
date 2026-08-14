@@ -81,11 +81,47 @@ pub struct SurfaceSpawnRequest {
 #[derive(Debug)]
 pub enum NativeTextureHandle {
     /// Windows: D3D12 shared texture HANDLE cast to u64.
-    D3d12Shared(u64),
+    ///
+    /// The host must obey [`FrameHandleOwnership`]. A `Transferred` handle is
+    /// closed by the host after `OpenSharedHandle`; a `Borrowed` handle remains
+    /// the producer's property and must not be closed by the host.
+    D3d12Shared {
+        handle: u64,
+        ownership: FrameHandleOwnership,
+    },
     /// macOS: IOSurface ref (opaque u64; downcast on the host side).
     IoSurface(u64),
     /// Linux: DMA-BUF fd (negative means absent/invalid).
     DmaBuf(i64),
+}
+
+/// Who closes a native handle carried in a [`SurfaceFrame`].
+///
+/// Frame handles cannot all use the same rule: a system-webview producer may
+/// retain and reuse its shared handle across paints, while Weld deliberately
+/// copies CEF's callback-scoped texture into a fresh application-owned handle
+/// and transfers that handle to the host. This is explicit so a generic host
+/// cannot either leak the latter or close the former underneath its producer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FrameHandleOwnership {
+    /// The producer owns the handle for the lifetime of this resource epoch.
+    Borrowed,
+    /// The host owns this one-shot handle and closes it after importing.
+    Transferred,
+}
+
+/// Pixel format for a native surface frame.
+///
+/// Inker deliberately models the small cross-platform texture vocabulary
+/// rather than depending on wgpu. Hosts map the known variants to their GPU
+/// API and must reject `Other` until they add an explicit import mapping.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SurfaceTextureFormat {
+    Rgba8Unorm,
+    Rgba8UnormSrgb,
+    Bgra8Unorm,
+    Bgra8UnormSrgb,
+    Other(String),
 }
 
 /// Synchronization handle accompanying a [`SurfaceFrame`].
@@ -111,6 +147,10 @@ pub struct SurfaceFrame {
     pub sync: SurfaceSyncHandle,
     pub width: u32,
     pub height: u32,
+    /// Exact pixel format of `texture`. The host must use this value when it
+    /// creates or imports the GPU resource; assuming BGRA silently corrupts
+    /// RGBA CEF frames.
+    pub format: SurfaceTextureFormat,
     /// Monotonic generation of the underlying GPU allocation. Bumps when the
     /// producer (re)allocates the shared resource (first frame, resize, realloc);
     /// stays constant while it overwrites the same allocation in place. The host's
@@ -154,26 +194,156 @@ pub struct MouseEvent {
     pub kind: MouseEventKind,
 }
 
-/// Pointer event for stylus / touch input (adds pressure and tilt).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PointerEvent {
-    pub position: PhysicalPosition,
-    pub button: Option<MouseButton>,
-    pub kind: MouseEventKind,
-    /// Normalized pressure [0.0, 1.0]; `None` when absent.
-    pub pressure: Option<f32>,
-    /// Tilt from vertical in degrees, X axis; `None` when absent.
-    pub tilt_x: Option<f32>,
-    /// Tilt from vertical in degrees, Y axis; `None` when absent.
-    pub tilt_y: Option<f32>,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyboardModifiers {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
     pub meta: bool,
+}
+
+/// The Pointer Events `pointerType` values. `Unknown` represents the empty
+/// string or a device kind the host cannot identify; it must not be guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointerType {
+    Mouse,
+    Pen,
+    Touch,
+    Unknown,
+}
+
+/// Native contact phases from which the engine fires DOM Pointer Events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointerPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
+
+/// Pointer Events `buttons` bitmask. Values follow the DOM allocation rather
+/// than a backend's native flag values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointerButtons(pub u16);
+
+impl PointerButtons {
+    pub const NONE: Self = Self(0);
+    pub const PRIMARY: Self = Self(1);
+    pub const SECONDARY: Self = Self(2);
+    pub const AUXILIARY: Self = Self(4);
+    pub const BACK: Self = Self(8);
+    pub const FORWARD: Self = Self(16);
+
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for PointerButtons {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// Hardware-neutral input following the W3C Pointer Events fields. Optional
+/// sensor values distinguish "not reported by the host" from a real zero;
+/// the engine applies the specification's DOM defaults when it dispatches.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PointerEvent {
+    pub pointer_id: i32,
+    pub pointer_type: PointerType,
+    pub is_primary: bool,
+    pub phase: PointerPhase,
+    pub position: PhysicalPosition,
+    /// The button whose state changed for Down/Up, if any.
+    pub button: Option<MouseButton>,
+    /// All buttons held after this native event.
+    pub buttons: PointerButtons,
+    /// Contact geometry in CSS-pixel shape, expressed here in physical pixels
+    /// at the host boundary. Engines perform their normal device-scale mapping.
+    pub width: f32,
+    pub height: f32,
+    pub pressure: Option<f32>,
+    pub tangential_pressure: Option<f32>,
+    /// Degrees in the Pointer Events `-90..=90` convention.
+    pub tilt_x: Option<f32>,
+    pub tilt_y: Option<f32>,
+    /// Clockwise degrees in `0..=359`.
+    pub twist: Option<f32>,
+    /// Radians in the Pointer Events conventions.
+    pub altitude_angle: Option<f32>,
+    pub azimuth_angle: Option<f32>,
+    pub modifiers: KeyboardModifiers,
+}
+
+/// Standard drag effects shared by HTML `DataTransfer.effectAllowed` and the
+/// host toolkit. Backend-only effects do not enter this mask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DragOperationSet(pub u8);
+
+impl DragOperationSet {
+    pub const NONE: Self = Self(0);
+    pub const COPY: Self = Self(1);
+    pub const LINK: Self = Self(2);
+    pub const MOVE: Self = Self(4);
+
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for DragOperationSet {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// One HTML `DataTransferItem`. The enum makes the standard `kind` value
+/// (`string` or `file`) structural, while `mime_type` carries its lowercase
+/// type string. A file path is host-private transport data, not page-visible
+/// identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataTransferItem {
+    String {
+        mime_type: String,
+        data: String,
+    },
+    File {
+        mime_type: String,
+        path: std::path::PathBuf,
+        display_name: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataTransfer {
+    pub items: Vec<DataTransferItem>,
+    pub allowed_operations: DragOperationSet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DragPhase {
+    Enter,
+    Over,
+    Leave,
+    Drop,
+}
+
+/// One host-to-page HTML drag lifecycle event. HTML exposes one `DataTransfer`
+/// throughout the drag; engines may only materialize its native payload on
+/// Enter, but the allowed effects remain available for every phase.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DragEvent {
+    pub phase: DragPhase,
+    pub position: PhysicalPosition,
+    pub modifiers: KeyboardModifiers,
+    /// DOM `MouseEvent.buttons` bitfield inherited by `DragEvent`.
+    pub buttons: PointerButtons,
+    pub data_transfer: DataTransfer,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -326,6 +496,56 @@ pub struct ScriptCapabilities {
     pub exceptions: WebFeatureStatus,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointerInputCapabilities {
+    pub mouse: WebFeatureStatus,
+    pub pen: WebFeatureStatus,
+    pub touch: WebFeatureStatus,
+    pub contact_geometry: WebFeatureStatus,
+    pub pressure: WebFeatureStatus,
+    pub tangential_pressure: WebFeatureStatus,
+    pub tilt: WebFeatureStatus,
+    pub twist: WebFeatureStatus,
+    pub altitude_azimuth: WebFeatureStatus,
+}
+
+impl Default for PointerInputCapabilities {
+    fn default() -> Self {
+        Self {
+            mouse: WebFeatureStatus::unsupported("pointer mouse input is not wired"),
+            pen: WebFeatureStatus::unsupported("pen input is not wired"),
+            touch: WebFeatureStatus::unsupported("touch input is not wired"),
+            contact_geometry: WebFeatureStatus::unsupported("contact geometry is not wired"),
+            pressure: WebFeatureStatus::unsupported("pointer pressure is not wired"),
+            tangential_pressure: WebFeatureStatus::unsupported("tangential pressure is not wired"),
+            tilt: WebFeatureStatus::unsupported("pointer tilt is not wired"),
+            twist: WebFeatureStatus::unsupported("pointer twist is not wired"),
+            altitude_azimuth: WebFeatureStatus::unsupported(
+                "pointer altitude/azimuth are not wired",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DragDropCapabilities {
+    pub host_to_page: WebFeatureStatus,
+    pub page_to_host: WebFeatureStatus,
+    pub file_items: WebFeatureStatus,
+    pub string_items: WebFeatureStatus,
+}
+
+impl Default for DragDropCapabilities {
+    fn default() -> Self {
+        Self {
+            host_to_page: WebFeatureStatus::unsupported("host-to-page drag is not wired"),
+            page_to_host: WebFeatureStatus::unsupported("page-to-host drag is not wired"),
+            file_items: WebFeatureStatus::unsupported("dragged files are not wired"),
+            string_items: WebFeatureStatus::unsupported("dragged strings are not wired"),
+        }
+    }
+}
+
 /// Runtime feature descriptor for web-surface capabilities that vary by
 /// backend instance rather than by the Rust type alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +555,7 @@ pub struct WebSurfaceCapabilities {
     pub frame_transport: WebFrameTransportMode,
     pub cookie: CookieCapabilities,
     pub script: ScriptCapabilities,
+    pub pointer: PointerInputCapabilities,
     pub find_in_page: WebFeatureStatus,
     pub pdf: WebFeatureStatus,
     pub downloads: WebFeatureStatus,
@@ -343,7 +564,7 @@ pub struct WebSurfaceCapabilities {
     pub permissions: WebFeatureStatus,
     pub auth: WebFeatureStatus,
     pub context_menus: WebFeatureStatus,
-    pub drag_drop: WebFeatureStatus,
+    pub drag_drop: DragDropCapabilities,
     pub ime_observability: WebFeatureStatus,
     pub accessibility: WebFeatureStatus,
     pub snapshot: WebFeatureStatus,
@@ -364,6 +585,7 @@ impl Default for WebSurfaceCapabilities {
                     "script exception reporting is not wired",
                 ),
             },
+            pointer: PointerInputCapabilities::default(),
             find_in_page: WebFeatureStatus::unsupported("find in page is not wired"),
             pdf: WebFeatureStatus::unsupported("PDF handling is not wired"),
             downloads: WebFeatureStatus::unsupported("download handling is not wired"),
@@ -372,7 +594,7 @@ impl Default for WebSurfaceCapabilities {
             permissions: WebFeatureStatus::unsupported("permission prompts are not wired"),
             auth: WebFeatureStatus::unsupported("auth prompts are not wired"),
             context_menus: WebFeatureStatus::unsupported("context menu events are not wired"),
-            drag_drop: WebFeatureStatus::unsupported("drag/drop is not wired"),
+            drag_drop: DragDropCapabilities::default(),
             ime_observability: WebFeatureStatus::unsupported("IME observability is not wired"),
             accessibility: WebFeatureStatus::unsupported("surface accessibility is opaque"),
             snapshot: WebFeatureStatus::unsupported("snapshots are not wired"),
@@ -424,6 +646,12 @@ pub enum WebSurfaceEvent {
         y: f64,
         link_url: Option<String>,
         image_url: Option<String>,
+    },
+    /// A page began a drag. The host owns placement and the native drag loop;
+    /// it must eventually answer through `finish_drag_source`.
+    PageDragStarted {
+        data_transfer: DataTransfer,
+        position: PhysicalPosition,
     },
     CookieStoreChanged,
     ProcessCrashed {
@@ -504,6 +732,20 @@ pub trait SurfaceProducer {
     // ── Input ────────────────────────────────────────────────────────────────
     fn send_mouse_input(&mut self, ev: MouseEvent) -> Result<(), SurfaceError>;
     fn send_pointer_input(&mut self, ev: PointerEvent) -> Result<(), SurfaceError>;
+    fn send_drag_input(&mut self, _ev: DragEvent) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "host-to-page drag input is not wired for this surface".into(),
+        ))
+    }
+    fn finish_drag_source(
+        &mut self,
+        _position: PhysicalPosition,
+        _operation: DragOperationSet,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "page-to-host drag completion is not wired for this surface".into(),
+        ))
+    }
     fn send_keyboard_input(&mut self, ev: KeyboardEvent) -> Result<(), SurfaceError>;
     fn move_focus(&mut self, reason: FocusReason) -> Result<(), SurfaceError>;
 
@@ -524,8 +766,12 @@ pub trait SurfaceProducer {
 
 /// Web-specific control plane layered over the raw surface transport.
 ///
-/// Navigation methods start work and return promptly. Completion is observed by
-/// polling navigation events from the driving frame loop.
+/// Navigation methods start work and return promptly. Completion and every
+/// other web-facing notification are observed through one ordered event
+/// stream from the driving frame loop. Consumers must drain
+/// [`WebSurface::poll_web_event`] directly: filtered convenience pollers can
+/// discard intervening events and therefore are deliberately not part of this
+/// contract.
 pub trait WebSurface: SurfaceProducer {
     fn capabilities(&self) -> WebSurfaceCapabilities {
         WebSurfaceCapabilities::default()
@@ -556,23 +802,12 @@ pub trait WebSurface: SurfaceProducer {
         ))
     }
     fn execute_script_with_result(&mut self, script: &str) -> Result<String, SurfaceError>;
+    /// Return the next event in producer order.
+    ///
+    /// An implementation must not inspect and discard events of another kind
+    /// while answering this call. Asynchronous commands will add correlation
+    /// ids to this stream as their shared contracts are introduced.
     fn poll_web_event(&mut self) -> Option<WebSurfaceEvent> {
-        None
-    }
-    fn poll_navigation_event(&mut self) -> Option<NavigationEvent> {
-        while let Some(event) = self.poll_web_event() {
-            if let WebSurfaceEvent::Navigation(event) = event {
-                return Some(event);
-            }
-        }
-        None
-    }
-    fn poll_web_message(&mut self) -> Option<WebMessage> {
-        while let Some(event) = self.poll_web_event() {
-            if let WebSurfaceEvent::WebMessage(message) = event {
-                return Some(message);
-            }
-        }
         None
     }
 }
@@ -634,6 +869,8 @@ impl SurfaceEngineRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::*;
     use crate::routing::{SurfaceContract, SurfaceContractMode, SurfaceTargetId};
 
@@ -683,6 +920,82 @@ mod tests {
         }
     }
 
+    struct EventQueueSurface {
+        events: VecDeque<WebSurfaceEvent>,
+    }
+
+    impl SurfaceProducer for EventQueueSurface {
+        fn resize(&mut self, _: u32, _: u32) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn set_offset(&mut self, _: i32, _: i32) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn acquire_frame(&mut self) -> Result<Option<SurfaceFrame>, SurfaceError> {
+            Ok(None)
+        }
+        fn send_mouse_input(&mut self, _: MouseEvent) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn send_pointer_input(&mut self, _: PointerEvent) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn send_keyboard_input(&mut self, _: KeyboardEvent) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn move_focus(&mut self, _: FocusReason) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn poll_cursor_shape(&mut self) -> Option<CursorShape> {
+            None
+        }
+        fn apply_settings(&mut self, _: &SurfaceSettings) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
+            Err(SurfaceError::Unsupported("stub".into()))
+        }
+        fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {
+            Some(self)
+        }
+    }
+
+    impl WebSurface for EventQueueSurface {
+        fn navigate_to_url(&mut self, _: &str) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn navigate_to_string(&mut self, _: &str) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn reload(&mut self) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn go_back(&mut self) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn go_forward(&mut self) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn can_go_back(&self) -> bool {
+            false
+        }
+        fn can_go_forward(&self) -> bool {
+            false
+        }
+        fn set_cookie(&mut self, _: &Cookie) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn execute_script_with_result(&mut self, _: &str) -> Result<String, SurfaceError> {
+            Ok(String::new())
+        }
+        fn poll_web_event(&mut self) -> Option<WebSurfaceEvent> {
+            self.events.pop_front()
+        }
+    }
+
     fn decision(id: &str) -> EngineRouteDecision {
         EngineRouteDecision {
             engine_id: id.to_string(),
@@ -729,5 +1042,29 @@ mod tests {
         let reg = SurfaceEngineRegistry::new();
         let result = reg.spawn(&decision("absent.engine"), &stub_request());
         assert!(matches!(result, Err(SurfaceError::EngineNotFound(_))));
+    }
+
+    #[test]
+    fn mixed_web_events_are_observed_once_in_producer_order() {
+        let expected = vec![
+            WebSurfaceEvent::TitleChanged {
+                title: "First".into(),
+            },
+            WebSurfaceEvent::Navigation(NavigationEvent::Committed {
+                url: "https://example.com/next".into(),
+            }),
+            WebSurfaceEvent::WebMessage(WebMessage {
+                tag: "receipt".into(),
+                payload: "done".into(),
+            }),
+        ];
+        let mut surface = EventQueueSurface {
+            events: expected.clone().into(),
+        };
+        let mut observed = Vec::new();
+        while let Some(event) = surface.poll_web_event() {
+            observed.push(event);
+        }
+        assert_eq!(observed, expected);
     }
 }

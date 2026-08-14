@@ -9,7 +9,7 @@ use genet_document_resources::{
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
-    ComputedValues, PropertyId, PropertyValue,
+    ComputedValues, PropertyId, PropertyValue, ShorthandId,
     cascade::{
         CascadeLayer, ColorComputeContext, DeclarationError, MatchedCustomDeclaration,
         MatchedDeclaration, Origin, Specificity, cascade_with_custom_context,
@@ -22,8 +22,9 @@ use livery::{
         StylesheetDiagnostic,
     },
     values::{
-        BackgroundImage, BorderStyle, BoxShadow, ComputedColor, FontSize, Length, LengthPercentage,
-        LengthUnit, LineHeight, Margin, Padding, Size, SystemColor, TreeCounts, UsedColorContext,
+        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FontSize, Length,
+        LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Size, SystemColor, TreeCounts,
+        UsedColorContext,
     },
 };
 
@@ -654,8 +655,12 @@ where
         if property.starts_with("--") {
             return self.custom_properties(id)?.get(property).cloned();
         }
-        let property = PropertyId::from_css_name(&property.to_ascii_lowercase())?;
+        let property_name = property.to_ascii_lowercase();
         let values = self.get(id)?;
+        if let Some(shorthand) = ShorthandId::from_css_name(&property_name) {
+            return self.computed_box_shorthand(values, shorthand);
+        }
+        let property = PropertyId::from_css_name(&property_name)?;
         let property = property.to_physical(values.writing_mode, values.direction);
         if let Some(used) = used
             && box_is_unadorned(values)
@@ -684,10 +689,35 @@ where
             let reference_box = definite_transform_reference_box(values, em);
             return Some(values.transform.to_computed_css(em, reference_box));
         }
-        Some(
-            resolve_property_used_colors(values.get(property), self.used_color_context_for(values))
-                .to_css_string(),
-        )
+        Some(computed_value_css(resolve_property_used_colors(
+            values.get(property),
+            self.used_color_context_for(values),
+        )))
+    }
+
+    fn computed_box_shorthand(
+        &self,
+        values: &ComputedValues,
+        shorthand: ShorthandId,
+    ) -> Option<String> {
+        if !matches!(
+            shorthand,
+            ShorthandId::BorderColor | ShorthandId::BorderStyle | ShorthandId::BorderWidth
+        ) {
+            return None;
+        }
+        let sides = shorthand
+            .metadata()
+            .longhands
+            .iter()
+            .map(|&property| {
+                computed_value_css(resolve_property_used_colors(
+                    values.get(property),
+                    self.used_color_context_for(values),
+                ))
+            })
+            .collect::<Vec<_>>();
+        (sides.len() == 4).then(|| serialize_four_sides(&sides))
     }
 
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut ComputedValues> {
@@ -1164,9 +1194,12 @@ fn resolve_font_metrics(computed: &mut ComputedValues, parent: Option<&ComputedV
         })) => value,
         _ => 16.0,
     });
-    let font_size = match computed.font_size {
-        FontSize::Medium => 16.0,
-        FontSize::Value(value) => resolve_length_percentage(value, parent_size, parent_size),
+    let font_size = match computed.font_size.absolute_px() {
+        Some(value) => value,
+        None => match computed.font_size {
+            FontSize::Value(value) => resolve_length_percentage(value, parent_size, parent_size),
+            _ => unreachable!("absolute font sizes returned a px value"),
+        },
     }
     .max(0.0);
     computed.font_size = FontSize::Value(LengthPercentage::Length(Length::px(font_size)));
@@ -1237,6 +1270,30 @@ fn used_px(value: f32) -> String {
     } else {
         Length::px(value).to_string()
     }
+}
+
+fn computed_value_css(value: PropertyValue) -> String {
+    match value {
+        PropertyValue::BorderWidth(BorderWidth::Length(Length {
+            value,
+            unit: LengthUnit::Px,
+        })) => used_px(value),
+        value => value.to_css_string(),
+    }
+}
+
+fn serialize_four_sides(sides: &[String]) -> String {
+    debug_assert_eq!(sides.len(), 4);
+    let count = if sides[1] == sides[3] {
+        if sides[0] == sides[2] {
+            if sides[0] == sides[1] { 1 } else { 2 }
+        } else {
+            3
+        }
+    } else {
+        4
+    };
+    sides[..count].join(" ")
 }
 
 fn used_margin(margin: Margin, values: &ComputedValues, context: UsedValueContext) -> Option<f32> {

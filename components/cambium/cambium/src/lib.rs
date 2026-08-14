@@ -85,7 +85,6 @@ pub use command_surface::{
     command_picker, command_surface,
 };
 pub use component::{COMPONENT_PROBE_ATTR, Component, ComponentView, component};
-pub use setting_row::setting_row;
 pub use context::GenetCtx;
 pub use detail_panel::{DetailRow, DetailSection, detail_panel};
 pub use detail_popover::{
@@ -100,13 +99,13 @@ pub use editor::{EditHistory, pair_close, wrap_selection};
 pub use graph_canvas::{
     GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasEvent, GraphCanvasNode,
     GraphCanvasNodeDrag, GraphCanvasRelation, GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas,
-    graph_canvas_swatch,
-    graph_canvas_swatch_with_drag, graph_canvas_swatch_with_drag_and_relations,
-    graph_canvas_swatch_with_focus, graph_canvas_swatch_with_focus_and_drag,
-    graph_canvas_swatch_with_focus_and_drag_and_relations,
+    graph_canvas_swatch, graph_canvas_swatch_with_drag,
+    graph_canvas_swatch_with_drag_and_relations, graph_canvas_swatch_with_focus,
+    graph_canvas_swatch_with_focus_and_drag, graph_canvas_swatch_with_focus_and_drag_and_relations,
 };
 pub use grid::{GridView, data_grid};
 pub use menu::{MENU_CLASS, MENU_ROW_ACTIVE_CLASS, MENU_ROW_CLASS, menu};
+pub use setting_row::setting_row;
 // Re-export the grid's spec types from Sprigging so a host building a `data_grid`
 // needs no second direct `sprigging` dependency. The grid widget's home
 // is here; its column model rides along.

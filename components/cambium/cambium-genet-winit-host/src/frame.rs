@@ -178,21 +178,21 @@ where
             }
             seen.push(key);
             match self.s.leaf_fragments.get(&key) {
-                Some((_, e)) if *e == epoch => {}
+                Some((_, e)) if *e == epoch => {},
                 Some(&(id, _)) => {
                     let fragment =
                         paint_list_render::translate_paint_cmds_to_fragment(splice, &[], &[]);
                     if renderer.update_fragment(id, fragment) == Some(true) {
                         self.s.leaf_fragments.insert(key, (id, epoch));
                     }
-                }
+                },
                 None => {
                     let fragment =
                         paint_list_render::translate_paint_cmds_to_fragment(splice, &[], &[]);
                     if let Some(id) = renderer.register_fragment(fragment) {
                         self.s.leaf_fragments.insert(key, (id, epoch));
                     }
-                }
+                },
             }
         }
         // Sweep leaves that no longer render (removed from the registry or
