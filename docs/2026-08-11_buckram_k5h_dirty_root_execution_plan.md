@@ -220,11 +220,73 @@ provider's unit and live behavior. The renderer still supplies this one
 specialized flex/grid result, so its private position role cannot vanish until
 Buckram has an equivalent flex/grid static-position algorithm.
 
+## Export contract and promotion rule
+
+An independent formatting context is the right recomputation unit, but not a
+propagation boundary by itself. Its subtree is isolated from the rest of the
+document only "except through the sizing of the box itself"
+([CSS Display 3](https://drafts.csswg.org/css-display-3/#independent-formatting-context)).
+A guaranteed stop needs containment: size plus layout containment lets
+dirtiness halt at the containment box
+([CSS Contain 2 §3.1.1](https://drafts.csswg.org/css-contain-2/#possible-size-containment-optimizations)).
+So the dirty-root walk compares exports instead of assuming a wall.
+
+`LayoutExports` is the set a reformatted root publishes upward:
+
+1. Used border-box size and intrinsic contributions.
+2. First and last baselines.
+3. Scrollable overflow. This is not a union of descendant rectangles; it
+   honors transforms, clips, and the margin rules of
+   [CSS Overflow 3 §3.3](https://drafts.csswg.org/css-overflow-3/#scrollable-overflow).
+4. Containing-block and static-position dependencies in either direction,
+   the same records `FragmentTree::replace_subtree` already refuses to
+   cross. Absolute layout consumes the containing block's final size
+   ([CSS Position 3](https://drafts.csswg.org/css-position-3/#absolute-positioning-layout-model)),
+   so a changed containing block reformats its positioned dependents.
+5. The root's fragment identity, and once K6 lands, its break-token state.
+
+The promotion rule: reformat the nearest valid root, compare its
+`LayoutExports` with the retained values, and walk to the parent root only
+when an export changed. Unchanged exports end the walk and keep every outer
+identity. Once Buckram implements containment, a root with size and layout
+containment may stop without the comparison.
+
+## Damage-class receipt matrix
+
+K5h closes when every damage class has either a selected-root route with a
+fresh-final-document receipt or a written dependency reason for staying
+full-document. Some classes are legitimately global; the reason must still be
+explicit. Current truth:
+
+| Damage class | Route today | Receipt |
+|---|---|---|
+| DOM mutation, admitted roots | selected-root splice and formatter | splice and formatter receipts above |
+| Style, background-color only | paint-only retained path | `background_color_mutation_repaints_without_a_geometry_pass` |
+| Style, admitted positioned insets | K5d translation or leaf resize | the four `positioned_*` receipts above |
+| Style, general geometry | full recompute, K5g reconcile | equivalence harness only |
+| Stylesheet events | full document | missing |
+| Resource events | full document | missing |
+| Interaction events | full document | missing |
+| Viewport and device events | full document | missing |
+
+The four missing rows each need a dependency reason or a scoped route, plus a
+fresh-layout equivalence receipt either way. The local WPT corpus already
+carries differential material:
+`css/css-grid/grid-extrinsically-sized-mutations.html`,
+`css/css-grid/img-src-changes.html`,
+`css/css-grid/grid-child-percent-basis-resize-1.html`,
+`css/css-flexbox/abspos/dynamic-align-self-001.html`,
+`css/css-overflow/column-style-change-triggers-relayout.html`, and
+`css/css-overflow/clipped-scroller-add-content.html`.
+
 ## Next replacement seam
 
 1. Compare each incremental result with the fresh-final-document harness.
 2. Replace the remaining private flex/grid renderer provider with an
    equivalent Buckram static-position algorithm.
+3. Land the `LayoutExports` comparison so an unchanged-export reformat stops
+   at its root instead of recomputing full geometry.
+4. Close the damage-class receipt matrix above.
 
 ## Stop rules
 
