@@ -7679,6 +7679,59 @@ mod tests {
     }
 
     #[test]
+    fn absolute_nonleaf_reformats_at_buckrams_resolved_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=positioned><div id=child></div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; height: 100px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; top: 7px; } \
+                 #child { width: 40px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect_for = |id| {
+            let box_id = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box");
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+        let positioned = rect_for("positioned");
+        let child = rect_for("child");
+
+        assert_eq!(
+            positioned,
+            PhysicalRect {
+                x: 10.0,
+                y: 7.0,
+                width: 170.0,
+                height: 20.0,
+            },
+            "the non-leaf root reformats at Buckram's final used width",
+        );
+        assert_eq!(
+            child,
+            PhysicalRect {
+                x: 10.0,
+                y: 7.0,
+                width: 40.0,
+                height: 20.0,
+            },
+            "the descendant belongs to the reformatted positioned root",
+        );
+    }
+
+    #[test]
     fn absolute_empty_leaf_uses_buckrams_resolved_border_box() {
         let dom = StaticDocument::parse("<div id=containing><div id=positioned></div></div>");
         let styles = resolve_styles(

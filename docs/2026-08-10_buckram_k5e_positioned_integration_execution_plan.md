@@ -92,6 +92,9 @@ The live receipts currently cover:
   verifies direct positioned grid children project their flow-relative
   placement area before physical `top`/`right`/`bottom`/`left` insets resolve
   against definite used dimensions, across vertical rl/lr and ltr/rtl flows.
+- `absolute_nonleaf_reformats_at_buckrams_resolved_inline_size` verifies an
+  admitted horizontal absolute block root and its child reformat at Buckram's
+  final used width before their final offset is published.
 
 ## Remaining boundary
 
@@ -106,7 +109,8 @@ that matrix. Generic inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
 subset; direct grid static alignment admits `self-start`/`self-end` across
 writing modes, using the positioned subject's corresponding physical edge.
-Unadmitted descendants remain explicit fallbacks.
+Positioned subtrees without an admitted intrinsic input remain explicit
+fallbacks.
 The renderer still supplies the narrow flex/grid static-position
 provider, so its private position role cannot disappear until Buckram has an
 equivalent flex/grid static-position algorithm. These are open work, not
