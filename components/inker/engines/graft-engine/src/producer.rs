@@ -6,10 +6,11 @@
 //! satisfies `inker::SurfaceProducer` over it.
 
 use inker::{
-    Cookie, CursorShape, FocusReason, KeyboardEvent, MouseEvent, NativeTextureHandle,
-    NavigationEvent, PointerEvent, SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings,
-    SurfaceSyncHandle, WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface,
-    WebSurfaceCapabilities, WebSurfaceEvent,
+    Cookie, CursorShape, DragEvent, DragOperationSet, FocusReason, KeyboardEvent, MouseEvent,
+    NativeTextureHandle, NavigationEvent, PhysicalPosition, PointerEvent, SurfaceError,
+    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSyncHandle, SurfaceTextureFormat,
+    WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface, WebSurfaceCapabilities,
+    WebSurfaceEvent,
 };
 
 /// A frame produced by a [`GraftSurface`]: the shared GPU texture handle the host
@@ -22,6 +23,7 @@ pub struct GraftFrame {
     pub sync: SurfaceSyncHandle,
     pub width: u32,
     pub height: u32,
+    pub format: SurfaceTextureFormat,
     /// Monotonic generation of the underlying shared allocation (from grafting's
     /// `ImportedTexture::generation`): bumps on (re)allocation (first frame / resize
     /// / context restart), constant while graft overwrites the same allocation in
@@ -66,6 +68,12 @@ pub trait GraftSurface {
 
     fn notify_mouse(&mut self, ev: MouseEvent) -> Result<(), SurfaceError>;
     fn notify_pointer(&mut self, ev: PointerEvent) -> Result<(), SurfaceError>;
+    fn notify_drag(&mut self, ev: DragEvent) -> Result<(), SurfaceError>;
+    fn finish_drag_source(
+        &mut self,
+        position: PhysicalPosition,
+        operation: DragOperationSet,
+    ) -> Result<(), SurfaceError>;
     fn notify_keyboard(&mut self, ev: KeyboardEvent) -> Result<(), SurfaceError>;
     fn focus(&mut self, reason: FocusReason) -> Result<(), SurfaceError>;
 
@@ -164,6 +172,7 @@ impl SurfaceProducer for GraftProducer {
             sync: f.sync,
             width: f.width,
             height: f.height,
+            format: f.format,
             resource_epoch: f.resource_epoch,
         }))
     }
@@ -174,6 +183,18 @@ impl SurfaceProducer for GraftProducer {
 
     fn send_pointer_input(&mut self, ev: PointerEvent) -> Result<(), SurfaceError> {
         self.inner.notify_pointer(ev)
+    }
+
+    fn send_drag_input(&mut self, ev: DragEvent) -> Result<(), SurfaceError> {
+        self.inner.notify_drag(ev)
+    }
+
+    fn finish_drag_source(
+        &mut self,
+        position: PhysicalPosition,
+        operation: DragOperationSet,
+    ) -> Result<(), SurfaceError> {
+        self.inner.finish_drag_source(position, operation)
     }
 
     fn send_keyboard_input(&mut self, ev: KeyboardEvent) -> Result<(), SurfaceError> {
@@ -261,14 +282,6 @@ impl WebSurface for GraftProducer {
         self.inner
             .poll_web_message()
             .map(WebSurfaceEvent::WebMessage)
-    }
-
-    fn poll_navigation_event(&mut self) -> Option<NavigationEvent> {
-        self.inner.poll_navigation_event()
-    }
-
-    fn poll_web_message(&mut self) -> Option<WebMessage> {
-        self.inner.poll_web_message()
     }
 }
 

@@ -60,6 +60,18 @@ struct Property {
     /// semantics.
     #[serde(default)]
     partial: Option<String>,
+    /// Stylo's logical-property override group. A logical property and all
+    /// physical targets it can resolve to share this identifier.
+    #[serde(default)]
+    logical_group: Option<String>,
+    #[serde(default)]
+    logical_axis: Option<String>,
+    #[serde(default)]
+    physical_axis: Option<String>,
+    #[serde(default)]
+    logical_side: Option<String>,
+    #[serde(default)]
+    physical_side: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -70,6 +82,8 @@ struct Unimplemented {
     animation: String,
     #[serde(default)]
     logical: bool,
+    #[serde(default)]
+    logical_group: Option<String>,
     #[serde(default)]
     aliases: Vec<String>,
     spec: String,
@@ -115,6 +129,49 @@ fn string_slice(values: &[String]) -> String {
 
 fn rust_field(css_name: &str) -> String {
     css_name.replace('-', "_")
+}
+
+fn logical_axis_variant(value: &str) -> &'static str {
+    match value {
+        "inline" => "crate::values::LogicalAxis::Inline",
+        "block" => "crate::values::LogicalAxis::Block",
+        _ => panic!("unsupported logical axis {value}"),
+    }
+}
+
+fn physical_axis_variant(value: &str) -> &'static str {
+    match value {
+        "horizontal" => "crate::values::PhysicalAxis::Horizontal",
+        "vertical" => "crate::values::PhysicalAxis::Vertical",
+        _ => panic!("unsupported physical axis {value}"),
+    }
+}
+
+fn logical_side_variant(value: &str) -> &'static str {
+    match value {
+        "block-start" => "crate::values::LogicalSide::BlockStart",
+        "block-end" => "crate::values::LogicalSide::BlockEnd",
+        "inline-start" => "crate::values::LogicalSide::InlineStart",
+        "inline-end" => "crate::values::LogicalSide::InlineEnd",
+        _ => panic!("unsupported logical side {value}"),
+    }
+}
+
+fn physical_side_variant(value: &str) -> &'static str {
+    match value {
+        "top" => "crate::values::PhysicalSide::Top",
+        "right" => "crate::values::PhysicalSide::Right",
+        "bottom" => "crate::values::PhysicalSide::Bottom",
+        "left" => "crate::values::PhysicalSide::Left",
+        _ => panic!("unsupported physical side {value}"),
+    }
+}
+
+fn option_variant(value: Option<&String>, variant: fn(&str) -> &'static str) -> String {
+    value.map_or_else(
+        || "None".to_owned(),
+        |value| format!("Some({})", variant(value)),
+    )
 }
 
 fn value_type_path(value_type: &str) -> &'static str {
@@ -327,6 +384,73 @@ fn validate(db: &Database) {
             property.name,
             property.source
         );
+        let logical_mappings = usize::from(property.logical_axis.is_some())
+            + usize::from(property.logical_side.is_some());
+        let physical_mappings = usize::from(property.physical_axis.is_some())
+            + usize::from(property.physical_side.is_some());
+        assert!(
+            logical_mappings <= 1,
+            "{} has multiple logical mappings",
+            property.name
+        );
+        assert!(
+            physical_mappings <= 1,
+            "{} has multiple physical mappings",
+            property.name
+        );
+        assert!(
+            logical_mappings == 0 || physical_mappings == 0,
+            "{} is both a logical and physical mapping",
+            property.name
+        );
+        assert_eq!(
+            property.logical_group.is_some(),
+            logical_mappings + physical_mappings > 0,
+            "{} must pair logical_group with exactly one mapping",
+            property.name
+        );
+        if let Some(value) = property.logical_axis.as_deref() {
+            logical_axis_variant(value);
+        }
+        if let Some(value) = property.physical_axis.as_deref() {
+            physical_axis_variant(value);
+        }
+        if let Some(value) = property.logical_side.as_deref() {
+            logical_side_variant(value);
+        }
+        if let Some(value) = property.physical_side.as_deref() {
+            physical_side_variant(value);
+        }
+    }
+
+    for property in &db.property {
+        let Some(group) = property.logical_group.as_deref() else {
+            continue;
+        };
+        if property.logical_axis.is_some() {
+            for target in ["horizontal", "vertical"] {
+                assert!(
+                    db.property.iter().any(|candidate| {
+                        candidate.logical_group.as_deref() == Some(group)
+                            && candidate.physical_axis.as_deref() == Some(target)
+                    }),
+                    "{} logical group {group} has no {target} target",
+                    property.name
+                );
+            }
+        }
+        if property.logical_side.is_some() {
+            for target in ["top", "right", "bottom", "left"] {
+                assert!(
+                    db.property.iter().any(|candidate| {
+                        candidate.logical_group.as_deref() == Some(group)
+                            && candidate.physical_side.as_deref() == Some(target)
+                    }),
+                    "{} logical group {group} has no {target} target",
+                    property.name
+                );
+            }
+        }
     }
 
     for (key, shorthand) in &db.shorthands {
@@ -484,6 +608,13 @@ fn generate(db: &Database) -> String {
          \x20   pub grammar: &'static str,\n\
          \x20   pub seed_values: &'static [&'static str],\n\
          \x20   pub animation: AnimationClass,\n\
+         \x20   /// Stylo-derived logical override group, when this property\n\
+         \x20   /// participates in flow-relative projection.\n\
+         \x20   pub logical_group: Option<&'static str>,\n\
+         \x20   pub logical_axis: Option<crate::values::LogicalAxis>,\n\
+         \x20   pub physical_axis: Option<crate::values::PhysicalAxis>,\n\
+         \x20   pub logical_side: Option<crate::values::LogicalSide>,\n\
+         \x20   pub physical_side: Option<crate::values::PhysicalSide>,\n\
          \x20   pub source_url: &'static str,\n\
          }\n\n",
     );
@@ -519,7 +650,7 @@ fn generate(db: &Database) -> String {
         };
         let source = &db.sources[&property.source].url;
         out.push_str(&format!(
-            "            Self::{variant} => PropertyMetadata {{ id: Self::{variant}, name: {name}, value_type: ValueType::{value_type}, inherited: {inherited}, initial: {initial}, partial: {partial}, grammar: {grammar}, seed_values: {seed_values}, animation: {animation}, source_url: {source} }},\n",
+            "            Self::{variant} => PropertyMetadata {{ id: Self::{variant}, name: {name}, value_type: ValueType::{value_type}, inherited: {inherited}, initial: {initial}, partial: {partial}, grammar: {grammar}, seed_values: {seed_values}, animation: {animation}, logical_group: {logical_group}, logical_axis: {logical_axis}, physical_axis: {physical_axis}, logical_side: {logical_side}, physical_side: {physical_side}, source_url: {source} }},\n",
             variant = rust_name(&property.name),
             name = literal(&property.name),
             value_type = rust_name(&property.value_type),
@@ -531,10 +662,52 @@ fn generate(db: &Database) -> String {
             },
             grammar = literal(&property.grammar),
             seed_values = string_slice(&property.seed_values),
+            logical_group = property
+                .logical_group
+                .as_deref()
+                .map_or_else(|| "None".to_owned(), |group| format!("Some({})", literal(group))),
+            logical_axis = option_variant(property.logical_axis.as_ref(), logical_axis_variant),
+            physical_axis = option_variant(property.physical_axis.as_ref(), physical_axis_variant),
+            logical_side = option_variant(property.logical_side.as_ref(), logical_side_variant),
+            physical_side = option_variant(property.physical_side.as_ref(), physical_side_variant),
             source = literal(source),
         ));
     }
-    out.push_str("        }\n    }\n}\n\n");
+    out.push_str(
+        "        }\n    }\n\n\
+         \x20   /// Resolve a generated logical longhand to the physical longhand\n\
+         \x20   /// selected by the element's computed writing mode and direction.\n\
+         \x20   pub fn to_physical(\n\
+         \x20       self,\n\
+         \x20       writing_mode: crate::values::WritingMode,\n\
+         \x20       direction: crate::values::Direction,\n\
+         \x20   ) -> Self {\n\
+         \x20       let metadata = self.metadata();\n\
+         \x20       let Some(group) = metadata.logical_group else { return self };\n\
+         \x20       if let Some(axis) = metadata.logical_axis {\n\
+         \x20           let target = axis.to_physical(writing_mode);\n\
+         \x20           return Self::ALL.iter().copied().find(|candidate| {\n\
+         \x20               let candidate = candidate.metadata();\n\
+         \x20               candidate.logical_group == Some(group)\n\
+         \x20                   && candidate.physical_axis == Some(target)\n\
+         \x20           }).expect(\"validated logical axis target\");\n\
+         \x20       }\n\
+         \x20       if let Some(side) = metadata.logical_side {\n\
+         \x20           let target = side.to_physical(writing_mode, direction);\n\
+         \x20           return Self::ALL.iter().copied().find(|candidate| {\n\
+         \x20               let candidate = candidate.metadata();\n\
+         \x20               candidate.logical_group == Some(group)\n\
+         \x20                   && candidate.physical_side == Some(target)\n\
+         \x20           }).expect(\"validated logical side target\");\n\
+         \x20       }\n\
+         \x20       self\n\
+         \x20   }\n\n\
+         \x20   pub const fn is_logical(self) -> bool {\n\
+         \x20       let metadata = self.metadata();\n\
+         \x20       metadata.logical_axis.is_some() || metadata.logical_side.is_some()\n\
+         \x20   }\n\
+         }\n\n",
+    );
 
     out.push_str("#[derive(Clone, Debug, PartialEq)]\npub enum PropertyValue {\n");
     for value_type in &value_types {
@@ -782,6 +955,7 @@ fn generate(db: &Database) -> String {
          \x20   pub inherited: bool,\n\
          \x20   pub animation: UnimplementedAnimation,\n\
          \x20   pub logical: bool,\n\
+         \x20   pub logical_group: Option<&'static str>,\n\
          \x20   pub spec_url: &'static str,\n\
          }\n\n\
          #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
@@ -800,11 +974,15 @@ fn generate(db: &Database) -> String {
             _ => unreachable!("validated animation class"),
         };
         out.push_str(&format!(
-            "    UnimplementedLonghand {{ name: {name}, group: {group}, inherited: {inherited}, animation: {animation}, logical: {logical}, spec_url: {spec} }},\n",
+            "    UnimplementedLonghand {{ name: {name}, group: {group}, inherited: {inherited}, animation: {animation}, logical: {logical}, logical_group: {logical_group}, spec_url: {spec} }},\n",
             name = literal(&entry.name),
             group = literal(&entry.group),
             inherited = entry.inherited,
             logical = entry.logical,
+            logical_group = entry.logical_group.as_deref().map_or_else(
+                || "None".to_owned(),
+                |group| format!("Some({})", literal(group)),
+            ),
             spec = literal(&entry.spec),
         ));
     }

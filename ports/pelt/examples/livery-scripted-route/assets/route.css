@@ -1,0 +1,20 @@
+body {
+  margin: 0;
+  padding: 28px;
+  background-color: #f3ecdc;
+  color: #3d2b1f;
+  font-family: RouteAhem, sans-serif;
+}
+
+h1 { color: #8b1e3f; }
+h1.ready { color: #1f6b57; }
+
+button {
+  display: inline-block;
+  margin-top: 20px;
+  padding: 8px;
+  color: #fffaf0;
+  background-color: #6b1f2d;
+}
+
+.spacer { height: 760px; }

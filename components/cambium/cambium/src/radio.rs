@@ -57,10 +57,13 @@ impl Default for RadioGroup {
 /// reads without special fonts), inside a `role="radiogroup"` container. The
 /// host styles the classes. `+ use<>` keeps the opaque type from borrowing
 /// `state` / `options` (the labels are cloned in).
-pub fn radio_group(
+pub fn radio_group<OptionLabel>(
     state: &RadioGroup,
-    options: &[&str],
-) -> impl View<RadioGroup, (), GenetCtx, Element = GenetElement> + use<> {
+    options: &[OptionLabel],
+) -> impl View<RadioGroup, (), GenetCtx, Element = GenetElement> + use<OptionLabel>
+where
+    OptionLabel: AsRef<str>,
+{
     let option_count = options.len();
     let active = if state.selected < option_count {
         state.selected
@@ -76,6 +79,7 @@ pub fn radio_group(
             let selected = i == state.selected;
             let active = i == active;
             let indicator = if selected { "(o) " } else { "( ) " };
+            let label = label.as_ref();
             let item = on_click(
                 el::<_, RadioGroup, ()>("div", format!("{indicator}{label}"))
                     .attr("role", "radio")
@@ -124,5 +128,11 @@ mod tests {
         assert_eq!(RadioGroup::default().selected, 0);
         assert_eq!(RadioGroup::default().label, "Options");
         assert_eq!(RadioGroup::default().focus_request, None);
+    }
+
+    #[test]
+    fn accepts_owned_option_labels() {
+        let options = ["Left".to_owned(), "Right".to_owned()];
+        let _view = radio_group(&RadioGroup::default(), &options);
     }
 }

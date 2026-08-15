@@ -31,7 +31,7 @@ render = ["dep:netrender", "dep:genet-layout", "dep:genet-render"]
 scripted-nova = ["dep:script-engine-nova"]
 # Opt-in clean-room CSSOM bridge. The default scripted/fullweb path keeps its
 # incumbent Stylo session; hosts selecting Livery install this adapter.
-livery = ["dep:genet-livery", "dep:paint_list_api"]
+livery = ["dep:genet-livery", "dep:paint_list_api", "dep:paint_list_render"]
 
 [dependencies]
 genet-scripted-dom = { path = "../genet-scripted-dom" }
@@ -42,6 +42,7 @@ genet-layout = { path = "../genet-layout", optional = true }
 genet-render = { path = "../genet-render", optional = true }
 genet-livery = { path = "../genet-livery", optional = true }
 paint_list_api = { workspace = true, optional = true }
+paint_list_render = { workspace = true, optional = true }
 genet-static-dom = { path = "../genet-static-dom" }
 genet-extract = { path = "../genet-extract" }
 script-runtime-api = { path = "../script-runtime-api" }

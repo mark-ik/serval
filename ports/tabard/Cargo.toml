@@ -1,0 +1,12 @@
+[package]
+name = "tabard"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/merely-made/genet"
+description = "Name reservation. Tabard is the theme-authoring port of the Genet engine: seeds in, liveries out. It composes tinct (OKLCH seed-to-palette derivation), illume (span kinds awaiting color), and palette-customizable icons into W3C Design Tokens, CSS custom-property stylesheets for livery, and theme structs for hosts. A tabard is the garment that displays a household's livery."
+readme = "README.md"
+keywords = ["theme", "design-tokens", "oklch", "palette", "icons"]
+categories = ["gui", "graphics"]
+
+[dependencies]

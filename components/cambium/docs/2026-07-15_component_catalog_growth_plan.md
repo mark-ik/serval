@@ -32,6 +32,9 @@ independently.
    integration specimen, but Cambium will not grow a competing splitter tree.
 5. Product canvases stay with their applications. Promote a paint leaf after a
    genuine second consumer establishes the shared contract.
+6. A reusable state-owning control takes props in, retains local interaction
+   state, and emits typed events out. The application remains responsible for
+   lowering those events into product actions and effects.
 
 ## Ordered work
 
@@ -173,6 +176,55 @@ card, detail panel, or C1 popover.
 
 Done when an accordion and recursive tree share one disclosure primitive, and
 the summary body is reused by two applications.
+
+### C6. Component boundary
+
+**Landed 2026-08-12.** `cambium::component` owns the narrow erasure seam for a
+reusable state-owning control: parent props in, retained local state, typed
+events out. Its reconciler receives previous and current props, so an external
+change can update a controlled axis without resetting component-owned
+interaction state. The retained state stores the local model, the previous
+erased child view, and the child's view state. `data-cambium-component` is
+optional caller-owned probe metadata and is not keyed or routing identity.
+
+The focused command-picker proof moves local selection, reconciles a changed
+parent label without resetting that selection, emits activation into the
+parent's event vocabulary, and exposes its probe id on the root. Turnstone's
+omnibar established the opposite boundary: it is an app-owned mirror, so it
+pulls only Cambium's pure `caret_field_children` projection and keeps its keys
+on Turnstone's Action spine.
+
+The catalog carries the boundary's specimen (2026-08-12): a counter whose
+count is component-owned. The headless contract clicks it, changes the
+parent-controlled step without resetting the count, lowers a typed Report
+event into catalog state, and proves teardown drops the local state while a
+remount reinitializes it.
+
+Also landed 2026-08-12: `Component::memo()` (props-equality skip gated by a
+local-dirty bit) and `setting_row`, the first component-shaped control:
+draft-local settings editing over `genet-host-api` specs, per-row Apply as
+the only emitter, memoized on its props. The catalog's settings form renders
+through it. The uncontrolled-wrapper idea is rejected in favor of
+per-control component-shaped signatures; see the 2026-08-12 brief in the
+repository root docs.
+
+Effects remain application-owned. `GenetAppRunner` returning `Vec<Action>` is
+the outward event seam; it is not a shared effect queue. Checked against
+Woodshed on 2026-08-12: after Woodshed replaced its request flags with a
+typed queue (for its own reasons — flags coalesced repeats and lost order),
+the two applications' shapes converge, and the shared part is still only
+`Vec::push` plus `mem::take`. The substance is app-specific: effect types,
+processors, and turnstone-only correlation. So the doctrine is shared and no
+module is lifted. Revisit only if a third consumer needs generation-counted
+staleness. Full reasoning in the 2026-08-12 brief in the repository root
+docs.
+
+**Component-shaped controls (2026-08-12).** `setting_row` and `graph_canvas`
+are the two built so far. The rule they establish: a control gains this shape
+when a consumer pulls, and the author decides the value/interaction split for
+that control specifically. `graph_canvas` also shows the compatible widening
+move — activating handlers return `OptionalAction` (unit already implements
+it, so existing callers are untouched) while emphasis handlers stay silent.
 
 ## Catalog refinements
 

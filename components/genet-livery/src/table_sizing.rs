@@ -499,6 +499,7 @@ pub(crate) fn table_cell_alignment(computed: &ComputedValues) -> TableCellAlignm
         | VerticalAlign::Super
         | VerticalAlign::TextTop
         | VerticalAlign::TextBottom
+        | VerticalAlign::MiddleWithBaseline
         | VerticalAlign::Length(_) => TableCellAlignment::Baseline,
     }
 }

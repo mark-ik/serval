@@ -274,7 +274,7 @@ impl<K: Eq + Hash> LeafRegistry<K> {
 }
 
 /// Rendered Path-A command buffers, keyed by leaf key. This is the **leaf-tier
-/// paint cache**: the third of the four retention gates (view `memoize`,
+/// paint cache**: the third of the four retention gates (retained view diff,
 /// `IncrementalLayout`, this, genet-render tile cache). A leaf re-renders only when
 /// it reports `paint_dirty` or has no buffer yet; an unchanged leaf keeps its
 /// cached commands. Neutral: only `paint_list_api` types, so a Genet-side
@@ -317,6 +317,18 @@ impl RenderedLeaves {
         self.map
             .iter()
             .filter_map(|(k, r)| r.scene.as_ref().map(|s| (*k, s, r.epoch, r.size)))
+    }
+
+    /// The Path-A entries: `(key, epoch, splice)`. This is the shape a host
+    /// syncing a retained-fragment registry consumes — translate the splice
+    /// once per epoch, place it per frame. Path-B entries are excluded (their
+    /// splice is a per-frame external-texture draw, which cannot be retained
+    /// as a fragment; they keep the inline splice path).
+    pub fn path_a_entries(&self) -> impl Iterator<Item = (u64, u64, &[PaintCmd])> {
+        self.map
+            .iter()
+            .filter(|(_, r)| r.scene.is_none())
+            .map(|(k, r)| (*k, r.epoch, r.splice.as_slice()))
     }
 
     pub fn is_empty(&self) -> bool {

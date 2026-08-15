@@ -200,7 +200,10 @@ impl TextSystem {
         self.fonts.len()
     }
 
-    pub(crate) fn register_font_bytes(&mut self, bytes: Vec<u8>) {
+    /// Register host-supplied font bytes with this retained text system. A
+    /// document owner rebuilds the system when its complete resource ledger
+    /// changes, so removed faces cannot remain reachable.
+    pub fn register_font_bytes(&mut self, bytes: Vec<u8>) {
         self.font_context
             .collection
             .register_fonts(parley::fontique::Blob::new(Arc::new(bytes)), None);
@@ -2821,6 +2824,9 @@ fn vertical_align_shift(
         VerticalAlign::Middle if is_inline_box => {
             metrics.baseline + font_size * 0.5 - (item_y + item_height * 0.5)
         },
+        VerticalAlign::MiddleWithBaseline if is_inline_box => {
+            metrics.baseline - (item_y + item_height * 0.5)
+        },
         VerticalAlign::Top | VerticalAlign::TextTop if is_inline_box => {
             metrics.block_min_coord - item_y
         },
@@ -2828,6 +2834,7 @@ fn vertical_align_shift(
             metrics.block_max_coord - (item_y + item_height)
         },
         VerticalAlign::Middle
+        | VerticalAlign::MiddleWithBaseline
         | VerticalAlign::Top
         | VerticalAlign::TextTop
         | VerticalAlign::Bottom

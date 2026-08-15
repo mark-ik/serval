@@ -29,6 +29,10 @@ pub enum EngineProfile {
     /// through `script-runtime-api` on a JS engine, mutating the DOM, rendered each
     /// frame. The content tier's proving ground (and the gc-arena soak's host).
     Scripted,
+    /// Explicit scripted Livery route. The runtime owns the mutable DOM while
+    /// Livery owns its CSSOM, resource graph, shaped layout, and paint session.
+    /// Selecting it never changes either incumbent profile.
+    LiveryScripted,
     /// Future automation-first profile. This is separate from `--headless`,
     /// which only selects the shell windowing mode.
     Headless,
@@ -54,6 +58,7 @@ impl fmt::Display for EngineProfile {
             Self::Static => "static",
             Self::Livery => "livery",
             Self::Scripted => "scripted",
+            Self::LiveryScripted => "livery-scripted",
             Self::Headless => "headless",
         };
         f.write_str(name)
@@ -70,9 +75,10 @@ impl FromStr for EngineProfile {
             "static" => Ok(Self::Static),
             "livery" => Ok(Self::Livery),
             "scripted" => Ok(Self::Scripted),
+            "livery-scripted" => Ok(Self::LiveryScripted),
             "headless" => Ok(Self::Headless),
             other => Err(format!(
-                "unknown engine profile '{other}'; expected browser, viewer, static, livery, scripted, or headless"
+                "unknown engine profile '{other}'; expected browser, viewer, static, livery, scripted, livery-scripted, or headless"
             )),
         }
     }
@@ -117,7 +123,10 @@ impl ShellEngine for DeferredShellEngine {
     fn capabilities(&self) -> ShellEngineCapabilities {
         ShellEngineCapabilities {
             // The scripted profile runs JS; the other profiles are script-free today.
-            javascript: matches!(self.profile, EngineProfile::Scripted),
+            javascript: matches!(
+                self.profile,
+                EngineProfile::Scripted | EngineProfile::LiveryScripted
+            ),
             ..ShellEngineCapabilities::default()
         }
     }

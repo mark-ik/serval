@@ -1,0 +1,25 @@
+{
+  "command": "testharness",
+  "engine": "boa",
+  "renderer": "stylo",
+  "policy": "opt-in",
+  "subset": "dom/abort",
+  "tests": {
+    "dom/abort/AbortSignal.any.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "the AbortSignal.abort() static returns an already aborted signal",
+          "status": "pass"
+        },
+        {
+          "name": "signal returned by AbortSignal.abort() should not fire abort event",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 2,
+      "subtests_total": 2
+    }
+  },
+  "version": 1
+}

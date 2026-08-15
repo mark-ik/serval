@@ -14,6 +14,8 @@
 use genet_layout::ScrollKey;
 use script_engine_api::ScriptEngine;
 
+#[cfg(feature = "livery-scripted")]
+use crate::LiveryScriptedDocument;
 use crate::document::LocalFetcher;
 use crate::scripted::{ScriptedDocument, ScriptedEngine};
 use crate::static_viewer::run_headed_with;
@@ -41,6 +43,28 @@ impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
     }
 }
 
+/// The explicit F4 route uses the same window shell but its frame is produced
+/// by the live Livery CSSOM session, not `IncrementalLayout`.
+#[cfg(feature = "livery-scripted")]
+impl<E: ScriptEngine> ViewerContent for LiveryScriptedDocument<E> {
+    fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
+        LiveryScriptedDocument::frame(self, width, height)
+    }
+    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
+        LiveryScriptedDocument::scroll_by(self, dx, dy)
+    }
+    fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
+        LiveryScriptedDocument::scroll_for_key(self, key)
+    }
+    fn click_at(&mut self, x: f32, y: f32) -> bool {
+        LiveryScriptedDocument::click_at(self, x, y)
+    }
+    fn pump(&mut self, now_ms: f64) -> bool {
+        let _ = LiveryScriptedDocument::pump(self, now_ms);
+        self.has_pending_work()
+    }
+}
+
 /// Run the scripted viewer for `config` on `engine`: headed opens a window and
 /// presents the live, script-driven document; headless returns immediately with no
 /// window (the CI smoke shape). The engine selects the monomorphization — Nova
@@ -57,6 +81,54 @@ pub fn run_scripted_viewer(
             size: (0, 0),
         }),
         WindowingMode::Headed => run_scripted_headed(config, engine),
+    }
+}
+
+/// Run the opt-in scripted Livery route. Its JavaScript backend selection is
+/// identical to the incumbent scripted viewer, but the live frame and CSSOM
+/// route are Livery from construction onward.
+#[cfg(feature = "livery-scripted")]
+pub fn run_livery_scripted_viewer(
+    config: StaticViewerConfig,
+    engine: ScriptedEngine,
+) -> Result<StaticViewerOutcome, String> {
+    match config.profile.windowing {
+        WindowingMode::Headless => Ok(StaticViewerOutcome {
+            url: config.url,
+            created_window: false,
+            redraws: 0,
+            size: (0, 0),
+        }),
+        WindowingMode::Headed => run_livery_scripted_headed(config, engine),
+    }
+}
+
+#[cfg(feature = "livery-scripted")]
+fn run_livery_scripted_headed(
+    config: StaticViewerConfig,
+    engine: ScriptedEngine,
+) -> Result<StaticViewerOutcome, String> {
+    match engine {
+        ScriptedEngine::Boa => {
+            let doc = LiveryScriptedDocument::<script_engine_boa::BoaEngine>::load(
+                LocalFetcher,
+                &config.url,
+            )?;
+            run_headed_with(config, doc)
+        },
+        #[cfg(feature = "scripted-nova")]
+        ScriptedEngine::Nova => {
+            let doc = LiveryScriptedDocument::<script_engine_nova::NovaEngine>::load(
+                LocalFetcher,
+                &config.url,
+            )?;
+            run_headed_with(config, doc)
+        },
+        #[cfg(not(feature = "scripted-nova"))]
+        ScriptedEngine::Nova => Err(
+            "the Nova engine needs `--features scripted-nova` (this build links Boa only)"
+                .to_string(),
+        ),
     }
 }
 

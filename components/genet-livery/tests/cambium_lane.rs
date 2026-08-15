@@ -122,6 +122,58 @@ fn inherited_relative_font_sizes_are_computed_once() {
 }
 
 #[test]
+fn html_presentational_hints_reach_cssom_and_layout_through_one_style_plane() {
+    let document = StaticDocument::parse(
+        r#"<html><body marginwidth="20" marginheight="10">
+             <font class="legacy" size="7">large</font>
+             <hr class="rule" width="100" size="10">
+           </body></html>"#,
+    );
+    let body = document.first_tag(document.document(), "body").unwrap();
+    let legacy = document
+        .first_with_class(document.document(), "legacy")
+        .unwrap();
+    let rule = document
+        .first_with_class(document.document(), "rule")
+        .unwrap();
+    let styles = resolve_styles(
+        &document,
+        &StyleSet::cambium(&[]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+
+    assert_eq!(
+        styles.computed_style(body, "margin-left").as_deref(),
+        Some("20px")
+    );
+    assert_eq!(
+        styles.computed_style(body, "margin-top").as_deref(),
+        Some("10px")
+    );
+    assert_eq!(
+        styles.computed_style(legacy, "font-size").as_deref(),
+        Some("48px")
+    );
+    assert_eq!(
+        styles.computed_style(rule, "width").as_deref(),
+        Some("100px")
+    );
+    assert_eq!(
+        styles.computed_style(rule, "height").as_deref(),
+        Some("8px")
+    );
+
+    let fragments = layout(&document, &styles, 320.0, 240.0).expect("hinted layout");
+    let body_fragment = fragments.get(body).unwrap();
+    let rule_fragment = fragments.get(rule).unwrap();
+    assert_eq!(body_fragment.x, 20.0);
+    assert_eq!(body_fragment.y, 10.0);
+    assert_eq!(rule_fragment.width, 102.0);
+    assert_eq!(rule_fragment.height, 10.0);
+}
+
+#[test]
 fn viewport_units_resolve_from_the_current_device_before_layout() {
     let document =
         StaticDocument::parse(r#"<html><body><div class="viewport-box"></div></body></html>"#);

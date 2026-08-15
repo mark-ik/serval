@@ -122,6 +122,18 @@ fn color_values_round_trip() {
 
 #[test]
 fn catalog_property_values_round_trip() {
+    for value in [
+        "xx-small",
+        "x-small",
+        "small",
+        "medium",
+        "large",
+        "x-large",
+        "xx-large",
+        "xxx-large",
+    ] {
+        assert_round_trip::<FontSize>(value);
+    }
     assert_round_trip::<AnimationDelay>("-500000s");
     assert_round_trip::<Display>("inline-block");
     assert_round_trip::<Display>("inline-table");
@@ -138,6 +150,8 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<Clear>("both");
     assert_round_trip::<Direction>("rtl");
     assert_round_trip::<AspectRatio>("16 / 9");
+    assert_round_trip::<AspectRatio>("auto 16 / 9");
+    assert_round_trip::<AspectRatio>("4 / 3 auto");
     assert_round_trip::<BoxSizing>("border-box");
     assert_round_trip::<BoxShadow>("0 2px 4px rgba(0, 0, 0, 0.5)");
     assert_round_trip::<BackgroundImage>("linear-gradient(red, blue)");
@@ -221,6 +235,16 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<ZIndex>("10");
 }
 
+#[test]
+fn html_auto_aspect_ratio_retains_degenerate_operands_without_using_them() {
+    let ratio = AspectRatio::AutoRatio {
+        width: 0.0,
+        height: 1.0,
+    };
+    assert_eq!(ratio.to_css_string(), "auto 0 / 1");
+    assert_eq!(ratio.preferred_ratio(), None);
+    assert!(ratio.uses_natural_ratio());
+}
 #[test]
 fn table_properties_parse_serialize_and_inherit() {
     let mut parent = ComputedValues::default();

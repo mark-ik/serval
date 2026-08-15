@@ -15,8 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::exit;
 
-const BEGIN_MARKER: &str =
-    "# ==== BEGIN GENERATED property-space import (stylo harvest H0) ====";
+const BEGIN_MARKER: &str = "# ==== BEGIN GENERATED property-space import (stylo harvest H0) ====";
 const END_MARKER: &str = "# ==== END GENERATED property-space import ====";
 
 const INHERITED_GROUPS: &[&str] = &[
@@ -32,6 +31,7 @@ const INHERITED_GROUPS: &[&str] = &[
 struct Longhand {
     name: String,
     group: String,
+    logical_group: Option<String>,
     inherited: bool,
     animation: &'static str,
     logical: bool,
@@ -74,8 +74,7 @@ fn toml_string(value: &str) -> String {
 fn main() {
     let mut stylo_properties: Option<PathBuf> = None;
     let mut source_rev = String::from("unrecorded");
-    let mut livery_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut livery_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -140,6 +139,10 @@ fn main() {
             name: name.clone(),
             inherited: INHERITED_GROUPS.contains(&group.as_str()),
             group,
+            logical_group: entry
+                .get("logical_group")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
             animation,
             logical: entry
                 .get("logical")
@@ -226,10 +229,14 @@ fn main() {
         })
         .collect();
 
-    let servo_longhand_names: BTreeSet<&str> =
-        longhands.iter().map(|longhand| longhand.name.as_str()).collect();
-    let servo_shorthand_names: BTreeSet<&str> =
-        shorthands.iter().map(|shorthand| shorthand.name.as_str()).collect();
+    let servo_longhand_names: BTreeSet<&str> = longhands
+        .iter()
+        .map(|longhand| longhand.name.as_str())
+        .collect();
+    let servo_shorthand_names: BTreeSet<&str> = shorthands
+        .iter()
+        .map(|shorthand| shorthand.name.as_str())
+        .collect();
 
     // A name livery implements as the other kind (its bounded
     // `background-position` longhand vs upstream's shorthand) is covered,
@@ -279,13 +286,17 @@ fn main() {
          # rev {source_rev}). Known to the catalog, rejected by the parser with a\n\
          # known-unimplemented diagnostic, and generated into the unimplemented\n\
          # metadata tables. `group` is the fork's style struct: the future\n\
-         # ComputedValues grouping seam. Re-run the tool after fork realignments;\n\
+         # ComputedValues grouping seam; `logical_group` retains its physical/\n\
+         # logical override family. Re-run the tool after fork realignments;\n\
          # entries leave this section by being implemented as [[property]] rows.\n\n"
     ));
 
     let mut by_group: BTreeMap<&str, Vec<&Longhand>> = BTreeMap::new();
     for longhand in &unimplemented_longhands {
-        by_group.entry(longhand.group.as_str()).or_default().push(longhand);
+        by_group
+            .entry(longhand.group.as_str())
+            .or_default()
+            .push(longhand);
     }
     for (group, group_longhands) in &by_group {
         section.push_str(&format!("# group: {group}\n"));
@@ -294,9 +305,15 @@ fn main() {
             section.push_str(&format!("name = {}\n", toml_string(&longhand.name)));
             section.push_str(&format!("group = {}\n", toml_string(&longhand.group)));
             section.push_str(&format!("inherited = {}\n", longhand.inherited));
-            section.push_str(&format!("animation = {}\n", toml_string(longhand.animation)));
+            section.push_str(&format!(
+                "animation = {}\n",
+                toml_string(longhand.animation)
+            ));
             if longhand.logical {
                 section.push_str("logical = true\n");
+            }
+            if let Some(group) = &longhand.logical_group {
+                section.push_str(&format!("logical_group = {}\n", toml_string(group)));
             }
             if !longhand.aliases.is_empty() {
                 let aliases = longhand

@@ -29,6 +29,7 @@ use layout_dom_api::{LocalName, Namespace, QualName};
 mod action_list;
 mod arrangement;
 mod command_surface;
+mod component;
 mod context;
 mod controls;
 mod detail_panel;
@@ -63,6 +64,7 @@ mod runner;
 mod sectioned_list;
 mod select;
 mod selection_bar;
+mod setting_row;
 mod slider;
 mod splice;
 mod split;
@@ -82,6 +84,7 @@ pub use command_surface::{
     CommandEvent, CommandItem, CommandState, CommandSurfaceKind, command_menu, command_palette,
     command_picker, command_surface,
 };
+pub use component::{COMPONENT_PROBE_ATTR, Component, ComponentView, component};
 pub use context::GenetCtx;
 pub use detail_panel::{DetailRow, DetailSection, detail_panel};
 pub use detail_popover::{
@@ -94,14 +97,15 @@ pub use disclosure::{
 };
 pub use editor::{EditHistory, pair_close, wrap_selection};
 pub use graph_canvas::{
-    GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasNode, GraphCanvasNodeDrag,
-    GraphCanvasRelation, GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas_swatch,
-    graph_canvas_swatch_with_drag, graph_canvas_swatch_with_drag_and_relations,
-    graph_canvas_swatch_with_focus, graph_canvas_swatch_with_focus_and_drag,
-    graph_canvas_swatch_with_focus_and_drag_and_relations,
+    GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasEvent, GraphCanvasNode,
+    GraphCanvasNodeDrag, GraphCanvasRelation, GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas,
+    graph_canvas_swatch, graph_canvas_swatch_with_drag,
+    graph_canvas_swatch_with_drag_and_relations, graph_canvas_swatch_with_focus,
+    graph_canvas_swatch_with_focus_and_drag, graph_canvas_swatch_with_focus_and_drag_and_relations,
 };
 pub use grid::{GridView, data_grid};
 pub use menu::{MENU_CLASS, MENU_ROW_ACTIVE_CLASS, MENU_ROW_CLASS, menu};
+pub use setting_row::setting_row;
 // Re-export the grid's spec types from Sprigging so a host building a `data_grid`
 // needs no second direct `sprigging` dependency. The grid widget's home
 // is here; its column model rides along.
@@ -145,7 +149,8 @@ pub use slider::{Slider, slider};
 pub use splice::GenetChildrenSplice;
 pub use sprigging::{GraphCanvas, GraphViewport, GridColumn, GridSpec};
 pub use styled_field::{
-    FIELD_CARET_CLASS, FieldChild, StyleRange, caret_text_field, styled_text_field, styled_textarea,
+    FIELD_CARET_CLASS, FIELD_PREEDIT_CLASS, FieldChild, StyleRange, caret_field_children,
+    caret_text_field, styled_text_field, styled_textarea,
 };
 pub use summary_body::{SummaryBody, summary_body};
 // Per-tag element-view helpers: `div`, `span`, `p`, `input`, `label`, `a`,
@@ -184,7 +189,7 @@ pub use splice::GenetChildrenSplice as ServalChildrenSplice;
 // `View`/`MessageResult` core traits come along so `impl View<…, GenetCtx, …>`
 // return types and the action path can be named from this crate alone.
 pub use meristem::{
-    AnyView, Lens, MessageResult, View, lens, map_action, map_message_result, map_state, memoize,
+    AnyView, Lens, MessageResult, View, lens, map_action, map_message_result, map_state,
 };
 
 /// The HTML namespace. Cambium views build elements in this namespace, matching

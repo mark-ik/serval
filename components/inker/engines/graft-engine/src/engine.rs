@@ -78,8 +78,8 @@ mod tests {
 
     use crate::producer::GraftFrame;
     use inker::{
-        CursorShape, FocusReason, KeyboardEvent, MouseEvent, NavigationEvent, PointerEvent,
-        SurfaceSettings, WebMessage,
+        CursorShape, DragEvent, DragOperationSet, FocusReason, KeyboardEvent, MouseEvent,
+        NavigationEvent, PhysicalPosition, PointerEvent, SurfaceSettings, WebMessage,
     };
 
     /// Minimal surface stub: navigable, no frames, no events. Drives the spawn
@@ -121,6 +121,16 @@ mod tests {
             Ok(())
         }
         fn notify_pointer(&mut self, _: PointerEvent) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn notify_drag(&mut self, _: DragEvent) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn finish_drag_source(
+            &mut self,
+            _: PhysicalPosition,
+            _: DragOperationSet,
+        ) -> Result<(), SurfaceError> {
             Ok(())
         }
         fn notify_keyboard(&mut self, _: KeyboardEvent) -> Result<(), SurfaceError> {

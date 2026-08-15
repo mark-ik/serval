@@ -2891,16 +2891,22 @@ mod tests {
         let layout = IncrementalLayout::new(&dom, &[sheet], W, H);
 
         assert_eq!(
-            layout.computed_custom_property(bar, "app-region").as_deref(),
+            layout
+                .computed_custom_property(bar, "app-region")
+                .as_deref(),
             Some("drag"),
         );
         assert_eq!(
-            layout.computed_custom_property(label, "app-region").as_deref(),
+            layout
+                .computed_custom_property(label, "app-region")
+                .as_deref(),
             Some("drag"),
             "a nested label must drag with the bar it sits in",
         );
         assert_eq!(
-            layout.computed_custom_property(close, "app-region").as_deref(),
+            layout
+                .computed_custom_property(close, "app-region")
+                .as_deref(),
             Some("no-drag"),
             "a control inside the bar must carve a hole, not drag the window",
         );

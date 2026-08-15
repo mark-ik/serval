@@ -1326,6 +1326,10 @@ pub enum VerticalAlign {
     TextTop,
     TextBottom,
     Middle,
+    /// HTML's legacy `align=middle|center` behavior for replaced content:
+    /// align the element's center with the parent's baseline. This differs
+    /// from CSS `middle`, which also includes half the parent's x-height.
+    MiddleWithBaseline,
     Top,
     Bottom,
     Length(LengthPercentage),
@@ -1358,6 +1362,7 @@ impl fmt::Display for VerticalAlign {
             Self::TextTop => formatter.write_str("text-top"),
             Self::TextBottom => formatter.write_str("text-bottom"),
             Self::Middle => formatter.write_str("middle"),
+            Self::MiddleWithBaseline => formatter.write_str("middle"),
             Self::Top => formatter.write_str("top"),
             Self::Bottom => formatter.write_str("bottom"),
             Self::Length(value) => value.fmt(formatter),
@@ -1577,18 +1582,47 @@ impl fmt::Display for FontFamily {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FontSize {
+    XXSmall,
+    XSmall,
+    Small,
     Medium,
+    Large,
+    XLarge,
+    XXLarge,
+    XXXLarge,
     Value(LengthPercentage),
 }
 
+impl FontSize {
+    /// Resolve CSS's absolute-size keywords against Livery's 16px medium.
+    pub const fn absolute_px(self) -> Option<f32> {
+        match self {
+            Self::XXSmall => Some(9.6),
+            Self::XSmall => Some(12.0),
+            Self::Small => Some(13.333_333),
+            Self::Medium => Some(16.0),
+            Self::Large => Some(18.0),
+            Self::XLarge => Some(24.0),
+            Self::XXLarge => Some(32.0),
+            Self::XXXLarge => Some(48.0),
+            Self::Value(_) => None,
+        }
+    }
+}
 impl FromStr for FontSize {
     type Err = ParseError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        if input.trim().eq_ignore_ascii_case("medium") {
-            Ok(Self::Medium)
-        } else {
-            input.parse::<LengthPercentage>().map(Self::Value)
+        match input.trim().to_ascii_lowercase().as_str() {
+            "xx-small" => Ok(Self::XXSmall),
+            "x-small" => Ok(Self::XSmall),
+            "small" => Ok(Self::Small),
+            "medium" => Ok(Self::Medium),
+            "large" => Ok(Self::Large),
+            "x-large" => Ok(Self::XLarge),
+            "xx-large" => Ok(Self::XXLarge),
+            "xxx-large" => Ok(Self::XXXLarge),
+            _ => input.parse::<LengthPercentage>().map(Self::Value),
         }
     }
 }
@@ -1596,7 +1630,14 @@ impl FromStr for FontSize {
 impl fmt::Display for FontSize {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::XXSmall => formatter.write_str("xx-small"),
+            Self::XSmall => formatter.write_str("x-small"),
+            Self::Small => formatter.write_str("small"),
             Self::Medium => formatter.write_str("medium"),
+            Self::Large => formatter.write_str("large"),
+            Self::XLarge => formatter.write_str("x-large"),
+            Self::XXLarge => formatter.write_str("xx-large"),
+            Self::XXXLarge => formatter.write_str("xxx-large"),
             Self::Value(value) => value.fmt(formatter),
         }
     }
@@ -1830,8 +1871,34 @@ impl fmt::Display for GridPlacement {
 pub enum AspectRatio {
     Auto,
     Ratio(f32),
+    /// HTML dimension attributes contribute `auto <ratio>`. The operands are
+    /// retained separately because HTML permits zero in this mapping even
+    /// though an authored CSS `<ratio>` requires two positive numbers.
+    AutoRatio {
+        width: f32,
+        height: f32,
+    },
 }
 
+impl AspectRatio {
+    /// Return the usable preferred ratio. Degenerate HTML ratios remain
+    /// serializable computed values but do not enter layout arithmetic.
+    pub fn preferred_ratio(self) -> Option<f32> {
+        let ratio = match self {
+            Self::Auto => return None,
+            Self::Ratio(ratio) => ratio,
+            Self::AutoRatio { width, height } => width / height,
+        };
+        ratio
+            .is_finite()
+            .then_some(ratio)
+            .filter(|ratio| *ratio > 0.0)
+    }
+
+    pub const fn uses_natural_ratio(self) -> bool {
+        matches!(self, Self::Auto | Self::AutoRatio { .. })
+    }
+}
 impl FromStr for AspectRatio {
     type Err = ParseError;
 
@@ -1840,6 +1907,17 @@ impl FromStr for AspectRatio {
         if input.eq_ignore_ascii_case("auto") {
             return Ok(Self::Auto);
         }
+        let lowercase = input.to_ascii_lowercase();
+        let (auto, input) =
+            if lowercase.starts_with("auto") && input[4..].starts_with(char::is_whitespace) {
+                (true, input[4..].trim())
+            } else if lowercase.ends_with("auto")
+                && input[..input.len() - 4].ends_with(char::is_whitespace)
+            {
+                (true, input[..input.len() - 4].trim())
+            } else {
+                (false, input)
+            };
         let (width, height) = input
             .split_once('/')
             .map_or((input, "1"), |(width, height)| {
@@ -1855,7 +1933,11 @@ impl FromStr for AspectRatio {
             .ok()
             .filter(|value| value.is_finite() && *value > 0.0)
             .ok_or_else(|| ParseError::expected("a positive aspect-ratio"))?;
-        Ok(Self::Ratio(width / height))
+        if auto {
+            Ok(Self::AutoRatio { width, height })
+        } else {
+            Ok(Self::Ratio(width / height))
+        }
     }
 }
 
@@ -1864,6 +1946,12 @@ impl fmt::Display for AspectRatio {
         match self {
             Self::Auto => formatter.write_str("auto"),
             Self::Ratio(value) => formatter.write_str(&format_number(*value)),
+            Self::AutoRatio { width, height } => write!(
+                formatter,
+                "auto {} / {}",
+                format_number(*width),
+                format_number(*height)
+            ),
         }
     }
 }

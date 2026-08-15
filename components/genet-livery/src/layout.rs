@@ -13,11 +13,11 @@ use buckram::{
     FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind,
     Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole,
     IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult,
-    LogicalAxis, LogicalRect, PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides,
-    PhysicalSize, PositioningScheme, StaticPosition, StaticPositionSource, TableCell,
-    TableCellInput, TableCellLayoutInput, TableCellLayoutOutput, TableCellLayoutPass,
-    TableFragmentRole, TableFragments, TableGrid, TableGridInputs, TableGridLines,
-    TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    LogicalAxis, LogicalRect, OverconstrainedInlineAlignment, PhysicalOffset, PhysicalRect,
+    PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
+    StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
+    TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
+    TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
     resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -26,7 +26,7 @@ use livery::{
     media::{Device, ViewportSizes},
     stylesheet::ContainerSnapshot,
     values::{
-        Alignment as CssAlignment, AspectRatio, BorderCollapse, BorderStyle, BorderWidth,
+        Alignment as CssAlignment, BorderCollapse, BorderStyle, BorderWidth,
         BoxSizing as CssBoxSizing, CaptionSide, Clear as CssClear, ComputedColor, ContainerType,
         Display as CssDisplay, FlexDirection as CssFlexDirection, FlexWrap as CssFlexWrap,
         Float as CssFloat, FontSize, Gap as CssGap, GridAutoFlow as CssGridAutoFlow,
@@ -52,7 +52,7 @@ use taffy::{
 type ImageSources = HashMap<String, Vec<u8>>;
 
 use crate::{
-    InteractionStates, StylePlane, StyleSet, TextSystem,
+    InteractionStates, LegacyDescendantAlignment, StylePlane, StyleSet, TextSystem,
     box_tree::GeneratedBoxTree,
     style::resolve_styles_with_containers,
     table_block::{
@@ -238,11 +238,8 @@ where
     /// retained text frame needs this old set as well as the final DOM set so
     /// a removed text node cannot retain a prepared run or selection cluster.
     pub(crate) fn generated_subtree_nodes(&self, node: Id) -> HashSet<Id> {
-        fn visit<Id>(
-            boxes: &buckram::CssBoxTree<Id>,
-            box_id: BoxId,
-            nodes: &mut HashSet<Id>,
-        ) where
+        fn visit<Id>(boxes: &buckram::CssBoxTree<Id>, box_id: BoxId, nodes: &mut HashSet<Id>)
+        where
             Id: Copy + Eq + Hash,
         {
             if let Some(node) = boxes.origin_node(box_id) {
@@ -538,7 +535,8 @@ where
                     computed.clone()
                 };
                 let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
-                let style = to_block_style(self.buckram.boxes(), box_id, &computed, font_size);
+                let style =
+                    to_block_style(self.buckram.boxes(), styles, box_id, &computed, font_size);
                 let percentage_basis = style
                     .containing_flow
                     .logical_size(PhysicalSize {
@@ -719,7 +717,7 @@ where
                 .fragment_ids_for_box(placement.box_id)
                 .len()
                 == 1)
-        .then_some(placement)
+            .then_some(placement)
     }
 
     pub fn fragments_for_node(&self, node: Id) -> impl Iterator<Item = &TreeFragment> {
@@ -1325,7 +1323,10 @@ where
     }))
 }
 
-pub(crate) fn layout_with_text_system<D>(
+/// Lay out a retained live document through the caller-owned text system and
+/// image ledger. `LiveryDocument` uses this internally; scripted hosts use the
+/// same entry when their runtime owns the DOM.
+pub fn layout_with_text_system<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     viewport_width: f32,
@@ -1400,10 +1401,7 @@ where
     let Some(previous_root_box) = retained_root_box(previous.boxes(), node) else {
         return Ok(RetainedRootFormatting::Unsupported);
     };
-    let [previous_root] = previous
-        .fragments()
-        .fragment_ids_for_box(previous_root_box)
-    else {
+    let [previous_root] = previous.fragments().fragment_ids_for_box(previous_root_box) else {
         return Ok(RetainedRootFormatting::Unsupported);
     };
     let Some(previous_root_fragment) = previous.fragments().get(*previous_root) else {
@@ -1452,7 +1450,8 @@ where
         None,
         parent_font_size,
         (Some(containing_size.0), Some(containing_size.1)),
-    )? else {
+    )?
+    else {
         return Ok(RetainedRootFormatting::Unsupported);
     };
     let formatter_root = state.tree.new_with_children_and_block_style(
@@ -1557,16 +1556,18 @@ where
     );
     drop(state);
 
-    Ok(RetainedRootFormatting::Formatted(Box::new(LiveryLayout::new(
-        LayoutResult::new(boxes.into_tree(), fragments),
-        Some(text_frame),
-        BlockAlgorithmCounts {
-            buckram: buckram_blocks,
-            taffy: taffy_blocks,
-        },
-        table_paint,
-        table_shadow,
-    ))))
+    Ok(RetainedRootFormatting::Formatted(Box::new(
+        LiveryLayout::new(
+            LayoutResult::new(boxes.into_tree(), fragments),
+            Some(text_frame),
+            BlockAlgorithmCounts {
+                buckram: buckram_blocks,
+                taffy: taffy_blocks,
+            },
+            table_paint,
+            table_shadow,
+        ),
+    )))
 }
 
 fn supports_retained_root_formatting<Id>(boxes: &GeneratedBoxTree<Id>, root: BoxId) -> bool
@@ -1598,7 +1599,11 @@ where
         if css_box.display.internal_table.is_some() {
             return false;
         }
-        css_box.children().iter().copied().all(|child| visit(boxes, child))
+        css_box
+            .children()
+            .iter()
+            .copied()
+            .all(|child| visit(boxes, child))
     }
 
     visit(boxes, root)
@@ -1616,7 +1621,9 @@ where
     } else if matches!(
         boxes[principal].formatting_context,
         Some(
-            FormattingContextKind::Block | FormattingContextKind::Flex | FormattingContextKind::Grid
+            FormattingContextKind::Block
+                | FormattingContextKind::Flex
+                | FormattingContextKind::Grid
         )
     ) {
         Some(principal)
@@ -1628,10 +1635,7 @@ where
 /// A table row, group, or cell mutation is owned by the element whose grid is
 /// wrapped into the formatting root. The damaged part cannot be spliced on its
 /// own because the table paint plane and wrapper width belong to that owner.
-pub(crate) fn retained_table_owner<Id>(
-    boxes: &buckram::CssBoxTree<Id>,
-    node: Id,
-) -> Option<Id>
+pub(crate) fn retained_table_owner<Id>(boxes: &buckram::CssBoxTree<Id>, node: Id) -> Option<Id>
 where
     Id: Copy + Eq + Hash,
 {
@@ -1663,10 +1667,7 @@ where
     false
 }
 
-fn supports_retained_table_root_formatting<Id>(
-    boxes: &GeneratedBoxTree<Id>,
-    root: BoxId,
-) -> bool
+fn supports_retained_table_root_formatting<Id>(boxes: &GeneratedBoxTree<Id>, root: BoxId) -> bool
 where
     Id: Copy + Eq + Hash,
 {
@@ -1685,9 +1686,7 @@ where
         {
             return false;
         }
-        if box_id != root
-            && css_box.display.internal_table == Some(InternalTableRole::Wrapper)
-        {
+        if box_id != root && css_box.display.internal_table == Some(InternalTableRole::Wrapper) {
             return false;
         }
         css_box
@@ -1788,7 +1787,9 @@ where
     )
 }
 
-pub(crate) fn resolve_container_query_styles_with_images<D>(
+/// Resolve container-query styles while retaining the caller-owned image
+/// ledger for intrinsic-size resolution.
+pub fn resolve_container_query_styles_with_images<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     style_set: &StyleSet,
@@ -2906,7 +2907,7 @@ where
                 )?;
                 let table_handoff = self.pending_table_handoff.take();
                 let mut taffy_style = to_taffy_style(&computed, font_size);
-                apply_replaced_image_size(
+                apply_replaced_intrinsic_size(
                     &mut taffy_style,
                     self.dom,
                     node,
@@ -2914,7 +2915,8 @@ where
                     self.image_sources,
                     font_size,
                 );
-                let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                let block_style =
+                    to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
                 let node = self.tree.new_with_children_and_block_style(
@@ -3035,7 +3037,8 @@ where
                     )) {
                         taffy_style.size.width = width;
                     }
-                    let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                    let block_style =
+                        to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                     let kind = if logical_wrapper {
                         AlgorithmKind::Flex
                     } else {
@@ -3228,7 +3231,8 @@ where
             self.table_shadow = TableShadowLedger::default();
             if let Some(computed) = self.styles.get(pending.node).cloned() {
                 pending.collapsed_border_metrics = None;
-                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
+                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse
+                {
                     match collapsed_table_borders(
                         self.boxes,
                         self.styles,
@@ -3535,12 +3539,9 @@ where
             }
             let mut out_of_flow_parts = Vec::with_capacity(table.out_of_flow_parts.len());
             for part in &table.out_of_flow_parts {
-                let Some(node) = self.build_box(
-                    *part,
-                    Some(parent_style),
-                    parent_font_size,
-                    containing_size,
-                )? else {
+                let Some(node) =
+                    self.build_box(*part, Some(parent_style), parent_font_size, containing_size)?
+                else {
                     continue;
                 };
                 out_of_flow_parts.push(DetachedTablePart {
@@ -3799,7 +3800,8 @@ where
             self.table_shadow = TableShadowLedger::default();
             if let Some(computed) = self.styles.get(pending.node).cloned() {
                 pending.collapsed_border_metrics = None;
-                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
+                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse
+                {
                     match collapsed_table_borders(
                         self.boxes,
                         self.styles,
@@ -4106,7 +4108,8 @@ where
                             Some(&computed),
                             font_size,
                             child_containing_size,
-                        )? else {
+                        )?
+                        else {
                             continue;
                         };
                         table_out_of_flow_parts.push(DetachedTablePart {
@@ -4143,7 +4146,7 @@ where
                     dimension_with_basis(computed.max_width, font_size, containing_size.0);
                 taffy_style.max_size.height =
                     dimension_with_basis(computed.max_height, font_size, containing_size.1);
-                apply_replaced_image_size(
+                apply_replaced_intrinsic_size(
                     &mut taffy_style,
                     self.dom,
                     node,
@@ -4151,7 +4154,8 @@ where
                     self.image_sources,
                     font_size,
                 );
-                let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                let block_style =
+                    to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
                 let node = self.tree.new_with_children_and_block_style(
@@ -4318,7 +4322,8 @@ where
                     )) {
                         taffy_style.size.width = width;
                     }
-                    let block_style = to_block_style(self.boxes, box_id, &computed, font_size);
+                    let block_style =
+                        to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                     let kind = if logical_wrapper {
                         AlgorithmKind::Flex
                     } else {
@@ -4467,7 +4472,7 @@ fn apply_relative_positioning<Id>(
             let node = css_box.origin.node()?;
             let computed = styles.get(node)?;
             let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
-            let style = to_block_style(boxes, box_id, computed, font_size);
+            let style = to_block_style(boxes, styles, box_id, computed, font_size);
             let roots = fragments
                 .fragment_ids_for_box(box_id)
                 .iter()
@@ -4711,14 +4716,8 @@ where
                     computed.clone()
                 };
             let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
-            let mut style = to_block_style(boxes, box_id, &computed, font_size);
-            let replaced = positioned_replaced_input(
-                dom,
-                node,
-                &computed,
-                image_sources,
-                &mut style,
-            );
+            let style = to_block_style(boxes, styles, box_id, &computed, font_size);
+            let replaced = positioned_replaced_input(dom, node, image_sources, &style);
             let containing_size = containing_flow.logical_size(PhysicalSize {
                 width: containing_rect.width,
                 height: containing_rect.height,
@@ -4859,12 +4858,7 @@ where
                         && candidate.display.internal_table.is_none()
                         && candidate.flow == flow
                 })
-                .flat_map(|box_id| {
-                    fragments
-                        .fragment_ids_for_box(box_id)
-                        .iter()
-                        .copied()
-                })
+                .flat_map(|box_id| fragments.fragment_ids_for_box(box_id).iter().copied())
                 .collect::<Vec<_>>()
         })
         .filter(|fragment_ids| !fragment_ids.is_empty())
@@ -5106,10 +5100,7 @@ where
 /// fragment used as the positioned root's static-position source. The root
 /// must be built separately, because out-of-flow contents neither occupy that
 /// line nor inherit its measured width.
-fn positioned_roots_in_inline_group<Id>(
-    boxes: &GeneratedBoxTree<Id>,
-    roots: &[BoxId],
-) -> Vec<BoxId>
+fn positioned_roots_in_inline_group<Id>(boxes: &GeneratedBoxTree<Id>, roots: &[BoxId]) -> Vec<BoxId>
 where
     Id: Copy + Eq + Hash,
 {
@@ -5149,6 +5140,7 @@ where
 
 fn to_block_style<Id>(
     boxes: &buckram::CssBoxTree<Id>,
+    styles: &StylePlane<Id>,
     box_id: BoxId,
     computed: &ComputedValues,
     font_size: f32,
@@ -5277,12 +5269,17 @@ where
         shrink_to_fit: matches!(computed.width, CssSize::Auto)
             && (computed.display == CssDisplay::InlineBlock || computed.float != CssFloat::None),
         replaced: css_box.replaced,
-        aspect_ratio: match computed.aspect_ratio {
-            AspectRatio::Auto => None,
-            AspectRatio::Ratio(value) => Some(value),
-        },
+        aspect_ratio: computed.aspect_ratio.preferred_ratio(),
         size_containment,
         has_nonlinear_lengths: block_style_has_nonlinear_lengths(computed),
+        overconstrained_inline_alignment: boxes
+            .origin_node(box_id)
+            .and_then(|id| styles.legacy_descendant_alignment(id))
+            .map(|alignment| match alignment {
+                LegacyDescendantAlignment::LineLeft => OverconstrainedInlineAlignment::LineLeft,
+                LegacyDescendantAlignment::Center => OverconstrainedInlineAlignment::Center,
+                LegacyDescendantAlignment::LineRight => OverconstrainedInlineAlignment::LineRight,
+            }),
         is_root_element: css_box.parent().is_none()
             && matches!(css_box.origin, BoxOrigin::Element(_)),
     }
@@ -6640,7 +6637,7 @@ where
         })
 }
 
-fn apply_replaced_image_size<D>(
+fn apply_replaced_intrinsic_size<D>(
     style: &mut Style,
     dom: &D,
     id: D::NodeId,
@@ -6651,47 +6648,43 @@ fn apply_replaced_image_size<D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    let intrinsic = image_intrinsic_size(dom, id, image_sources)
-        .filter(|(width, height)| *width > 0.0 && *height > 0.0);
+    let intrinsic = replaced_intrinsic_size(dom, id, image_sources);
+    let natural_ratio = intrinsic
+        .filter(|(width, height)| *width > 0.0 && *height > 0.0)
+        .map(|(width, height)| width / height);
 
-    // HTML width/height attributes are presentational hints. A CSS value wins
-    // even when it is percentage-based; only an auto CSS dimension accepts
-    // the attribute. Legacy percentage attributes remain percentages so they
-    // resolve against the eventual containing block rather than against zero.
-    let width_hint = matches!(computed.width, CssSize::Auto)
-        .then(|| image_attribute_size(dom, id, "width"))
-        .flatten();
-    let height_hint = matches!(computed.height, CssSize::Auto)
-        .then(|| image_attribute_size(dom, id, "height"))
-        .flatten();
-    if let Some(width) = width_hint {
-        style.size.width = width.dimension();
-    }
-    if let Some(height) = height_hint {
-        style.size.height = height.dimension();
-    }
-    let width_specified = !matches!(computed.width, CssSize::Auto) || width_hint.is_some();
-    let height_specified = !matches!(computed.height, CssSize::Auto) || height_hint.is_some();
-    let width =
-        definite_size(computed.width, font_size).or_else(|| width_hint.and_then(|hint| hint.px()));
-    let height = definite_size(computed.height, font_size)
-        .or_else(|| height_hint.and_then(|hint| hint.px()));
-    if let Some((intrinsic_width, intrinsic_height)) = intrinsic
-        && style.aspect_ratio.is_none()
+    // Attribute-derived dimensions already reached `computed` through the
+    // presentational-hint origin. Layout owns only natural-size resolution.
+    let width_specified = !matches!(computed.width, CssSize::Auto);
+    let height_specified = !matches!(computed.height, CssSize::Auto);
+    let width = definite_size(computed.width, font_size);
+    let height = definite_size(computed.height, font_size);
+    if computed.aspect_ratio.uses_natural_ratio()
+        && natural_ratio.is_some()
         && !(width.is_some() && height.is_some())
     {
-        style.aspect_ratio = Some(intrinsic_width / intrinsic_height);
+        // Taffy's aspect-ratio input participates in sizing even when both
+        // axes are definite. CSS's natural ratio does not, so only expose it
+        // while at least one axis still needs intrinsic resolution.
+        style.aspect_ratio = natural_ratio;
     }
-    match (width, height, width_specified, height_specified, intrinsic) {
-        (Some(width), _, true, false, Some((intrinsic_width, intrinsic_height))) => {
+    match (
+        width,
+        height,
+        width_specified,
+        height_specified,
+        style.aspect_ratio,
+        intrinsic,
+    ) {
+        (Some(width), _, true, false, Some(ratio), _) => {
             style.size.width = Dimension::length(width);
-            style.size.height = Dimension::length(width * intrinsic_height / intrinsic_width);
+            style.size.height = Dimension::length(width / ratio);
         },
-        (_, Some(height), false, true, Some((intrinsic_width, intrinsic_height))) => {
-            style.size.width = Dimension::length(height * intrinsic_width / intrinsic_height);
+        (_, Some(height), false, true, Some(ratio), _) => {
+            style.size.width = Dimension::length(height * ratio);
             style.size.height = Dimension::length(height);
         },
-        (None, None, false, false, Some((intrinsic_width, intrinsic_height))) => {
+        (None, None, false, false, _, Some((intrinsic_width, intrinsic_height))) => {
             style.size.width = Dimension::length(intrinsic_width);
             style.size.height = Dimension::length(intrinsic_height);
         },
@@ -6699,16 +6692,14 @@ fn apply_replaced_image_size<D>(
     }
 }
 
-/// Preserve the HTML image-dimension hints at the browser-facing K5d edge.
-/// The scratch formatter still receives the same hints for its normal-flow
-/// fallback, but a positioned replaced leaf passes this independent input to
-/// Buckram for final used geometry.
+/// Pass natural replaced dimensions across the browser-facing K5d edge.
+/// Attribute-derived dimensions already live in the computed style through
+/// presentational hints, so this path does not reread DOM width or height.
 fn positioned_replaced_input<D>(
     dom: &D,
     id: D::NodeId,
-    computed: &ComputedValues,
     image_sources: &ImageSources,
-    style: &mut BlockStyle,
+    style: &BlockStyle,
 ) -> Option<buckram::ReplacedSize>
 where
     D: LayoutDom,
@@ -6717,81 +6708,15 @@ where
     if !style.replaced {
         return None;
     }
-    if matches!(computed.width, CssSize::Auto)
-        && let Some(width) = image_attribute_size(dom, id, "width")
-    {
-        style.size.width = width.block_size_value();
-    }
-    if matches!(computed.height, CssSize::Auto)
-        && let Some(height) = image_attribute_size(dom, id, "height")
-    {
-        style.size.height = height.block_size_value();
-    }
-    let intrinsic_size = image_intrinsic_size(dom, id, image_sources).map(|(width, height)| {
-        style.containing_flow.logical_size(PhysicalSize { width, height })
+    let intrinsic_size = replaced_intrinsic_size(dom, id, image_sources).map(|(width, height)| {
+        style
+            .containing_flow
+            .logical_size(PhysicalSize { width, height })
     });
     Some(buckram::ReplacedSize { intrinsic_size })
 }
 
-#[derive(Clone, Copy)]
-enum ImageAttributeSize {
-    Length(f32),
-    Percentage(f32),
-}
-
-impl ImageAttributeSize {
-    fn dimension(self) -> Dimension {
-        match self {
-            Self::Length(value) => Dimension::length(value),
-            Self::Percentage(value) => Dimension::percent(value),
-        }
-    }
-
-    fn px(self) -> Option<f32> {
-        match self {
-            Self::Length(value) => Some(value),
-            Self::Percentage(_) => None,
-        }
-    }
-
-    fn block_size_value(self) -> BlockSizeValue {
-        match self {
-            Self::Length(value) => BlockSizeValue::Length(FlowLength::px(value)),
-            Self::Percentage(value) => BlockSizeValue::Length(FlowLength::percent(value)),
-        }
-    }
-}
-
-fn image_attribute_size<D>(dom: &D, id: D::NodeId, name: &str) -> Option<ImageAttributeSize>
-where
-    D: LayoutDom,
-    D::NodeId: Copy,
-{
-    dom.attributes(id).find_map(|attribute| {
-        (attribute.name.ns.as_ref().is_empty()
-            && attribute.name.local.as_ref().eq_ignore_ascii_case(name))
-        .then(|| {
-            let value = attribute.value.trim();
-            if let Some(percentage) = value.strip_suffix('%') {
-                percentage
-                    .trim()
-                    .parse::<f32>()
-                    .ok()
-                    .map(|value| ImageAttributeSize::Percentage(value / 100.0))
-            } else {
-                value.parse::<f32>().ok().map(ImageAttributeSize::Length)
-            }
-        })
-        .flatten()
-        .filter(|value| match value {
-            ImageAttributeSize::Length(value) | ImageAttributeSize::Percentage(value) => {
-                value.is_finite() && *value > 0.0
-            },
-        })
-    })
-}
-
-fn image_intrinsic_size<D>(
+fn replaced_intrinsic_size<D>(
     dom: &D,
     id: D::NodeId,
     image_sources: &ImageSources,
@@ -6800,11 +6725,17 @@ where
     D: LayoutDom,
     D::NodeId: Copy,
 {
-    if dom.kind(id) != NodeKind::Element
-        || !dom
-            .element_name(id)
-            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("img"))
-    {
+    if dom.kind(id) != NodeKind::Element {
+        return None;
+    }
+    let local = dom.element_name(id)?.local.as_ref().to_ascii_lowercase();
+    if local == "canvas" {
+        return Some((
+            canvas_intrinsic_dimension(dom, id, "width", 300.0),
+            canvas_intrinsic_dimension(dom, id, "height", 150.0),
+        ));
+    }
+    if local != "img" {
         return None;
     }
     let source = dom.attributes(id).find_map(|attribute| {
@@ -6819,6 +6750,25 @@ where
     };
     let image = image::load_from_memory(&bytes).ok()?;
     Some((image.width() as f32, image.height() as f32))
+}
+
+fn canvas_intrinsic_dimension<D>(dom: &D, id: D::NodeId, attribute: &str, default: f32) -> f32
+where
+    D: LayoutDom,
+    D::NodeId: Copy,
+{
+    dom.attributes(id)
+        .find_map(|candidate| {
+            (candidate.name.ns.as_ref().is_empty()
+                && candidate
+                    .name
+                    .local
+                    .as_ref()
+                    .eq_ignore_ascii_case(attribute))
+            .then_some(candidate.value)
+        })
+        .and_then(crate::presentational_hints::parse_non_negative_integer_px)
+        .unwrap_or(default)
 }
 
 fn definite_size(size: CssSize, font_size: f32) -> Option<f32> {
@@ -6924,10 +6874,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             width: dimension(computed.max_width, font_size),
             height: dimension(computed.max_height, font_size),
         },
-        aspect_ratio: match computed.aspect_ratio {
-            AspectRatio::Auto => None,
-            AspectRatio::Ratio(value) => Some(value),
-        },
+        aspect_ratio: computed.aspect_ratio.preferred_ratio(),
         size_containment: match computed.container_type {
             ContainerType::Normal => Size {
                 width: false,
@@ -7124,18 +7071,14 @@ fn map_grid_static_self_alignment(
     align_self: CssAlignment,
     justify_self: CssAlignment,
 ) {
-    if let Some(alignment) = self_alignment_for_axis(
-        align_self,
-        subject_flow,
-        container_flow.block_start(),
-    ) {
+    if let Some(alignment) =
+        self_alignment_for_axis(align_self, subject_flow, container_flow.block_start())
+    {
         set_physical_self_alignment(style, container_flow.block_start(), alignment);
     }
-    if let Some(alignment) = self_alignment_for_axis(
-        justify_self,
-        subject_flow,
-        container_flow.inline_start(),
-    ) {
+    if let Some(alignment) =
+        self_alignment_for_axis(justify_self, subject_flow, container_flow.inline_start())
+    {
         set_physical_self_alignment(style, container_flow.inline_start(), alignment);
     }
 }
@@ -7308,11 +7251,12 @@ fn justify_content(value: CssAlignment) -> JustifyContent {
 }
 
 fn font_size_px(size: &FontSize, parent: f32) -> f32 {
-    match size {
-        FontSize::Medium => 16.0,
-        FontSize::Value(value) => absolute_length_percentage(*value, parent, 16.0, parent),
-    }
-    .max(0.0)
+    size.absolute_px()
+        .unwrap_or_else(|| match size {
+            FontSize::Value(value) => absolute_length_percentage(*value, parent, 16.0, parent),
+            _ => unreachable!("absolute font sizes returned a px value"),
+        })
+        .max(0.0)
 }
 
 pub(crate) fn line_height_px(height: &LineHeight, font_size: f32) -> f32 {
@@ -7834,10 +7778,8 @@ mod tests {
         let dom = StaticDocument::parse("<div id=fixed></div>");
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
-                 #fixed { position: fixed; left: 50px; top: 50px; width: 50%; height: 50%; border: 10px solid; }",
-            ]),
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #fixed { position: fixed; left: 50px; top: 50px; width: 50%; height: 50%; border: 10px solid; }"]),
             &Device::screen(800.0, 600.0),
             &InteractionStates::default(),
         );
@@ -7866,14 +7808,12 @@ mod tests {
         );
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #host { position: relative; width: 200px; } \
                  #before { height: 20px; } \
                  #positioned { position: absolute; left: 25px; width: 80px; } \
                  #inside { height: 30px; } \
-                 #after { height: 10px; }",
-            ]),
+                 #after { height: 10px; }"]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
@@ -7890,10 +7830,18 @@ mod tests {
         let after = rect("after");
         let algorithms = layout.block_algorithm_counts();
 
-        assert_eq!(host.height, 30.0, "the absolute child does not size its block parent");
+        assert_eq!(
+            host.height, 30.0,
+            "the absolute child does not size its block parent"
+        );
         assert_eq!((after.x - host.x, after.y - host.y), (0.0, 20.0));
         assert_eq!(
-            (positioned.x - host.x, positioned.y - host.y, positioned.width, positioned.height),
+            (
+                positioned.x - host.x,
+                positioned.y - host.y,
+                positioned.width,
+                positioned.height
+            ),
             (25.0, 20.0, 80.0, 30.0),
         );
         assert_eq!(
@@ -8032,11 +7980,9 @@ mod tests {
         );
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #container { position: relative; width: 160px; } #source { display: inline; } \
-                 #positioned { position: absolute; left: 34px; right: 0; top: 8px; }",
-            ]),
+                 #positioned { position: absolute; left: 34px; right: 0; top: 8px; }"]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
@@ -8108,11 +8054,9 @@ mod tests {
         );
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #container { width: 160px; } #source { display: inline; } \
-                 #positioned { position: fixed; left: 34px; right: 160px; top: 8px; }",
-            ]),
+                 #positioned { position: fixed; left: 34px; right: 160px; top: 8px; }"]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
@@ -8257,11 +8201,9 @@ mod tests {
         let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #grid { display: grid; width: 100px; height: 100px; border: 1px solid; } \
-                 #positioned { position: absolute; width: 50px; height: 50px; align-self: self-end; }",
-            ]),
+                 #positioned { position: absolute; width: 50px; height: 50px; align-self: self-end; }"]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
@@ -8313,13 +8255,11 @@ mod tests {
         let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #grid { position: relative; display: grid; width: 100px; height: 100px; \
                          grid-template-columns: 20px 80px; grid-template-rows: 30px 70px; } \
                  #positioned { position: absolute; grid-area: 2 / 2 / 3 / 3; \
-                               width: 20px; height: 10px; align-self: self-end; }",
-            ]),
+                               width: 20px; height: 10px; align-self: self-end; }"]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
@@ -8380,16 +8320,14 @@ mod tests {
         for (writing_mode, expected_x) in [("vertical-rl", 0.0), ("vertical-lr", 80.0)] {
             let styles = resolve_styles(
                 &dom,
-                &StyleSet::cambium(&[
-                    &format!(
-                        "html, body, div {{ margin: 0; padding: 0; }} \
+                &StyleSet::cambium(&[&format!(
+                    "html, body, div {{ margin: 0; padding: 0; }} \
                          #grid {{ position: relative; display: grid; writing-mode: {writing_mode}; \
                                  width: 100px; height: 80px; \
                                  grid-template-columns: 20px 60px; grid-template-rows: 30px 70px; }} \
                          #positioned {{ position: absolute; grid-area: 2 / 2 / 3 / 3; \
                                        width: 20px; height: 10px; align-self: end; }}"
-                    ),
-                ]),
+                )]),
                 &Device::screen(320.0, 240.0),
                 &InteractionStates::default(),
             );
@@ -8518,7 +8456,10 @@ mod tests {
                 .expect("positioned fragment");
 
             assert_eq!(
-                (positioned_rect.x - grid_rect.x, positioned_rect.y - grid_rect.y),
+                (
+                    positioned_rect.x - grid_rect.x,
+                    positioned_rect.y - grid_rect.y
+                ),
                 expected,
                 "{description} aligns to the subject's corresponding start or end side",
             );
@@ -8683,12 +8624,14 @@ mod tests {
             .fragments_for_box(box_for("containing"))
             .map(TreeFragment::physical_rect)
             .collect::<Vec<_>>();
-        let positioned = |id| layout
-            .fragments()
-            .fragments_for_box(box_for(id))
-            .next()
-            .map(TreeFragment::physical_rect)
-            .expect("positioned fragment");
+        let positioned = |id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_for(id))
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment")
+        };
         assert!(
             containing_fragments.len() >= 2,
             "the positioned inline must fragment across multiple lines: {containing_fragments:?}"
@@ -8766,8 +8709,8 @@ mod tests {
             layout
                 .fragments()
                 .fragments_for_box(positioned)
-            .next()
-            .map(TreeFragment::physical_rect),
+                .next()
+                .map(TreeFragment::physical_rect),
             Some(PhysicalRect {
                 x: first_containing_fragment.x,
                 y: first_containing_fragment.y - 60.0,
@@ -8871,16 +8814,24 @@ mod tests {
         let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
         let node = |id| node_by_id(&dom, dom.document(), id).expect(id);
 
-        assert_eq!(hit_test(&dom, &styles, &layout, 10.0, 10.0), Some(node("front")));
-        assert_eq!(hit_test(&dom, &styles, &layout, 10.0, 110.0), Some(node("overlay")));
-        assert_ne!(hit_test(&dom, &styles, &layout, 75.0, 110.0), Some(node("overlay")));
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node("front"))
+        );
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 110.0),
+            Some(node("overlay"))
+        );
+        assert_ne!(
+            hit_test(&dom, &styles, &layout, 75.0, 110.0),
+            Some(node("overlay"))
+        );
     }
 
     #[test]
     fn static_block_z_index_keeps_normal_hit_order() {
-        let dom = StaticDocument::parse(
-            "<div id=host><div id=front></div><div id=normal></div></div>",
-        );
+        let dom =
+            StaticDocument::parse("<div id=host><div id=front></div><div id=normal></div></div>");
         let styles = resolve_styles(
             &dom,
             &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
@@ -8901,9 +8852,8 @@ mod tests {
 
     #[test]
     fn grid_item_order_changes_the_topmost_hit_target() {
-        let dom = StaticDocument::parse(
-            "<div id=grid><div id=later></div><div id=earlier></div></div>",
-        );
+        let dom =
+            StaticDocument::parse("<div id=grid><div id=later></div><div id=earlier></div></div>");
         let styles = resolve_styles(
             &dom,
             &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
@@ -9051,6 +9001,46 @@ mod tests {
     }
 
     #[test]
+    fn html_align_descendants_adjusts_used_margins_without_rewriting_computed_css() {
+        let dom = StaticDocument::parse(
+            r#"
+                <div style="width: 300px">
+                  <div align="right"><div id="right" style="width: 100px; margin: 10px">right</div></div>
+                  <center><div id="center" style="width: 100px; margin: 10px">center</div></center>
+                  <div align="left" style="direction: rtl"><div id="rtl-left" style="width: 100px; margin: 10px">rtl</div></div>
+                  <div align="right"><div id="auto" style="margin: 10px">auto</div></div>
+                </div>
+            "#,
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body { margin: 0; }"]),
+            &Device::screen(300.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 300.0, 240.0).expect("layout");
+        let by_id = |id| node_by_id(&dom, dom.document(), id).expect("node");
+
+        assert_eq!(layout.get(by_id("right")).expect("right").x, 190.0);
+        assert_eq!(layout.get(by_id("center")).expect("center").x, 100.0);
+        assert_eq!(
+            layout.get(by_id("rtl-left")).expect("rtl left").x,
+            10.0,
+            "line-left remains physical left in horizontal RTL"
+        );
+        assert_eq!(
+            layout.get(by_id("auto")).expect("auto width").x,
+            10.0,
+            "width:auto is outside the legacy over-constrained rule"
+        );
+        assert_eq!(
+            styles.get(by_id("right")).unwrap().margin_left,
+            Margin::Value(CssLengthPercentage::Length(Length::px(10.0))),
+            "the adjustment must remain a used value"
+        );
+    }
+
+    #[test]
     fn absolute_table_root_uses_shared_k5d_wrapper_geometry() {
         let dom =
             StaticDocument::parse("<table id=table><tbody><tr><td>one</td></tr></tbody></table>");
@@ -9158,7 +9148,10 @@ mod tests {
         // the 240px out-of-flow caption does not participate in this width.
         assert_eq!(grid_fragment.width, 82.0);
         assert_eq!(caption_fragment.width, 240.0);
-        assert_eq!(caption_static.containing_block, ContainingBlock::Box(wrapper));
+        assert_eq!(
+            caption_static.containing_block,
+            ContainingBlock::Box(wrapper)
+        );
         assert_eq!(
             caption_fragment.containing_fragment(),
             layout
@@ -9285,7 +9278,10 @@ mod tests {
                 (wrapper_fragment.x + 31.0, wrapper_fragment.y + 14.0),
                 "{part_id} resolves through the wrapper containing block",
             );
-            assert_eq!(grid_fragment.width, 82.0, "{part_id} does not widen the grid");
+            assert_eq!(
+                grid_fragment.width, 82.0,
+                "{part_id} does not widen the grid"
+            );
             assert_eq!(static_position.logical_rect, LogicalRect::default());
         }
         assert!(
@@ -9344,7 +9340,10 @@ mod tests {
                 (31.0, 14.0),
                 "{part_id} resolves against the initial containing block",
             );
-            assert_eq!(grid_fragment.width, 82.0, "{part_id} does not widen the grid");
+            assert_eq!(
+                grid_fragment.width, 82.0,
+                "{part_id} does not widen the grid"
+            );
             assert_eq!(static_position.logical_rect, LogicalRect::default());
             assert_eq!(static_position.containing_block, ContainingBlock::Initial);
             assert_eq!(part_fragment.containing_fragment(), None);
@@ -9392,6 +9391,43 @@ mod tests {
             (fragment.logical_rect.block_start - fragment.overflow.block_start - 2.5).abs() < 0.01,
             "the block-start winner also propagates into table overflow: {fragment:?}"
         );
+    }
+
+    #[test]
+    fn ph3_rules_attribute_reaches_k4g_collapsed_border_resolution() {
+        let dom = StaticDocument::parse(
+            r#"<table id="table" rules="all" bordercolor="red"><tbody><tr><td id="cell">one</td><td>two</td></tr></tbody></table>"#,
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let cell = node_by_id(&dom, dom.document(), "cell").expect("cell");
+
+        assert_eq!(
+            styles.get(table).unwrap().border_collapse,
+            BorderCollapse::Collapse,
+            "the HTML attribute must first become an ordinary computed declaration"
+        );
+        assert_eq!(
+            styles.get(cell).unwrap().border_top_style,
+            BorderStyle::Solid
+        );
+        assert_eq!(
+            styles.get(cell).unwrap().border_top_color.to_srgb8(),
+            Some((0, 0, 0, 255)),
+            "the attribute-sensitive UA rule supplies the cell candidate color"
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let ledger = layout.table_shadow_ledger();
+        assert_eq!(ledger.collapsed_metrics, 1, "{ledger:?}");
+        assert_eq!(ledger.assigned, 1, "{ledger:?}");
+        assert_eq!(ledger.honored, 1, "{ledger:?}");
+        assert!(ledger.skipped.is_empty(), "{ledger:?}");
     }
 
     fn fixed_table_ledger(spacing: &str) -> crate::table_shadow::TableShadowLedger {
@@ -9742,6 +9778,19 @@ mod tests {
             one(InternalTableRole::Wrapper),
             one(InternalTableRole::Grid),
         )
+    }
+
+    #[test]
+    fn ph2_table_width_hint_reaches_buckram_through_computed_css() {
+        let (wrapper, grid) = table_wrapper_and_grid(
+            "<div id=host><table width=50%><tr><td></td></tr></table></div>",
+            "#host { width: 200px; }\
+             table { display: table; table-layout: fixed; border-spacing: 0; }\
+             tr { display: table-row; } td { display: table-cell; padding: 0; }",
+        );
+
+        assert!((wrapper.width - 100.0).abs() < 0.5, "wrapper: {wrapper:?}");
+        assert!((grid.width - 100.0).abs() < 0.5, "grid: {grid:?}");
     }
 
     /// K4e1: the wrapper and the grid are two boxes that split one element.
@@ -11447,7 +11496,7 @@ mod tests {
     }
 
     #[test]
-    fn replaced_html_dimension_hints_keep_percentage_and_canvas_width() {
+    fn replaced_html_dimensions_use_computed_css_and_canvas_intrinsics() {
         fn find_by_name(
             dom: &StaticDocument,
             node: <StaticDocument as LayoutDom>::NodeId,
@@ -11476,6 +11525,26 @@ mod tests {
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
+        let image = find_by_name(&dom, dom.document(), "img").expect("img");
+        assert_eq!(
+            styles.get(image).unwrap().width,
+            CssSize::Value(CssLengthPercentage::Percentage(1.0))
+        );
+        assert_eq!(
+            styles.get(image).unwrap().height,
+            CssSize::Value(CssLengthPercentage::Length(Length::px(3.0)))
+        );
+        let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
+        assert_eq!(styles.get(canvas).unwrap().width, CssSize::Auto);
+        assert_eq!(styles.get(canvas).unwrap().height, CssSize::Auto);
+        assert_eq!(
+            styles.get(canvas).unwrap().aspect_ratio,
+            livery::values::AspectRatio::AutoRatio {
+                width: 100.0,
+                height: 100.0,
+            },
+            "canvas dimensions remain natural-size inputs rather than CSS dimensions"
+        );
         let mut text = TextSystem::new();
         let (_, layout) = layout_with_text_system(
             &dom,
@@ -11488,7 +11557,6 @@ mod tests {
         )
         .expect("layout");
 
-        let image = find_by_name(&dom, dom.document(), "img").expect("img");
         let image = layout.get(image).expect("image fragment").physical_rect();
         assert_eq!(
             (image.width, image.height),
@@ -11496,7 +11564,6 @@ mod tests {
             "the percentage hint resolves against the positioned containing block"
         );
 
-        let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
         let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
         assert_eq!((canvas.width, canvas.height), (100.0, 100.0));
     }
@@ -11544,7 +11611,10 @@ mod tests {
 
         let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
         let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
-        assert_eq!((canvas.x, canvas.y, canvas.width, canvas.height), (10.0, 5.0, 80.0, 40.0));
+        assert_eq!(
+            (canvas.x, canvas.y, canvas.width, canvas.height),
+            (10.0, 5.0, 80.0, 40.0)
+        );
     }
 
     #[test]

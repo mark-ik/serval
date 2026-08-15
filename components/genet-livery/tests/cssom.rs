@@ -59,6 +59,25 @@ fn computed_style_resolves_without_a_prior_frame() {
 }
 
 #[test]
+fn computed_style_serializes_border_lengths_and_box_shorthands() {
+    let (retained, card) = retained(
+        ".card { color: rgb(1, 2, 3); border-width: 0; border-style: inset; border-color: currentcolor; }",
+    );
+    assert_eq!(
+        retained.computed_style(card, "border-top-width").as_deref(),
+        Some("0px")
+    );
+    assert_eq!(
+        retained.computed_style(card, "border-style").as_deref(),
+        Some("inset")
+    );
+    assert_eq!(
+        retained.computed_style(card, "border-color").as_deref(),
+        Some("rgb(1, 2, 3)")
+    );
+}
+
+#[test]
 fn computed_transform_serializes_as_a_resolved_2d_matrix() {
     let (retained, card) =
         retained(".card { font-size: 10px; transform: translate(2em, 4px) skewX(45deg); }");

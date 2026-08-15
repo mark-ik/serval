@@ -17,6 +17,7 @@ The ordered expansion and promotion rules live in
 | Select | Combobox state, End selection, Escape dismissal |
 | Slider | Accessible value and configurable PageUp step |
 | Text fields | Single-line editing, multiline structure, styled runs |
+| Pane shell and settings form | Header/context, `setting_row` per provider spec (draft-local text/number/toggle/choice controls, per-row Apply carrying the edited `SettingValue`), empty/error/unavailable states, and a nested Frisket frame whose events leave the tree authoritative |
 | Command surfaces | One model rendered as palette, picker, and positioned context menu; pattern-specific roles, disabled reasons, shared navigation, and depth-one submenus |
 | Action list compatibility | Existing API delegates to the command palette engine |
 | Selection bars | Shared roving focus rendered as linked tabs, a single-select segmented control, and multi-select filter chips |
@@ -27,6 +28,7 @@ The ordered expansion and promotion rules live in
 | Detail popover | Hover preview, click-pinned interactive detail, Escape dismissal, and trigger focus return |
 | Data grid | Grid/row/header/cell semantics, keyboard-sortable headers, and bounded DOM rows for a 10,000-row model |
 | Graph-canvas swatch | Shared graph paint path, native node targets, click/hover routing, selected/focus state, expand action |
+| Component boundary | Counter with component-owned count: clicks mutate local state, a parent prop change reconciles without resetting it, a typed Report event lowers into catalog state, unmount drops the local state and remount reinitializes, caller-owned probe id on the root |
 | Sprigging leaves | Five catalog leaf elements, retained registry entries, paint commands, clean repaint gate |
 | Retained lifecycle | Self-replacing focused and pointer-captured controls retire stale handles before the next dispatch |
 

@@ -2,8 +2,18 @@
 
 **Date:** 2026-08-08
 
-**Status:** scoped. PH0 is the first gate after contextual-color C1. This is
-an F0/F3 conformance sidequest and does not enter Buckram.
+**Status:** PH0 through PH5 were implemented locally through 2026-08-14.
+The checked-in census assigns every currently applicable HTML rendering
+surface, but the plan remains open at its stated K4 evidence wall.
+Table and table-part dimensions use HTML's
+legacy dimension algorithms, `table[align]` maps to float or harvested logical
+margins, and applicable legacy alignment owners carry HTML's separate
+`align descendants` policy to Buckram's generic used-margin solver. The PH1
+acceptance wall is not closed: the named 40-file WPT family measures **10/40**,
+exposing remaining CSS anonymous-table construction and sizing defects rather
+than another hint mapping (measured 2026-08-12). This remains an F0/F3
+conformance sidequest; Buckram owns the generic used-value calculation but not
+the HTML mappings or owner selection.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md)
 
@@ -14,19 +24,26 @@ both slices change generated color fields and the cascade representation.
 
 ## Ruling
 
-HTML presentational attributes become declarations before computed style.
-They do not become layout corrections.
+CSS-representable HTML presentational attributes become declarations before
+computed style. HTML's explicitly used-value-only algorithms cross a separate
+typed metadata seam. Neither becomes an ad hoc late geometry correction.
 
 The HTML adapter derives typed declarations from element attributes and feeds
 them into Livery's cascade at the author presentational-hint origin. Livery
 remains DOM-language neutral; it knows the origin and priority, not the names
-`cellpadding`, `bgcolor`, or `align`. Buckram sees only the resulting computed
-CSS values.
+`cellpadding`, `bgcolor`, or `align`. For `align descendants`, the adapter also
+selects the deepest applicable HTML owner and carries a line-left, center, or
+line-right token beside computed style. Buckram applies that token only while
+solving used margins.
 
-The immediate defect is the 40-file `table-anonymous-objects-059` through
-`-098` family. Buckram's anonymous table geometry is correct. The HTML test
-table carries `cellpadding="0" cellspacing="0"`; Livery ignores both and
-retains the UA defaults, causing a per-column drift.
+The original defect hypothesis came from the 40-file
+`table-anonymous-objects-059` through `-098` family. Every HTML comparison table
+carries `cellpadding="0" cellspacing="0"`; ignoring both was a real systematic
+drift. The post-implementation measurement disproves the stronger claim that
+Buckram's anonymous table geometry was already correct: only 10 files pass,
+all 20 variants with the CSS-generated table on top fail, and another 10 fail
+with that table underneath because its geometry protrudes. Presentational hints
+remove the HTML-side drift; the remaining 30 are a K4 construction/sizing wall.
 
 ## Standards boundary
 
@@ -120,7 +137,7 @@ Required invariants:
 |---|---|
 | PH0 | cascade origin and adapter contract |
 | PH1 | `cellspacing` and cross-element `cellpadding` |
-| PH2 | table dimensions and alignment |
+| PH2 | table dimensions and alignment, complete 2026-08-12 |
 | PH3 | table color, border, frame, and rules families |
 | PH4 | replaced and embedded element hints; layout fallback deletion |
 | PH5 | broader HTML hint census, mutation closure, and ledger update |
@@ -157,9 +174,12 @@ The provider may precompute a table-to-cell dependency index for one style
 resolution. It must not ask Buckram's generated box tree which cells belong to
 the table; hints precede box generation.
 
-**Receipts:** direct cascade fixtures, nested-table fixtures, attribute
-mutation, and the full `table-anonymous-objects-059` through `-098` family.
-The WPT family is credited here, not to K4.
+**Receipts:** direct cascade fixtures, nested-table fixtures, and attribute
+mutation are green. The full `table-anonymous-objects-059` through `-098`
+family is measured at 10/40. That result is not credited as PH1 completion:
+the HTML comparison side now receives zero spacing and padding through computed
+CSS, while the remaining mismatches are on CSS anonymous-table construction
+and sizing and return to K4.
 
 ### PH2. Dimensions and alignment
 
@@ -178,6 +198,45 @@ do not fold it into the text-align family.
 Use HTML's non-negative-integer, dimension, and nonzero-dimension parsing
 rules rather than CSS declaration parsing. Preserve percentage dimensions as
 percentages until used-value resolution.
+
+**Implemented declaration slices, 2026-08-11:** Livery now activates
+`margin-inline-start` and `margin-inline-end` through a generated logical
+group projection adapted from Stylo's axis/side mapping. `table[align=left]`
+and `table[align=right]` emit `float`; `table[align=center]` emits both logical
+auto margins at the presentational-hint origin. Authored physical margins
+compete at their original cascade coordinates and logical CSSOM reads project
+through the winning writing mode and direction.
+
+The HTML adapter also maps `table[width]`, `table[height]`, `col[width]`,
+row-group and row `height`, and cell `width`/`height` to typed `Size` values.
+It preserves percentages and the exact per-element zero policy. `colgroup`
+does not receive the `col` mapping. Table-part `align` values `center`,
+`middle`, `left`, `right`, and `justify` map to `text-align`; `absmiddle` is
+covered by the HTML static hint. `caption[align=bottom]` maps to
+`caption-side: bottom`. Values are ASCII case-insensitive but are not
+whitespace-trimmed.
+
+Fixtures cover parsing edge cases, invalid diagnostics, authored precedence,
+nested tables, mutation, percentage preservation, and the real table layout
+route. No table-specific late width or height fallback existed to remove; the
+remaining direct attribute-size fallback is replaced-element-only and stays
+owned by PH4.
+
+**Implemented used-value slice, 2026-08-12:** the adapter now records the
+deepest applicable alignment owner for each descendant, suppresses an ancestor
+when the element has its own applicable legacy alignment, and treats invalid
+enumerated values as non-owners. `center`, `div[align]`, and the applicable
+table-part values establish owners; `p[align]`, heading `align`, table
+`absmiddle`, and the table/caption special mappings suppress ancestors without
+inventing a descendant owner where HTML does not define one.
+
+The metadata remains separate from computed CSS. Buckram's generic
+`OverconstrainedInlineAlignment` policy adjusts only a definite-width block
+whose two inline margins are non-auto and whose width equation leaves positive
+space. It preserves line-left/line-right semantics across direction and writing
+mode and leaves width-auto, auto-margin, and overflowing cases on the ordinary
+CSS path. Static ownership, scripted mutation, pure used-value, and end-to-end
+layout receipts are green; computed margins remain authored values.
 
 **Removal receipt:** delete any table-specific late geometry fallback for a
 mapping now represented in computed CSS.
@@ -198,6 +257,55 @@ not select winners.
 the K4g border result, and focused table border/color WPT has an exact
 before/after map.
 
+**Implemented 2026-08-12:** the Genet adapter parses `bgcolor` on tables, row
+groups, rows, and cells with a bounded harvest of Stylo's HTML legacy-color
+algorithm. `table[bordercolor]` contributes four typed border-color
+longhands. Failed colors remain diagnostics and do not become CSS parser
+inputs.
+
+`table[border]` now maps valid non-negative integer prefixes to all four
+border widths and uses the specified 1px fallback after a parse error. The
+nonzero-or-error condition independently controls the table's outset styles
+and corresponding cells' 1px inset styles. Every `frame` state maps its exact
+physical side pattern. Every recognized `rules` state collapses the table and
+projects the specified cell, row, row-group, and column-group widths and
+styles. `cols`, `rows`, and `groups` retain logical block/inline semantics
+through Livery's generated border logical groups, including vertical writing
+modes. Traversal stops at nested tables.
+
+The attribute-sensitive black rule colors and inherited table-part colors are
+UA-origin selectors in `CAMBIUM_UA_DEFAULTS`; geometry remains at the author
+presentational-hint origin. Ordinary author CSS therefore overrides both at
+the correct cascade coordinate. K4g still selects collapsed-border winners.
+The end-to-end receipt first asserts the typed table and cell candidates, then
+records one collapsed-metrics, assigned, and honored table with no skip.
+
+Focused tests are green: 22 HTML-hint unit tests, logical-border projection,
+the K4g receipt, all 112 `genet-livery` library tests, every integration and
+example target, and the full `livery` suite. Mutation changes `bgcolor`,
+`frame`, and `rules` in one batch without retaining the old side pattern.
+
+The rebuilt release WPT runner reports:
+
+| WPT | before | after |
+|---|---:|---:|
+| `table-bordercolor-001.html` | pass | pass |
+| `table-border-1.html` | fail | pass |
+| `table-border-2.html` | pass | pass |
+| `table-border-presentational-hints-ascii-case-insensitive.html` | pass | pass |
+| `table-attribute.html` | 0/58 | 41/58 |
+
+The broad harness delta is cumulative with the rebuilt PH1/PH2 binary, so it
+is not credited wholly to PH3. Its 17 remaining subtests name separate
+boundaries: seven `background` URL hints, one computed `border-color`
+shorthand serialization gap despite the longhands and rendering being
+correct, percentage/used table sizing, default `th` alignment, and harness
+DOM/script gaps. The four PH3-focused reftests are all green.
+
+The joint `livery` plus `genet-livery` clippy command remains blocked by 146
+pre-existing warnings in untouched Livery selector and color-space code.
+`genet-livery` alone is clean under `-D warnings`.
+
 ### PH4. Replaced and embedded elements
 
 Migrate the CSS-representable hint families for `img`, `input[type=image]`,
@@ -212,6 +320,65 @@ retain only intrinsic sizing against those computed inputs.
 
 **Receipt:** computed CSS, layout geometry, intrinsic aspect ratio, attribute
 mutation, and authored override all agree through one style path.
+
+**Implemented 2026-08-14:** the HTML adapter now projects the complete PH4
+declaration matrix at the author presentational-hint origin. Dimension
+attributes reach `width` and `height` on `img`, `embed`, `iframe`, `object`,
+`video`, and image buttons. The applicable image, video, image-button, and
+canvas pairs also produce HTML's `auto <width> / <height>` aspect-ratio form.
+Livery now preserves that computed form separately from a CSS ratio and uses
+its preferred ratio only when the natural ratio is unavailable.
+
+Legacy `align` projects floats or the exact vertical-alignment behavior,
+including a separate internal token for HTML's center-on-the-parent-baseline
+`middle` and `center` behavior. `hspace` and `vspace` project the four physical
+margins. Positive image/object borders project four solid border sides.
+`iframe[frameborder]` projects zero widths for zero or a signed-integer parse
+error, while the iframe's ordinary 2px inset border remains a UA-origin
+default. Authored CSS wins over every one of these declarations.
+
+`apply_replaced_image_size` and its direct `img[width]`/`img[height]` attribute
+reader are deleted. Image layout now sees attribute-derived dimensions only
+through computed CSS. Decoded image dimensions remain the natural-size and
+natural-ratio input; canvas bitmap dimensions remain intrinsic layout data.
+The adapter does not expose a natural ratio to the backend when both CSS axes
+are definite, because intrinsic ratio must not override two definite sizes.
+
+Static computed-style fixtures cover every element and attribute family.
+Retained mutation, authored precedence, decoded-natural-ratio, canvas
+intrinsics, shaped inline image, layout, and neutral paint receipts are green.
+The frameborder receipt also closed the computed-style surface needed to
+serialize absolute zero border widths as `0px` and reconstruct the computed
+`border-width`, `border-style`, and `border-color` four-side shorthands.
+The full `genet-livery --all-targets` suite and isolated
+`genet-livery --no-deps -D warnings` Clippy pass. The full `livery` test suite
+also passes; its joint strict-Clippy boundary remains the 146 pre-existing
+warnings named under PH3.
+
+The rebuilt 1.97.1 release WPT runner reports:
+
+| WPT | before | after |
+|---|---:|---:|
+| `embedded-and-images-presentational-hints-ascii-case-insensitive.html` | 0/3 | 3/3 |
+| `iframe-frameborder.html` | 0/13 | 13/13 |
+| `align.html` | 14/23 | 23/23 |
+| `canvas-aspect-ratio.html` | not measured | 13/13 |
+| `canvas-dimension-attributes.html` | not measured | pass |
+| `img-dim.html` | pass | pass |
+| `images/space.html` | fail | pass |
+| `dimension-attributes.html` | harness error, 0/0 | harness error, 0/0 |
+
+The broad dimension file still errors in the Boa DOM harness before it emits
+a subtest. That result does not contradict the direct computed-style, layout,
+and canvas intrinsic receipts above.
+
+The selected-source dimension source for `img` is still unimplemented because
+the adapter has no `picture`/`srcset` source-selection state. Actual embedded
+content for `embed`, `iframe`, `object`, `video`, and image buttons is likewise
+an element or browsing-context capability boundary: their computed hints are
+present, but PH4 does not invent replaced-content implementations. The UA
+`video { object-fit: contain }` default awaits an active `object-fit` property.
+PH5 must record these separately from missing mappings.
 
 ### PH5. Census and closure
 
@@ -228,6 +395,61 @@ behavior to their owning plans instead of adding dormant declarations.
 
 Run absolute conformance and Stylo-differential ledgers separately. A family
 that matches Stylo but remains wrong against HTML is not a closure receipt.
+
+**Implemented 2026-08-14:** the
+[HTML rendering census](2026-08-14_livery_html_rendering_census.md) now keeps
+author presentational hints, UA defaults, used-value algorithms, and missing
+property/selector/document/element capabilities separate. In particular, it
+assigns background URL hints to the absent document/base-URL seam, body link
+colors to absent link/visited selector state, `font[face]` to the one-family
+grammar and consumer boundary, list hints to marker/counter work, and embedded
+contexts to their element hosts. It does not add declarations that cannot yet
+be consumed correctly.
+
+The low-cost active-property harvest now includes body margin and color hints,
+`pre[wrap]`, `br[clear]`, legacy font color and size, the complete `<hr>` hint
+family, table-part vertical alignment, and cell `nowrap`. Livery's `font-size`
+value now represents every CSS absolute-size keyword, resolves it through the
+same computed metric path as authored CSS, and round-trips it through CSSOM.
+The `<hr>` UA defaults are present at UA origin. The current HTML Standard's
+`align=bottom` mapping is `vertical-align: bottom`; the older checked-in WPT
+expects `baseline`, so that single differential remains deliberately red.
+
+Direct fixtures cover HTML parsing, invalid-first-source behavior, authored
+precedence, mutation removal and replacement, computed shorthand CSSOM, and
+layout geometry through one retained style plane. No new late attribute reader
+or Buckram-specific HTML branch was added.
+
+The rebuilt 1.97.1 release runner reports absolute Livery results separately
+from the Stylo differential:
+
+| WPT | Livery before | Livery after | Stylo current |
+|---|---:|---:|---:|
+| `<hr>` folder, runnable files | 2/4 | 4/4 | 2/4 |
+| `body_text_00ffff.xhtml` | fail | pass | fail |
+| legacy `font[size]` | 21/28 | 28/28 | 21/28 |
+| `table-attribute.html` | 41/58 | 42/58 | 0/58 |
+| replaced `align.html` | 23/23 at the PH4 snapshot | 22/23 current-standard mapping | 3/23 |
+| list hint ASCII casing | 0/2 | 0/2 assigned gap | 0/2 |
+| `pixel-length-attributes.html` | harness error, 0/0 | harness error, 0/0 | harness error, 0/0 |
+
+Three non-runnable files in the seven-file `<hr>` folder remain skipped. The
+16 broad table failures are seven background URL cases, one Boa DOM/script subtest error,
+percentage/used table sizing, cellpadding/table-column layout, and dynamic
+`th` default alignment. The table increase is one subtest; it is not evidence
+that K4 sizing is fixed.
+
+The full `livery` suite and `genet-livery --all-targets` suite pass. Isolated
+`genet-livery --no-deps -D warnings` Clippy, the release WPT build, explicit
+edition-2024 rustfmt check, and `git diff --check` pass. A forced clean-target
+joint Clippy run still stops on the same 146 pre-existing Livery selector and
+color-space diagnostics; the shared-target cache alone had incorrectly made
+that command appear clean.
+
+PH5 is complete as an implementation and assignment gate. The overall plan is
+still unfinished because the done condition also requires the 40-file
+anonymous-table family to pass for the attributed K4 reason. The rebuilt PH5
+runner remeasured it unchanged at 10 passed and 30 failed on 2026-08-14.
 
 ## Verification ladder
 

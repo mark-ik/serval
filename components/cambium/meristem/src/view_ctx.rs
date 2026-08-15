@@ -1,8 +1,6 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::environment::Environment;
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 /// An identifier used to differentiate between the direct children of a [`View`].
 ///
@@ -48,11 +46,6 @@ impl ViewId {
 /// [`View::rebuild`]: crate::View::rebuild
 /// [`View::message`]: crate::View::message
 pub trait ViewPathTracker {
-    /// Accesses the [`Environment`] associated with this context.
-    ///
-    /// I hope that we can remove the "context" generic entirely, and so this is here
-    /// on a temporary basis.
-    fn environment(&mut self) -> &mut Environment;
     /// Adds `id` to the end of current view path
     fn push_id(&mut self, id: ViewId);
     /// Removes the most recently `push`ed id from the current view path

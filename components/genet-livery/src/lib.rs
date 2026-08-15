@@ -11,7 +11,9 @@ mod document;
 mod dom;
 mod invalidation;
 mod layout;
+mod legacy_color;
 mod paint;
+mod presentational_hints;
 mod style;
 // K4d6b: Buckram lays out live tables' block axis through the phase order it
 // owns; a table it cannot lay out defers under a named gap.
@@ -37,16 +39,24 @@ pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, Res
 pub(crate) use layout::hit_test_with_scroll;
 pub use layout::{
     BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test, layout,
-    resolve_container_query_styles, resolve_container_relative_styles, used_value_context,
+    layout_with_text_system, resolve_container_query_styles,
+    resolve_container_query_styles_with_images, resolve_container_relative_styles,
+    used_value_context,
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
 pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
-pub(crate) use paint::emit_paint_list_with_text_system_scrolled_with_images;
-pub use paint::{LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system};
+pub use paint::{
+    LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system,
+    emit_paint_list_with_text_system_scrolled_with_images,
+};
+pub use presentational_hints::{
+    LegacyDescendantAlignment, PresentationalDeclarations, PresentationalHintDiagnostic,
+    PresentationalHintProvider, PresentationalHints,
+};
 pub use style::{
     AuthorStylesheet, CssomImportOwner, CssomImportRule, StylePlane, StyleSet, UsedValueContext,
-    resolve_styles,
+    resolve_styles, resolve_styles_with_presentational_hints,
 };
 pub use text::{TextRange, TextRect, TextSelection, TextSystem};
 
@@ -60,6 +70,14 @@ div, blockquote, h1, h2, h3, h4, h5, h6, p, ul, ol, pre {
     display: block;
 }
 li { display: list-item; }
+hr {
+    display: block;
+    color: gray;
+    border-style: inset;
+    border-width: 1px;
+    margin: 0.5em auto;
+    overflow: hidden;
+}
 
 table { display: table; border-collapse: separate; border-spacing: 2px; }
 thead { display: table-header-group; vertical-align: middle; }
@@ -71,12 +89,61 @@ tr { display: table-row; }
 td, th { display: table-cell; padding: 1px; vertical-align: inherit; }
 caption { display: table-caption; }
 
+thead, tbody, tfoot, tr {
+    border-top-color: inherit;
+    border-right-color: inherit;
+    border-bottom-color: inherit;
+    border-left-color: inherit;
+}
+
+table[rules=none i], table[rules=groups i], table[rules=rows i],
+table[rules=cols i], table[rules=all i], table[frame=void i],
+table[frame=above i], table[frame=below i], table[frame=hsides i],
+table[frame=lhs i], table[frame=rhs i], table[frame=vsides i],
+table[frame=box i], table[frame=border i],
+table[rules=none i] > tr > td, table[rules=none i] > tr > th,
+table[rules=groups i] > tr > td, table[rules=groups i] > tr > th,
+table[rules=rows i] > tr > td, table[rules=rows i] > tr > th,
+table[rules=cols i] > tr > td, table[rules=cols i] > tr > th,
+table[rules=all i] > tr > td, table[rules=all i] > tr > th,
+table[rules=none i] > thead > tr > td, table[rules=none i] > thead > tr > th,
+table[rules=groups i] > thead > tr > td, table[rules=groups i] > thead > tr > th,
+table[rules=rows i] > thead > tr > td, table[rules=rows i] > thead > tr > th,
+table[rules=cols i] > thead > tr > td, table[rules=cols i] > thead > tr > th,
+table[rules=all i] > thead > tr > td, table[rules=all i] > thead > tr > th,
+table[rules=none i] > tbody > tr > td, table[rules=none i] > tbody > tr > th,
+table[rules=groups i] > tbody > tr > td, table[rules=groups i] > tbody > tr > th,
+table[rules=rows i] > tbody > tr > td, table[rules=rows i] > tbody > tr > th,
+table[rules=cols i] > tbody > tr > td, table[rules=cols i] > tbody > tr > th,
+table[rules=all i] > tbody > tr > td, table[rules=all i] > tbody > tr > th,
+table[rules=none i] > tfoot > tr > td, table[rules=none i] > tfoot > tr > th,
+table[rules=groups i] > tfoot > tr > td, table[rules=groups i] > tfoot > tr > th,
+table[rules=rows i] > tfoot > tr > td, table[rules=rows i] > tfoot > tr > th,
+table[rules=cols i] > tfoot > tr > td, table[rules=cols i] > tfoot > tr > th,
+table[rules=all i] > tfoot > tr > td, table[rules=all i] > tfoot > tr > th {
+    border-top-color: black;
+    border-right-color: black;
+    border-bottom-color: black;
+    border-left-color: black;
+}
+
 button, input, select, textarea {
     display: inline-block;
 }
 
 img {
     display: inline-block;
+}
+
+iframe {
+    border-top-width: 2px;
+    border-right-width: 2px;
+    border-bottom-width: 2px;
+    border-left-width: 2px;
+    border-top-style: inset;
+    border-right-style: inset;
+    border-bottom-style: inset;
+    border-left-style: inset;
 }
 
 head, title, meta, link, style, script, template {

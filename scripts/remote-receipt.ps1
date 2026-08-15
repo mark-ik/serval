@@ -60,6 +60,26 @@ real session.
 `linux` or `macos`. Decides how the command is attached to the graphical
 session.
 
+.PARAMETER IngestBin
+Path to mere's `receipt_ingest` binary. When given, the fetched receipt is
+ingested into the personal graph's blob store in the same motion that fetched
+it, so a run on another machine becomes a replicated fact rather than a folder
+on this one. Build it with:
+
+    cargo build -p graphshell --features personal-sync --bin receipt_ingest
+
+Genet takes a path rather than knowing where mere lives, because it does not
+depend on mere and should not learn its layout.
+
+.PARAMETER IngestStore
+The redb database the blobs go into (mere's personal-graph blob store).
+Required when `-IngestBin` is given.
+
+.PARAMETER IngestDevice
+Name recorded as the device holding the bytes. Defaults to this machine's
+hostname; blob availability is per device, so a wrong name claims bytes are
+somewhere they are not.
+
 .EXAMPLE
 ./remote-receipt.ps1 -Target mark@thinkpad -Repo woodshed `
   -RemotePath /home/mark/Code/repos/woodshed -Package woodshed-genet `
@@ -81,7 +101,10 @@ param(
     [string] $ReceiptEnv,
     [hashtable] $ExtraEnv = @{},
     [Parameter(Mandatory)] [ValidateSet('linux', 'macos')] [string] $Platform,
-    [string] $Out
+    [string] $Out,
+    [string] $IngestBin,
+    [string] $IngestStore,
+    [string] $IngestDevice = $env:COMPUTERNAME
 )
 
 $ErrorActionPreference = 'Stop'
@@ -306,10 +329,33 @@ if ($appReceipt) {
     Get-Content $appReceipt.FullName | ForEach-Object { Write-Host "    $_" }
 }
 
+# ------------------------------------------------------------------ ingest
+#
+# The receipt becomes a replicated graph fact. Deliberately after the manifest
+# is written, so what gets ingested is what was recorded, and deliberately not
+# fatal: a fetched receipt is worth keeping even if the graph is unavailable.
+
+if ($IngestBin) {
+    Step 'Ingesting into the personal graph'
+    if (-not $IngestStore) { Fail '-IngestBin needs -IngestStore' }
+    if (-not (Test-Path $IngestBin)) {
+        Fail "no receipt_ingest at $IngestBin (cargo build -p graphshell --features personal-sync --bin receipt_ingest)"
+    }
+    $ingest = & $IngestBin --dir $Out --store $IngestStore --device $IngestDevice 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $ingest | ForEach-Object { Note $_ }
+    } else {
+        Warn "ingest failed (exit $LASTEXITCODE); the receipt is still in $Out"
+        $ingest | ForEach-Object { Warn $_ }
+    }
+}
+
 Write-Host ''
 if ($runCode -ne 0) {
     Warn "the run exited $runCode — artifacts were kept, but this is not a pass"
     exit $runCode
 }
 Write-Host "Receipt in $Out" -ForegroundColor Green
-Write-Host "Promote it into <repo>/design_docs/ when it proves a route." -ForegroundColor DarkGray
+if (-not $IngestBin) {
+    Write-Host "Pass -IngestBin/-IngestStore to file it in the personal graph." -ForegroundColor DarkGray
+}

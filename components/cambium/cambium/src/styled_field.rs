@@ -36,9 +36,13 @@ pub struct StyleRange {
 }
 
 /// One child of a field element: a text node or a styled `<span>`, type-erased so
-/// the field's children are a uniform `Vec`. Public so the [`crate::TextField`] alias can
-/// name it.
-pub type FieldChild = Box<dyn AnyView<TextInput, (), GenetCtx, GenetElement>>;
+/// the field's children are a uniform `Vec`.
+///
+/// The defaults name the editable-field shape. A read-only projection such as
+/// Turnstone's omnibar mirror supplies its own parent `State` and `Action` while
+/// reusing the same runs, preedit, ghost, and caret rendering.
+pub type FieldChild<State = TextInput, Action = ()> =
+    Box<dyn AnyView<State, Action, GenetCtx, GenetElement>>;
 
 /// Flatten possibly-overlapping `styles` over `len` bytes into non-overlapping
 /// runs, the innermost (smallest) range winning on overlap. Runs cover `0..len`
@@ -73,8 +77,8 @@ fn flatten(len: usize, styles: &[StyleRange]) -> Vec<(Range<usize>, Option<Strin
 
 /// Emit the `runs` clipped to `[lo, hi)` over `text`: a styled run as a
 /// `<span class="…">`, an unstyled run as a bare text node.
-fn emit(
-    kids: &mut Vec<FieldChild>,
+fn emit<State: 'static, Action: 'static>(
+    kids: &mut Vec<FieldChild<State, Action>>,
     text: &str,
     runs: &[(Range<usize>, Option<String>)],
     lo: usize,
@@ -89,7 +93,7 @@ fn emit(
         let slice = text[start..end].to_string();
         match class {
             Some(c) => kids.push(Box::new(
-                el::<_, TextInput, ()>("span", slice).attr("class", c.clone()),
+                el::<_, State, Action>("span", slice).attr("class", c.clone()),
             )),
             None => kids.push(Box::new(slice)),
         }
@@ -101,28 +105,31 @@ fn emit(
 /// Empty `styles` renders the plain field (unstyled text nodes); non-empty paints
 /// the highlight classes. This is the one body behind the plain and styled fields.
 pub(crate) fn field_children(input: &TextInput, styles: &[StyleRange]) -> Vec<FieldChild> {
-    field_children_impl(input, styles, false)
+    field_children_impl::<TextInput, ()>(input, styles, false)
 }
 
 /// The class on the in-flow caret span a [`caret_text_field`] renders, for the
 /// host's stylesheet to theme (colour, weight — e.g. `.field-caret { color: … }`).
 pub const FIELD_CARET_CLASS: &str = "field-caret";
 
+/// The class carried by an in-progress IME preedit span.
+pub const FIELD_PREEDIT_CLASS: &str = "field-preedit";
+
 /// The one field body, with or without a rendered caret. `show_caret` splices a
 /// `<span class="field-caret">▍</span>` at the caret split, *after* the preedit
 /// (composition text lands before the caret, matching platform IME fields).
-fn field_children_impl(
+fn field_children_impl<State: 'static, Action: 'static>(
     input: &TextInput,
     styles: &[StyleRange],
     show_caret: bool,
-) -> Vec<FieldChild> {
+) -> Vec<FieldChild<State, Action>> {
     let text = input.text();
     let (before, preedit, after) = input.render_parts();
     let start = before.len();
     let end = text.len() - after.len();
     let runs = flatten(text.len(), styles);
 
-    let mut kids: Vec<FieldChild> = Vec::new();
+    let mut kids: Vec<FieldChild<State, Action>> = Vec::new();
     emit(&mut kids, text, &runs, 0, start);
     let preedit_caret = input
         .composition()
@@ -135,18 +142,20 @@ fn field_children_impl(
         .unwrap_or(0);
     if !preedit[..preedit_caret].is_empty() {
         kids.push(Box::new(
-            el::<_, TextInput, ()>("span", preedit[..preedit_caret].to_owned())
+            el::<_, State, Action>("span", preedit[..preedit_caret].to_owned())
+                .attr("class", FIELD_PREEDIT_CLASS)
                 .attr("style", "text-decoration-line: underline;"),
         ));
     }
     if show_caret {
         kids.push(Box::new(
-            el::<_, TextInput, ()>("span", "▍").attr("class", FIELD_CARET_CLASS),
+            el::<_, State, Action>("span", "▍").attr("class", FIELD_CARET_CLASS),
         ));
     }
     if !preedit[preedit_caret..].is_empty() {
         kids.push(Box::new(
-            el::<_, TextInput, ()>("span", preedit[preedit_caret..].to_owned())
+            el::<_, State, Action>("span", preedit[preedit_caret..].to_owned())
+                .attr("class", FIELD_PREEDIT_CLASS)
                 .attr("style", "text-decoration-line: underline;"),
         ));
     }
@@ -154,11 +163,23 @@ fn field_children_impl(
     let ghost = input.ghost();
     if !ghost.is_empty() {
         kids.push(Box::new(
-            el::<_, TextInput, ()>("span", ghost.to_string())
+            el::<_, State, Action>("span", ghost.to_string())
                 .attr("style", "color: #8b91a0; font-style: italic;"),
         ));
     }
     kids
+}
+
+/// Render the children of a caret-bearing field without installing an editor.
+///
+/// This is the controlled/mirror counterpart to [`caret_text_field`]. The
+/// caller owns the semantic container and all input routing; Cambium supplies
+/// only the exact text, style, IME-preedit, ghost, and caret projection.
+pub fn caret_field_children<State: 'static, Action: 'static>(
+    input: &TextInput,
+    styles: &[StyleRange],
+) -> Vec<FieldChild<State, Action>> {
+    field_children_impl::<State, Action>(input, styles, true)
 }
 
 /// A multi-line text field rendered with per-range syntax highlighting from
@@ -198,7 +219,7 @@ pub fn styled_text_field(input: &TextInput, styles: &[StyleRange]) -> crate::Tex
 /// this constructor when focused, [`styled_text_field`] when not.
 pub fn caret_text_field(input: &TextInput, styles: &[StyleRange]) -> crate::TextField {
     on_key(
-        el::<_, TextInput, ()>("input", field_children_impl(input, styles, true)),
+        el::<_, TextInput, ()>("input", caret_field_children(input, styles)),
         edit as fn(&mut TextInput, KeyEvent),
     )
 }

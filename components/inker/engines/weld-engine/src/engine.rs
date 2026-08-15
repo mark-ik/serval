@@ -70,8 +70,9 @@ impl SurfaceEngine for WeldEngine {
 mod tests {
     use super::*;
     use inker::{
-        CursorShape, EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent, NavigationEvent,
-        PointerEvent, SurfaceEngineRegistry, SurfaceSettings, WebMessage,
+        CursorShape, DragEvent, DragOperationSet, EngineProfileBinding, FocusReason, KeyboardEvent,
+        MouseEvent, NavigationEvent, PhysicalPosition, PointerEvent, SurfaceEngineRegistry,
+        SurfaceSettings, WebMessage,
         routing::{EngineRouteDecision, SurfaceContract, SurfaceContractMode, SurfaceTargetId},
     };
 
@@ -117,6 +118,16 @@ mod tests {
         fn notify_pointer(&mut self, _: PointerEvent) -> Result<(), SurfaceError> {
             Ok(())
         }
+        fn notify_drag(&mut self, _: DragEvent) -> Result<(), SurfaceError> {
+            Ok(())
+        }
+        fn finish_drag_source(
+            &mut self,
+            _: PhysicalPosition,
+            _: DragOperationSet,
+        ) -> Result<(), SurfaceError> {
+            Ok(())
+        }
         fn notify_keyboard(&mut self, _: KeyboardEvent) -> Result<(), SurfaceError> {
             Ok(())
         }
@@ -131,6 +142,13 @@ mod tests {
         }
         fn poll_web_message(&mut self) -> Option<WebMessage> {
             None
+        }
+        fn web_capabilities(&self) -> inker::WebSurfaceCapabilities {
+            inker::WebSurfaceCapabilities {
+                backend_name: "stub.weld".into(),
+                frame_transport: inker::WebFrameTransportMode::Unsupported,
+                ..Default::default()
+            }
         }
         fn apply_settings(&mut self, _: &SurfaceSettings) -> Result<(), SurfaceError> {
             Ok(())

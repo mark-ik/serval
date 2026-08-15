@@ -9,7 +9,7 @@ use genet_document_resources::{
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
-    ComputedValues, PropertyId, PropertyValue,
+    ComputedValues, PropertyId, PropertyValue, ShorthandId,
     cascade::{
         CascadeLayer, ColorComputeContext, DeclarationError, MatchedCustomDeclaration,
         MatchedDeclaration, Origin, Specificity, cascade_with_custom_context,
@@ -22,13 +22,16 @@ use livery::{
         StylesheetDiagnostic,
     },
     values::{
-        BackgroundImage, BorderStyle, BoxShadow, ComputedColor, FontSize, Length, LengthPercentage,
-        LengthUnit, LineHeight, Margin, Padding, Position, Size, SystemColor, TreeCounts,
-        UsedColorContext,
+        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FontSize, Length,
+        LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size, SystemColor,
+        TreeCounts, UsedColorContext,
     },
 };
 
-use crate::{CAMBIUM_UA_DEFAULTS, InteractionStates, SelectorTree};
+use crate::{
+    CAMBIUM_UA_DEFAULTS, InteractionStates, LegacyDescendantAlignment,
+    PresentationalHintDiagnostic, PresentationalHintProvider, PresentationalHints, SelectorTree,
+};
 
 /// Layout facts needed to serialize properties whose CSSOM result is a used
 /// value rather than only a computed value.
@@ -528,6 +531,8 @@ pub struct StylePlane<Id> {
     values: HashMap<Id, ComputedValues>,
     custom: HashMap<Id, CustomProperties>,
     inline_diagnostics: HashMap<Id, Vec<DeclarationError>>,
+    presentational_hint_diagnostics: HashMap<Id, Vec<PresentationalHintDiagnostic>>,
+    legacy_descendant_alignment: HashMap<Id, LegacyDescendantAlignment>,
     color_context: ColorComputeContext,
 }
 
@@ -539,6 +544,8 @@ where
         self.values == other.values
             && self.custom == other.custom
             && self.inline_diagnostics == other.inline_diagnostics
+            && self.presentational_hint_diagnostics == other.presentational_hint_diagnostics
+            && self.legacy_descendant_alignment == other.legacy_descendant_alignment
             && self.color_context == other.color_context
     }
 }
@@ -549,6 +556,8 @@ impl<Id> Default for StylePlane<Id> {
             values: HashMap::new(),
             custom: HashMap::new(),
             inline_diagnostics: HashMap::new(),
+            presentational_hint_diagnostics: HashMap::new(),
+            legacy_descendant_alignment: HashMap::new(),
             color_context: ColorComputeContext::default(),
         }
     }
@@ -752,9 +761,13 @@ where
         if property.starts_with("--") {
             return self.custom_properties(id)?.get(property).cloned();
         }
-        let property = PropertyId::from_css_name(&property.to_ascii_lowercase())?;
+        let property_name = property.to_ascii_lowercase();
         let values = self.get(id)?;
-        let property = logical_inline_property(property, values);
+        if let Some(shorthand) = ShorthandId::from_css_name(&property_name) {
+            return self.computed_box_shorthand(values, shorthand);
+        }
+        let property = PropertyId::from_css_name(&property_name)?;
+        let property = property.to_physical(values.writing_mode, values.direction);
         if let Some(used) = used
             && box_is_unadorned(values)
         {
@@ -782,10 +795,35 @@ where
             let reference_box = definite_transform_reference_box(values, em);
             return Some(values.transform.to_computed_css(em, reference_box));
         }
-        Some(
-            resolve_property_used_colors(values.get(property), self.used_color_context_for(values))
-                .to_css_string(),
-        )
+        Some(computed_value_css(resolve_property_used_colors(
+            values.get(property),
+            self.used_color_context_for(values),
+        )))
+    }
+
+    fn computed_box_shorthand(
+        &self,
+        values: &ComputedValues,
+        shorthand: ShorthandId,
+    ) -> Option<String> {
+        if !matches!(
+            shorthand,
+            ShorthandId::BorderColor | ShorthandId::BorderStyle | ShorthandId::BorderWidth
+        ) {
+            return None;
+        }
+        let sides = shorthand
+            .metadata()
+            .longhands
+            .iter()
+            .map(|&property| {
+                computed_value_css(resolve_property_used_colors(
+                    values.get(property),
+                    self.used_color_context_for(values),
+                ))
+            })
+            .collect::<Vec<_>>();
+        (sides.len() == 4).then(|| serialize_four_sides(&sides))
     }
 
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut ComputedValues> {
@@ -806,6 +844,20 @@ where
         self.inline_diagnostics.get(&id).map_or(&[], Vec::as_slice)
     }
 
+    /// Diagnostics emitted while collecting an HTML presentational hint for
+    /// this element. Hints remain outside CSSOM and inline-style diagnostics.
+    pub fn presentational_hint_diagnostics(&self, id: Id) -> &[PresentationalHintDiagnostic] {
+        self.presentational_hint_diagnostics
+            .get(&id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// HTML-owned used-margin alignment selected for this element by the
+    /// deepest applicable legacy alignment ancestor.
+    pub fn legacy_descendant_alignment(&self, id: Id) -> Option<LegacyDescendantAlignment> {
+        self.legacy_descendant_alignment.get(&id).copied()
+    }
+
     pub fn len(&self) -> usize {
         self.values.len()
     }
@@ -818,6 +870,8 @@ where
         self.values.remove(&id);
         self.custom.remove(&id);
         self.inline_diagnostics.remove(&id);
+        self.presentational_hint_diagnostics.remove(&id);
+        self.legacy_descendant_alignment.remove(&id);
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(Id) -> bool)
@@ -827,6 +881,9 @@ where
         self.values.retain(|id, _| keep(*id));
         self.custom.retain(|id, _| keep(*id));
         self.inline_diagnostics.retain(|id, _| keep(*id));
+        self.presentational_hint_diagnostics
+            .retain(|id, _| keep(*id));
+        self.legacy_descendant_alignment.retain(|id, _| keep(*id));
     }
 
     fn with_color_context(color_context: ColorComputeContext) -> Self {
@@ -881,9 +938,27 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    let hints = PresentationalHints::from_html_dom(dom);
+    resolve_styles_with_presentational_hints(dom, style_set, device, states, &hints)
+}
+
+/// Resolve every element while projecting a caller-owned presentational-hint
+/// provider through Livery's dedicated cascade origin.
+pub fn resolve_styles_with_presentational_hints<D, P>(
+    dom: &D,
+    style_set: &StyleSet,
+    device: &Device,
+    states: &InteractionStates<D::NodeId>,
+    hints: &P,
+) -> StylePlane<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+    P: PresentationalHintProvider<D::NodeId>,
+{
     let selector_tree = SelectorTree::new(dom, states);
     let mut plane = StylePlane::with_color_context(ColorComputeContext::from_device(device));
-    resolve_subtree(
+    resolve_subtree_with_containers(
         &selector_tree,
         style_set,
         device,
@@ -892,6 +967,8 @@ where
         None,
         TreeCounts::Deferred,
         &mut plane,
+        hints,
+        None,
     );
     plane
 }
@@ -907,6 +984,25 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    let hints = PresentationalHints::from_html_dom(dom);
+    resolve_styles_with_containers_and_presentational_hints(
+        dom, style_set, device, states, &hints, containers,
+    )
+}
+
+pub(crate) fn resolve_styles_with_containers_and_presentational_hints<D, P>(
+    dom: &D,
+    style_set: &StyleSet,
+    device: &Device,
+    states: &InteractionStates<D::NodeId>,
+    hints: &P,
+    containers: &HashMap<D::NodeId, Vec<ContainerSnapshot>>,
+) -> StylePlane<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+    P: PresentationalHintProvider<D::NodeId>,
+{
     let selector_tree = SelectorTree::new(dom, states);
     let mut plane = StylePlane::with_color_context(ColorComputeContext::from_device(device));
     resolve_subtree_with_containers(
@@ -918,6 +1014,7 @@ where
         None,
         TreeCounts::Deferred,
         &mut plane,
+        hints,
         Some(containers),
     );
     plane
@@ -938,6 +1035,7 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    let hints = PresentationalHints::from_html_dom(selector_tree.dom());
     resolve_subtree_with_containers(
         selector_tree,
         style_set,
@@ -947,6 +1045,7 @@ where
         parent_custom,
         tree_counts,
         plane,
+        &hints,
         None,
     )
 }
@@ -997,7 +1096,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resolve_subtree_with_containers<D>(
+fn resolve_subtree_with_containers<D, P>(
     selector_tree: &SelectorTree<'_, D>,
     style_set: &StyleSet,
     device: &Device,
@@ -1006,13 +1105,20 @@ fn resolve_subtree_with_containers<D>(
     parent_custom: Option<&CustomProperties>,
     tree_counts: TreeCounts,
     plane: &mut StylePlane<D::NodeId>,
+    hints: &P,
     containers: Option<&HashMap<D::NodeId, Vec<ContainerSnapshot>>>,
 ) -> usize
 where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
+    P: PresentationalHintProvider<D::NodeId>,
 {
     if selector_tree.dom().kind(id) == NodeKind::Element {
+        if let Some(alignment) = hints.descendant_alignment_for(id) {
+            plane.legacy_descendant_alignment.insert(id, alignment);
+        } else {
+            plane.legacy_descendant_alignment.remove(&id);
+        }
         let element = selector_tree.element(id).expect("element kind has adapter");
         let candidates = containers
             .and_then(|containers| containers.get(&id))
@@ -1024,6 +1130,26 @@ where
             matched_custom.extend(
                 rule.matched_custom_declarations_with_containers(&element, device, candidates),
             );
+        }
+
+        if let Some(declarations) = hints.declarations_for(id) {
+            if !declarations.diagnostics().is_empty() {
+                plane
+                    .presentational_hint_diagnostics
+                    .insert(id, declarations.diagnostics().to_vec());
+            }
+            // Providers expose only ordinary typed longhands. The cascade
+            // origin, not synthetic selector specificity or a CSS layer,
+            // gives these declarations their HTML-defined precedence.
+            matched.extend(declarations.declarations().iter().cloned().enumerate().map(
+                |(index, declaration)| MatchedDeclaration {
+                    declaration,
+                    origin: Origin::AuthorPresentationalHint,
+                    layer: CascadeLayer::Unlayered,
+                    specificity: Specificity(0),
+                    source_order: index as u64,
+                },
+            ));
         }
 
         if let Some(inline) =
@@ -1056,7 +1182,7 @@ where
             ));
         }
 
-        let (mut computed, custom) = cascade_with_logical_inline_properties(
+        let (mut computed, custom) = cascade_with_logical_properties(
             parent,
             parent_custom,
             matched,
@@ -1076,6 +1202,7 @@ where
                 Some(&custom),
                 child_counts,
                 plane,
+                hints,
                 containers,
             );
         }
@@ -1094,6 +1221,7 @@ where
                 parent_custom,
                 child_counts,
                 plane,
+                hints,
                 containers,
             );
         }
@@ -1101,11 +1229,11 @@ where
     }
 }
 
-/// Resolve logical inline properties after the winning writing mode is known,
-/// while leaving declarations in their ordinary cascade priority order beside
-/// their physical counterparts. Generated logical fields retain the CSSOM
-/// values; layout consumes the mapped physical longhands.
-fn cascade_with_logical_inline_properties(
+/// Resolve generated logical properties after the winning writing mode and
+/// direction are known, while leaving declarations in their ordinary cascade
+/// priority order beside their physical counterparts. Generated logical fields
+/// retain the CSSOM values; layout consumes the mapped physical longhands.
+fn cascade_with_logical_properties(
     parent: Option<&ComputedValues>,
     parent_custom: Option<&CustomProperties>,
     matched: Vec<MatchedDeclaration>,
@@ -1119,9 +1247,17 @@ fn cascade_with_logical_inline_properties(
         matched_custom.clone(),
         color_context,
     );
-    let inline_size = logical.inline_size;
+    let logical_values = PropertyId::ALL
+        .iter()
+        .copied()
+        .filter(|property| property.is_logical())
+        .map(|property| (property, logical.get(property)))
+        .collect::<Vec<_>>();
     let mapped = matched.into_iter().map(|mut declaration| {
-        let property = logical_inline_property(declaration.declaration.property, &logical);
+        let property = declaration
+            .declaration
+            .property
+            .to_physical(logical.writing_mode, logical.direction);
         if property != declaration.declaration.property {
             declaration.declaration.property = property;
         }
@@ -1129,19 +1265,12 @@ fn cascade_with_logical_inline_properties(
     });
     let (mut computed, custom) =
         cascade_with_custom_context(parent, parent_custom, mapped, matched_custom, color_context);
-    computed.inline_size = inline_size;
+    for (property, value) in logical_values {
+        computed
+            .set(property, value)
+            .expect("generated logical property read and write types agree");
+    }
     (computed, custom)
-}
-
-fn logical_inline_property(property: PropertyId, values: &ComputedValues) -> PropertyId {
-    if property != PropertyId::InlineSize {
-        return property;
-    }
-    if values.writing_mode.is_vertical() {
-        PropertyId::Height
-    } else {
-        PropertyId::Width
-    }
 }
 
 fn resolve_viewport_units(computed: &mut ComputedValues, device: &Device, tree_counts: TreeCounts) {
@@ -1171,9 +1300,12 @@ fn resolve_font_metrics(computed: &mut ComputedValues, parent: Option<&ComputedV
         })) => value,
         _ => 16.0,
     });
-    let font_size = match computed.font_size {
-        FontSize::Medium => 16.0,
-        FontSize::Value(value) => resolve_length_percentage(value, parent_size, parent_size),
+    let font_size = match computed.font_size.absolute_px() {
+        Some(value) => value,
+        None => match computed.font_size {
+            FontSize::Value(value) => resolve_length_percentage(value, parent_size, parent_size),
+            _ => unreachable!("absolute font sizes returned a px value"),
+        },
     }
     .max(0.0);
     computed.font_size = FontSize::Value(LengthPercentage::Length(Length::px(font_size)));
@@ -1246,6 +1378,30 @@ fn used_px(value: f32) -> String {
     }
 }
 
+fn computed_value_css(value: PropertyValue) -> String {
+    match value {
+        PropertyValue::BorderWidth(BorderWidth::Length(Length {
+            value,
+            unit: LengthUnit::Px,
+        })) => used_px(value),
+        value => value.to_css_string(),
+    }
+}
+
+fn serialize_four_sides(sides: &[String]) -> String {
+    debug_assert_eq!(sides.len(), 4);
+    let count = if sides[1] == sides[3] {
+        if sides[0] == sides[2] {
+            if sides[0] == sides[1] { 1 } else { 2 }
+        } else {
+            3
+        }
+    } else {
+        4
+    };
+    sides[..count].join(" ")
+}
+
 fn used_margin(margin: Margin, values: &ComputedValues, context: UsedValueContext) -> Option<f32> {
     let Margin::Value(value) = margin else {
         return None;
@@ -1274,6 +1430,8 @@ fn definite_size(size: Size, em: f32) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
+    use livery::values::BorderWidth;
+
     use super::*;
 
     fn matched(css: &str, source_order: u64) -> MatchedDeclaration {
@@ -1290,8 +1448,8 @@ mod tests {
     }
 
     #[test]
-    fn inline_size_maps_to_the_winning_physical_axis() {
-        let (horizontal, _) = cascade_with_logical_inline_properties(
+    fn logical_properties_map_to_the_winning_physical_axis_and_side() {
+        let (horizontal, _) = cascade_with_logical_properties(
             None,
             None,
             vec![matched("inline-size: 25px", 0), matched("width: 50px", 1)],
@@ -1301,7 +1459,7 @@ mod tests {
         assert_eq!(horizontal.inline_size, "25px".parse().unwrap());
         assert_eq!(horizontal.width, "50px".parse().unwrap());
 
-        let (vertical, _) = cascade_with_logical_inline_properties(
+        let (vertical, _) = cascade_with_logical_properties(
             None,
             None,
             vec![
@@ -1314,5 +1472,65 @@ mod tests {
         );
         assert_eq!(vertical.inline_size, "25px".parse().unwrap());
         assert_eq!(vertical.height, "25px".parse().unwrap());
+
+        let (ltr, _) = cascade_with_logical_properties(
+            None,
+            None,
+            vec![
+                matched("margin-left: 11px", 0),
+                matched("margin-inline-start: 17px", 1),
+            ],
+            vec![],
+            ColorComputeContext::default(),
+        );
+        assert_eq!(ltr.margin_left, "17px".parse().unwrap());
+
+        let (rtl, _) = cascade_with_logical_properties(
+            None,
+            None,
+            vec![
+                matched("direction: rtl", 0),
+                matched("margin-inline-start: 17px", 1),
+                matched("margin-right: 11px", 2),
+            ],
+            vec![],
+            ColorComputeContext::default(),
+        );
+        assert_eq!(rtl.margin_right, "11px".parse().unwrap());
+
+        let (vertical_rtl, _) = cascade_with_logical_properties(
+            None,
+            None,
+            vec![
+                matched("writing-mode: vertical-rl", 0),
+                matched("direction: rtl", 1),
+                matched("margin-inline-start: 23px", 2),
+            ],
+            vec![],
+            ColorComputeContext::default(),
+        );
+        assert_eq!(vertical_rtl.margin_bottom, "23px".parse().unwrap());
+
+        let (logical_borders, _) = cascade_with_logical_properties(
+            None,
+            None,
+            vec![
+                matched("writing-mode: vertical-rl", 0),
+                matched("border-block-start-style: solid", 1),
+                matched("border-inline-start-width: 7px", 2),
+                matched("border-inline-end-color: red", 3),
+            ],
+            vec![],
+            ColorComputeContext::default(),
+        );
+        assert_eq!(logical_borders.border_right_style, BorderStyle::Solid);
+        assert_eq!(
+            logical_borders.border_top_width,
+            BorderWidth::Length(Length::px(7.0))
+        );
+        assert_eq!(
+            logical_borders.border_bottom_color.to_srgb8(),
+            Some((255, 0, 0, 255))
+        );
     }
 }

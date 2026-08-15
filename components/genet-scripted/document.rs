@@ -52,8 +52,12 @@ use engine_observables_api::DomArenaStats;
 use engine_observables_api::LayoutBatchStats;
 #[cfg(feature = "render")]
 use genet_document_resources::ResolvedDocumentResources;
+#[cfg(all(feature = "livery", feature = "render"))]
+use genet_document_resources::ResourceLimits;
 #[cfg(feature = "render")]
 use genet_layout::{IncrementalLayout, ScrollKey, ScrollOffsets, TextRange, TextSelection};
+#[cfg(all(feature = "livery", feature = "render"))]
+use genet_livery::Device;
 #[cfg(feature = "render")]
 use genet_render::translated_frame_from_session_dom;
 #[cfg(feature = "render")]
@@ -64,6 +68,8 @@ use script_engine_api::ScriptEngine;
 use script_runtime_api::ComputedStyleHandler;
 use script_runtime_api::{CookieProvider, Runtime, WebGlFactory};
 
+#[cfg(all(feature = "livery", feature = "render"))]
+use crate::LiveryCssom;
 use crate::ResourceFetcher;
 use crate::capture::DomCaptureRecorder;
 
@@ -894,6 +900,13 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
         self.rt.host().borrow().console.clone()
     }
 
+    /// The post-script document title used by a native host window. This is
+    /// read from the same live DOM Livery lays out and paints.
+    pub fn title(&self) -> Option<String> {
+        let host = self.rt.host().borrow();
+        genet_extract::extract_title(&host.dom)
+    }
+
     /// Render-free extraction of the **post-JS** document: a
     /// [`PageExtract`](genet_extract::PageExtract) over the live `ScriptedDom` as the
     /// page's scripts have left it. This is the **headless-scripted-DOM scrape**: an
@@ -920,6 +933,359 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
             Err(err) => eprintln!("[pelt-scripted] dom capture disabled: {err}"),
         }
     }
+}
+
+/// A cloneable, host-owned resource handle. The Livery CSSOM retains one clone
+/// for live stylesheet and asset reconciliation while parser-blocking scripts
+/// read through the other clone during construction.
+#[cfg(all(feature = "livery", feature = "render"))]
+#[derive(Clone)]
+struct SharedResourceFetcher(Rc<dyn ResourceFetcher>);
+
+#[cfg(all(feature = "livery", feature = "render"))]
+impl ResourceFetcher for SharedResourceFetcher {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.0.fetch(url)
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+        self.0.fetch_response(url)
+    }
+}
+
+#[cfg(all(feature = "livery", feature = "render"))]
+struct EmptyResourceFetcher;
+
+#[cfg(all(feature = "livery", feature = "render"))]
+impl ResourceFetcher for EmptyResourceFetcher {
+    fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// A live script runtime rendered entirely by its Livery CSSOM session.
+///
+/// The mutable `ScriptedDom` remains inside `Runtime`; this type deliberately
+/// keeps no mirror DOM. Livery observes that runtime's exact mutation suffix,
+/// resolves the same host-owned resource graph, then supplies shaped layout and
+/// paint to the product shell.
+#[cfg(all(feature = "livery", feature = "render"))]
+pub struct LiveryScriptedDocument<E: ScriptEngine> {
+    // These retained engines are sizeable in a native UI event loop. Heap-own
+    // them so the route does not consume the Windows main-thread stack merely
+    // by carrying one live document through `ViewerApp`.
+    rt: Box<Runtime<E>>,
+    cssom: Box<LiveryCssom>,
+    pending_fragment: Option<String>,
+    capture: Option<DomCaptureRecorder>,
+    hidden: bool,
+    frozen: bool,
+    last_hidden_pump_ms: f64,
+}
+
+#[cfg(all(feature = "livery", feature = "render"))]
+impl<E: ScriptEngine> LiveryScriptedDocument<E> {
+    /// Fetch a document and build the Livery CSSOM session before its first
+    /// parser-blocking script executes.
+    pub fn load<Fetch>(fetcher: Fetch, url: &str) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + 'static,
+    {
+        let (resource, fragment) = match url.split_once('#') {
+            Some((resource, fragment)) => (resource, (!fragment.is_empty()).then(|| fragment)),
+            None => (url, None),
+        };
+        let fetcher = SharedResourceFetcher(Rc::new(fetcher));
+        let bytes = fetcher
+            .fetch(resource)
+            .ok_or_else(|| format!("could not load {resource}"))?;
+        let mut document = Self::build(&String::from_utf8_lossy(&bytes), fetcher, resource)?;
+        document.pending_fragment = fragment.map(str::to_owned);
+        Ok(document)
+    }
+
+    /// Build a Livery-scripted document from already-fetched HTML. The fetcher
+    /// remains retained for external scripts and later live stylesheet, image,
+    /// and font reconciliation.
+    pub fn from_body<Fetch>(html: &str, fetcher: Fetch, base_url: &str) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + 'static,
+    {
+        Self::build(html, SharedResourceFetcher(Rc::new(fetcher)), base_url)
+    }
+
+    /// Parse an inline fixture with an explicit empty host transport. Inline
+    /// styles and scripts still use the same Livery CSSOM ownership path.
+    pub fn parse(html: &str) -> Result<Self, String> {
+        Self::build(
+            html,
+            SharedResourceFetcher(Rc::new(EmptyResourceFetcher)),
+            "about:blank",
+        )
+    }
+
+    fn build(html: &str, fetcher: SharedResourceFetcher, base_url: &str) -> Result<Self, String> {
+        let doc = StaticDocument::parse(html);
+        let mut rt =
+            Runtime::<E>::new().map_err(|error| format!("script runtime init: {error:?}"))?;
+        let _ = rt.set_base_url(base_url);
+        rt.load_dom(&doc);
+        let cssom = LiveryCssom::install_live(
+            &mut rt,
+            fetcher.clone(),
+            base_url,
+            ResourceLimits::default(),
+            Device::screen(800.0, 600.0),
+        );
+        let capture_sheets = cssom
+            .resource_set()
+            .map(|resources| {
+                resources
+                    .stylesheet_text()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut capture = {
+            let mut host = rt.host().borrow_mut();
+            DomCaptureRecorder::from_env(&mut host.dom, &capture_sheets)
+                .map_err(|error| format!("dom capture init: {error}"))?
+        };
+
+        let loader: Option<(&dyn ResourceFetcher, &str)> = Some((&fetcher, base_url));
+        let scripts = collect_scripts(&doc);
+        let mut deferred = Vec::new();
+        for script in &scripts {
+            match script {
+                ScriptSource::Inline(source) => eval_reporting(&mut rt, source),
+                ScriptSource::External {
+                    src,
+                    timing: ScriptTiming::Blocking,
+                    charset,
+                    integrity,
+                } => {
+                    if let Some(source) =
+                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
+                    {
+                        eval_reporting(&mut rt, &source);
+                    }
+                },
+                ScriptSource::External { .. }
+                | ScriptSource::ModuleInline(_)
+                | ScriptSource::ModuleExternal { .. } => deferred.push(script),
+            }
+        }
+        for script in deferred {
+            match script {
+                ScriptSource::External {
+                    src,
+                    charset,
+                    integrity,
+                    ..
+                } => {
+                    if let Some(source) =
+                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
+                    {
+                        eval_reporting(&mut rt, &source);
+                    }
+                },
+                ScriptSource::ModuleInline(source) => {
+                    eval_module_reporting(&mut rt, loader, base_url, source);
+                },
+                ScriptSource::ModuleExternal {
+                    src,
+                    charset,
+                    integrity,
+                } => {
+                    let module_base = crate::resolve_href(base_url, src);
+                    if let Some(source) =
+                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
+                    {
+                        eval_module_reporting(&mut rt, loader, &module_base, &source);
+                    }
+                },
+                ScriptSource::Inline(_) => {},
+            }
+        }
+        rt.run_microtasks();
+        if let Some(recorder) = capture.as_mut() {
+            let mut host = rt.host().borrow_mut();
+            recorder
+                .record_pending(&mut host.dom)
+                .map_err(|error| format!("dom capture write: {error}"))?;
+        }
+
+        Ok(Self {
+            rt: Box::new(rt),
+            cssom: Box::new(cssom),
+            pending_fragment: None,
+            capture,
+            hidden: false,
+            frozen: false,
+            last_hidden_pump_ms: f64::NAN,
+        })
+    }
+
+    /// Render the exact live runtime DOM through Livery and lower the resulting
+    /// paint list into the existing host-neutral scene.
+    pub fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
+        let (requested_scroll, into_view) = {
+            let mut host = self.rt.host().borrow_mut();
+            (host.viewport_scroll, host.scroll_into_view.take())
+        };
+        if let Some(node) = into_view {
+            let _ = self.cssom.scroll_to_id(node);
+        } else {
+            self.cssom.scroll_to(requested_scroll.0, requested_scroll.1);
+        }
+        let mut list = match self.cssom.frame(&mut self.rt, width, height) {
+            Ok(list) => list,
+            Err(error) => {
+                eprintln!("[pelt-livery-scripted] layout error: {error}");
+                return netrender::Scene::new(width, height);
+            },
+        };
+        if let Some(fragment) = self.pending_fragment.take() {
+            self.scroll_to_fragment(&fragment);
+            list = match self.cssom.frame(&mut self.rt, width, height) {
+                Ok(list) => list,
+                Err(error) => {
+                    eprintln!("[pelt-livery-scripted] layout error: {error}");
+                    return netrender::Scene::new(width, height);
+                },
+            };
+        }
+        self.rt.host().borrow_mut().viewport_scroll = self.cssom.scroll();
+        paint_list_render::translate_paint_list(&list)
+    }
+
+    pub fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
+        let moved = self.cssom.scroll_by(dx, dy);
+        if moved {
+            self.rt.host().borrow_mut().viewport_scroll = self.cssom.scroll();
+        }
+        moved
+    }
+
+    pub fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
+        let (_, height) = self.cssom.viewport();
+        let current = self.cssom.scroll();
+        let next = match key {
+            ScrollKey::Up => (current.0, current.1 - 40.0),
+            ScrollKey::Down => (current.0, current.1 + 40.0),
+            ScrollKey::Left => (current.0 - 40.0, current.1),
+            ScrollKey::Right => (current.0 + 40.0, current.1),
+            ScrollKey::PageUp => (current.0, current.1 - height as f32 * 0.9),
+            ScrollKey::PageDown => (current.0, current.1 + height as f32 * 0.9),
+            ScrollKey::Home => (0.0, 0.0),
+            ScrollKey::End => (0.0, f32::MAX),
+        };
+        self.cssom.scroll_to(next.0, next.1);
+        let moved = self.cssom.scroll() != current;
+        if moved {
+            self.rt.host().borrow_mut().viewport_scroll = self.cssom.scroll();
+        }
+        moved
+    }
+
+    pub fn click_at(&mut self, x: f32, y: f32) -> bool {
+        let handled = self.cssom.click_at(&mut self.rt, x, y);
+        self.flush_dom_capture();
+        handled
+    }
+
+    pub fn pump(&mut self, now_ms: f64) -> (usize, usize) {
+        if self.frozen {
+            return (0, 0);
+        }
+        if self.hidden {
+            if self.last_hidden_pump_ms.is_nan() || now_ms - self.last_hidden_pump_ms < 1000.0 {
+                if self.last_hidden_pump_ms.is_nan() {
+                    self.last_hidden_pump_ms = now_ms;
+                }
+                return (0, 0);
+            }
+            self.last_hidden_pump_ms = now_ms;
+        }
+        self.rt.run_timers(64, now_ms);
+        self.rt.run_microtasks();
+        self.flush_dom_capture();
+        self.rt.collect_garbage()
+    }
+
+    pub fn has_pending_work(&mut self) -> bool {
+        !self.frozen && self.rt.next_timer_delay().is_some()
+    }
+
+    pub fn set_hidden(&mut self, hidden: bool) {
+        if self.hidden == hidden {
+            return;
+        }
+        self.hidden = hidden;
+        if hidden {
+            self.last_hidden_pump_ms = f64::NAN;
+        }
+        let document = self.rt.host().borrow().dom.document().raw();
+        let _ = self.rt.dispatch_event(document, "visibilitychange");
+    }
+
+    pub fn evaluate(&mut self, source: &str) -> Result<(), String> {
+        self.rt
+            .eval(source)
+            .map_err(|error| format!("script evaluation: {error:?}"))?;
+        self.rt.run_microtasks();
+        self.flush_dom_capture();
+        Ok(())
+    }
+
+    pub fn dom_snapshot(&self) -> String {
+        let host = self.rt.host().borrow();
+        host.dom.inner_html(host.dom.document())
+    }
+
+    pub fn console(&self) -> Vec<String> {
+        self.rt.host().borrow().console.clone()
+    }
+
+    pub fn resource_set(&self) -> Option<ResolvedDocumentResources> {
+        self.cssom.resource_set()
+    }
+
+    pub fn scroll_to_fragment(&mut self, fragment: &str) {
+        let target = {
+            let host = self.rt.host().borrow();
+            find_id(&host.dom, host.dom.document(), fragment)
+        };
+        if let Some(target) = target {
+            let _ = self.cssom.scroll_to_id(target);
+        }
+    }
+
+    fn flush_dom_capture(&mut self) {
+        let Some(mut recorder) = self.capture.take() else {
+            return;
+        };
+        let result = {
+            let mut host = self.rt.host().borrow_mut();
+            recorder.record_pending(&mut host.dom)
+        };
+        match result {
+            Ok(_) => self.capture = Some(recorder),
+            Err(error) => eprintln!("[pelt-livery-scripted] dom capture disabled: {error}"),
+        }
+    }
+}
+
+#[cfg(all(feature = "livery", feature = "render"))]
+fn find_id(dom: &ScriptedDom, node: NodeId, id: &str) -> Option<NodeId> {
+    if dom.kind(node) == layout_dom_api::NodeKind::Element
+        && dom.attribute(node, &Namespace::default(), &LocalName::from("id")) == Some(id)
+    {
+        return Some(node);
+    }
+    dom.dom_children(node)
+        .find_map(|child| find_id(dom, child, id))
 }
 
 /// Which JS engine the scripted profile runs on. Boa is pure Rust (all targets, the
@@ -2634,6 +3000,135 @@ mod tests {
         assert_eq!(page.links.len(), 1, "the injected link is extracted");
         assert_eq!(page.links[0].href, "/spa/route");
         assert_eq!(page.links[0].text, "go");
+    }
+
+    #[cfg(feature = "livery")]
+    #[derive(Clone)]
+    struct LiveryFixtureFetcher {
+        resources: std::collections::BTreeMap<String, Vec<u8>>,
+    }
+
+    #[cfg(feature = "livery")]
+    impl LiveryFixtureFetcher {
+        fn new() -> Self {
+            let image = include_bytes!("../../resources/servo_64.png").to_vec();
+            let mut resources = std::collections::BTreeMap::new();
+            resources.insert(
+                "https://f4.test/route/theme.css".to_string(),
+                b".card { color: rgb(0, 0, 255); } .floor { height: 600px; }".to_vec(),
+            );
+            resources.insert("https://f4.test/route/first.png".to_string(), image.clone());
+            resources.insert(
+                "https://f4.test/route/second.png".to_string(),
+                image.clone(),
+            );
+            resources.insert(
+                "https://f4.test/route/font-a.woff2".to_string(),
+                image.clone(),
+            );
+            resources.insert("https://f4.test/route/font-b.woff2".to_string(), image);
+            Self { resources }
+        }
+    }
+
+    #[cfg(feature = "livery")]
+    impl ResourceFetcher for LiveryFixtureFetcher {
+        fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+            self.resources.get(url).cloned()
+        }
+    }
+
+    /// F4's core receipt: scripts see Livery CSSOM before parser-blocking
+    /// execution, then the one runtime DOM drives a resource-backed Livery
+    /// frame after both image and font source replacements.
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_scripted_document_owns_live_cssom_resources_and_frame_on_boa() {
+        let html = r#"<!doctype html><html><head>
+            <link rel="stylesheet" href="theme.css">
+            <style id="faces">@font-face { font-family: F4; src: url(font-a.woff2); }</style>
+            </head><body>
+            <img id="hero" src="first.png" width="64" height="64">
+            <div id="card" class="card">before</div>
+            <div class="floor"></div>
+            <script>
+              const card = document.getElementById('card');
+              console.log(document.styleSheets.length + '|' +
+                String(getComputedStyle(card).color === 'rgb(0, 0, 255)'));
+              document.getElementById('hero').src = 'second.png';
+              document.getElementById('faces').textContent =
+                '@font-face { font-family: F4; src: url(font-b.woff2); }';
+              card.textContent = 'after';
+              document.body.addEventListener('click', function () {
+                card.setAttribute('data-clicked', 'yes');
+              });
+            </script>
+            </body></html>"#;
+        let mut document = LiveryScriptedDocument::<BoaEngine>::from_body(
+            html,
+            LiveryFixtureFetcher::new(),
+            "https://f4.test/route/index.html",
+        )
+        .expect("Livery scripted document builds");
+
+        let initial_scene = document.frame(320, 180);
+        assert_eq!(document.console(), vec!["2|true"]);
+        assert!(document.dom_snapshot().contains("after"));
+        assert!(
+            document.scroll_by(0.0, 30.0),
+            "Livery owns live viewport input"
+        );
+        assert!(
+            document.click_at(16.0, 16.0),
+            "Livery hit-tests into the runtime DOM"
+        );
+        assert!(document.dom_snapshot().contains("data-clicked=\"yes\""));
+        let post_click_scene = document.frame(320, 180);
+        assert!(
+            initial_scene.dump_ops().contains("images=1")
+                && post_click_scene.dump_ops().contains("images=1"),
+            "the Livery paint list survives a live event-driven resource replacement"
+        );
+        let resources = document.resource_set().expect("live Livery ledger");
+        let urls = resources
+            .resources
+            .iter()
+            .map(|resource| resource.resolved_url.as_str())
+            .collect::<Vec<_>>();
+        assert!(urls.contains(&"https://f4.test/route/second.png"));
+        assert!(urls.contains(&"https://f4.test/route/font-b.woff2"));
+        assert!(!urls.contains(&"https://f4.test/route/first.png"));
+        assert!(!urls.contains(&"https://f4.test/route/font-a.woff2"));
+    }
+
+    /// A real F4 control is an inline/block layout target, not merely the body
+    /// fallback used by the resource receipt above. Its listener must therefore
+    /// receive the Livery hit-test target itself.
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_scripted_button_hit_dispatches_to_its_listener_on_boa() {
+        let html = r#"<style>
+            html, body { margin: 0; padding: 0; }
+            button { display: block; width: 240px; height: 80px; margin: 0; padding: 0; }
+        </style>
+        <button id="swap">Mutate live DOM</button>
+        <script>
+            document.getElementById('swap').addEventListener('click', function () {
+                this.setAttribute('data-clicked', 'yes');
+            });
+        </script>"#;
+        let mut document = LiveryScriptedDocument::<BoaEngine>::parse(html)
+            .expect("Livery scripted button fixture builds");
+
+        let _ = document.frame(320, 180);
+        assert!(
+            document.click_at(120.0, 40.0),
+            "the button's painted box is a Livery hit target"
+        );
+        assert!(
+            document.dom_snapshot().contains("data-clicked=\"yes\""),
+            "the hit button received its own runtime click listener"
+        );
     }
 
     #[test]

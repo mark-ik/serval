@@ -40,6 +40,8 @@ members = [
     # illume (lexer/highlighter spans) + tinct (OKLCH palette derivation).
     "components/illume",
     "components/tinct",
+    # Live-document extraction's successor name; reservation, no implementation.
+    "components/fleece",
     # The content lanes as session engines (2026-07-10 session-engines plan):
     # static/scripted/smolweb retained documents, promoted out of pelt.
     "components/genet-documents",
@@ -80,6 +82,8 @@ members = [
     "ports/pelt/desktop",
     "ports/pelt",
     "ports/genet-wpt",
+    # The theme-authoring port; reservation, no implementation.
+    "ports/tabard",
     "tests/unit/*",
 ]
 default-members = ["ports/pelt"]

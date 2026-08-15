@@ -1,0 +1,12 @@
+[package]
+name = "fleece"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/merely-made/genet"
+description = "Name reservation. Fleece is live document extraction for the Genet engine: shearing the readable substance off a rendered page. Article text, metadata, tables, and structure come away clean; the document keeps standing. The successor name for genet-extract's lane: analyze, don't paint."
+readme = "README.md"
+keywords = ["extraction", "readability", "content", "scraping", "dom"]
+categories = ["parser-implementations", "text-processing"]
+
+[dependencies]

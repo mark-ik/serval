@@ -53,6 +53,10 @@ scripted = [
     "dep:genet-extract",
     "dep:encoding_rs", "dep:sha2", "dep:base64", "dep:url",
 ]
+# Explicit live Livery product route. It uses the same present shell as
+# `scripted`, while `LiveryScriptedDocument` owns Livery CSSOM, resources, and
+# geometry from the first parser-blocking script onward.
+livery-scripted = ["viewer", "livery", "scripted", "genet-documents/livery-scripted"]
 # Add the Nova engine to the scripted profile (64-bit targets, including wasm64).
 # Off by default; enabling
 # it links a second engine, which on Windows can exceed the linker's image-size limit

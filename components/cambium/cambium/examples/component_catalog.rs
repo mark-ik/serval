@@ -9,18 +9,26 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use cambium::{
-    AccordionConfig, AccordionItem, AccordionState, AnyView, CommandEvent, CommandItem,
-    CommandState, DetailPopoverMode, DetailPopoverState, DisclosureState, DomHandle,
-    GenetAppRunner, GenetCtx, GenetElement, GraphCanvasEdge, GraphCanvasNode, GraphCanvasSubgraph,
-    GraphCanvasSwatch, GridColumn, GridSpec, GridView, HoverEvent, HoverPhase, Key, KeyEvent,
-    NamedKey, OverlayDismiss, OverlayRole, OverlaySurface, Placement, PointerClick, PointerEvent,
-    PointerPhase, RadioGroup, ReorderItem, ReorderMove, ReorderState, SelectState, SelectionItem,
-    SelectionState, Slider, StyleRange, SummaryBody, TabActivation, TextInput, TreeItem, TreeState,
-    accordion_with, button, button_with, checkbox, command_menu, command_palette, command_picker,
-    custom_leaf, data_grid, detail_popover, disclosure, el, filter_chips, graph_canvas_swatch,
+    AccordionConfig, AccordionItem, AccordionState, Action, AnyView, COMPONENT_PROBE_ATTR,
+    CommandEvent, CommandItem, CommandState, ComponentView, DetailPopoverMode, DetailPopoverState,
+    DisclosureState, DomHandle, GenetAppRunner, GenetCtx, GenetElement, GraphCanvasEdge,
+    GraphCanvasNode, GraphCanvasSubgraph, GraphCanvasSwatch, GridColumn, GridSpec, GridView,
+    HoverEvent, HoverPhase, Key, KeyEvent, NamedKey, OverlayDismiss, OverlayRole, OverlaySurface,
+    Placement, PointerClick, PointerEvent, PointerPhase, RadioGroup, ReorderItem, ReorderMove,
+    ReorderState, SelectState, SelectionItem, SelectionState, Slider, StyleRange, SummaryBody,
+    TabActivation, TextInput, TreeItem, TreeState, accordion_with, button, button_with, checkbox,
+    command_menu, command_palette, command_picker, component, custom_leaf, data_grid,
+    detail_popover, disclosure, el, filter_chips, frisket, graph_canvas_swatch,
     graph_canvas_swatch_with_focus, lens, map_action, on_hover, on_pointer, overlay_surface,
-    radio_group, reorderable_list, segmented_control, select, slider, styled_textarea,
+    radio_group, reorderable_list, segmented_control, select, setting_row, slider, styled_textarea,
     summary_body, tab_bar, text_field_typed, textarea_typed, toggle, tree_view,
+};
+use genet_host_api::settings::{
+    SettingControl, SettingMovement, SettingMutability, SettingOption, SettingScope,
+    SettingSecurity, SettingSpec, SettingValue,
+};
+use genet_host_api::tile::{
+    ContentSource, DocumentRef, TabStack, Tile, TileBranch, TileEvent, TileId, TileTree,
 };
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
@@ -101,6 +109,9 @@ struct CatalogState {
     text: TextInput,
     multiline: TextInput,
     styled: TextInput,
+    settings_saves: usize,
+    settings_last: String,
+    pane_events: Vec<TileEvent>,
     actions: CommandState,
     last_action: String,
     picker_commands: CommandState,
@@ -124,6 +135,9 @@ struct CatalogState {
     overlay_last_dismiss: Option<OverlayDismiss>,
     detail_popover: DetailPopoverState,
     detail_uses: usize,
+    counter_step: i64,
+    counter_mounted: bool,
+    counter_reports: Vec<i64>,
 }
 
 impl Default for CatalogState {
@@ -163,6 +177,9 @@ impl Default for CatalogState {
             text: TextInput::new("turnstone"),
             multiline: TextInput::new("First line\nSecond line"),
             styled: TextInput::new("let answer = 42;"),
+            settings_saves: 0,
+            settings_last: "none".into(),
+            pane_events: Vec::new(),
             actions: CommandState::default()
                 .with_label("Catalog actions")
                 .with_id("catalog-actions"),
@@ -192,6 +209,9 @@ impl Default for CatalogState {
             overlay_last_dismiss: None,
             detail_popover: DetailPopoverState::default(),
             detail_uses: 0,
+            counter_step: 1,
+            counter_mounted: true,
+            counter_reports: Vec::new(),
         }
     }
 }
@@ -425,6 +445,37 @@ fn catalog_summary(id: impl Into<String>, title: impl Into<String>) -> SummaryBo
         .with_fact("Updated", "Today")
 }
 
+/// A deliberately small nested pane tree. It exercises the same framed
+/// furniture a mixed-surface host uses, while keeping content ownership in
+/// the catalog rather than pretending the frame owns a document runtime.
+fn catalog_pane_tree() -> TileTree {
+    let tile = |id: u64, title: &str| Tile {
+        id: TileId(id),
+        title: title.into(),
+        content: ContentSource::Document(DocumentRef(format!("catalog:{id}"))),
+        accent: None,
+    };
+    TileTree::Split {
+        axis: genet_host_api::tile::SplitAxis::Row,
+        children: vec![
+            TileBranch {
+                fraction: 0.6,
+                tree: TileTree::Stack(TabStack {
+                    tabs: vec![tile(1, "Settings"), tile(2, "Preview")],
+                    active: 0,
+                }),
+            },
+            TileBranch {
+                fraction: 0.4,
+                tree: TileTree::Stack(TabStack {
+                    tabs: vec![tile(3, "Activity")],
+                    active: 0,
+                }),
+            },
+        ],
+    }
+}
+
 fn command_result(event: CommandEvent) -> String {
     match event {
         CommandEvent::Activate(path) => format!(
@@ -482,6 +533,112 @@ fn grid(state: &CatalogState) -> GridView<CatalogState, ()> {
             }
         },
         |row| (row == 0).then(|| "grid-row-selected".to_string()),
+    )
+}
+
+/// The settings-form specimen's provider-shaped rows. In an application these
+/// come from a `SettingsProvider`; the catalog describes them inline.
+fn catalog_setting_specs() -> Vec<SettingSpec> {
+    let spec = |id: &str, label: &str, control: SettingControl, value: SettingValue| SettingSpec {
+        id: id.into(),
+        label: label.into(),
+        scope: SettingScope::Application,
+        movement: SettingMovement::LocalOnly,
+        mutability: SettingMutability::Live,
+        security: SettingSecurity::Ordinary,
+        control,
+        value,
+    };
+    vec![
+        spec(
+            "appearance.theme",
+            "Theme",
+            SettingControl::Text,
+            SettingValue::Text("theme:night".into()),
+        ),
+        spec(
+            "appearance.ui-zoom",
+            "UI zoom",
+            SettingControl::Number {
+                min: Some(0.5),
+                max: Some(2.0),
+                step: Some(0.05),
+            },
+            SettingValue::Number(1.1),
+        ),
+        spec(
+            "chrome.shellbar.visible",
+            "Show shellbar",
+            SettingControl::Toggle,
+            SettingValue::Boolean(true),
+        ),
+        spec(
+            "chrome.shellbar.edge",
+            "Shellbar edge",
+            SettingControl::Choice {
+                options: ["Left", "Right", "Top", "Bottom"]
+                    .into_iter()
+                    .map(|label| SettingOption {
+                        value: label.to_ascii_lowercase(),
+                        label: label.into(),
+                    })
+                    .collect(),
+            },
+            SettingValue::Text("left".into()),
+        ),
+    ]
+}
+
+/// The component-boundary specimen's typed event vocabulary: the only values
+/// that cross from the counter to the catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CounterEvent {
+    Report(i64),
+}
+
+impl Action for CounterEvent {}
+
+/// Parent-owned props. The step is catalog state; the count is not.
+struct CounterProps {
+    label: String,
+    step: i64,
+}
+
+fn counter_init(_: &CounterProps) -> i64 {
+    0
+}
+
+/// Nothing in `Local` is parent-controlled: the label and step flow through
+/// `body` on every rebuild, and the count is component-owned.
+fn counter_reconcile(_: &CounterProps, _: &CounterProps, _: &mut i64) {}
+
+fn counter_body(props: &CounterProps, count: &i64) -> ComponentView<i64, CounterEvent> {
+    let step = props.step;
+    Box::new(
+        el(
+            "div",
+            (
+                el::<_, i64, CounterEvent>("output", count.to_string())
+                    .attr("id", "catalog-counter-value"),
+                button(
+                    format!("+{step}"),
+                    move |count: &mut i64, _: PointerClick| {
+                        *count += step;
+                    },
+                )
+                .attr("id", "catalog-counter-up")
+                .attr("class", "catalog-button"),
+                button("Report", |count: &mut i64, _: PointerClick| {
+                    CounterEvent::Report(*count)
+                })
+                .attr("id", "catalog-counter-report")
+                .attr("class", "catalog-button"),
+            ),
+        )
+        .attr("role", "group")
+        .attr("aria-label", props.label.clone())
+        .attr("data-count", count.to_string())
+        .attr("class", "catalog-row catalog-counter"),
     )
 }
 
@@ -561,6 +718,119 @@ fn catalog(state: &CatalogState) -> CatalogView {
     )
     .attr("id", "controls-section")
     .attr("class", "catalog-section");
+
+    let counter_section = el::<_, CatalogState, ()>(
+        "section",
+        (
+            el::<_, CatalogState, ()>("h2", "Component boundary").attr("class", "catalog-label"),
+            button(
+                if state.counter_step == 1 {
+                    "Count by 5"
+                } else {
+                    "Count by 1"
+                },
+                |state: &mut CatalogState, _: PointerClick| {
+                    state.counter_step = if state.counter_step == 1 { 5 } else { 1 };
+                },
+            )
+            .attr("id", "catalog-counter-step")
+            .attr("class", "catalog-button"),
+            button(
+                if state.counter_mounted {
+                    "Unmount counter"
+                } else {
+                    "Mount counter"
+                },
+                |state: &mut CatalogState, _: PointerClick| {
+                    state.counter_mounted = !state.counter_mounted;
+                },
+            )
+            .attr("id", "catalog-counter-mount")
+            .attr("class", "catalog-button"),
+            state.counter_mounted.then(|| {
+                component(
+                    CounterProps {
+                        label: format!("Count by {}", state.counter_step),
+                        step: state.counter_step,
+                    },
+                    counter_init,
+                    counter_reconcile,
+                    counter_body,
+                    |state: &mut CatalogState, CounterEvent::Report(total)| {
+                        state.counter_reports.push(total);
+                    },
+                )
+                .probe_id("catalog-counter")
+            }),
+            el::<_, CatalogState, ()>("output", format!("{} reports", state.counter_reports.len()))
+                .attr("id", "catalog-counter-reports"),
+        ),
+    )
+    .attr("id", "component-section")
+    .attr("class", "catalog-section");
+
+    let pane_tree = catalog_pane_tree();
+    let settings_form = el::<_, CatalogState, ()>(
+        "section",
+        (
+            el::<_, CatalogState, ()>(
+                "header",
+                (
+                    el::<_, CatalogState, ()>("h2", "Settings").attr("class", "catalog-pane-title"),
+                    el::<_, CatalogState, ()>("span", "Application")
+                        .attr("class", "catalog-pane-context"),
+                ),
+            )
+            .attr("class", "catalog-pane-header"),
+            el::<_, CatalogState, ()>(
+                "div",
+                (
+                    catalog_setting_specs()
+                        .iter()
+                        .map(|spec| {
+                            Box::new(setting_row(
+                                spec,
+                                spec.label.clone(),
+                                |state: &mut CatalogState, value: SettingValue| {
+                                    state.settings_saves += 1;
+                                    state.settings_last = format!("{value:?}");
+                                },
+                            )) as CatalogView
+                        })
+                        .collect::<Vec<_>>(),
+                    el::<_, CatalogState, ()>(
+                        "output",
+                        format!("{} saved changes", state.settings_saves),
+                    )
+                    .attr("id", "catalog-settings-status")
+                    .attr("role", "status"),
+                ),
+            )
+            .attr("class", "catalog-settings-form"),
+            el::<_, CatalogState, ()>("div", "No settings are available for this source.")
+                .attr("class", "catalog-pane-state catalog-pane-empty")
+                .attr("data-pane-state", "empty")
+                .attr("role", "status"),
+            el::<_, CatalogState, ()>("div", "The settings provider could not be reached.")
+                .attr("class", "catalog-pane-state catalog-pane-error")
+                .attr("data-pane-state", "error")
+                .attr("role", "alert"),
+            el::<_, CatalogState, ()>("div", "Settings are unavailable in this space.")
+                .attr("class", "catalog-pane-state catalog-pane-unavailable")
+                .attr("data-pane-state", "unavailable")
+                .attr("aria-disabled", "true"),
+            el(
+                "div",
+                frisket(&pane_tree, |state: &mut CatalogState, event| {
+                    state.pane_events.push(event);
+                }),
+            )
+            .attr("id", "catalog-frisket")
+            .attr("class", "catalog-frisket"),
+        ),
+    )
+    .attr("id", "pane-settings-section")
+    .attr("class", "catalog-section catalog-pane-shell");
 
     let selected_tab = state.tabs.selected.first().copied().unwrap_or(0);
     let mut overview_panel = el::<_, CatalogState, ()>("div", "Overview of the selected node")
@@ -1034,11 +1304,13 @@ fn catalog(state: &CatalogState) -> CatalogView {
                 )
                 .attr("class", "catalog-intro"),
                 controls,
+                settings_form,
                 selection,
                 reorder_section,
                 disclosure_section,
                 editors,
                 navigation,
+                counter_section,
                 data,
                 states,
                 leaves,
@@ -1205,17 +1477,28 @@ fn assert_initial_surface(dom: &ScriptedDom, root: NodeId, width: CatalogWidth) 
     );
     for section in [
         "controls-section",
+        "pane-settings-section",
         "selection-section",
         "reorder-section",
         "disclosure-section",
         "editors-section",
         "navigation-section",
+        "component-section",
         "data-section",
         "states-section",
         "leaves-section",
     ] {
         find_id(dom, root, section);
     }
+
+    let counter = find_where(dom, root, &|dom, node| {
+        attr(dom, node, COMPONENT_PROBE_ATTR) == Some("catalog-counter")
+    })
+    .expect("component-boundary counter carries its caller-owned probe id");
+    assert_attr(dom, counter, "role", "group");
+    assert_attr(dom, counter, "aria-label", "Count by 1");
+    assert_attr(dom, counter, "data-count", "0");
+
     assert_attr(dom, root, "data-specimen-width", width.name());
     assert!(has_class(
         dom,
@@ -1225,6 +1508,50 @@ fn assert_initial_surface(dom: &ScriptedDom, root: NodeId, width: CatalogWidth) 
             CatalogWidth::Regular => "catalog-width-regular",
         }
     ));
+
+    let pane_shell = find_id(dom, root, "pane-settings-section");
+    let pane_title = find_class(dom, pane_shell, "catalog-pane-title");
+    assert_eq!(node_text(dom, pane_title), "Settings");
+    let pane_status = find_id(dom, pane_shell, "catalog-settings-status");
+    assert_attr(dom, pane_status, "role", "status");
+    let settings_radio = find_where(dom, pane_shell, &|dom, node| {
+        attr(dom, node, "role") == Some("radiogroup")
+            && attr(dom, node, "aria-label") == Some("Shellbar edge")
+    })
+    .expect("settings choice control");
+    assert_attr(dom, settings_radio, "aria-label", "Shellbar edge");
+    let mut setting_rows = Vec::new();
+    collect_class(dom, pane_shell, "setting-row", &mut setting_rows);
+    assert_eq!(setting_rows.len(), 4, "one setting_row per provider spec");
+    let mut setting_applies = Vec::new();
+    collect_class(dom, pane_shell, "setting-apply", &mut setting_applies);
+    assert_eq!(setting_applies.len(), 4, "every supported row has an apply");
+    for state in ["empty", "error", "unavailable"] {
+        find_where(dom, pane_shell, &|dom, node| {
+            attr(dom, node, "data-pane-state") == Some(state)
+        })
+        .unwrap_or_else(|| panic!("pane state specimen {state} is missing"));
+    }
+    assert_attr(
+        dom,
+        find_where(dom, pane_shell, &|dom, node| {
+            attr(dom, node, "data-pane-state") == Some("error")
+        })
+        .expect("pane error specimen"),
+        "role",
+        "alert",
+    );
+    let pane_frame = find_id(dom, pane_shell, "catalog-frisket");
+    let mut pane_tabs = Vec::new();
+    collect_class(dom, pane_frame, "frisket-tab", &mut pane_tabs);
+    assert_eq!(pane_tabs.len(), 3, "the pane frame has every tab");
+    let mut pane_dividers = Vec::new();
+    collect_class(dom, pane_frame, "frisket-divider", &mut pane_dividers);
+    assert_eq!(
+        pane_dividers.len(),
+        1,
+        "the pane frame has one split divider"
+    );
 
     let checkbox = find_id(dom, root, "catalog-checkbox");
     assert_attr(dom, checkbox, "role", "checkbox");
@@ -1493,7 +1820,8 @@ fn run_interactions(runner: &mut CatalogRunner) {
     runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::ArrowRight)));
     assert_eq!(runner.state().radio.selected, 1);
 
-    let selected_tab = find_where(&runner.dom().borrow(), root, &|dom, node| {
+    let selection_section = find_id(&runner.dom().borrow(), root, "selection-section");
+    let selected_tab = find_where(&runner.dom().borrow(), selection_section, &|dom, node| {
         attr(dom, node, "role") == Some("tab") && attr(dom, node, "aria-selected") == Some("true")
     })
     .expect("selected tab");
@@ -1689,6 +2017,46 @@ fn run_interactions(runner: &mut CatalogRunner) {
     runner.dispatch_click(apply, PointerClick::at((4.0, 4.0)));
     assert_eq!(runner.state().presses, 1);
 
+    // Settings rows: edit the component-local draft, then apply. Only the
+    // applied SettingValue crosses into catalog state.
+    let visible_row = find_where(&runner.dom().borrow(), root, &|dom, node| {
+        attr(dom, node, "data-setting") == Some("chrome.shellbar.visible")
+            && has_class(dom, node, "setting-row")
+    })
+    .expect("shellbar toggle row");
+    let visible_toggle = find_class(&runner.dom().borrow(), visible_row, "toggle");
+    runner.dispatch_click(visible_toggle, PointerClick::at((4.0, 4.0)));
+    assert_eq!(
+        runner.state().settings_saves,
+        0,
+        "editing the draft applies nothing"
+    );
+    let visible_apply = find_class(&runner.dom().borrow(), visible_row, "setting-apply");
+    runner.dispatch_click(visible_apply, PointerClick::at((4.0, 4.0)));
+    assert_eq!(runner.state().settings_saves, 1);
+    assert_eq!(
+        runner.state().settings_last,
+        "Boolean(false)",
+        "the applied value reflects the edited draft, not the committed spec"
+    );
+    assert_eq!(
+        node_text(
+            &runner.dom().borrow(),
+            find_id(&runner.dom().borrow(), root, "catalog-settings-status")
+        ),
+        "1 saved changes"
+    );
+    let pane_preview = find_where(&runner.dom().borrow(), root, &|dom, node| {
+        attr(dom, node, "aria-label") == Some("Preview")
+    })
+    .expect("pane preview tab");
+    runner.dispatch_click(pane_preview, PointerClick::at((4.0, 4.0)));
+    assert_eq!(
+        runner.state().pane_events,
+        [TileEvent::Activated(TileId(2))],
+        "frisket reports, while the caller remains the tree owner"
+    );
+
     let disabled_command = find_where(&runner.dom().borrow(), root, &|dom, node| {
         attr(dom, node, "aria-description") == Some("Connect a writable graph first")
     })
@@ -1707,6 +2075,76 @@ fn run_interactions(runner: &mut CatalogRunner) {
     runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::End)));
     runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::Enter)));
     assert_eq!(runner.state().last_picker, "activate:3");
+
+    // Component boundary: the counter's count is component-owned local state.
+    let find_counter = |runner: &CatalogRunner| {
+        find_where(&runner.dom().borrow(), root, &|dom, node| {
+            attr(dom, node, COMPONENT_PROBE_ATTR) == Some("catalog-counter")
+        })
+    };
+    let up = find_id(&runner.dom().borrow(), root, "catalog-counter-up");
+    runner.dispatch_click(up, PointerClick::at((4.0, 4.0)));
+    runner.dispatch_click(up, PointerClick::at((4.0, 4.0)));
+    let counter = find_counter(runner).expect("mounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("2"),
+        "clicks mutate component-owned state"
+    );
+
+    // A parent rebuild that changes the controlled props must not reset the
+    // component-owned count.
+    let step = find_id(&runner.dom().borrow(), root, "catalog-counter-step");
+    runner.dispatch_click(step, PointerClick::at((4.0, 4.0)));
+    assert_eq!(runner.state().counter_step, 5);
+    let counter = find_counter(runner).expect("mounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "aria-label"),
+        Some("Count by 5"),
+        "controlled label reconciles from parent props"
+    );
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("2"),
+        "parent rebuild must not reset component-owned state"
+    );
+
+    let up = find_id(&runner.dom().borrow(), root, "catalog-counter-up");
+    runner.dispatch_click(up, PointerClick::at((4.0, 4.0)));
+    let counter = find_counter(runner).expect("mounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("7"),
+        "the reconciled step applies to the surviving count"
+    );
+
+    // The typed event is the only value that crosses into catalog state.
+    let report = find_id(&runner.dom().borrow(), root, "catalog-counter-report");
+    runner.dispatch_click(report, PointerClick::at((4.0, 4.0)));
+    assert_eq!(runner.state().counter_reports, [7]);
+    let reports = find_id(&runner.dom().borrow(), root, "catalog-counter-reports");
+    assert_eq!(node_text(&runner.dom().borrow(), reports), "1 reports");
+
+    // Teardown drops the local state; remounting starts from init again.
+    let mount = find_id(&runner.dom().borrow(), root, "catalog-counter-mount");
+    runner.dispatch_click(mount, PointerClick::at((4.0, 4.0)));
+    assert!(
+        find_counter(runner).is_none(),
+        "unmounting removes the component subtree"
+    );
+    let mount = find_id(&runner.dom().borrow(), root, "catalog-counter-mount");
+    runner.dispatch_click(mount, PointerClick::at((4.0, 4.0)));
+    let counter = find_counter(runner).expect("remounted counter");
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "data-count"),
+        Some("0"),
+        "teardown dropped the local count; init ran again"
+    );
+    assert_eq!(
+        attr(&runner.dom().borrow(), counter, "aria-label"),
+        Some("Count by 5"),
+        "parent-owned step survives in catalog state across the remount"
+    );
 
     let command_menu = find_id(&runner.dom().borrow(), root, "catalog-command-menu");
     assert_eq!(

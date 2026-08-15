@@ -70,6 +70,11 @@ fn kind(cmd: &PaintCmd) -> &'static str {
         PaintCmd::PushShadow(_) => "PushShadow",
         PaintCmd::PopAllShadows => "PopAllShadows",
         PaintCmd::HitTest(_) => "HitTest",
+        // In-process placement marker (netrender E4); the corpus must not
+        // carry it (an envelope referencing a renderer registry is not
+        // self-contained), so seeing it in a capture is a bug worth a
+        // loud name in the histogram.
+        PaintCmd::PlaceRetainedFragment(_) => "PlaceRetainedFragment(NOT-SELF-CONTAINED)",
     }
 }
 

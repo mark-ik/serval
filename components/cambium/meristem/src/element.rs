@@ -85,8 +85,6 @@ where
 ///
 /// Views with this element type can be included in any [`ViewSequence`](crate::ViewSequence) (with the
 /// correct `State` and `Action` types), as they do not need to actually add an element to the sequence.
-///
-/// These views can also as the `alongside_view` in [`fork`](crate::fork).
 #[derive(Debug)]
 pub struct NoElement;
 

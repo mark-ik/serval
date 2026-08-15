@@ -12,16 +12,15 @@
 use std::time::Duration;
 
 use inker::{
-    Cookie, CursorShape, FocusReason, KeyboardEvent, MouseEvent, NavigationEvent, PointerEvent,
-    SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings, WebMessage, WebSurface,
-    WebSurfaceCapabilities, WebSurfaceEvent,
+    Cookie, CursorShape, FocusReason, KeyboardEvent, MouseEvent, PointerEvent, SurfaceError,
+    SurfaceFrame, SurfaceProducer, SurfaceSettings, WebSurface, WebSurfaceCapabilities,
+    WebSurfaceEvent,
 };
 use scrying::WebSurfaceProducer;
 
 use crate::translation::{
     map_capabilities, map_cookie, map_cursor_shape, map_error, map_focus_reason, map_frame,
-    map_keyboard, map_mouse, map_navigation_event, map_pointer, map_settings, map_web_event,
-    wrap_web_message,
+    map_keyboard, map_mouse, map_pointer, map_settings, map_web_event, wrap_web_message,
 };
 
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -89,7 +88,7 @@ impl SurfaceProducer for ScryingProducer {
 
     fn send_pointer_input(&mut self, ev: PointerEvent) -> Result<(), SurfaceError> {
         self.inner
-            .send_pointer_input(map_pointer(ev))
+            .send_pointer_input(map_pointer(ev)?)
             .map_err(map_error)
     }
 
@@ -181,15 +180,5 @@ impl WebSurface for ScryingProducer {
             .poll_web_message()
             .map(wrap_web_message)
             .map(WebSurfaceEvent::WebMessage)
-    }
-
-    fn poll_navigation_event(&mut self) -> Option<NavigationEvent> {
-        self.inner
-            .poll_navigation_event()
-            .and_then(map_navigation_event)
-    }
-
-    fn poll_web_message(&mut self) -> Option<WebMessage> {
-        self.inner.poll_web_message().map(wrap_web_message)
     }
 }

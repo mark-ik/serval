@@ -23,11 +23,22 @@ use crate::input::to_visual_caret;
 use crate::meristem_bounds::RootView;
 use crate::{AppCtx, Host};
 
-struct SpriggingSource<'a>(&'a sprigging::RenderedLeaves);
+struct SpriggingSource<'a> {
+    rendered: &'a sprigging::RenderedLeaves,
+    /// Leaf key → (FragmentId, epoch), synced by `sync_leaf_fragments`
+    /// immediately before every emit, so an entry here is current by
+    /// construction. Empty in headless runs (no surface, no registry),
+    /// which keeps the `Harness` on the pixel-identical inline path.
+    fragments: &'a std::collections::HashMap<u64, (u64, u64)>,
+}
 
 impl LeafPaintSource for SpriggingSource<'_> {
     fn leaf_commands(&self, key: u64) -> Option<&[paint_list_api::PaintCmd]> {
-        self.0.get(key)
+        self.rendered.get(key)
+    }
+
+    fn leaf_fragment(&self, key: u64) -> Option<u64> {
+        self.fragments.get(&key).map(|(id, _epoch)| *id)
     }
 }
 
@@ -59,6 +70,7 @@ where
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
                 close: &mut self.s.close_requested,
+                wake: &self.wake,
                 capture: &mut self.s.pending_capture,
                 pointer: &mut self.s.pending_pointer,
                 window_commands: &commands,
@@ -101,7 +113,7 @@ where
                 if !muts.is_empty() {
                     let _ = layout.apply(&*dom_ref, &sheets, &muts);
                 }
-            }
+            },
             _ => {
                 let mut layout = IncrementalLayout::new(&*dom_ref, &sheets, lw, lh);
                 // Carry BOTH scroll planes across rebuilds: element scroll and
@@ -113,7 +125,7 @@ where
                 }
                 self.s.layout = Some(layout);
                 self.s.layout_size = (lw, lh);
-            }
+            },
         }
         let layout = self.s.layout.as_ref().expect("layout just ensured");
         let anim_active = layout.has_active_animations();
@@ -127,6 +139,76 @@ where
             &mut self.s.rendered,
         );
         anim_active
+    }
+
+    /// Netrender roadmap E4 — reconcile the renderer's retained-fragment
+    /// registry with this frame's rendered leaves. Runs each redraw after
+    /// `relayout` (which refreshed `rendered`) and before `emit_scene`, so the
+    /// map the emitter consults is current by construction.
+    ///
+    /// Only Path-A splices free of per-frame state become fragments: a splice
+    /// carrying `DrawExternalTexture` or `DrawShadow` keeps the inline path,
+    /// because composite textures and blurred shadow masks are rebuilt per
+    /// frame by the host painter and cannot be retained in a lowering.
+    fn sync_leaf_fragments(&mut self) {
+        use paint_list_api::PaintCmd;
+
+        let Some(surface) = self.s.surface.as_ref() else {
+            // No surface means no renderer, and any previously registered
+            // fragments died with it. Clear so a resumed surface re-registers
+            // from scratch instead of placing dangling ids.
+            self.s.leaf_fragments.clear();
+            return;
+        };
+        let renderer = surface.core().renderer();
+
+        let mut seen: Vec<u64> = Vec::new();
+        for (key, epoch, splice) in self.s.rendered.path_a_entries() {
+            let fragmentable = !splice.iter().any(|cmd| {
+                matches!(
+                    cmd,
+                    PaintCmd::DrawExternalTexture(_) | PaintCmd::DrawShadow(_)
+                )
+            });
+            if !fragmentable {
+                if let Some((id, _)) = self.s.leaf_fragments.remove(&key) {
+                    let _ = renderer.remove_fragment(id);
+                }
+                continue;
+            }
+            seen.push(key);
+            match self.s.leaf_fragments.get(&key) {
+                Some((_, e)) if *e == epoch => {},
+                Some(&(id, _)) => {
+                    let fragment =
+                        paint_list_render::translate_paint_cmds_to_fragment(splice, &[], &[]);
+                    if renderer.update_fragment(id, fragment) == Some(true) {
+                        self.s.leaf_fragments.insert(key, (id, epoch));
+                    }
+                },
+                None => {
+                    let fragment =
+                        paint_list_render::translate_paint_cmds_to_fragment(splice, &[], &[]);
+                    if let Some(id) = renderer.register_fragment(fragment) {
+                        self.s.leaf_fragments.insert(key, (id, epoch));
+                    }
+                },
+            }
+        }
+        // Sweep leaves that no longer render (removed from the registry or
+        // not laid out): their retained lowerings go with them.
+        let stale: Vec<u64> = self
+            .s
+            .leaf_fragments
+            .keys()
+            .copied()
+            .filter(|k| !seen.contains(k))
+            .collect();
+        for key in stale {
+            if let Some((id, _)) = self.s.leaf_fragments.remove(&key) {
+                let _ = renderer.remove_fragment(id);
+            }
+        }
     }
 
     /// The focused text field's paint inputs, as the application maps them.
@@ -164,10 +246,7 @@ where
         };
         window.set_ime_cursor_area(
             winit::dpi::LogicalPosition::new(rect.x as f64, rect.y as f64),
-            winit::dpi::LogicalSize::new(
-                rect.width.max(2.0) as f64,
-                rect.height.max(1.0) as f64,
-            ),
+            winit::dpi::LogicalSize::new(rect.width.max(2.0) as f64, rect.height.max(1.0) as f64),
         );
     }
 
@@ -179,7 +258,10 @@ where
         let layout = self.s.layout.as_ref()?;
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        let source = SpriggingSource(&self.s.rendered);
+        let source = SpriggingSource {
+            rendered: &self.s.rendered,
+            fragments: &self.s.leaf_fragments,
+        };
         let mut list = layout.emit_paint_list_with_leaves(
             &*dom_ref,
             &ScrollOffsets::default(),
@@ -257,6 +339,7 @@ where
         let (lw, lh) = (pw as f32 / scale, ph as f32 / scale);
 
         let anim_active = self.relayout(lw, lh);
+        self.sync_leaf_fragments();
         self.sync_ime_area();
         let Some(scene) = self.emit_scene(lw, lh) else {
             return;
@@ -327,7 +410,13 @@ where
             ) else {
                 return;
             };
-            a11y.sync(window, &dom_ref, layout, &mut self.s.leaves, self.s.last_focus)
+            a11y.sync(
+                window,
+                &dom_ref,
+                layout,
+                &mut self.s.leaves,
+                self.s.last_focus,
+            )
         };
         self.apply_a11y_requests(&requests);
     }
@@ -347,7 +436,7 @@ where
                     // No cursor is involved, so the local point is genuinely the
                     // element's own origin rather than a hit position.
                     runner.dispatch_click(request.node, PointerClick::at((0.0, 0.0)));
-                }
+                },
                 A11yAction::Focus => runner.set_focus(Some(request.node)),
             }
         }
@@ -412,10 +501,16 @@ where
             return;
         };
         if let Some(old) = old {
-            runner.dispatch_hover(old, HoverEvent::new(HoverPhase::Leave, (0.0, 0.0), (0.0, 0.0)));
+            runner.dispatch_hover(
+                old,
+                HoverEvent::new(HoverPhase::Leave, (0.0, 0.0), (0.0, 0.0)),
+            );
         }
         if let Some(new) = hit {
-            runner.dispatch_hover(new, HoverEvent::new(HoverPhase::Enter, (0.0, 0.0), (0.0, 0.0)));
+            runner.dispatch_hover(
+                new,
+                HoverEvent::new(HoverPhase::Enter, (0.0, 0.0), (0.0, 0.0)),
+            );
         }
         self.after_dispatch();
     }

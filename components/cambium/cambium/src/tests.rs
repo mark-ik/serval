@@ -319,8 +319,7 @@ fn message_to_unknown_path_is_handled() {
     let view = "hello";
     let (mut element, mut state) = View::<(), (), GenetCtx>::build(&view, &mut ctx, &mut ());
     let mut node = element.node;
-    let env = meristem::Environment::new();
-    let mut msg = MessageCtx::new(env, Vec::new(), meristem::DynMessage::new(()));
+    let mut msg = MessageCtx::new(Vec::new(), meristem::DynMessage::new(()));
     let mut_ref = crate::GenetElementMut {
         node: &mut node,
         dom: dom.clone(),

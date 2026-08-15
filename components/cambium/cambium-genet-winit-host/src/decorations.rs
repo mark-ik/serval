@@ -67,6 +67,8 @@ impl AppRegion {
 /// A window verb an application asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowCommand {
+    /// Reveal and redraw a root window that a close policy hid.
+    Show,
     /// Minimize to the taskbar/dock.
     Minimize,
     /// Maximize, or restore if already maximized.
@@ -77,7 +79,8 @@ pub enum WindowCommand {
     Drag,
     /// Raise the platform's own window menu at the cursor.
     ShowSystemMenu,
-    /// Close the window and end the application.
+    /// Ask the application to close. Its [`CloseDisposition`](crate::CloseDisposition)
+    /// decides whether this exits, hides, or keeps the window visible.
     Close,
 }
 
@@ -106,6 +109,11 @@ impl WindowCommands {
         self.0.borrow_mut().push(command);
     }
 
+    /// Reveal a window previously hidden by a close policy.
+    pub fn show(&self) {
+        self.push(WindowCommand::Show);
+    }
+
     /// Minimize the window.
     pub fn minimize(&self) {
         self.push(WindowCommand::Minimize);
@@ -126,7 +134,7 @@ impl WindowCommands {
         self.push(WindowCommand::ShowSystemMenu);
     }
 
-    /// Close the window.
+    /// Ask the application's close policy to close the window.
     pub fn close(&self) {
         self.push(WindowCommand::Close);
     }
@@ -144,7 +152,9 @@ impl WindowCommands {
 
 impl std::fmt::Debug for WindowCommands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("WindowCommands").field(&*self.0.borrow()).finish()
+        f.debug_tuple("WindowCommands")
+            .field(&*self.0.borrow())
+            .finish()
     }
 }
 
@@ -256,14 +266,12 @@ where
     /// What the window frame makes of the point `(x, y)` in logical
     /// coordinates.
     pub(crate) fn app_region_at(&self, x: f32, y: f32) -> AppRegion {
-        let (Some(runner), Some(layout)) = (self.s.runner.as_ref(), self.s.layout.as_ref())
-        else {
+        let (Some(runner), Some(layout)) = (self.s.runner.as_ref(), self.s.layout.as_ref()) else {
             return AppRegion::NoDrag;
         };
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        let Some(node) =
-            layout.hit_test(&*dom_ref, x, y, &genet_layout::ScrollOffsets::default())
+        let Some(node) = layout.hit_test(&*dom_ref, x, y, &genet_layout::ScrollOffsets::default())
         else {
             return AppRegion::NoDrag;
         };
@@ -316,16 +324,26 @@ where
     /// Run one window verb against the real window.
     pub(crate) fn perform(&mut self, command: WindowCommand) {
         self.s.performed.push(command);
+        if matches!(command, WindowCommand::Close) {
+            self.request_close(crate::CloseRequest::Command);
+            return;
+        }
         let Some(window) = self.s.window.as_ref() else {
             // Windowless (the `Harness`). Verbs are still drained so a test
             // can assert an application asked for one; there is nothing to
             // act on.
-            if matches!(command, WindowCommand::Close) {
-                self.s.close_requested = true;
+            if matches!(command, WindowCommand::Show) {
+                self.s.hidden = false;
             }
             return;
         };
         match command {
+            WindowCommand::Show => {
+                window.set_visible(true);
+                window.set_minimized(false);
+                window.request_redraw();
+                self.s.hidden = false;
+            },
             WindowCommand::Minimize => window.set_minimized(true),
             WindowCommand::ToggleMaximize => window.set_maximized(!window.is_maximized()),
             // Both of these hand control to the platform for the duration of
@@ -334,14 +352,14 @@ where
             // inline rather than queueing.
             WindowCommand::Drag => {
                 let _ = window.drag_window();
-            }
+            },
             WindowCommand::ShowSystemMenu => {
                 let (x, y) = self.s.cursor;
                 window.show_window_menu(winit::dpi::Position::Logical(
                     winit::dpi::LogicalPosition::new(x as f64, y as f64),
                 ));
-            }
-            WindowCommand::Close => self.s.close_requested = true,
+            },
+            WindowCommand::Close => unreachable!("close returned above"),
         }
     }
 

@@ -11,12 +11,9 @@
 use meristem::*;
 
 #[derive(Default)]
-pub(super) struct TestCtx(Vec<ViewId>, Environment);
+pub(super) struct TestCtx(Vec<ViewId>);
 
 impl ViewPathTracker for TestCtx {
-    fn environment(&mut self) -> &mut Environment {
-        &mut self.1
-    }
     fn push_id(&mut self, id: ViewId) {
         self.0.push(id);
     }
@@ -43,9 +40,8 @@ impl TestCtx {
         message: DynMessage,
         f: impl FnOnce(&mut MessageCtx),
     ) {
-        let mut ctx = MessageCtx::new(std::mem::take(&mut self.1), target_id_path, message);
+        let mut ctx = MessageCtx::new(target_id_path, message);
         f(&mut ctx);
-        self.1 = ctx.finish().0;
     }
 }
 

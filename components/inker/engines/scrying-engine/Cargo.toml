@@ -21,3 +21,4 @@ inker.workspace = true
 scrying = { git = "https://github.com/merely-made/wgpu-scry.git", branch = "main" }
 dpi.workspace = true
 tracing.workspace = true
+wgpu.workspace = true

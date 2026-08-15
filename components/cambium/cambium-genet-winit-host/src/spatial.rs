@@ -158,7 +158,9 @@ where
                 .min_by(|a, b| {
                     let (ax, ay) = a.1.centre();
                     let (bx, by) = b.1.centre();
-                    (ay, ax).partial_cmp(&(by, bx)).unwrap_or(std::cmp::Ordering::Equal)
+                    (ay, ax)
+                        .partial_cmp(&(by, bx))
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(node, _)| *node),
         };
@@ -193,7 +195,8 @@ mod tests {
     fn alignment_beats_raw_distance() {
         let from = b(0.0, 0.0, 100.0, 40.0);
         let below = score(from, b(0.0, 60.0, 100.0, 40.0), Direction::Down).expect("in direction");
-        let aside = score(from, b(300.0, 45.0, 100.0, 40.0), Direction::Down).expect("in direction");
+        let aside =
+            score(from, b(300.0, 45.0, 100.0, 40.0), Direction::Down).expect("in direction");
         assert!(
             below < aside,
             "aligned {below} must beat off-to-the-side {aside}",
