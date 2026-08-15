@@ -104,6 +104,9 @@ impl WgpuRenderingContext {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
+            // wgpu 30 made surface color space explicit; `Auto` keeps the
+            // pre-30 platform-chosen behavior.
+            color_space: wgpu::SurfaceColorSpace::Auto,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: if non_srgb_format != preferred_format {
                 vec![non_srgb_format]
@@ -239,7 +242,8 @@ impl RenderingContextCore for WgpuRenderingContext {
     fn present(&self) {
         if let Some(frame) = self.current_frame.borrow_mut().take() {
             self.snapshot_current_frame(&frame);
-            frame.present();
+            // wgpu 30 moved presentation from SurfaceTexture to Queue.
+            self.queue.present(frame);
         }
     }
 

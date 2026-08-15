@@ -111,6 +111,9 @@ impl RenderCore {
             width: width.max(1),
             height: height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
+            // wgpu 30 made surface color space explicit. `Auto` keeps the
+            // pre-30 behavior of letting the platform pick.
+            color_space: wgpu::SurfaceColorSpace::Auto,
             desired_maximum_frame_latency: 2,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],

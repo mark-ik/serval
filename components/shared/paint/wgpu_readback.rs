@@ -117,7 +117,7 @@ pub fn read_texture_to_image(
     }
 
     let image = {
-        let mapped = buffer_slice.get_mapped_range();
+        let mapped = buffer_slice.get_mapped_range().ok()?;
         let row_bytes = (width * 4) as usize;
         let mut pixels = vec![0; row_bytes * height as usize];
         for row in 0..height as usize {

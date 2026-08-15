@@ -10,6 +10,9 @@ pub(super) fn make_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,
         compatible_surface: None,
+        // Test device: report the adapter's real limits, not wgpu 30's
+        // privacy buckets.
+        apply_limit_buckets: false,
     }))
     .expect("wgpu adapter");
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

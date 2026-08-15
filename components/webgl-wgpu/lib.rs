@@ -312,6 +312,9 @@ mod tests {
             power_preference: wgpu::PowerPreference::LowPower,
             force_fallback_adapter: false,
             compatible_surface: None,
+            // Test device: report the adapter's real limits, not wgpu 30's
+            // privacy buckets.
+            apply_limit_buckets: false,
         }))
         .expect("wgpu adapter");
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -378,7 +381,7 @@ mod tests {
             .expect("device poll");
         receiver.recv().expect("map result").expect("map buffer");
 
-        let mapped = slice.get_mapped_range();
+        let mapped = slice.get_mapped_range().expect("map range");
         let mut pixels = vec![0; (row_bytes * height) as usize];
         for y in 0..height as usize {
             let src = y * padded_row_bytes as usize;

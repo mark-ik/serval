@@ -49,7 +49,7 @@ netrender_device = { git = "https://github.com/merely-made/netrender.git", branc
 paint_list_api = { git = "https://github.com/merely-made/netrender.git", branch = "main" }
 paint_list_render = { git = "https://github.com/merely-made/netrender.git", branch = "main" }
 
-wgpu = { version = "29", default-features = false, features = ["std", "wgsl", "webgpu"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "webgpu"] }
 
 # web glue. wasm-bindgen pinned exactly to the installed CLI version.
 wasm-bindgen = "=0.2.126"
@@ -79,3 +79,5 @@ stylo_taffy = { path = "../../support/patches/stylo_taffy" }
 taffy = { path = "../../support/patches/taffy" }
 # ahash runtime-rng/getrandom-0.3 drop for the wasm graph.
 sonic-rs = { path = "../../support/patches/sonic-rs-0.5.8" }
+# netrender pulls vello, and upstream vello 0.10 still requires wgpu 29.
+vello = { git = "https://github.com/mark-ik/vello.git", branch = "mark-ik/wgpu-30" }

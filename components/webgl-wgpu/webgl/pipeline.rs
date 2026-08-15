@@ -71,13 +71,19 @@ pub(super) fn build_render_pipeline(
             }]
         })
         .collect();
-    let vertex_buffer_layouts: Vec<wgpu::VertexBufferLayout> = attribute_descriptors
+    // wgpu 30 allows gaps in `VertexState::buffers` (an unbound slot is
+    // `None`), so the element type is `Option<VertexBufferLayout>`. Every
+    // slot this builds is occupied, so each is wrapped in `Some`; the
+    // slot-to-index correspondence is unchanged.
+    let vertex_buffer_layouts: Vec<Option<wgpu::VertexBufferLayout>> = attribute_descriptors
         .iter()
         .zip(pipeline_key.attribute_layouts.iter())
-        .map(|(attrs, layout)| wgpu::VertexBufferLayout {
-            array_stride: layout.stride,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: attrs,
+        .map(|(attrs, layout)| {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: layout.stride,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: attrs,
+            })
         })
         .collect();
 
@@ -223,7 +229,7 @@ pub(super) fn build_group_zero_bind_group(
         });
         buffer
             .slice(..)
-            .get_mapped_range_mut()
+            .get_mapped_range_mut().expect("map range")
             .copy_from_slice(bytes);
         buffer.unmap();
         buffer

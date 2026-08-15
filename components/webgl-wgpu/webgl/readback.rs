@@ -97,7 +97,7 @@ fn read_texture_rect_rgba8(
         .expect("device poll");
     receiver.recv().expect("map result").expect("map buffer");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice.get_mapped_range().expect("map range");
     let mut pixels = vec![0; (row_bytes * height) as usize];
     for row in 0..height as usize {
         let src = row * padded_row_bytes as usize;
