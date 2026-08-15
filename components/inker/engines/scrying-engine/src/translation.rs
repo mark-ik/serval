@@ -22,8 +22,7 @@ use inker::{
     NavigationEvent as InkerNavEvent, PointerButtons, PointerEvent as InkerPointerEvent,
     PointerInputCapabilities, PointerPhase as InkerPointerPhase, PointerType as InkerPointerType,
     SameSite as InkerSameSite, ScriptCapabilities, SurfaceError, SurfaceFrame, SurfaceSettings,
-    SurfaceSyncHandle,
-    SurfaceTextureFormat, WebFeatureStatus, WebFrameTransportMode, WebMessage,
+    SurfaceSyncHandle, SurfaceTextureFormat, WebFeatureStatus, WebFrameTransportMode, WebMessage,
     WebSurfaceCapabilities as InkerWebSurfaceCapabilities, WebSurfaceEvent,
 };
 use scrying::{
@@ -224,11 +223,13 @@ pub fn map_pointer(ev: InkerPointerEvent) -> Result<ScryingPointerInput, Surface
         device,
         pointer_id,
         point: (ev.position.x as i32, ev.position.y as i32),
-        pressure: ev.pressure.unwrap_or(if ev.buttons != PointerButtons::NONE {
-            0.5
-        } else {
-            0.0
-        }),
+        pressure: ev
+            .pressure
+            .unwrap_or(if ev.buttons != PointerButtons::NONE {
+                0.5
+            } else {
+                0.0
+            }),
         tilt: (
             ev.tilt_x.unwrap_or(0.0).to_radians(),
             ev.tilt_y.unwrap_or(0.0).to_radians(),
@@ -477,10 +478,15 @@ pub fn map_web_event(ev: ScryingNavEvent) -> Option<WebSurfaceEvent> {
         ScryingNavEvent::ContentProcessTerminated => Some(WebSurfaceEvent::ProcessCrashed {
             reason: "web content process terminated".into(),
         }),
-        ScryingNavEvent::AuthChallenged { url, host, .. } => Some(WebSurfaceEvent::AuthRequested {
-            origin: if host.is_empty() { url } else { host },
-            realm: None,
-        }),
+        ScryingNavEvent::AuthChallenged { url, host, .. } => {
+            Some(WebSurfaceEvent::BackendDiagnostic {
+                severity: "info".into(),
+                message: format!(
+                    "authentication challenge handled by the system provider: {}",
+                    if host.is_empty() { url } else { host }
+                ),
+            })
+        },
         ScryingNavEvent::DownloadStarted {
             url,
             suggested_filename,

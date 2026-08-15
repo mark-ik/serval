@@ -1,7 +1,8 @@
 # Web platform host contract plan
 
 **Date:** 2026-08-14  
-**Status:** active; S0 and the truthful S1 contract landed, S2 is next  
+**Status:** active; S0 and S1 landed; S2 is implemented locally through the
+policy and Weld adapter boundary, with rendered prompts and headed proof open
 **Owners:** `inker` owns the engine-neutral contract; engines implement it;
 hosts apply graph, profile, policy, and presentation effects.
 
@@ -218,6 +219,45 @@ the Weld engine 2, and Welding 48.
 Done when grant, denial, dismissal, restart retention, private-profile
 isolation, and an unanswered-request timeout are tested without storing a
 credential in graph data.
+
+**Implemented locally 2026-08-15; the gate remains open at headed/UI proof.**
+`inker` now carries surface-scoped `UserAgentRequestId`s, typed Permissions API
+descriptors and states, explicit grant/deny/dismiss answers, and RFC 9110
+protection-space challenges. Credential answers deliberately implement neither
+serialization nor ordinary secret-bearing debug output. `WebSurface` has
+answer methods for both request families. The Weld adapter forwards those
+answers; Turnstone enables CEF's held permission and authentication callbacks,
+maps their backend ids and challenge fields, and calls CEF's grant/deny,
+credential, or cancel methods. Scry's informational system-handled auth event
+remains a diagnostic rather than pretending to be an answerable request.
+
+Turnstone owns a default-profile registry at
+`<data_root>/profiles/default/web-policy.json`, keyed by canonical origin plus
+permission descriptor. Private registries are isolated and memory-only.
+Credentials live in a process-memory provider keyed by protection space and
+never enter that JSON. Pending request events include the surface member and
+request id; public shell answer methods use the same correlation pair. The
+timeout is configurable with `TURNSTONE_WEB_REQUEST_TIMEOUT_MS` and dismisses
+permissions or cancels authentication without retaining a decision. Node
+facets receive only the `web.user-agent-policy` summary: descriptor/state and
+non-secret challenge metadata.
+
+Focused receipts:
+
+- `cargo test -p inker -p weld-engine --offline`: Inker 95 passed and
+  Weld-engine 2 passed.
+- `cargo test --lib web_policy --offline` in Turnstone: 6 passed, covering
+  grant, denial, dismissal, restart retention, private-profile isolation,
+  timeout, credential-provider reuse, and an assertion that the facet contains
+  neither username nor password.
+- `cargo check --lib --features weld --offline` in Turnstone passed against the
+  local Weld/Welding adapters.
+
+This is not yet a completed S2 claim. Turnstone publishes correlated pending
+events and answer methods, but does not render the anchored prompt UI. A headed
+CEF run has not yet proved page-observed grant, denial, dismissal, Basic-auth
+success/cancel, and timeout. Weld therefore reports permissions and
+authentication as `Partial`, not `Supported`.
 
 ### S3. Addressed downloads and representations
 

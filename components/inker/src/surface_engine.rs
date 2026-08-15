@@ -19,6 +19,128 @@ use serde::{Deserialize, Serialize};
 use crate::a11y::A11yCapability;
 use crate::routing::EngineRouteDecision;
 
+// ── User-agent requests ────────────────────────────────────────────────────
+
+/// Correlates one user-agent policy request with exactly one later answer.
+///
+/// The id is scoped to the [`WebSurface`] that emitted it. Hosts which drive
+/// several surfaces must retain the surface identity beside this value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct UserAgentRequestId(u64);
+
+impl UserAgentRequestId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// A Permissions API descriptor in engine-neutral web-platform terms.
+///
+/// Chromium-only values are not allowed to become shared enum variants. A
+/// producer which cannot project a request precisely uses `Other` and keeps
+/// the stable standard or implementation name it received.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PermissionDescriptor {
+    Camera,
+    Microphone,
+    Geolocation,
+    Notifications,
+    ClipboardRead,
+    Midi { sysex: bool },
+    PointerLock,
+    KeyboardLock,
+    IdleDetection,
+    LocalFonts,
+    StorageAccess,
+    ProtectedMediaIdentifier,
+    DisplayCapture { audio: bool, video: bool },
+    Other(String),
+}
+
+/// The three states exposed by the Permissions API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PermissionState {
+    Prompt,
+    Granted,
+    Denied,
+}
+
+/// One answer to a pending permission request.
+///
+/// `Dismiss` returns the request to `Prompt` and is deliberately distinct
+/// from a retained denial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionAnswer {
+    Grant,
+    Deny,
+    Dismiss,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionRequest {
+    pub id: UserAgentRequestId,
+    pub origin: String,
+    pub descriptors: Vec<PermissionDescriptor>,
+}
+
+/// RFC 9110 protection-space data. It identifies credential lookup without
+/// carrying a username or password.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct HttpProtectionSpace {
+    /// URL whose request provoked the challenge.
+    pub origin_url: String,
+    pub host: String,
+    pub port: u16,
+    pub realm: Option<String>,
+    /// Authentication scheme token, normalized to ASCII lowercase.
+    pub scheme: String,
+    pub is_proxy: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpAuthenticationChallenge {
+    pub id: UserAgentRequestId,
+    pub protection_space: HttpProtectionSpace,
+}
+
+/// A credential-provider result. Deliberately neither serializable nor
+/// printable: secrets may cross the answer call but cannot enter events,
+/// facets, traces, or persisted registries through a derive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HttpCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+impl fmt::Debug for HttpCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpCredentials")
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum HttpAuthenticationAnswer {
+    Credentials(HttpCredentials),
+    Cancel,
+}
+
+impl fmt::Debug for HttpAuthenticationAnswer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Credentials(_) => f.write_str("Credentials(<redacted>)"),
+            Self::Cancel => f.write_str("Cancel"),
+        }
+    }
+}
+
 // ── Errors ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -626,14 +748,8 @@ pub enum WebSurfaceEvent {
         source: Option<String>,
         line: Option<u32>,
     },
-    PermissionRequested {
-        kind: String,
-        origin: String,
-    },
-    AuthRequested {
-        origin: String,
-        realm: Option<String>,
-    },
+    PermissionRequested(PermissionRequest),
+    AuthenticationRequested(HttpAuthenticationChallenge),
     DownloadRequested {
         url: String,
         suggested_name: Option<String>,
@@ -799,6 +915,26 @@ pub trait WebSurface: SurfaceProducer {
         let _ = cookie;
         Err(SurfaceError::Unsupported(
             "cookie delete is not wired for this web surface".into(),
+        ))
+    }
+    /// Answer a held Permissions API request emitted on this surface.
+    fn answer_permission(
+        &mut self,
+        _id: UserAgentRequestId,
+        _answer: PermissionAnswer,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "permission answers are not wired for this web surface".into(),
+        ))
+    }
+    /// Answer or cancel a held RFC 9110 authentication challenge.
+    fn answer_http_authentication(
+        &mut self,
+        _id: UserAgentRequestId,
+        _answer: &HttpAuthenticationAnswer,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "authentication answers are not wired for this web surface".into(),
         ))
     }
     fn execute_script_with_result(&mut self, script: &str) -> Result<String, SurfaceError>;

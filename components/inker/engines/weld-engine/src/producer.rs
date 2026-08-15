@@ -5,10 +5,11 @@
 //! and [`WeldProducer`], the adapter satisfying `inker::SurfaceProducer`.
 
 use inker::{
-    Cookie, CursorShape, DragEvent, DragOperationSet, FocusReason, KeyboardEvent, MouseEvent,
-    NativeTextureHandle, NavigationEvent, PhysicalPosition, PointerEvent, SurfaceError,
-    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSyncHandle, SurfaceTextureFormat,
-    WebMessage, WebSurface, WebSurfaceCapabilities, WebSurfaceEvent,
+    Cookie, CursorShape, DragEvent, DragOperationSet, FocusReason, HttpAuthenticationAnswer,
+    KeyboardEvent, MouseEvent, NativeTextureHandle, NavigationEvent, PermissionAnswer,
+    PhysicalPosition, PointerEvent, SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings,
+    SurfaceSyncHandle, SurfaceTextureFormat, UserAgentRequestId, WebMessage, WebSurface,
+    WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// A frame produced by a [`WeldSurface`]: the shared GPU texture handle the host
@@ -115,6 +116,26 @@ pub trait WeldSurface {
     fn delete_cookie(&mut self, _cookie: &Cookie) -> Result<(), SurfaceError> {
         Err(SurfaceError::Unsupported(
             "weld-engine cookie delete is not wired yet".into(),
+        ))
+    }
+
+    fn answer_permission(
+        &mut self,
+        _id: UserAgentRequestId,
+        _answer: PermissionAnswer,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "weld-engine permission answers are not wired by this host".into(),
+        ))
+    }
+
+    fn answer_http_authentication(
+        &mut self,
+        _id: UserAgentRequestId,
+        _answer: &HttpAuthenticationAnswer,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "weld-engine authentication answers are not wired by this host".into(),
         ))
     }
 
@@ -255,6 +276,22 @@ impl WebSurface for WeldProducer {
 
     fn delete_cookie(&mut self, cookie: &Cookie) -> Result<(), SurfaceError> {
         self.inner.delete_cookie(cookie)
+    }
+
+    fn answer_permission(
+        &mut self,
+        id: UserAgentRequestId,
+        answer: PermissionAnswer,
+    ) -> Result<(), SurfaceError> {
+        self.inner.answer_permission(id, answer)
+    }
+
+    fn answer_http_authentication(
+        &mut self,
+        id: UserAgentRequestId,
+        answer: &HttpAuthenticationAnswer,
+    ) -> Result<(), SurfaceError> {
+        self.inner.answer_http_authentication(id, answer)
     }
 
     fn execute_script_with_result(&mut self, script: &str) -> Result<String, SurfaceError> {

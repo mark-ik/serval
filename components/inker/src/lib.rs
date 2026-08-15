@@ -75,13 +75,15 @@ pub use statements::{LinkStatement, link_statements};
 pub use surface_engine::{
     Cookie, CookieAttributeCapabilities, CookieCapabilities, CursorShape, DataTransfer,
     DataTransferItem, DragDropCapabilities, DragEvent, DragOperationSet, DragPhase,
-    EngineProfileBinding, FocusReason, FrameHandleOwnership, KeyboardEvent, KeyboardModifiers,
-    MouseButton, MouseEvent, MouseEventKind, NativeTextureHandle, NavigationEvent,
+    EngineProfileBinding, FocusReason, FrameHandleOwnership, HttpAuthenticationAnswer,
+    HttpAuthenticationChallenge, HttpCredentials, HttpProtectionSpace, KeyboardEvent,
+    KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, NativeTextureHandle,
+    NavigationEvent, PermissionAnswer, PermissionDescriptor, PermissionRequest, PermissionState,
     PhysicalPosition, PointerButtons, PointerEvent, PointerInputCapabilities, PointerPhase,
     PointerType, SameSite, ScriptCapabilities, SurfaceEngine, SurfaceEngineRegistry, SurfaceError,
     SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, SurfaceSyncHandle,
-    SurfaceTextureFormat, WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface,
-    WebSurfaceCapabilities, WebSurfaceEvent,
+    SurfaceTextureFormat, UserAgentRequestId, WebFeatureStatus, WebFrameTransportMode, WebMessage,
+    WebSurface, WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// Crate version.
