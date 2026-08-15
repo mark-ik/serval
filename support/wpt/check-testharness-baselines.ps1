@@ -36,6 +36,14 @@ $baselines = @(
         Expectations = "ports/genet-wpt/expectations/testharness/dom_abort_boa.json"
     },
     @{
+        # H4 governance receipt: only the file named in this opt-in baseline
+        # runs. New files discovered under dom/abort remain skipped until their
+        # expectations are added deliberately.
+        Subset = "dom/abort"
+        Engine = "boa"
+        Expectations = "ports/genet-wpt/expectations/testharness/h4_opt_in_dom_abort_boa.json"
+    },
+    @{
         Subset = "dom/nodes"
         Engine = "boa"
         Expectations = "ports/genet-wpt/expectations/testharness/dom_nodes_boa.json"

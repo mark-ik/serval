@@ -1,7 +1,7 @@
 # WPT harness exactness + throughput plan
 
 **Date:** 2026-06-24
-**Status:** in progress — H1 is wired into the normal runner path (manifest-backed discovery by default; legacy walk demoted to `--walk-discovery`), **H2a (Nova snapshot clone through the harness)**, H2b (cross-engine compare), **H3 (checked-in testharness expectations + local/CI guard)**, and **H5 (test262 runner + hang-safe full-corpus run)** landed. The remaining H2 question is no longer "can we wire snapshots?", but "is the Nova lane stable enough on broad release-mode corpora for the throughput win to matter?" H4 is partial: per-test reason metadata landed, but the full opt-in policy / per-subtest metadata layer remains open. Spun out of the grand audit (`2026-06-24_grand_audit.md` §2, levers 1/3/5); continues and supersedes the discovery/expectations portions of the WPT runner plan (`2026-05-26_wpt_runner_plan.md`).
+**Status:** in progress — H1 is wired into the normal runner path (manifest-backed discovery by default; legacy walk demoted to `--walk-discovery`), **H2a (Nova snapshot clone through the harness)**, H2b (cross-engine compare), **H3 (checked-in testharness expectations + local/CI guard)**, **H4 (opt-in governance + named subtest expectations)**, and **H5 (test262 runner + hang-safe full-corpus run)** landed. Spun out of the grand audit (`2026-06-24_grand_audit.md` §2, levers 1/3/5); continues and supersedes the discovery/expectations portions of the WPT runner plan (`2026-05-26_wpt_runner_plan.md`).
 **Thesis:** the binding constraint on genet's WPT scoreboard is the harness, not the engine. What runs and how much runs gates the value of every engine fix. This plan closes the three harness levers in dependency order: exactness (what runs), throughput (how much runs), then a tracked scoreboard + regression guard (so movement is real and stays).
 
 ## Why this and not engine work first
@@ -88,6 +88,34 @@ dashboard into a regression gate:
   `fetch-load-failed`, `panic`, `evaluation-threw`, `no-subtests`). This gives
   the harness an explicit policy vocabulary without yet adopting the full
   `include.ini` / `meta/*.ini` formal-web model.
+- **Governance layer completed (2026-08-15):** the existing version-1 JSON
+  format now carries an explicit top-level `policy`:
+  - `exact` remains the default and preserves every checked baseline's current
+    behavior: every discovered test needs an expectation, and missing, stale,
+    changed, or newly passing results are unexpected.
+  - `opt-in` treats the existing `tests` map as the include list. The runner
+    filters manifest discovery through that map before execution, so a new WPT
+    file stays skipped until it is deliberately added. Expected entries which
+    disappear from the selected corpus still fail as stale.
+  - A test record may now carry `subtests: [{name, status, reason?}]` alongside
+    the backward-compatible `subtests_passed` / `subtests_total` counts. The
+    checker compares named results even when the aggregate count is unchanged,
+    including duplicate names as an order-insensitive multiset. An opted-in
+    expected subtest non-pass must carry a non-empty, non-placeholder `reason`;
+    generated `TODO` text is a skeleton and is rejected until replaced with the
+    owning capability or issue. File-level `skip`, `error`, and `no-results`
+    cannot be opted in: their runner `reason` names an execution symptom rather
+    than a human policy justification, so the file must first reach reported
+    testharness results.
+  - `--expectation-policy exact|opt-in` controls files written by
+    `--write-expectations`. The checked
+    `h4_opt_in_dom_abort_boa.json` fixture selects one file from the broader
+    `dom/abort` discovery set and pins both of its named passing subtests. The
+    normal baseline script runs this receipt and requires `unexpected=0`.
+- **H4 governance done condition: met.** Green-by-default selection and named
+  expected-result changes are enforced by the same JSON checker and CI-facing
+  script as H3. Local deterministic micro-tests remain a consumer pattern for
+  subsystem plans; they do not require another expectation format.
 - **Local deterministic micro-tests below the WPT level.** Small `.html` tests
   reporting via testharness.js OR a plain `window.__formalWebTestResult` object
   (same shape testharnessreport produces), mounted so they reuse upstream
@@ -628,6 +656,11 @@ reliably land in `no-subtests`: a third of them throw instead.
 - 2026-06-30 — **H2a landed as an explicit Nova snapshot seam**: the direct derive-based structural-clone route was rejected, then replaced with `GcAgent::snapshot_clone`, Nova-side isolation tests, `ScriptEngineSnapshot`, `Runtime::snapshot_clone`, and a `NovaHarnessTemplate` in `genet-wpt` that reuses a post-`testharness.js` Nova heap per test.
 - 2026-06-30 — **First release-mode Nova throughput probe on the WPT lane**: `genet-wpt testharness dom --engine nova` still overflows the main-thread stack before a full aggregate, so the broad lane is not yet stable enough to cash in the snapshot-template win. The smaller checked slices do complete: `dom/abort` at exact coarse parity with Boa in 1.38s vs 1.17s, `html/webappapis/timers` at exact coarse parity in 1.48s vs 1.62s, and `dom/nodes` with the same coarse buckets as Boa in 4.44s vs 34.36s.
 - 2026-06-30 — **H4a reason metadata landed**: `testharness` expectations can now pin an optional per-test `reason` in addition to coarse status, and the runner emits explicit reasons for capability skips / early error classes. Rewrote the focused checked baselines (`dom_abort_boa.json`, `dom_nodes_boa.json`, `html_webappapis_timers_boa.json`) to exercise the format without re-basing the broad dirty-tree `dom_boa.json`.
+- 2026-08-15 — **H4 governance completed locally**: added `exact` / `opt-in`
+  JSON policy, tests-map selection before execution, named per-subtest statuses,
+  mandatory meaningful reasons for opted-in non-passes, and a checked
+  single-file `dom/abort` receipt. Legacy version-1 status/count files remain
+  readable and retain exact coverage.
 - 2026-06-30 — **First checked fetch/server-mode baseline landed locally**: release-mode `genet-wpt --features netfetch testharness fetch/api/basic --spawn-server --engine boa` completed in about 7.9 minutes with 8 all-pass / 8 with-failures / 2 errored / 20 no-results / 0 skipped, subtests 81/119 passed. Checked in `fetch_api_basic_boa.json` plus `support/wpt/check-testharness-fetch-baselines.ps1`. This remains a separate local guard, not default CI, because it depends on local host mapping and live server startup.
 - 2026-07-01 — **test262 `async` re-enabled** (genet `493454cdc5c`): the corpus-scale memory blow-up that forced the earlier revert was traced to two *non-async* Promise infinite-hangs spinning in shared threads, not async. Per-test worker-subprocess isolation bounds each async test to its own reaped process, so it cannot recur. Restores `run_262_async` (`$DONE` via a `print`→buffer shim + `run_event_loop` + the `AsyncTestComplete` sentinel) + `Runtime::value_to_string`. `built-ins/Promise/race` skipped 63→0, +6 gaps surfaced; recovers the ~5,582 skipped corpus-wide.
 - 2026-07-01 — **Nova Promise iterator-close hang family fixed** (nova fork `e9765334` + `b5201d12`): the combinators used `inner_promise_then` (internal reaction wiring), bypassing the observable `.then` method and never `IteratorClose`-ing, so an infinite iterable with a throwing/overridden `then` looped forever. Fix: `perform_promise_race` creates the capability's shared resolve/reject resolving functions and `Invoke`s the real `.then`; `all`/`allSettled`/`any` (all via `perform_promise_group`) materialize per-element resolve/reject functions — a new optional `group_element` payload on `PromiseResolvingFunctionHeapData` driving the existing `PromiseGroup::settle`, guarded by `[[AlreadyCalled]]` — then `Invoke` `.then` and `IteratorClose` on abrupt (setting `[[Done]]` so the caller does not close twice). Validated in genet: race 2 hangs → pass (nova-only=0); full `built-ins/Promise` (677) both-pass 453→469, boa-only 180→170, **timeout 6→0, nova-only=0** (16 gaps closed: the group/any hangs + observable-`.then` conformance tests, zero regressions). This clears the Promise-combinator half of the stability track; the Nova broad-corpus stack overflow (H2) and the perf cliffs remain.

@@ -406,6 +406,30 @@ fn synthesize_any_js(path: &Path, variant_url: Option<&str>) -> Option<String> {
     Some(html)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ExpectationPolicy {
+    #[default]
+    Exact,
+    OptIn,
+}
+
+impl ExpectationPolicy {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "exact" => Some(Self::Exact),
+            "opt-in" | "optin" => Some(Self::OptIn),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::OptIn => "opt-in",
+        }
+    }
+}
+
 struct Args {
     command: String,
     subset: String,
@@ -435,6 +459,10 @@ struct Args {
     expectations: Option<String>,
     /// Write current per-test statuses to a JSON expectations file.
     write_expectations: Option<String>,
+    /// Policy written into a new expectations file. Exact baselines cover every
+    /// discovered test; opt-in baselines use their `tests` map as the include
+    /// list and skip newly discovered tests until they are explicitly added.
+    expectation_policy: ExpectationPolicy,
     /// Write aggregate Buckram table-dispatch counters for the documents the
     /// Livery reftest renderer actually laid out.
     write_table_ledger: Option<PathBuf>,
@@ -467,6 +495,7 @@ fn parse_args() -> Result<Args, String> {
     let mut walk_discovery = false;
     let mut expectations = None;
     let mut write_expectations = None;
+    let mut expectation_policy = ExpectationPolicy::Exact;
     let mut write_table_ledger = None;
     let mut reftest_results = Vec::new();
     let mut testharness_results = Vec::new();
@@ -524,6 +553,14 @@ fn parse_args() -> Result<Args, String> {
             "--write-expectations" => {
                 write_expectations = Some(it.next().ok_or("--write-expectations needs a path")?);
             },
+            "--expectation-policy" => {
+                let value = it
+                    .next()
+                    .ok_or("--expectation-policy needs a value (exact | opt-in)")?;
+                expectation_policy = ExpectationPolicy::parse(&value).ok_or_else(|| {
+                    format!("unknown expectation policy: {value} (expected exact | opt-in)")
+                })?;
+            },
             "--write-table-ledger" => {
                 write_table_ledger = Some(PathBuf::from(
                     it.next().ok_or("--write-table-ledger needs a path")?,
@@ -576,6 +613,7 @@ fn parse_args() -> Result<Args, String> {
         walk_discovery,
         expectations,
         write_expectations,
+        expectation_policy,
         write_table_ledger,
         reftest_results,
         testharness_results,
@@ -609,6 +647,8 @@ Options:
     --expectations <f>   fail if testharness results differ from JSON expectations
     --write-expectations <f>
                          write current testharness results as JSON expectations
+    --expectation-policy <exact|opt-in>
+                         policy for --write-expectations (default: exact)
     --write-table-ledger <f>
                          write Livery reftest table-dispatch counters
     --reftest-results <f>
@@ -716,6 +756,11 @@ fn real_main() {
         std::process::exit(2);
     }
 
+    if args.expectation_policy != ExpectationPolicy::Exact && args.write_expectations.is_none() {
+        eprintln!("--expectation-policy is used only with --write-expectations");
+        std::process::exit(2);
+    }
+
     if args.write_table_ledger.is_some()
         && !(args.command == "reftest" && args.renderer == ReftestRenderer::Livery)
     {
@@ -723,7 +768,7 @@ fn real_main() {
         std::process::exit(2);
     }
 
-    let tests = discover_tests(&args);
+    let mut tests = discover_tests(&args);
     if tests.is_empty() {
         eprintln!(
             "no runnable tests found for '{}' under {}",
@@ -735,6 +780,25 @@ fn real_main() {
             args.tests_root
         );
         std::process::exit(1);
+    }
+
+    if let Some(path) = &args.expectations {
+        let expectations = match load_expectations(path) {
+            Ok(expectations) => expectations,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            },
+        };
+        if expectations.policy == ExpectationPolicy::OptIn {
+            retain_opted_in_tests(&mut tests, &expectations);
+            if args.verbose {
+                println!(
+                    "expectations: opt-in policy selected {} test(s)",
+                    tests.len()
+                );
+            }
+        }
     }
 
     match args.command.as_str() {
@@ -1094,6 +1158,32 @@ fn outcome_passes(result: &Result<harness::HarnessOutcome, Box<dyn std::any::Any
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActualSubtest {
+    name: String,
+    status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExpectedSubtest {
+    name: String,
+    status: String,
+    /// Human policy metadata. Unlike the file-level `reason`, this does not
+    /// mirror a runner outcome; it records why a non-pass remains opted in.
+    reason: Option<String>,
+}
+
+fn subtest_status(status: i64) -> String {
+    match status {
+        0 => "pass".to_string(),
+        1 => "fail".to_string(),
+        2 => "timeout".to_string(),
+        3 => "not-run".to_string(),
+        4 => "precondition-failed".to_string(),
+        other => format!("unknown-{other}"),
+    }
+}
+
 struct ActualRecord {
     test: String,
     status: &'static str,
@@ -1101,6 +1191,10 @@ struct ActualRecord {
     /// `(passed, total)` subtest counts for a testharness file that produced
     /// results. `None` for reftests, skips, errors, and no-results files.
     subtests: Option<(usize, usize)>,
+    /// Named testharness results. Kept separately from the count pair so old
+    /// count-only expectation files stay valid while opted-in files can pin the
+    /// exact assertion that moved.
+    subtest_results: Option<Vec<ActualSubtest>>,
 }
 
 impl ActualRecord {
@@ -1110,6 +1204,7 @@ impl ActualRecord {
             status,
             reason: None,
             subtests: None,
+            subtest_results: None,
         }
     }
 
@@ -1123,20 +1218,31 @@ impl ActualRecord {
             status,
             reason: Some(reason.into()),
             subtests: None,
+            subtest_results: None,
         }
     }
 
     fn with_subtests(
         test: &TestCase,
         status: &'static str,
-        passed: usize,
-        total: usize,
+        results: &[script_runtime_api::TestResult],
     ) -> ActualRecord {
+        let total = results.len();
+        let passed = results.iter().filter(|result| result.passed()).count();
         ActualRecord {
             test: test.name().to_string(),
             status,
             reason: None,
             subtests: Some((passed, total)),
+            subtest_results: Some(
+                results
+                    .iter()
+                    .map(|result| ActualSubtest {
+                        name: result.name.clone(),
+                        status: subtest_status(result.status),
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -1150,6 +1256,9 @@ struct ExpectedRecord {
     /// failing file is caught, not just a status flip. Absent in files written
     /// before the counts existed, which then pin status only.
     subtests: Option<(usize, usize)>,
+    /// Named expected results. `None` preserves the status/count-only behavior
+    /// of older version-1 JSON files.
+    subtest_results: Option<Vec<ExpectedSubtest>>,
 }
 
 impl ExpectedRecord {
@@ -1162,6 +1271,11 @@ impl ExpectedRecord {
             && self
                 .subtests
                 .is_none_or(|counts| actual.subtests == Some(counts))
+            && self.subtest_results.as_ref().is_none_or(|expected| {
+                actual.subtest_results.as_ref().is_some_and(|actual| {
+                    normalized_expected_subtests(expected) == normalized_actual_subtests(actual)
+                })
+            })
     }
 
     fn describe(&self) -> String {
@@ -1172,8 +1286,107 @@ impl ExpectedRecord {
         if let Some((passed, total)) = self.subtests {
             out.push_str(&format!(" {passed}/{total}"));
         }
+        if let Some(subtests) = &self.subtest_results {
+            let reasoned = subtests
+                .iter()
+                .filter(|subtest| subtest.reason.is_some())
+                .count();
+            out.push_str(&format!(
+                " with {} named subtests ({reasoned} reasoned)",
+                subtests.len()
+            ));
+        }
         out
     }
+
+    fn mismatch(&self, actual: &ActualRecord) -> String {
+        if self.status != actual.status
+            || self
+                .reason
+                .as_deref()
+                .is_some_and(|reason| actual.reason.as_deref() != Some(reason))
+            || self
+                .subtests
+                .is_some_and(|counts| actual.subtests != Some(counts))
+        {
+            return format!(
+                "expected {}, got {}",
+                self.describe(),
+                ActualRecordDisplay(actual)
+            );
+        }
+
+        if let Some(expected) = &self.subtest_results {
+            let expected = normalized_expected_subtests(expected);
+            let actual = actual
+                .subtest_results
+                .as_deref()
+                .map(normalized_actual_subtests)
+                .unwrap_or_default();
+            for name in expected
+                .keys()
+                .chain(actual.keys())
+                .collect::<BTreeSet<_>>()
+            {
+                match (expected.get(name), actual.get(name)) {
+                    (Some(expected), Some(actual)) if expected != actual => {
+                        return format!(
+                            "subtest `{name}` expected {}, got {}",
+                            expected.join(", "),
+                            actual.join(", ")
+                        );
+                    },
+                    (Some(expected), None) => {
+                        return format!(
+                            "subtest `{name}` expected {}, but was not reported",
+                            expected.join(", ")
+                        );
+                    },
+                    (None, Some(actual)) => {
+                        return format!(
+                            "unexpected subtest `{name}` reported {}",
+                            actual.join(", ")
+                        );
+                    },
+                    _ => {},
+                }
+            }
+        }
+
+        format!(
+            "expected {}, got {}",
+            self.describe(),
+            ActualRecordDisplay(actual)
+        )
+    }
+}
+
+fn normalized_expected_subtests(subtests: &[ExpectedSubtest]) -> BTreeMap<String, Vec<String>> {
+    let mut normalized = BTreeMap::<String, Vec<String>>::new();
+    for subtest in subtests {
+        normalized
+            .entry(subtest.name.clone())
+            .or_default()
+            .push(subtest.status.clone());
+    }
+    for statuses in normalized.values_mut() {
+        statuses.sort();
+    }
+    normalized
+}
+
+fn normalized_actual_subtests(subtests: &[ActualSubtest]) -> BTreeMap<String, Vec<String>> {
+    let mut normalized = BTreeMap::<String, Vec<String>>::new();
+    for subtest in subtests {
+        normalized
+            .entry(subtest.name.clone())
+            .or_default()
+            .push(subtest.status.clone());
+    }
+    for statuses in normalized.values_mut() {
+        statuses.sort();
+    }
+    normalized
 }
 
 struct ActualRecordDisplay<'a>(&'a ActualRecord);
@@ -1198,6 +1411,7 @@ struct ResultFileMetadata<'a> {
     subset: &'a str,
     manifest_sha256: Option<&'a str>,
     runner_sha256: Option<&'a str>,
+    policy: ExpectationPolicy,
 }
 
 fn finish_expectations(args: &Args, command: &str, actuals: &[ActualRecord]) {
@@ -1248,6 +1462,7 @@ fn finish_expectations(args: &Args, command: &str, actuals: &[ActualRecord]) {
                 subset: &args.subset,
                 manifest_sha256: provenance.as_ref().map(|(manifest, _)| manifest.as_str()),
                 runner_sha256: provenance.as_ref().map(|(_, runner)| runner.as_str()),
+                policy: args.expectation_policy,
             },
             actuals,
         ) {
@@ -1274,6 +1489,23 @@ fn write_expectations(
 ) -> Result<(), String> {
     let mut tests = BTreeMap::new();
     for actual in actuals {
+        let named_subtests = actual.subtest_results.as_ref().map(|subtests| {
+            subtests
+                .iter()
+                .map(|subtest| {
+                    let mut value = serde_json::json!({
+                        "name": subtest.name,
+                        "status": subtest.status,
+                    });
+                    if metadata.policy == ExpectationPolicy::OptIn && subtest.status != "pass" {
+                        value["reason"] = serde_json::Value::String(
+                            "TODO: record the owning capability or issue".to_string(),
+                        );
+                    }
+                    value
+                })
+                .collect::<Vec<_>>()
+        });
         let value = match (actual.reason.as_deref(), actual.subtests) {
             (Some(reason), None) => serde_json::json!({
                 "status": actual.status,
@@ -1292,6 +1524,10 @@ fn write_expectations(
             }),
             (None, None) => serde_json::Value::String(actual.status.to_string()),
         };
+        let mut value = value;
+        if let Some(subtests) = named_subtests {
+            value["subtests"] = serde_json::Value::Array(subtests);
+        }
         tests.insert(actual.test.clone(), value);
     }
     let value = serde_json::json!({
@@ -1302,6 +1538,7 @@ fn write_expectations(
         "subset": metadata.subset.trim_matches('/').replace('\\', "/"),
         "manifest_sha256": metadata.manifest_sha256,
         "runner_sha256": metadata.runner_sha256,
+        "policy": metadata.policy.label(),
         "tests": tests,
     });
     let out = Path::new(path);
@@ -1320,7 +1557,13 @@ struct Expectations {
     /// the field existed; those cannot distinguish a Stylo from a Livery
     /// baseline by content.
     renderer: Option<String>,
+    policy: ExpectationPolicy,
     tests: BTreeMap<String, ExpectedRecord>,
+}
+
+fn retain_opted_in_tests(tests: &mut Vec<TestCase>, expectations: &Expectations) {
+    debug_assert_eq!(expectations.policy, ExpectationPolicy::OptIn);
+    tests.retain(|test| expectations.tests.contains_key(test.name()));
 }
 
 fn load_expectations(path: &str) -> Result<Expectations, String> {
@@ -1332,6 +1575,20 @@ fn load_expectations(path: &str) -> Result<Expectations, String> {
         .get("renderer")
         .and_then(serde_json::Value::as_str)
         .map(str::to_ascii_lowercase);
+    let command = value
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_ascii_lowercase);
+    let policy = match value.get("policy") {
+        None | Some(serde_json::Value::Null) => ExpectationPolicy::Exact,
+        Some(serde_json::Value::String(policy)) => ExpectationPolicy::parse(policy)
+            .ok_or_else(|| format!("expectations file {path} has unknown policy `{policy}`"))?,
+        Some(_) => {
+            return Err(format!(
+                "expectations file {path} must carry a string `policy`"
+            ));
+        },
+    };
     let tests = value.get("tests").unwrap_or(&value);
     let obj = tests.as_object().ok_or_else(|| {
         format!("expectations file {path} must be an object or carry a `tests` object")
@@ -1343,6 +1600,7 @@ fn load_expectations(path: &str) -> Result<Expectations, String> {
                 status: status.to_ascii_lowercase(),
                 reason: None,
                 subtests: None,
+                subtest_results: None,
             },
             serde_json::Value::Object(fields) => {
                 let Some(status) = fields.get("status").and_then(serde_json::Value::as_str) else {
@@ -1377,10 +1635,106 @@ fn load_expectations(path: &str) -> Result<Expectations, String> {
                         ));
                     },
                 };
+                let subtest_results = match fields.get("subtests") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::Array(subtests)) => {
+                        let mut parsed = Vec::with_capacity(subtests.len());
+                        for (index, subtest) in subtests.iter().enumerate() {
+                            let Some(subtest) = subtest.as_object() else {
+                                return Err(format!(
+                                    "expectation for {name} subtest {index} must be an object"
+                                ));
+                            };
+                            let Some(subtest_name) =
+                                subtest.get("name").and_then(serde_json::Value::as_str)
+                            else {
+                                return Err(format!(
+                                    "expectation for {name} subtest {index} lacks a string `name`"
+                                ));
+                            };
+                            let Some(status) =
+                                subtest.get("status").and_then(serde_json::Value::as_str)
+                            else {
+                                return Err(format!(
+                                    "expectation for {name} subtest `{subtest_name}` lacks a string \
+                                     `status`"
+                                ));
+                            };
+                            let status = status.to_ascii_lowercase();
+                            if !matches!(
+                                status.as_str(),
+                                "pass" | "fail" | "timeout" | "not-run" | "precondition-failed"
+                            ) {
+                                return Err(format!(
+                                    "expectation for {name} subtest `{subtest_name}` has unknown \
+                                     status `{status}`"
+                                ));
+                            }
+                            let reason = match subtest.get("reason") {
+                                None | Some(serde_json::Value::Null) => None,
+                                Some(serde_json::Value::String(reason))
+                                    if !reason.trim().is_empty()
+                                        && !reason
+                                            .trim()
+                                            .to_ascii_lowercase()
+                                            .starts_with("todo") =>
+                                {
+                                    Some(reason.clone())
+                                },
+                                Some(serde_json::Value::String(_)) => {
+                                    return Err(format!(
+                                        "expectation for {name} subtest `{subtest_name}` needs a \
+                                         meaningful `reason`, not an empty or TODO placeholder"
+                                    ));
+                                },
+                                Some(_) => {
+                                    return Err(format!(
+                                        "expectation for {name} subtest `{subtest_name}` must carry \
+                                         a string `reason`"
+                                    ));
+                                },
+                            };
+                            if policy == ExpectationPolicy::OptIn
+                                && status != "pass"
+                                && reason.is_none()
+                            {
+                                return Err(format!(
+                                    "opt-in expectation for {name} subtest `{subtest_name}` must \
+                                     explain the expected `{status}` result with `reason`"
+                                ));
+                            }
+                            parsed.push(ExpectedSubtest {
+                                name: subtest_name.to_string(),
+                                status,
+                                reason,
+                            });
+                        }
+                        Some(parsed)
+                    },
+                    Some(_) => {
+                        return Err(format!(
+                            "expectation for {name} must carry an array `subtests` field"
+                        ));
+                    },
+                };
+                if let (Some((passed, total)), Some(named)) = (subtests, &subtest_results) {
+                    let named_passed = named
+                        .iter()
+                        .filter(|subtest| subtest.status == "pass")
+                        .count();
+                    if named.len() != total || named_passed != passed {
+                        return Err(format!(
+                            "expectation for {name} says {passed}/{total} subtests but its named \
+                             metadata says {named_passed}/{}",
+                            named.len()
+                        ));
+                    }
+                }
                 ExpectedRecord {
                     status: status.to_ascii_lowercase(),
                     reason,
                     subtests,
+                    subtest_results,
                 }
             },
             _ => {
@@ -1389,10 +1743,39 @@ fn load_expectations(path: &str) -> Result<Expectations, String> {
                 ));
             },
         };
+        if policy == ExpectationPolicy::OptIn {
+            match record.status.as_str() {
+                "pass" => {},
+                "fail"
+                    if command.as_deref() == Some("testharness")
+                        && record.subtest_results.is_none() =>
+                {
+                    return Err(format!(
+                        "opt-in failing expectation for {name} must carry named `subtests` \
+                         metadata"
+                    ));
+                },
+                "fail" => {},
+                "skip" | "error" | "no-results" => {
+                    return Err(format!(
+                        "opt-in expectation for {name} cannot accept file status `{}`: the \
+                         runtime `reason` is not a human policy reason; opt in after the file \
+                         reaches testharness results",
+                        record.status
+                    ));
+                },
+                other => {
+                    return Err(format!(
+                        "opt-in expectation for {name} has unknown file status `{other}`"
+                    ));
+                },
+            }
+        }
         out.insert(name.clone(), record);
     }
     Ok(Expectations {
         renderer,
+        policy,
         tests: out,
     })
 }
@@ -1413,12 +1796,9 @@ fn check_expectations(path: &str, renderer: &str, actuals: &[ActualRecord]) -> R
     for actual in actuals {
         match expected.get(&actual.test) {
             Some(record) if record.matches(actual) => {},
-            Some(record) => unexpected.push(format!(
-                "{}: expected {}, got {}",
-                actual.test,
-                record.describe(),
-                ActualRecordDisplay(actual)
-            )),
+            Some(record) => {
+                unexpected.push(format!("{}: {}", actual.test, record.mismatch(actual)))
+            },
             None => unexpected.push(format!(
                 "{}: missing expectation, got {}",
                 actual.test,
@@ -2263,13 +2643,13 @@ fn testharness(tests: &[TestCase], args: &Args) {
                     }
                 } else if passed == total {
                     all_pass += 1;
-                    actuals.push(ActualRecord::with_subtests(test, "pass", passed, total));
+                    actuals.push(ActualRecord::with_subtests(test, "pass", &results));
                     if args.verbose {
                         println!("PASS  {name}  ({passed}/{total})");
                     }
                 } else {
                     with_fail += 1;
-                    actuals.push(ActualRecord::with_subtests(test, "fail", passed, total));
+                    actuals.push(ActualRecord::with_subtests(test, "fail", &results));
                     println!("FAIL  {name}  ({passed}/{total} subtests)");
                     if args.verbose {
                         for r in results.iter().filter(|r| !r.passed()) {
@@ -3114,6 +3494,7 @@ mod tests {
             subset,
             manifest_sha256: Some("manifest"),
             runner_sha256: Some("runner"),
+            policy: ExpectationPolicy::Exact,
         }
     }
 
@@ -3126,12 +3507,14 @@ mod tests {
                 status: "pass",
                 reason: None,
                 subtests: None,
+                subtest_results: None,
             },
             ActualRecord {
                 test: "dom/example-b.html".into(),
                 status: "fail",
                 reason: None,
                 subtests: None,
+                subtest_results: None,
             },
         ];
         write_expectations(&path, test_result_metadata("stylo", "dom"), &actuals)
@@ -3148,6 +3531,7 @@ mod tests {
             status: "pass",
             reason: None,
             subtests: None,
+            subtest_results: None,
         }];
         write_expectations(&path, test_result_metadata("stylo", "dom"), &expected)
             .expect("write expectations");
@@ -3156,6 +3540,7 @@ mod tests {
             status: "fail",
             reason: None,
             subtests: None,
+            subtest_results: None,
         }];
         let err =
             check_expectations(&path, "stylo", &actual).expect_err("changed status is unexpected");
@@ -3172,12 +3557,14 @@ mod tests {
                 status: "skip",
                 reason: Some("worker-only".into()),
                 subtests: None,
+                subtest_results: None,
             },
             ActualRecord {
                 test: "dom/example-b.html".into(),
                 status: "pass",
                 reason: None,
                 subtests: None,
+                subtest_results: None,
             },
         ];
         write_expectations(&path, test_result_metadata("stylo", "dom"), &expected)
@@ -3194,6 +3581,7 @@ mod tests {
             status: "skip",
             reason: Some("worker-only".into()),
             subtests: None,
+            subtest_results: None,
         }];
         write_expectations(&path, test_result_metadata("stylo", "dom"), &expected)
             .expect("write expectations");
@@ -3202,6 +3590,7 @@ mod tests {
             status: "skip",
             reason: Some("xhtml".into()),
             subtests: None,
+            subtest_results: None,
         }];
         let err =
             check_expectations(&path, "stylo", &actual).expect_err("changed reason is unexpected");
@@ -3220,6 +3609,7 @@ mod tests {
             status: "fail",
             reason: None,
             subtests: Some((40, 47)),
+            subtest_results: None,
         }];
         write_expectations(&path, test_result_metadata("livery", "css"), &expected)
             .expect("write expectations");
@@ -3234,6 +3624,7 @@ mod tests {
             status: "fail",
             reason: None,
             subtests: Some((38, 47)),
+            subtest_results: None,
         }];
         let err = check_expectations(&path, "livery", &regressed)
             .expect_err("a lost subtest is unexpected");
@@ -3246,11 +3637,191 @@ mod tests {
             status: "fail",
             reason: None,
             subtests: Some((43, 47)),
+            subtest_results: None,
         }];
         let err = check_expectations(&path, "livery", &progressed)
             .expect_err("a gained subtest wants a re-pin");
         assert!(err.contains("expected fail 40/47, got fail 43/47"), "{err}");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expectations_pin_named_subtests_even_when_aggregate_counts_do_not_move() {
+        let path = temp_expectations_path("named-subtests");
+        let expected = vec![ActualRecord {
+            test: "css/example.html".into(),
+            status: "fail",
+            reason: None,
+            subtests: Some((1, 2)),
+            subtest_results: Some(vec![
+                ActualSubtest {
+                    name: "alpha".into(),
+                    status: "pass".into(),
+                },
+                ActualSubtest {
+                    name: "beta".into(),
+                    status: "fail".into(),
+                },
+            ]),
+        }];
+        write_expectations(&path, test_result_metadata("livery", "css"), &expected)
+            .expect("write named expectations");
+        check_expectations(&path, "livery", &expected).expect("named subtests match");
+
+        let changed = vec![ActualRecord {
+            test: "css/example.html".into(),
+            status: "fail",
+            reason: None,
+            subtests: Some((1, 2)),
+            subtest_results: Some(vec![
+                ActualSubtest {
+                    name: "alpha".into(),
+                    status: "fail".into(),
+                },
+                ActualSubtest {
+                    name: "beta".into(),
+                    status: "pass".into(),
+                },
+            ]),
+        }];
+        let error = check_expectations(&path, "livery", &changed)
+            .expect_err("a named subtest change is unexpected");
+        assert!(
+            error.contains("subtest `alpha` expected pass, got fail"),
+            "{error}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn opt_in_expected_nonpasses_require_a_reason() {
+        let path = temp_expectations_path("opt-in-reason");
+        fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "command": "testharness",
+                "engine": "boa",
+                "renderer": "stylo",
+                "policy": "opt-in",
+                "tests": {
+                    "dom/example.html": {
+                        "status": "fail",
+                        "subtests_passed": 0,
+                        "subtests_total": 1,
+                        "subtests": [
+                            {"name": "known gap", "status": "fail"}
+                        ]
+                    }
+                }
+            }"#,
+        )
+        .expect("write opt-in expectations");
+        let error = load_expectations(&path)
+            .err()
+            .expect("unreasoned opt-in failure must fail");
+        assert!(
+            error.contains("must explain the expected `fail` result with `reason`"),
+            "{error}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn generated_opt_in_todo_is_not_an_accepted_reason() {
+        let path = temp_expectations_path("opt-in-todo");
+        let actuals = vec![ActualRecord {
+            test: "dom/example.html".into(),
+            status: "fail",
+            reason: None,
+            subtests: Some((0, 1)),
+            subtest_results: Some(vec![ActualSubtest {
+                name: "known gap".into(),
+                status: "fail".into(),
+            }]),
+        }];
+        let mut metadata = test_result_metadata("stylo", "dom/example.html");
+        metadata.policy = ExpectationPolicy::OptIn;
+        write_expectations(&path, metadata, &actuals).expect("write opt-in skeleton");
+
+        let error = load_expectations(&path)
+            .err()
+            .expect("generated TODO must be replaced before checking");
+        assert!(
+            error.contains("meaningful `reason`, not an empty or TODO placeholder"),
+            "{error}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn opt_in_policy_rejects_file_level_nonexecution_statuses() {
+        let path = temp_expectations_path("opt-in-skip");
+        fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "command": "testharness",
+                "engine": "boa",
+                "renderer": "stylo",
+                "policy": "opt-in",
+                "tests": {
+                    "dom/example.html": {
+                        "status": "skip",
+                        "reason": "xhtml"
+                    }
+                }
+            }"#,
+        )
+        .expect("write opt-in skip");
+        let error = load_expectations(&path)
+            .err()
+            .expect("a runtime skip reason is not policy justification");
+        assert!(
+            error.contains("runtime `reason` is not a human policy reason"),
+            "{error}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn opt_in_policy_uses_the_expectation_map_as_its_include_list() {
+        let mut tests = vec![
+            TestCase {
+                path: PathBuf::from("dom/selected.html"),
+                url: "dom/selected.html".into(),
+                kind: Kind::Testharness,
+                refs: Vec::new(),
+                fuzzy: None,
+                long_timeout: false,
+                from_manifest: true,
+            },
+            TestCase {
+                path: PathBuf::from("dom/new.html"),
+                url: "dom/new.html".into(),
+                kind: Kind::Testharness,
+                refs: Vec::new(),
+                fuzzy: None,
+                long_timeout: false,
+                from_manifest: true,
+            },
+        ];
+        let expectations = Expectations {
+            renderer: Some("stylo".into()),
+            policy: ExpectationPolicy::OptIn,
+            tests: BTreeMap::from([(
+                "dom/selected.html".into(),
+                ExpectedRecord {
+                    status: "pass".into(),
+                    reason: None,
+                    subtests: None,
+                    subtest_results: None,
+                },
+            )]),
+        };
+        retain_opted_in_tests(&mut tests, &expectations);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name(), "dom/selected.html");
     }
 
     #[test]
@@ -3268,6 +3839,7 @@ mod tests {
             status: "fail",
             reason: None,
             subtests: Some((38, 47)),
+            subtest_results: None,
         }];
         check_expectations(&path, "livery", &actual)
             .expect("a legacy count-free file pins status only");
@@ -3282,6 +3854,7 @@ mod tests {
             status: "pass",
             reason: None,
             subtests: Some((5, 5)),
+            subtest_results: None,
         }];
         write_expectations(&path, test_result_metadata("livery", "css"), &expected)
             .expect("write expectations");
