@@ -1,20 +1,21 @@
 # Livery fullweb cutover and the servo-* retirement
 
 **Date:** 2026-07-24
-**Status:** in execution, current-state correction 2026-08-08. D0 is ruled
+**Status:** in execution, current-state correction 2026-08-15. D0 is ruled
 (lane, at the revised price; multicol knocked out). Every stage F0-F6 carries
-its detail, instrument, and receipt. Product reachability is now an earlier
-projection gate rather than part of the final F4 flip; see the
+its detail, instrument, and receipt. Product reachability completed as an
+earlier projection gate rather than part of the final F4 flip; see the
 [Livery product route and document resources plan](2026-08-08_livery_product_route_and_document_resources_execution_plan.md).
 
-**Current truth.** Pelt still routes static HTML through `genet.web` and
-Stylo; no shipping port enables `genet-documents/livery`. The product-facing
-`LiverySessionEngine` exists, but it assembles host CSS plus inline `<style>`
-blocks and does not share the linked-stylesheet/resource path Pelt just proved
-on the incumbent route. Buckram has advanced through live table dispatch,
-captions, and collapsed tracks; K4g1 is accepted and K4g2 is next after
-contextual-color C1. The recorded F0/F3 figures below remain the latest full
-cutover ledger, not a fresh 2026-08-08 rerun.
+**Current truth.** Product-route R0-R4 and R5a-R5d are landed. Pelt exposes
+explicit `livery` and `livery-scripted` routes over the shared document-resource
+boundary, including linked CSS, image and font replacement, and Livery's
+supported CSS rule-object projection. The incumbent `viewer` and scripted
+routes remain the defaults. The F4 scripted implementation boundary is
+complete, but the default flip is still gated by its parity receipts. Buckram
+K4 is closed at `610df0981a8`; K5 is active on `buckram-k5-positioning`, and
+K6 is planned but blocked on K5h closure. The recorded F0/F3 figures below
+remain the latest full cutover ledger, not a fresh 2026-08-15 rerun.
 
 **Where the two lanes stand.**
 
@@ -61,10 +62,10 @@ had to be corrected. Prefer a bisect to a hypothesis: reverting one hunk
 attributed a 128-file CSS2 regression precisely and cleared three other
 changes of suspicion in one run.
 
-**Ruling closed 2026-07-26:** Buckram owns table layout. The parity emulation
-was a useful falsifier and is now a deletion target. K4 has reached live
-dispatch, row/column fragments, captions, and collapsed tracks; collapsed
-border resolution/paint and the positioned-table closure remain K4g/K4h.
+**Ruling closed 2026-07-26, implementation closed 2026-08-10:** Buckram owns
+table layout. The parity emulation was a useful falsifier and has been deleted.
+K4 closed at `610df0981a8` with table sizing, fragments, captions, separated
+and collapsed borders, positioned parts, and compatibility-bridge deletion.
 
 **Open, in measured value order:** the `content` longhand (F0 ratchet plus
 19 CSS2 files, one slice paid twice), contextual color computation
@@ -897,18 +898,18 @@ the ones to take first, ahead of anything ranked purely by file count.
 | capability | state | new or inherited | compounds |
 |---|---|---|---|
 | multicol (`column-*`) | **recorded knockout**, ruled D0 | inherited | no |
-| table model, fixed/auto sizing, rows, spans, captions, colgroups, fixup, collapsed tracks | **built through Buckram K4f**, with named per-table fallback | inherited | no |
-| collapsed-border conflict, metrics, and paint | K4g1 topology accepted; K4g2 next after contextual-color C1 | inherited | **yes** |
-| positioned-table closure and compatibility-bridge deletion | K4h | inherited | no |
+| table model, fixed/auto sizing, rows, spans, captions, colgroups, fixup, and collapsed tracks | **built; K4 closed at `610df0981a8`** | inherited | no |
+| collapsed-border conflict, metrics, and paint | **built through accepted K4g** | inherited | no |
+| positioned-table closure and compatibility-bridge deletion | **built through accepted K4h** | inherited | no |
 | `display` outer/inner roles and admitted normal-flow formatting contexts | **Buckram K0-K3 accepted**; remaining positioned, fragmented, and sizing shapes route to K5-K7 | inherited | no |
-| `position: fixed` and `sticky` | retained as named K5 gaps; compatibility mappings survive | inherited | no |
+| `position: fixed` and `sticky` | live K5 routes with remaining closure work recorded in K5d-K5h | inherited | no |
 | CSSOM used values | handwritten per-property list (box-tree B6) | inherited | no |
 | block-flow anonymous boxes | **wrong behaviour retained**, scoped away (box-tree B1) | **new** | **yes** |
 | `min-content` / `max-content` sizing | admitted Buckram K3 queries built; cycles, percentages, replaced/atomic, and fragmentainer-dependent shapes route to K5-K7 | inherited | **yes** |
 | gamut mapping (out-of-gamut colors clip per channel) | not built | inherited | no |
 | contextual `color-layers()`, `alpha()`, `contrast-color()`, relative colors, and system colors | absolute forms built; retained contextual computation is C1-C3 | inherited | **yes** |
 | `order` with grid auto-placement | not built | inherited | no |
-| relative-position table parts | structural boxes now survive; K4h applies offsets and retires guarded fallback | **new** | no |
+| relative-position table parts | **built through accepted K4h/K5c integration** | **new** | no |
 
 **The two that compound, in detail, because they are the ones that will hurt:**
 
@@ -950,12 +951,10 @@ confirmed plus F0-F3 receipts. F5 fires the harvest plan's trigger. F6 is
 strictly after F5, per the 2026-07-24 ruling, with F6b's media knockout held
 to that sequencing even though it is technically independent today.
 
-**Correction 2026-08-08:** product reachability R0-R4 now precedes F4 rather
-than waiting inside it. It can proceed while F0 and the ledgers remain open,
-but it stops with an explicit Livery pin. Contextual-color C1 is the entry
-dependency for K4g2's Livery adapter and for presentational-hint PH0; K4g5
-headed paint additionally requires C2/C3. These gates touch overlapping
-cascade and style seams and land serially.
+**Correction 2026-08-15:** product reachability R0-R4 and resource work R5a-R5d
+are complete. Pelt now has explicit static and scripted Livery pins over the
+shared resource boundary, while its defaults remain incumbent. This closes the
+projection gate only; F4 still owns the measured default flip.
 
 **Ordered 2026-07-25 (audit with Mark), and where each stands:**
 

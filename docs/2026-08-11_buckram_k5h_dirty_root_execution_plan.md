@@ -10,12 +10,20 @@ table-root case, and falls back to a fresh complete layout outside that
 boundary. A background-only reuse admission first rules out a newly introduced
 transition or keyframe; a clock advance invalidates that paint cache and goes
 through ordinary retained layout so text shaping samples the same animated
-style as paint.
+style as paint. The active K5 branch integrated current `main` at
+`27c2c87828f`; the merged Buckram and Genet Livery library suites pass 220/220
+and 193/193. This integration does not close K5h.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
 
 ## Current boundary
+
+HTML `width` and `height` attributes have one sizing authority after the
+integration merge. Presentational hints project them into computed CSS, and
+the positioned K5d path consumes those computed sizes. Its separate replaced
+input carries only natural image or canvas dimensions, so it does not reread
+the DOM attributes or create a second cascade path.
 
 `LiveryDocument` records `LayoutDamage` before it discards a retained layout.
 DOM mutations map to the nearest existing Buckram formatting context, and
