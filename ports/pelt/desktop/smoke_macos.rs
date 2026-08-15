@@ -142,6 +142,7 @@ fn build_metal_handles() -> Result<netrender::WgpuHandles, String> {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .map_err(|err| format!("request_adapter: {err}"))?;
     // No optional features: vello's compute pipeline binds its

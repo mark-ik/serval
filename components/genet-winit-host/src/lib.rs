@@ -24,7 +24,7 @@
 //! let Some(frame)  = host.acquire() else { return };         // skip if outdated
 //! let target = frame.texture.create_view(&Default::default());
 //! host.renderer().compose_external_texture(&view, &target, host.format(), w, h, placement);
-//! frame.present();
+//! host.queue().present(frame);
 //! ```
 
 mod a11y;

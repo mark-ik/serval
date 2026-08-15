@@ -22,7 +22,7 @@
 //! let Some(frame)  = surface.acquire(&core) else { return }; // skip if outdated
 //! let target = frame.texture.create_view(&Default::default());
 //! core.renderer().compose_external_texture(&view, &target, surface.format(), w, h, placement);
-//! frame.present();
+//! core.queue().present(frame);
 //! ```
 
 use netrender::{ColorLoad, NetrenderOptions, Renderer, Scene};

@@ -204,6 +204,7 @@ mod tests {
                     power_preference: wgpu::PowerPreference::LowPower,
                     force_fallback_adapter: true,
                     compatible_surface: None,
+                    apply_limit_buckets: false,
                 })
                 .await
                 .expect("fallback adapter");

@@ -329,6 +329,7 @@ async fn run() -> Result<(), String> {
     });
     blitter.copy(&device, &mut encoder, &vello_view, &frame_view);
     queue.submit([encoder.finish()]);
-    frame.present();
+    // wgpu 30 moved presentation from SurfaceTexture to Queue.
+    queue.present(frame);
     Ok(())
 }

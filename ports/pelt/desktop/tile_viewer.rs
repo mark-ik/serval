@@ -345,7 +345,8 @@ mod windowed {
                     placement(ghost.rect, self.scale_factor),
                 );
             }
-            swap.present();
+            // wgpu 30 moved presentation from SurfaceTexture to Queue.
+            host.queue().present(swap);
             self.redraws += 1;
             self.shell
                 .note_frame_millis(frame_t0.elapsed().as_secs_f32() * 1000.0);
