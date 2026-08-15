@@ -95,6 +95,12 @@ The live receipts currently cover:
 - `absolute_nonleaf_reformats_at_buckrams_resolved_inline_size` verifies an
   admitted horizontal absolute block root and its child reformat at Buckram's
   final used width before their final offset is published.
+- `vertical_positioned_block_intrinsic_and_inline_size_follow_height` verifies
+  a same-flow vertical positioned block takes its intrinsic contribution and
+  second-pass inline constraint from physical height, not width.
+- `vertical_absolute_nonleaf_reformats_at_buckrams_resolved_inline_size`
+  verifies a same-flow vertical absolute block root and child reformat at the
+  final logical inline size selected by physical `top`/`bottom` insets.
 
 ## Remaining boundary
 
@@ -109,7 +115,9 @@ that matrix. Generic inline automatic-width roots now
 have a distinct formatter root for the admitted horizontal absolute/fixed
 subset; direct grid static alignment admits `self-start`/`self-end` across
 writing modes, using the positioned subject's corresponding physical edge.
-Positioned subtrees without an admitted intrinsic input remain explicit
+Same-flow vertical block trees with context-free leaves share that reformat
+route through physical height. Measured text, flex/grid, orthogonal roots, and
+positioned subtrees without an admitted intrinsic input remain explicit
 fallbacks.
 The renderer still supplies the narrow flex/grid static-position
 provider, so its private position role cannot disappear until Buckram has an

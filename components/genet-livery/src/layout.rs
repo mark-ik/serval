@@ -4531,14 +4531,19 @@ impl PositionedPlacement {
     }
 
     /// Convert Buckram's border-box answer back into the formatter's CSS
-    /// `width` input. This is only admitted for horizontal roots whose
+    /// inline-size input. This is only admitted for same-flow roots whose
     /// intrinsic query was accepted above.
     fn formatter_inline_size(self) -> Option<f32> {
-        if !self.style.flow.is_horizontal() || !self.style.containing_flow.is_horizontal() {
+        if self.style.flow != self.style.containing_flow {
             return None;
         }
+        let inline_size = if self.style.flow.is_horizontal() {
+            self.style.size.width
+        } else {
+            self.style.size.height
+        };
         if !matches!(
-            self.style.size.width,
+            inline_size,
             BlockSizeValue::Auto
                 | BlockSizeValue::MinContent
                 | BlockSizeValue::MaxContent
@@ -4950,14 +4955,20 @@ fn apply_admitted_positioned_inline_sizes<Context, Source>(
         if !intrinsic_sizes.contains_key(box_id) {
             continue;
         }
-        let Some(size) = placements
+        let Some(placement) = placements
             .iter()
             .find(|placement| placement.box_id == *box_id)
-            .and_then(|placement| placement.formatter_inline_size())
         else {
             continue;
         };
-        tree.style_mut(*node).size.width = Dimension::length(size);
+        let Some(size) = placement.formatter_inline_size() else {
+            continue;
+        };
+        if placement.style.flow.is_horizontal() {
+            tree.style_mut(*node).size.width = Dimension::length(size);
+        } else {
+            tree.style_mut(*node).size.height = Dimension::length(size);
+        }
         tree.set_positioned_inline_size(*node, size);
         changed = true;
     }
@@ -7728,6 +7739,59 @@ mod tests {
                 height: 20.0,
             },
             "the descendant belongs to the reformatted positioned root",
+        );
+    }
+
+    #[test]
+    fn vertical_absolute_nonleaf_reformats_at_buckrams_resolved_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=positioned><div id=child></div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; writing-mode: vertical-rl; width: 100px; height: 200px; } \
+                 #positioned { position: absolute; writing-mode: vertical-rl; left: 7px; top: 10px; bottom: 20px; } \
+                 #child { width: 40px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect_for = |id| {
+            let box_id = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box");
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+        let positioned = rect_for("positioned");
+        let child = rect_for("child");
+
+        assert_eq!(
+            positioned,
+            PhysicalRect {
+                x: 7.0,
+                y: 10.0,
+                width: 40.0,
+                height: 170.0,
+            },
+            "the vertical non-leaf root reformats at Buckram's final used inline size",
+        );
+        assert_eq!(
+            child,
+            PhysicalRect {
+                x: 7.0,
+                y: 10.0,
+                width: 40.0,
+                height: 20.0,
+            },
+            "the descendant belongs to the reformatted vertical positioned root",
         );
     }
 

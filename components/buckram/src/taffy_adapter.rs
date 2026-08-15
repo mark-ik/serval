@@ -351,7 +351,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     pub fn set_positioned_inline_size(&mut self, id: AlgorithmNodeId, size: f32) {
         assert!(
             size.is_finite() && size >= 0.0,
-            "a positioned formatting width must be finite and non-negative"
+            "a positioned formatting inline size must be finite and non-negative"
         );
         let style = &mut self.nodes[id.index()].block_style;
         let size = BlockSizeValue::Length(FlowLength::px(size));
@@ -531,6 +531,17 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     fn intrinsic_inline_subtree_is_admitted(&self, id: AlgorithmNodeId, is_root: bool) -> bool {
         let node = &self.nodes[id.index()];
         if !intrinsic_inline_style_is_admitted(node.block_style, is_root) {
+            return false;
+        }
+        // The generic leaf measurement callback and the flex/grid intrinsic
+        // query are still physical-width routes. Same-flow vertical block
+        // trees without measured leaves have complete logical inline inputs,
+        // so admit that narrower route without treating text or algorithms as
+        // vertically intrinsic-capable.
+        if !node.block_style.flow.is_horizontal()
+            && (matches!(node.kind, AlgorithmKind::Flex | AlgorithmKind::Grid)
+                || (matches!(node.kind, AlgorithmKind::Leaf) && node.context.is_some()))
+        {
             return false;
         }
         match node.kind {
@@ -2175,7 +2186,6 @@ where
 
 fn intrinsic_inline_style_is_admitted(style: BlockStyle, is_root: bool) -> bool {
     if style.flow != style.containing_flow
-        || !style.flow.is_horizontal()
         || style.position != crate::BlockPosition::Static
         || style.replaced
         || style.aspect_ratio.is_some()
@@ -2677,6 +2687,52 @@ mod tests {
         assert_eq!(
             tree.positioned_intrinsic_inline_sizes(positioned, zero_measure),
             IntrinsicSizes::new(0.0, 0.0),
+        );
+    }
+
+    #[test]
+    fn vertical_positioned_block_intrinsic_and_inline_size_follow_height() {
+        use crate::{Direction, WritingMode};
+
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let child = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: vertical,
+                size: crate::BlockDimensions::new(
+                    BlockSizeValue::Auto,
+                    BlockSizeValue::Length(FlowLength::px(20.0)),
+                ),
+                ..BlockStyle::default()
+            },
+            Style::default(),
+            &[],
+            2,
+        );
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: vertical,
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style::default(),
+            &[child],
+            1,
+        );
+
+        assert_eq!(
+            tree.positioned_intrinsic_inline_sizes(positioned, zero_measure),
+            IntrinsicSizes::new(20.0, 20.0),
+        );
+
+        tree.set_positioned_inline_size(positioned, 170.0);
+        assert_eq!(
+            tree.block_style(positioned).size.height,
+            BlockSizeValue::Length(FlowLength::px(170.0)),
         );
     }
 
