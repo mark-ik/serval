@@ -40,7 +40,7 @@ a unit.
 | 3 | Genet | Done except the three inker engines |
 | 4 | CubeCL / Burn, then Mere and Quint | Not started |
 | 5 | Renderling and Crabslab | Not started |
-| 6 | Downstream applications | 2 verified, 3 blocked on unrelated breaks |
+| 6 | Downstream applications | Done for all five, mesocosm deferred |
 | 7 | wgpu-graft / scry / weld defaults | In progress elsewhere |
 
 ### 1. Vello fork
@@ -113,20 +113,37 @@ for finishing step 3, not a tail step.
 
 ### 6. Downstream applications
 
-turnstone and cleromancy are clean on `--workspace --all-targets`. woodshed,
-hocket and isometry carry the same manifest edit but could not be verified,
-each blocked by an unrelated in-flight change in mere:
+All five are clean: turnstone, cleromancy, woodshed, hocket and isometry.
+mesocosm was left alone, since it had uncommitted work at the time.
 
-- woodshed: two `personae` copies resolve (published 0.1.1 beside local
-  0.2.0), so `Roster` and `ProfileId` do not match themselves.
-  `woodshed-views` has no wgpu, vello or netrender dependency, so this is
-  independent of the migration.
-- hocket: `hocket-engine` requires `personae = "^0.1.0"` while mere's main
-  carries 0.2.0. Resolution fails before compilation.
-- isometry: depends on `graphshell-protocol`, which mere's graphshell
-  restructure removed.
+The last three were each blocked first by something that had nothing to do
+with wgpu, and each blocker had to be cleared before the migration could
+even be verified:
 
-mesocosm was left alone: it had uncommitted work at the time.
+- woodshed: two `personae` in one graph, so `Roster` and `ProfileId` did not
+  match themselves. The `[patch]` was correct and applying; the lock had
+  merely retained a second git-sourced `personae 0.1.1` at mere rev
+  7b6b4130. `mere-persona-picker` reaches personae by sibling path inside
+  mere's workspace and so always had the local 0.2.0, which is what put the
+  two sides of one call on different types.
+- hocket: the workspace dep carried `version = "0.1.0"` next to the mere git
+  branch. That is a real requirement, so personae 0.2.0 satisfied nothing
+  and resolution failed outright. This one genuinely needed the requirement
+  moved.
+- isometry: `graphshell-protocol` was renamed to `chirograph` on 2026-08-14.
+  Separately its lock pinned mark-ik/p2panda before the
+  use-core-traits-in-auth merge, so every `--all-features` build failed on
+  trait bounds inside mere's own gemot. mere was unaffected because its
+  config resolves p2panda by local path.
+
+Three of those four are stale lock entries rather than wrong manifests. The
+sibling lattice reaches most of its dependencies through git branches, and a
+lock pins a branch to a rev, so a repo goes stale silently whenever a
+sibling moves and nothing in that repo changes. It presents as a version
+skew in the manifests, and the manifests are fine. Check whether a duplicate
+or a missing symbol is merely locked before editing requirements to chase
+it: `cargo update -p <name>@<version>` for a duplicate, `cargo update -p
+<name>` to move a git source.
 
 ## Open question: `apply_limit_buckets`
 
@@ -148,6 +165,12 @@ helpers, which correctly want real limits), the paint vulkan timeline
 interop, genet-wpt's conformance runner, and pelt's three platform smokes.
 
 ## Progress
+
+**2026-08-16.** Step 6 finished. woodshed, hocket and isometry are verified
+green after clearing the three non-wgpu blockers described above; isometry
+was checked with `--all-features --all-targets` per its own standing rule,
+and its full all-features suite passes (297 tests, 0 failures). Every
+migrated repo now resolves a single wgpu row at 30.
 
 **2026-08-15.** Steps 1, 2 and 3 landed and pushed; step 6 landed for five
 apps, verified for two. Upstream survey found that CubeCL and Burn crossed to
