@@ -37,7 +37,7 @@ a unit.
 |---|---|---|
 | 1 | Vello fork | Done |
 | 2 | Netrender | Done |
-| 3 | Genet | Done except the three inker engines |
+| 3 | Genet | Done, inker engines included |
 | 4 | CubeCL / Burn, then Mere and Quint | Done, via the backport after all |
 | 5 | Renderling and Crabslab | Done, plus mesocosm and paredros |
 | 6 | Downstream applications | Done for all five, plus mesocosm |
@@ -106,10 +106,16 @@ host-target check never compiles it. The second pass grepped the tree for
 the five break patterns instead of following build errors. Prefer that
 order.
 
-**Blocked:** the three inker engines. `scrying-engine` fails with two
-`wgpu_types` in the graph, because `scrying` comes from wgpu-scry main,
-still on wgpu 29. This is an ordering correction: step 7 is a prerequisite
-for finishing step 3, not a tail step.
+**The inker engines were blocked, and cleared 2026-08-16.** `scrying-engine`
+was failing with two `wgpu_types` in the graph, because `scrying` came from
+wgpu-scry main while that still defaulted to wgpu 29. That was an ordering
+correction: step 7 turned out to be a prerequisite for finishing step 3, not
+a tail step.
+
+It cleared the moment scrying's default row flipped. `cargo update -p
+scrying`, and scrying-engine, graft-engine and inker all build with **no
+source change in genet at all** — the entire fix was upstream. Worth
+remembering: the engine looked broken for a day and never was.
 
 ### 6. Downstream applications
 
@@ -294,6 +300,25 @@ helpers, which correctly want real limits), the paint vulkan timeline
 interop, genet-wpt's conformance runner, and pelt's three platform smokes.
 
 ## Progress
+
+**2026-08-16 — MIGRATION COMPLETE.** Every step is done. Verified by census
+across all twelve product repos: crabslab, renderling, netrender, genet, mere,
+turnstone, woodshed, isometry, cleromancy, mesocosm and paredros each resolve
+exactly one `wgpu` / `wgpu-core` / `wgpu-hal` / `wgpu-types` / `naga` row at
+30.0.0. hocket resolves the same single row for everything it builds; its lock
+additionally lists `wgpu-types 27.0.1` from bevy_reflect's optional
+`wgpu-types` feature, which is not enabled on a crate that is not in the build
+graph, so it never compiles.
+
+genet's 65 WebGL GPU tests still pass (7.0s), and its lock now holds zero
+wgpu-29 entries.
+
+What remains is not migration work: the `apply_limit_buckets` policy question
+below, the platform receipts (Windows headed composition, CubeCL compute,
+wasm WebGPU, Linux DMA-BUF, macOS IOSurface), and the two forks that retire on
+their own upstream schedule — the vello wgpu-30 fork when linebender ships a
+wgpu-30 vello, and `mere/support/patches/cubecl-wgpu` when the burn 0.22
+migration happens.
 
 **2026-08-16 (step 7).** welding and scrying default to wgpu 30; grafting
 deliberately does not. Every step is now done except genet's three inker
