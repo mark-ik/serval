@@ -234,9 +234,11 @@ $profileFlag = if ($CargoProfile -eq 'release') { '--release ' } else { '' }
 $runLine = "cargo run $profileFlag$cargoArgs"
 
 # `systemd-run --user` puts the command in the user manager's own environment,
-# which is where the graphical session's variables live. `launchctl asuser`
-# is the macOS equivalent: an ssh session is not in the Aqua session, and a
-# GUI launched without this simply never appears.
+# which is where the graphical session's variables live. macOS needs no
+# equivalent: `launchctl asuser` is root-only, and an ssh session belonging to
+# the console user can open a window on that user's screen directly. What
+# makes that safe is the preflight, which refuses to run when the ssh user is
+# not the console user.
 # Built in two steps on purpose: `+` binds tighter than `-join`, so folding
 # these into one expression concatenates an array onto a string and then
 # "joins" the result with itself. Each `--setenv=` token is quoted whole,
@@ -253,11 +255,22 @@ $attached = if ($Platform -eq 'linux') {
     "--setenv=RUST_BACKTRACE=1 $setenvTokens"
 } else { $null }
 
+# A non-interactive ssh shell does not source the login profile, so cargo is
+# not on PATH even where it is plainly installed. Prepending is enough and is
+# harmless where the profile would have done it anyway.
+$cargoPath = 'export PATH="$HOME/.cargo/bin:$PATH"; '
+
 $remoteCommand = if ($Platform -eq 'linux') {
-    "mkdir -p $(Sh $remoteOut) && cd $(Sh $RemotePath) && $attached -- $runLine"
+    "mkdir -p $(Sh $remoteOut) && cd $(Sh $RemotePath) && $cargoPath$attached -- $runLine"
 } else {
+    # No `launchctl asuser`: it requires root, and over ssh as an ordinary user
+    # it fails with "Could not switch to audit session". It is also not needed
+    # here — the preflight above has already asserted that the ssh user IS the
+    # console user, and a GUI launched by that user from ssh appears on their
+    # own screen. The app's own receipt is the backstop: a run that reached no
+    # display captures blank, identical frames, which its frame checks fail.
     "mkdir -p $(Sh $remoteOut) && cd $(Sh $RemotePath) && " +
-    "launchctl asuser $remoteUid env $envAssignments RUST_BACKTRACE=1 $runLine"
+    "$cargoPath env $envAssignments RUST_BACKTRACE=1 $runLine"
 }
 
 Step 'Building and running the scenario on the remote screen'
