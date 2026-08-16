@@ -60,6 +60,14 @@ real session.
 `linux` or `macos`. Decides how the command is attached to the graphical
 session.
 
+.PARAMETER CargoProfile
+`release` (default) or `debug`. Recorded in the manifest, because a receipt
+that does not say which profile it ran under invites the reader to assume the
+shipping one. Use `debug` when only the debug target is warm and the receipt
+is about what was drawn rather than how fast. Named `CargoProfile` rather
+than `Profile` for the same reason `ExtraEnv` is not `Env`: `$PROFILE` is a
+PowerShell automatic variable, and a parameter of that name shadows it.
+
 .PARAMETER IngestBin
 Path to mere's `receipt_ingest` binary. When given, the fetched receipt is
 ingested into the personal graph's blob store in the same motion that fetched
@@ -101,6 +109,7 @@ param(
     [string] $ReceiptEnv,
     [hashtable] $ExtraEnv = @{},
     [Parameter(Mandatory)] [ValidateSet('linux', 'macos')] [string] $Platform,
+    [ValidateSet('release', 'debug')] [string] $CargoProfile = 'release',
     [string] $Out,
     [string] $IngestBin,
     [string] $IngestStore,
@@ -221,7 +230,8 @@ $envAssignments = ($envPairs.GetEnumerator() | ForEach-Object {
 }) -join ' '
 
 $cargoArgs = if ($Example) { "-p $Package --example $Example" } else { "-p $Package" }
-$runLine = "cargo run --release $cargoArgs"
+$profileFlag = if ($CargoProfile -eq 'release') { '--release ' } else { '' }
+$runLine = "cargo run $profileFlag$cargoArgs"
 
 # `systemd-run --user` puts the command in the user manager's own environment,
 # which is where the graphical session's variables live. `launchctl asuser`
@@ -234,8 +244,13 @@ $runLine = "cargo run --release $cargoArgs"
 $setenvTokens = ($envPairs.GetEnumerator() | ForEach-Object {
     Sh "--setenv=$($_.Key)=$($_.Value)"
 }) -join ' '
+# `--working-directory` is not optional: a transient unit does NOT inherit the
+# ssh shell's cwd, so without it cargo runs in $HOME and fails to find a
+# Cargo.toml. The `cd` below still matters for the macOS branch, which runs in
+# the shell rather than in a unit.
 $attached = if ($Platform -eq 'linux') {
-    "systemd-run --user --wait --collect --pipe --setenv=RUST_BACKTRACE=1 $setenvTokens"
+    "systemd-run --user --wait --collect --pipe --working-directory=$(Sh $RemotePath) " +
+    "--setenv=RUST_BACKTRACE=1 $setenvTokens"
 } else { $null }
 
 $remoteCommand = if ($Platform -eq 'linux') {
@@ -295,6 +310,7 @@ $manifest = [ordered]@{
     scenario     = $Scenario
     target       = $Target
     platform     = $Platform
+    profile      = $CargoProfile
     remote_os    = $remoteOs
     remote_path  = $RemotePath
     remote_commit = $remoteCommit

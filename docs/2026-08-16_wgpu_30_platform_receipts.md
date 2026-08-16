@@ -7,7 +7,7 @@ Closes the receipt list from the
 headed composition, CubeCL compute and resident buffers, wasm WebGPU, macOS
 IOSurface, Linux DMA-BUF.
 
-**Five of six pass. Linux DMA-BUF fails on the only Linux hardware available,
+**Six of seven pass. Linux DMA-BUF fails on the only Linux hardware available,
 for a documented pre-existing reason unrelated to wgpu 30.**
 
 | Receipt | Host | Result |
@@ -16,8 +16,13 @@ for a documented pre-existing reason unrelated to wgpu 30.**
 | CubeCL compute | this box, RTX 4060 | PASS |
 | Resident buffer | this box, RTX 4060 | PASS |
 | wasm WebGPU | this box, Chromium | PASS |
-| macOS IOSurface | Q-PC, Intel iMac | PASS |
+| macOS IOSurface, x86_64 | Q-PC, Intel iMac | PASS |
+| macOS IOSurface, aarch64 | Mayola's iMac, Apple M4 | PASS |
 | Linux DMA-BUF | ThinkPad, AMD RADV | FAIL — hardware |
+
+Both macOS architectures now have a runtime receipt. The aarch64 half was
+outstanding on 2026-08-16 morning because the machine was unreachable; see
+**Hosts** for why that was a network fact rather than a hardware one.
 
 ---
 
@@ -106,6 +111,49 @@ The demo gates on elapsed time as well as frame count for exactly this reason,
 and it is the same trap as
 `[[feedback-paint-counts-are-not-clocks]]`.
 
+## macOS IOSurface, aarch64 — PASS
+
+`demo-weld-mac` on Mayola's iMac (Apple M4, macOS 26.5.1 / 25F80, arm64),
+rebuilt at `02fb1cc` so the run is on the wgpu-30 default row. The README's
+prior "verified on M4" line dates from 2026-08-12 and predates the flip, so
+this is the first Apple Silicon run on 30.
+
+```
+wgpu interop backend: Metal
+CEF browser created (1280x800) at https://example.com  →  LoadEnd http_status: 200
+imported frame #1 (1280x800 Bgra8Unorm)
+probe: 16384/16384 bytes non-zero in the top-left corner; first pixels [238,238,238,255]
+VALIDATION PASS: 2 frames imported and the IOSurface carried real pixels
+```
+
+Confirm the binary is fresh before believing this. `bundle-demo-weld-mac`
+replaces files in place, so the `.app` **directory** mtimes stay at the date of
+the first bundling (Aug 12 here) while the executables inside are current.
+Read the mtime on `Contents/MacOS/demo-weld-mac`, not on the bundle.
+
+Snapshot at `testing/rendering/2026-08-16_wgpu30_macos_aarch64_iosurface.png`.
+It needs `WELD_EXIT_AFTER_FRAMES` set high enough to outlive the asynchronous
+PNG callback; at 1 or 2 frames the process exits first and no file appears even
+though the probe passed. As on Linux, the PNG is a CEF-side capture and is
+context, not evidence. The probe readback is the evidence.
+
+### The `cef` crate pins wgpu 29, so the weld demos carry two rows
+
+`cargo tree -p demo-weld-mac -e normal` resolves **both** wgpu 29.0.3 and
+30.0.0. The second row is upstream's: `cef = "148"` declares
+`wgpu = "29"` as an optional dependency enabled by its `accelerated_osr`
+feature, for its own `osr_texture_import` module.
+
+This does not compromise the receipt. Welding imports through its own
+`native_frame` on its own wgpu-30 row and never calls cef's importer; the
+seam between them is a raw `IOSurfaceRef`, not a wgpu type, so no version
+couples across it. Cef's copy is compiled and unused.
+
+It does mean the "exactly one wgpu row" condition does not hold for the three
+`demo-weld-*` packages, and cannot until cef bumps. They are receipt harnesses
+in a deliberately multi-row repo rather than active product packages, so this
+is noted rather than treated as a regression.
+
 ## Linux DMA-BUF — FAIL (hardware, pre-existing)
 
 `demo-weld-linux` on the Fedora ThinkPad (Fedora 44, **AMD Radeon Renoir,
@@ -125,6 +173,16 @@ this is not a wgpu 30 regression — it is the lane meeting hardware it was neve
 verified on. `demo-weld-linux`'s own header says "Validated against Intel/Mesa
 + Vulkan + X11". Clearing this receipt needs an Intel/Mesa Linux box, or
 `VK_EXT_image_drm_format_modifier` support in wgpu.
+
+**The cef wgpu-29 pin is not implicated.** The obvious suspicion, given that
+the weld demos resolve two wgpu rows, is that the Linux import somehow ran on
+cef's 29. It did not. `welding::native_frame::vulkan_dmabuf` refuses
+`DRM_FORMAT_MOD_INVALID` in an early guard at `vulkan_dmabuf.rs:62`, before it
+makes any wgpu or Vulkan call, so the result is byte-identical on 28, 29 and
+30. Welding never calls cef's `import_to_wgpu`, and cef's own importer builds
+its image with `ImageDrmFormatModifierExplicitCreateInfoEXT`, so it requires an
+explicit modifier too and would refuse the same buffer. The constraint is what
+CEF hands over on AMD/RADV, not which wgpu receives it.
 
 Do not be fooled by the snapshot at
 `testing/rendering/2026-08-16_wgpu30_linux_dmabuf.png`: it shows a rendered
@@ -159,10 +217,35 @@ reverted; the ThinkPad's only dirty path is its untracked CEF download.
 - **This box**: Windows 11, RTX 4060 Laptop, rustc 1.97.1.
 - **Q-PC** `markik@192.168.4.105`: Intel iMac, macOS 15.7.7, x86_64, rustc 1.97.1.
 - **ThinkPad** `markik@192.168.4.28`: Fedora 44, AMD Renoir/RADV, rustc 1.96.0.
-- **Mayola's iMac** `.32` (M4, the preferred mac target) was **not reachable** —
-  ssh/22 refused. The macOS receipt therefore ran on Intel, not Apple Silicon,
-  so `aarch64-apple-darwin` IOSurface is still unproven at runtime. It does
-  cross-compile clean.
+- **Mayola's iMac** `markik@192.168.4.57`: Apple M4 (Mac16,3), macOS 26.5.1
+  (25F80), arm64, rustc 1.97.1. Host key ED25519
+  `SHA256:0sT34z10ELgEyR8+LJFVDvOov3iGNuPz8gOx4QU48vo`, matching the recorded
+  fingerprint.
 
-Note the recorded addresses in the SSH access memory are `192.168.1.x`; the
-network is now `192.168.4.x` with the same last octets.
+### Reaching the M4, and two wrong turns worth not repeating
+
+This machine read as "down" for most of the day and was not. Both diagnoses
+along the way were wrong, in ways a sweep alone could not distinguish.
+
+**It is wired to a business Ethernet line on `192.168.1.0/24`**, which is a
+different network from the `Boykin Mesh Network` Wi-Fi the Windows box uses,
+with no route between them in either direction. No setting on the Mac could
+have fixed that; Remote Login was on the whole time. It was reached by joining
+its Wi-Fi to the mesh network while leaving Ethernet plugged in, which macOS
+runs concurrently, giving it a second address on the reachable side.
+
+Two traps produced confident wrong answers before that:
+
+1. **The Wi-Fi is a `/22`, not a `/24`.** `192.168.4.0/22` spans
+   `192.168.4.0`–`192.168.7.255`. A sweep of `192.168.4.x` covers a quarter of
+   it and reads as exhaustive. Check `Get-NetIPAddress` for the prefix length
+   before believing a subnet sweep.
+2. **`.32` from the old note is now an iOS device**, not the iMac. It answers
+   ping, which reads as "the host is up but sshd is off". Port 62078 is
+   `lockdownd` and identifies an iPhone or iPad; a Mac would not have it.
+
+The cheap decisive test was neither sweep: **mDNS**. Only Q-PC answered
+`_ssh._tcp.local`. Since mDNS is link-local multicast, a machine on the same
+segment answers regardless of which services it runs, so silence there is
+positive evidence of a different broadcast domain rather than of a closed port.
+Reach for it before concluding anything from a port scan.
