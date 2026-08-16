@@ -369,7 +369,8 @@ where
             ph,
             ExternalTexturePlacement::new([0.0, 0.0, pw as f32, ph as f32]),
         );
-        frame.present();
+        // wgpu 30 moved presentation from SurfaceTexture to Queue.
+        surface.queue().present(frame);
         // A capture armed by the application: run it while the rasterized
         // view is still alive.
         if let Some(capture) = self.s.pending_capture.take() {

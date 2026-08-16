@@ -359,7 +359,8 @@ pub(crate) mod windowed {
                 win_h,
                 placement(content_rect, self.scale_factor),
             );
-            frame.present();
+            // wgpu 30 moved presentation from SurfaceTexture to Queue.
+            host.queue().present(frame);
             self.redraws += 1;
             if self
                 .config

@@ -18,7 +18,14 @@ inker.workspace = true
 # Sibling repo consumed one-way; a **git dep** (not a path dep) so a bare clone
 # builds without the `wgpu-scry` sibling layout. A local checkout is picked up via
 # the gitignored `.cargo/config.toml` `paths` override.
-scrying = { git = "https://github.com/merely-made/wgpu-scry.git", branch = "main" }
+# scrying carries feature-selected wgpu rows so hosts on adjacent majors do
+# not move in lockstep. Its default row is still wgpu-29 while the wider GUI
+# ecosystem straddles 29/30, so genet names its own row explicitly: an
+# imported texture has to come from the same wgpu major as the host device,
+# and taking the default silently put a second wgpu stack in this crate.
+scrying = { git = "https://github.com/merely-made/wgpu-scry.git", branch = "main", default-features = false, features = [
+    "wgpu-30",
+] }
 dpi.workspace = true
 tracing.workspace = true
 wgpu.workspace = true

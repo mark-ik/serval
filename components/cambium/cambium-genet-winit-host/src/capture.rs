@@ -138,7 +138,10 @@ fn read_texture_rgba(
         eprintln!("[cambium-host] capture readback poll failed");
         return None;
     }
-    let data = slice.get_mapped_range();
+    let Ok(data) = slice.get_mapped_range() else {
+        eprintln!("[cambium-host] capture readback get_mapped_range failed");
+        return None;
+    };
     let mut out = Vec::with_capacity((unpadded * height) as usize);
     for row in 0..height {
         let start = (row * padded) as usize;

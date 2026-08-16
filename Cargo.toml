@@ -359,14 +359,14 @@ url = "2.5"
 urlpattern = "0.3"
 utf-8 = "0.7"
 uuid = { version = "1.23.1", features = ["v4", "v5"] }
-vello = "0.9"
-vello_cpu = "0.0.8"
+vello = "0.10"
+vello_cpu = "0.2.0"
 webdriver = { version = "0.53.0", default-features = false }
 webpki-roots = "1.0"
 web_atoms = "0.2"
-wgpu = "29"
-wgpu-core = "29"
-wgpu-types = "29"
+wgpu = "30"
+wgpu-core = "30"
+wgpu-types = "30"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D12",
@@ -607,9 +607,14 @@ ipc-channel = { path = "support/patches/ipc-channel" }
 # through `[workspace.dependencies]` above and directly by the vendored
 # stylo_taffy adapter. See docs/2026-05-20_stylo_taffy_adoption_plan.md
 # and the css transitions plan for the original rationale.
-# vello patch removed 2026-05-15 per Mark's audit — bumping to vello 0.9
-# directly from crates.io. If vello upstream needs a fork applied later,
-# re-add here pinned to a specific upstream version.
+# vello, re-forked 2026-08-15 for the stack-wide wgpu 30 unification. The
+# 2026-05-15 audit removed the previous patch and took vello 0.9 from
+# crates.io; that is no longer possible, because upstream vello 0.10 still
+# requires wgpu 29 and their own migration (linebender/vello#1754) is open,
+# stalled, and conflicted. The branch is the v0.10.0 tag plus exactly the
+# API changes in that PR, so this entry retires by deletion when a wgpu-30
+# vello (0.11) ships. Branch, not rev: owned forks track branches.
+vello = { git = "https://github.com/mark-ik/vello.git", branch = "mark-ik/wgpu-30" }
 # For WebRender / netrender:
 # The netrender/ workspace (formerly the webrender-wgpu fork) dropped
 # webrender, webrender_api, and wr_malloc_size_of as separate crates. Local

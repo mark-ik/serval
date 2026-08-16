@@ -720,7 +720,8 @@ pub(crate) mod windowed {
                 self.height,
                 ExternalTexturePlacement::new([0.0, 0.0, self.width as f32, self.height as f32]),
             );
-            frame.present();
+            // wgpu 30 moved presentation from SurfaceTexture to Queue.
+            host.queue().present(frame);
             self.redraws += 1;
             if let Some(limit) = self.config.frames {
                 if self.redraws >= limit {

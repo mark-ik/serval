@@ -270,6 +270,9 @@ async fn run() -> Result<(), String> {
             width: W,
             height: H,
             present_mode: wgpu::PresentMode::Fifo,
+            // wgpu 30 made surface color space explicit; Auto keeps the
+            // pre-30 platform-chosen behavior.
+            color_space: wgpu::SurfaceColorSpace::Auto,
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -329,6 +332,7 @@ async fn run() -> Result<(), String> {
     });
     blitter.copy(&device, &mut encoder, &vello_view, &frame_view);
     queue.submit([encoder.finish()]);
-    frame.present();
+    // wgpu 30 moved presentation from SurfaceTexture to Queue.
+    queue.present(frame);
     Ok(())
 }

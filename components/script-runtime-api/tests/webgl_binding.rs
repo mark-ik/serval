@@ -85,6 +85,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
                     power_preference: wgpu::PowerPreference::LowPower,
                     force_fallback_adapter: false,
                     compatible_surface: None,
+                    apply_limit_buckets: false,
                 }))
                 .expect("wgpu adapter");
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
