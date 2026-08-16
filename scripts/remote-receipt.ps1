@@ -88,6 +88,13 @@ Name recorded as the device holding the bytes. Defaults to this machine's
 hostname; blob availability is per device, so a wrong name claims bytes are
 somewhere they are not.
 
+.PARAMETER IngestDataRoot
+The resident host's data root. Without it, ingest stores the blobs but leaves
+the authored events sitting beside the receipt, so the run never becomes a
+fact in the personal graph and the card never appears. Pass it to complete the
+hand-off: the resident host picks the events up within ~10s and authors them,
+because it, not this script, holds the signing identity and the log.
+
 .EXAMPLE
 ./remote-receipt.ps1 -Target mark@thinkpad -Repo woodshed `
   -RemotePath /home/mark/Code/repos/woodshed -Package woodshed-genet `
@@ -113,7 +120,8 @@ param(
     [string] $Out,
     [string] $IngestBin,
     [string] $IngestStore,
-    [string] $IngestDevice = $env:COMPUTERNAME
+    [string] $IngestDevice = $env:COMPUTERNAME,
+    [string] $IngestDataRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -370,7 +378,9 @@ if ($IngestBin) {
     if (-not (Test-Path $IngestBin)) {
         Fail "no receipt_ingest at $IngestBin (cargo build -p graphshell --features personal-sync --bin receipt_ingest)"
     }
-    $ingest = & $IngestBin --dir $Out --store $IngestStore --device $IngestDevice 2>&1
+    $ingestArgs = @('--dir', $Out, '--store', $IngestStore, '--device', $IngestDevice)
+    if ($IngestDataRoot) { $ingestArgs += @('--data-root', $IngestDataRoot) }
+    $ingest = & $IngestBin @ingestArgs 2>&1
     if ($LASTEXITCODE -eq 0) {
         $ingest | ForEach-Object { Note $_ }
     } else {
