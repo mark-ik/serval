@@ -39,8 +39,8 @@ a unit.
 | 2 | Netrender | Done |
 | 3 | Genet | Done except the three inker engines |
 | 4 | CubeCL / Burn, then Mere and Quint | Not started |
-| 5 | Renderling and Crabslab | Not started |
-| 6 | Downstream applications | Done for all five, mesocosm deferred |
+| 5 | Renderling and Crabslab | Done, plus mesocosm and paredros |
+| 6 | Downstream applications | Done for all five, plus mesocosm |
 | 7 | wgpu-graft / scry / weld defaults | In progress elsewhere |
 
 ### 1. Vello fork
@@ -145,6 +145,64 @@ or a missing symbol is merely locked before editing requirements to chase
 it: `cargo update -p <name>@<version>` for a duplicate, `cargo update -p
 <name>` to move a git source.
 
+### 5. Renderling, Crabslab, and the games wing
+
+Both had uncommitted wgpu-29 work in the tree. Neither was buildable as
+found: crabslab's missed its own `wgpu_slab` test helper, and renderling's
+left `crates/example` and `tests/wasm.rs` on the wgpu 26 API. So there was no
+sound wgpu-29 checkpoint to commit, and both went to 30 in one commit each,
+on branches (`mark-ik/wgpu-30`). Neither repo has a fork remote, so both
+branches are local only.
+
+Two things were worth the care the plan asked for:
+
+- crabslab's uncommitted work sat on the **wrong base**. The checkout was
+  detached at tag v0.6.6, whose craballoc is 0.3.0, and the work relabelled
+  it 0.3.1 to satisfy renderling's `craballoc = "0.3.1"`. Published 0.3.1
+  came a week after that tag, so renderling was being fed older code wearing
+  a newer label. Commit `1ae313c` is byte-identical to published 0.3.1 across
+  all five source files; `122a96f`, one commit later, already differs by 172
+  lines in `value.rs`. The port is rebased onto `1ae313c`.
+- the work also carried a real fix worth keeping: `SlabBuffer`'s
+  `source_slab_buffer` is `Weak` rather than `Arc`, because the allocator
+  stores a `SlabBuffer` in that very slot and a strong pointer is a
+  self-referential cycle that leaks the GPU buffer.
+
+**The interesting bug.** With everything ported, renderling's whole 95-test
+GPU suite failed with
+
+    Validation Error: Copy at offset 17179869180 bytes would end up
+    overrunning the bounds of the Destination buffer of size 64
+
+17179869180 is `u32::MAX * 4`. An empty `SlabUpdate` carries `Array::NONE`,
+whose starting index is `u32::MAX`, and craballoc turned that into a
+`write_buffer` at that offset with **zero bytes** of data. wgpu 26 ignored
+the offset for an empty write; wgpu 30 validates it regardless of length. A
+long-standing no-op became fatal. Guarding on `elements.is_empty()` in both
+runtimes fixes it, and the suite goes green.
+
+Worth generalising: the first three suspects were all wrong, and each was
+eliminated by a control rather than by reading code. A pristine wgpu 26
+worktree passing 95/95 is what established there was a real regression at
+all; reverting the `Weak` change on the correct base is what cleared it;
+and the probe that printed the offending update (`starting_index=4294967295
+len=0 elements=0 buffer_size=64`) is what actually named the cause. Keep the
+control until the cause is named.
+
+Downstream of those two: mesocosm and paredros both moved. mesocosm's own
+HEAD commit had recorded this exact split as a blocker on lane F ("a
+`wgpu::Buffer` does not cross a major version"), diagnosed it correctly, and
+concluded the repair is to move the row. Its lock was also holding netrender
+at a pre-30 commit, which is the only reason it still built. paredros needed
+mesocosm first, since `mesocosm-render` is a path dep there and held the last
+wgpu 29.
+
+**Test parallelism.** At wgpu 30, four of renderling's heavier tests fail
+with wgpu "Out of Memory" under the default test parallelism, where the wgpu
+26 control passes all 95 in parallel repeatably. Single-threaded is clean at
+both. wgpu 30 wants more VRAM under concurrent device load; upstream crabslab
+already moved its CI to single-threaded, and renderling should follow.
+
 ## Open question: `apply_limit_buckets`
 
 wgpu 30's new `RequestAdapterOptions::apply_limit_buckets` maps an adapter's
@@ -165,6 +223,14 @@ helpers, which correctly want real limits), the paint vulkan timeline
 interop, genet-wpt's conformance runner, and pelt's three platform smokes.
 
 ## Progress
+
+**2026-08-16 (later).** Step 5 finished, and it pulled mesocosm and paredros
+in with it. crabslab, renderling, mesocosm and paredros each resolve one wgpu
+row at 30; renderling's 95-test GPU suite passes single-threaded, matching
+its wgpu 26 control exactly, and mesocosm's 440 tests pass. Only step 4
+(CubeCL/Burn, then Mere and Quint) and the inker engines' dependency on step
+7 remain. Note quint's resident lane is still wgpu 29, which is step 4's
+work.
 
 **2026-08-16.** Step 6 finished. woodshed, hocket and isometry are verified
 green after clearing the three non-wgpu blockers described above; isometry
