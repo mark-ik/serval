@@ -270,6 +270,9 @@ async fn run() -> Result<(), String> {
             width: W,
             height: H,
             present_mode: wgpu::PresentMode::Fifo,
+            // wgpu 30 made surface color space explicit; Auto keeps the
+            // pre-30 platform-chosen behavior.
+            color_space: wgpu::SurfaceColorSpace::Auto,
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,

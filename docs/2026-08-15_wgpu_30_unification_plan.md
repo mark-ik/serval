@@ -313,9 +313,17 @@ graph, so it never compiles.
 genet's 65 WebGL GPU tests still pass (7.0s), and its lock now holds zero
 wgpu-29 entries.
 
-What remains is not migration work: the `apply_limit_buckets` policy question
-below, the platform receipts (Windows headed composition, CubeCL compute,
-wasm WebGPU, Linux DMA-BUF, macOS IOSurface), and the two forks that retire on
+The platform receipts were then run: see
+[2026-08-16_wgpu_30_platform_receipts.md](2026-08-16_wgpu_30_platform_receipts.md).
+Five of six pass. Linux DMA-BUF fails on the only Linux box available, because
+CEF hands it an implicit DRM modifier that wgpu cannot import without
+`VK_EXT_image_drm_format_modifier` — a documented AMD/RADV limitation that
+predates this work, on a lane verified against Intel/Mesa. That same run also
+observed the predicted wgpu 30 fence bug (#9918, fixed on the unreleased v30
+branch).
+
+What remains beyond that is not migration work: the `apply_limit_buckets`
+policy question below, and the two forks that retire on
 their own upstream schedule — the vello wgpu-30 fork when linebender ships a
 wgpu-30 vello, and `mere/support/patches/cubecl-wgpu` when the burn 0.22
 migration happens.
