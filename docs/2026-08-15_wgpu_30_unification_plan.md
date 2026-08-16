@@ -41,7 +41,7 @@ a unit.
 | 4 | CubeCL / Burn, then Mere and Quint | Done, via the backport after all |
 | 5 | Renderling and Crabslab | Done, plus mesocosm and paredros |
 | 6 | Downstream applications | Done for all five, plus mesocosm |
-| 7 | wgpu-graft / scry / weld defaults | In progress elsewhere |
+| 7 | wgpu-graft / scry / weld defaults | weld flipped; scry and graft still default 29 |
 
 ### 1. Vello fork
 
@@ -238,6 +238,31 @@ with wgpu "Out of Memory" under the default test parallelism, where the wgpu
 26 control passes all 95 in parallel repeatably. Single-threaded is clean at
 both. wgpu 30 wants more VRAM under concurrent device load; upstream crabslab
 already moved its CI to single-threaded, and renderling should follow.
+
+### 7. The compat repos' defaults
+
+All three carry feature-selected wgpu rows (28/29/30) — that multi-row surface
+is the point of these crates and it stays. Only the *default* row is in
+question.
+
+**welding: flipped to 30 on 2026-08-16.** Its workspace `wgpu` pin moved with
+it, and has to: the demos take `wgpu.workspace = true` *and* `welding` with
+default features, so a mismatch puts two majors in one demo graph. Flipping
+surfaced the usual API breaks in demo code written against 29. Verified on
+Windows, macOS and Linux targets, so the Metal and DMABUF arms are checked
+rather than assumed; demo-weld-mac is unverified because cef-dll-sys needs a
+Darwin C/C++ toolchain a Windows host cannot provide.
+
+**grafting: deliberately still 29, and the reason is at the pin** — "wgpu-29
+stays the default while the GUI ecosystem straddles 29/30 (bevy 0.19 and slint
+1.17 are on 29; eframe 0.36 is on 30)." grafting is consumed one-way by
+outside GUI hosts, so its default serves that ecosystem rather than this
+stack. Our own consumers set `default-features = false` and forward the row
+they want, which is exactly why welding was unaffected by it. Flipping this
+one is a call about who the crate is for, not a migration step.
+
+**scrying: still 29, with no stated rationale** beyond the generic row
+comment. It looks like a plain leftover.
 
 ## Open question: `apply_limit_buckets`
 
