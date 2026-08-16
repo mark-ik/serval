@@ -38,7 +38,7 @@ a unit.
 | 1 | Vello fork | Done |
 | 2 | Netrender | Done |
 | 3 | Genet | Done except the three inker engines |
-| 4 | CubeCL / Burn, then Mere and Quint | Not started |
+| 4 | CubeCL / Burn, then Mere and Quint | Done, via the backport after all |
 | 5 | Renderling and Crabslab | Done, plus mesocosm and paredros |
 | 6 | Downstream applications | Done for all five, plus mesocosm |
 | 7 | wgpu-graft / scry / weld defaults | In progress elsewhere |
@@ -145,6 +145,42 @@ or a missing symbol is merely locked before editing requirements to chase
 it: `cargo update -p <name>@<version>` for a duplicate, `cargo update -p
 <name>` to move a git source.
 
+### 4. CubeCL, Burn, Mere and Quint
+
+The 2026-08-15 progress note below says this step "no longer needs the narrow
+CubeCL 0.10 backport" because CubeCL and Burn had crossed to wgpu 30 on their
+own. **That was wrong, and the backport is what shipped.**
+
+Two independent obstacles killed the prerelease row:
+
+1. Mere's own [burn 0.22 migration plan](../../mere/design_docs/mere_docs/implementation_strategy/2026-08-09_burn_0_22_migration_plan.md)
+   is release-gated on stable 0.22, which still is not published, with an
+   explicit "unless Mark explicitly reopens that gate". He was asked and did
+   reopen it.
+2. It does not resolve regardless. On `cfg(any(windows, linux, macos,
+   android))`, `cubecl-runtime 0.11.0-pre.2` depends on `cubecl-environment`
+   with the `cache` feature **non-optionally** — a persistent autotune cache —
+   pulling `rusqlite ^0.40` and so `libsqlite3-sys ^0.38`. Mere's
+   `p2panda-store` reaches `sqlite` through its `groups`/`encryption`
+   features, which `gemot` needs, pulling `sqlx` and so
+   `libsqlite3-sys >=0.30.1, <0.38`. No released sqlx, 0.9.0 included, reaches
+   0.38, and `libsqlite3-sys` sets `links = "sqlite3"`, so exactly one may
+   exist. Version selection cannot fix it.
+
+So the original plan's step 4 was right. `cubecl-wgpu` is the **only** crate in
+the entire burn 0.21 / cubecl 0.10 stack that names wgpu (cubecl, cubecl-core,
+cubecl-runtime and cubecl-common have no wgpu dependency at all), so one
+vendored crate carries the whole resident lane across the major. It lives at
+`mere/support/patches/cubecl-wgpu`, three call sites changed, burn stays at
+stable 0.21.
+
+Quint's own resident lane needed one non-obvious fix beyond the usual set.
+wgpu 30 added `entry_points` to `ShaderModuleDescriptorPassthrough`, and its
+`Default` is an **empty list**, because passthrough skips naga and therefore
+cannot reflect entry points. Leaving it defaulted compiles cleanly and then
+fails at pipeline creation with "Unable to find entry point 'repulse'". Any
+other SPIR-V passthrough site in the family will hit this the same way.
+
 ### 5. Renderling, Crabslab, and the games wing
 
 Both had uncommitted wgpu-29 work in the tree. Neither was buildable as
@@ -223,6 +259,18 @@ helpers, which correctly want real limits), the paint vulkan timeline
 interop, genet-wpt's conformance runner, and pelt's three platform smokes.
 
 ## Progress
+
+**2026-08-16 (step 4).** Mere is on wgpu 30, by the narrow CubeCL backport
+rather than the prerelease row, for the two reasons in §4 above. One
+wgpu/wgpu-core/wgpu-hal/wgpu-types/naga row at 30, vello 0.10, stable burn
+0.21, one libsqlite3-sys. Quint's full suite passes on 30 including the four
+resident GPU tests and the committed-SPIR-V receipt. Every step except 7 is
+now done, and 7 is in progress elsewhere; the three genet inker engines land
+when it does.
+
+Known red, pre-existing and unrelated: mere's `--all-targets` fails in
+mere-canvas's test on a missing `NodeMaterial::gravity_scale`, from commit
+8d14c12c.
 
 **2026-08-16 (later).** Step 5 finished, and it pulled mesocosm and paredros
 in with it. crabslab, renderling, mesocosm and paredros each resolve one wgpu
