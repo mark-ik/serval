@@ -7139,6 +7139,13 @@ fn reverse_self_alignment(alignment: Option<AlignItems>) -> Option<AlignItems> {
             AlignItemsKeyword::End => AlignItemsKeyword::Start,
             AlignItemsKeyword::FlexStart => AlignItemsKeyword::FlexEnd,
             AlignItemsKeyword::FlexEnd => AlignItemsKeyword::FlexStart,
+            // Reversing an axis swaps its self-relative ends too. These reach
+            // here only when the subject's own flow has not already resolved
+            // them to a physical side; taffy resolves the pair against an
+            // Ltr/Rtl `direction` alone, so the flow-aware resolution above
+            // stays responsible for vertical writing modes.
+            AlignItemsKeyword::SelfStart => AlignItemsKeyword::SelfEnd,
+            AlignItemsKeyword::SelfEnd => AlignItemsKeyword::SelfStart,
             AlignItemsKeyword::Center
             | AlignItemsKeyword::Baseline
             | AlignItemsKeyword::Stretch => alignment.keyword,

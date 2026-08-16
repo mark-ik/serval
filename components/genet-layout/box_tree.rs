@@ -1947,7 +1947,10 @@ impl<Id: Copy + Eq + Hash> BoxTreeView<'_, Id> {
             let taffy_display = stylo_taffy::convert::display(display);
             match (taffy_display, has_children) {
                 (Display::None, _) => taffy::compute_hidden_layout(tree, node),
-                (Display::Block, true) => {
+                // taffy 0.13 split `flow-root` out of `block`. This incumbent
+                // lane routes both to block layout; the BFC distinction lives
+                // in Livery/Buckram, which owns formatting contexts.
+                (Display::Block | Display::FlowRoot, true) => {
                     taffy::compute_block_layout(tree, node, inputs, block_ctx)
                 },
                 (Display::Flex, true) => taffy::compute_flexbox_layout(tree, node, inputs),

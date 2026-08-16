@@ -35,7 +35,7 @@ inker = { path = "../inker" }
 accesskit = { workspace = true }
 # taffy must match genet-layout's experimental pin (layout() takes a taffy::Size
 # viewport); euclid for the viewport size the image planes carry.
-taffy = { version = "=0.12.1", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
+taffy = { version = "=0.13.0", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
 euclid = { workspace = true }
 
 [dev-dependencies]

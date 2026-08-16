@@ -64,7 +64,7 @@ stylo_traits = { workspace = true }
 # `taffy::Style` we consume). Reach is genet-layout + paint's dev-dep;
 # Servo's components/layout stays on 0.10.1. See
 # docs/2026-05-20_stylo_taffy_adoption_plan.md.
-taffy = { version = "=0.12.1", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
+taffy = { version = "=0.13.0", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
 stylo_taffy = { version = "0.3.0-beta.1", features = ["floats"] }
 # Host-neutral diagnostics facade: this crate only EMITS tracing events; the
 # consuming app (e.g. meerkat) installs the subscriber. No dep on any app or

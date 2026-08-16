@@ -492,13 +492,23 @@ pub fn grid_template_area(input: &stylo::NamedArea) -> taffy::GridTemplateArea<A
 
 #[inline]
 #[cfg(feature = "grid")]
-fn grid_template_areas(input: &stylo::GridTemplateAreas) -> Vec<taffy::GridTemplateArea<Atom>> {
+fn grid_template_areas(input: &stylo::GridTemplateAreas) -> Option<taffy::GridTemplateAreas<Atom>> {
     match input {
-        stylo::GridTemplateAreas::None => Vec::new(),
+        stylo::GridTemplateAreas::None => None,
         stylo::GridTemplateAreas::Areas(template_areas_arc) => {
-            crate::wrapper::GridAreaWrapper(&template_areas_arc.0.areas)
-                .into_iter()
-                .collect()
+            // taffy 0.13 replaced the bare area list with a struct carrying the
+            // template's extent. Stylo does not surface those counts alongside
+            // the areas, so derive them from the areas' own end lines.
+            let mut template = taffy::GridTemplateAreas {
+                areas: crate::wrapper::GridAreaWrapper(&template_areas_arc.0.areas).into_iter().collect(),
+                row_count: 0,
+                column_count: 0,
+            };
+            template.row_count =
+                template.areas.iter().map(|area| area.row_end).max().unwrap_or(1).saturating_sub(1);
+            template.column_count =
+                template.areas.iter().map(|area| area.column_end).max().unwrap_or(1).saturating_sub(1);
+            Some(template)
         }
     }
 }

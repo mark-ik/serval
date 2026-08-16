@@ -1,0 +1,879 @@
+diff --git a/src/compute/block.rs b/src/compute/block.rs
+--- a/src/compute/block.rs
++++ b/src/compute/block.rs
+@@ -15,7 +15,7 @@
+ };
+ 
+ #[cfg(feature = "float_layout")]
+-use super::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
++use super::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator, InlineFloatBand};
+ #[cfg(feature = "float_layout")]
+ use crate::{Clear, Float, FloatDirection};
+ 
+@@ -180,6 +180,36 @@
+         slot
+     }
+ 
++    /// Snapshot the active float exclusion bands for inline content laid out in
++    /// this block, in the block's content-box-local coordinate space: `y`
++    /// measured from the content-box top, `left` / `right` insets measured
++    /// inward from the content-box edges. Empty when no floats are active at or
++    /// below `min_y` (block-local).
++    ///
++    /// genet patch (float wrap-around): the per-line widths that let a
++    /// paragraph's lines wrap to the side of a float and reclaim the full
++    /// column below it. Mirrors the coordinate handling of
++    /// [`Self::find_content_slot`] (subtract `y_offset` to reach block-local y;
++    /// `max` each segment inset with the content-box inset and re-base to the
++    /// content-box edge), but returns every band rather than picking one slot.
++    /// Note: only the x-axis content-box insets are tracked, so a top
++    /// padding/border on an inline-context leaf is not yet reflected in `y`
++    /// (acceptable for the common no-top-padding case; see the float-wrap spike).
++    pub fn inline_exclusion_bands(&self, min_y: f32) -> Vec<InlineFloatBand> {
++        let cbi = self.content_box_insets;
++        self.bfc
++            .float_context
++            .exclusion_bands(min_y + self.y_offset)
++            .into_iter()
++            .map(|(y, insets)| InlineFloatBand {
++                y_start: y.start - self.y_offset,
++                y_end: y.end - self.y_offset,
++                left: (insets[0].max(cbi[0]) - cbi[0]).max(0.0),
++                right: (insets[1].max(cbi[1]) - cbi[1]).max(0.0),
++            })
++            .collect()
++    }
++
+     /// Search for a space suitable for laying out a box that establishes an independent
+     /// formatting context (whose border box must not overlap floats)
+     pub fn find_bfc_slot(
+@@ -436,6 +466,7 @@
+     let raw_border = style.border();
+     let raw_margin = style.margin();
+     let aspect_ratio = style.aspect_ratio();
++    let size_containment = style.size_containment();
+     let padding = raw_padding.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+     let border = raw_border.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+     let direction = style.direction();
+@@ -486,10 +517,14 @@
+     // while probing intrinsic sizes, so measure passes stay content-based. Only a
+     // newly-filled axis is adopted (and clamped); an incoming known size is left
+     // as the parent resolved it (re-clamping would undo padding/border overrides).
+-    let known_dimensions = {
++    let mut known_dimensions = {
+         let derived = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+         Size { width: known_dimensions.width.or(derived.width), height: known_dimensions.height.or(derived.height) }
+     };
++    if size_containment.height && known_dimensions.height.is_none() {
++        known_dimensions.height =
++            Some(padding_border_size.height.maybe_clamp(min_size.height, max_size.height));
++    }
+     let container_content_box_size = known_dimensions.maybe_sub(content_box_inset.sum_axes());
+ 
+     let overflow = style.overflow();
+@@ -498,11 +533,15 @@
+     // Determine margin collapsing behaviour
+     let own_margins_collapse_with_children = Line {
+         start: vertical_margins_are_collapsible.start
++            && !size_containment.width
++            && !size_containment.height
+             && !is_scroll_container
+             && style.position() == Position::Relative
+             && padding.top == 0.0
+             && border.top == 0.0,
+         end: vertical_margins_are_collapsible.end
++            && !size_containment.width
++            && !size_containment.height
+             && !is_scroll_container
+             && style.position() == Position::Relative
+             && padding.bottom == 0.0
+@@ -511,6 +550,8 @@
+     };
+     let has_styles_preventing_being_collapsed_through = !style.is_block()
+         || block_ctx.is_bfc_root()
++        || size_containment.width
++        || size_containment.height
+         || is_scroll_container
+         || style.position() == Position::Absolute
+         || padding.top > 0.0
+@@ -530,8 +571,12 @@
+     // 2. Compute container width
+     let container_outer_width = known_dimensions.width.unwrap_or_else(|| {
+         let available_width = available_space.width.maybe_sub(content_box_inset.horizontal_axis_sum());
+-        let intrinsic_width = determine_content_based_container_width(tree, &items, available_width)
+-            + content_box_inset.horizontal_axis_sum();
++        let intrinsic_width = if size_containment.width {
++            content_box_inset.horizontal_axis_sum()
++        } else {
++            determine_content_based_container_width(tree, &items, available_width)
++                + content_box_inset.horizontal_axis_sum()
++        };
+         intrinsic_width.maybe_clamp(min_size.width, max_size.width).maybe_max(Some(padding_border_size.width))
+     });
+ 
+@@ -1013,6 +1058,7 @@
+                         content_size: item_layout.content_size,
+                         scrollbar_size,
+                         location,
++                        static_location: location,
+                         padding: item.padding,
+                         border: item.border,
+                         margin: item_non_auto_margin,
+@@ -1363,6 +1409,7 @@
+                 content_size: item_layout.content_size,
+                 scrollbar_size,
+                 location,
++                static_location: location,
+                 padding: item.padding,
+                 border: item.border,
+                 margin: resolved_margin,
+@@ -1676,6 +1723,7 @@
+                 content_size: layout_output.content_size,
+                 scrollbar_size,
+                 location,
++                static_location: item.static_position,
+                 padding,
+                 border,
+                 margin: resolved_margin,
+diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
+--- a/src/compute/flexbox.rs
++++ b/src/compute/flexbox.rs
+@@ -27,6 +27,12 @@
+     /// The order of the node relative to it's siblings
+     order: u32,
+ 
++    /// The CSS `order` value, used to stable-sort items into order-modified
++    /// document order before line collection. Distinct from `order` above,
++    /// which stays the document index used for paint/output ordering.
++    /// (genet patch: flex `order` support.)
++    css_order: i32,
++
+     /// The base size of this item
+     size: Size<Option<f32>>,
+     /// The minimum allowable size of this item
+@@ -178,6 +184,7 @@
+     let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+     let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+     let padding_border_sum = padding.sum_axes() + border.sum_axes();
++    let size_containment = style.size_containment();
+     let box_sizing_adjustment =
+         if style.box_sizing() == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
+ 
+@@ -209,8 +216,17 @@
+     });
+ 
+     // The size of the container should be floored by the padding and border
+-    let styled_based_known_dimensions =
+-        known_dimensions.or(min_max_definite_size.or(clamped_style_size).maybe_max(padding_border_sum));
++    let containment_size = Size {
++        width: size_containment.width.then_some(padding_border_sum.width),
++        height: size_containment.height.then_some(padding_border_sum.height),
++    };
++    let styled_based_known_dimensions = known_dimensions.or(
++        min_max_definite_size
++            .or(clamped_style_size)
++            .or(containment_size)
++            .maybe_clamp(min_size, max_size)
++            .maybe_max(padding_border_sum),
++    );
+ 
+     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
+     // is ComputeSize (and thus the container's size is all that we're interested in)
+@@ -256,6 +272,12 @@
+     debug_log!("generate_anonymous_flex_items");
+     let mut flex_items = generate_anonymous_flex_items(tree, node, &constants);
+ 
++    // genet patch (flex `order`): CSS `order` lays items out (and paints them)
++    // in order-modified document order — items sort by ascending `order`, ties
++    // broken by document order. A *stable* sort keeps equal-`order` items (the
++    // common case, 0) in document order.
++    flex_items.sort_by_key(|item| item.css_order);
++
+     // 9.2. Line Length Determination
+ 
+     // 2. Determine the available main and cross space for the flex items
+@@ -539,6 +561,7 @@
+             FlexItem {
+                 node: child,
+                 order: index as u32,
++                css_order: child_style.order(),
+                 size: child_style
+                     .size()
+                     .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
+@@ -2067,6 +2090,7 @@
+             content_size,
+             scrollbar_size,
+             location,
++            static_location: location,
+             padding: item.padding,
+             border: item.border,
+             margin: item.margin,
+@@ -2401,8 +2425,72 @@
+         let cross_end_scrollbar_offset =
+             if cross_is_rtl { 0.0 } else { constants.scrollbar_gutter.cross(constants.dir) };
+ 
+-        // Apply main-axis alignment
+-        // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);
++        // The static position is the flex-aligned position with all inset
++        // properties treated as auto. Keep it distinct from the final used
++        // position: an explicit inset replaces this position, but does not
++        // rewrite the formatter's static-position result.
++        //
++        // Stretch is an invalid value for justify_content in the flexbox
++        // algorithm, so we treat it as if it wasn't set (and thus we default
++        // to FlexStart behaviour).
++        //
++        // The `safe` overflow-position keyword is intentionally NOT applied
++        // here, even when the abs-positioned item would overflow the main
++        // axis: Chrome does not apply safe fallback to `justify-content` on
++        // absolutely-positioned flex items (only the cross-axis `align-self`
++        // does so). Matching the layout authority over a strict spec read
++        // keeps gentest fixtures green; reconsider if Chromium changes
++        // behavior.
++        let static_offset_main = match (
++            constants.justify_content.unwrap_or(JustifyContent::START).keyword(),
++            main_axis_flex_start_reversed,
++        ) {
++            (AlignContentKeyword::SpaceBetween, _)
++            | (AlignContentKeyword::Stretch, false)
++            | (AlignContentKeyword::FlexStart, false)
++            | (AlignContentKeyword::FlexEnd, true) => {
++                constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
++            }
++            (AlignContentKeyword::Start, false) => {
++                constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
++            }
++            (AlignContentKeyword::Start, true) => {
++                constants.container_size.main(constants.dir)
++                    - constants.content_box_inset.main_end(constants.dir)
++                    - final_size.main(constants.dir)
++                    - resolved_margin.main_end(constants.dir)
++            }
++            (AlignContentKeyword::End, false) => {
++                constants.container_size.main(constants.dir)
++                    - constants.content_box_inset.main_end(constants.dir)
++                    - final_size.main(constants.dir)
++                    - resolved_margin.main_end(constants.dir)
++            }
++            (AlignContentKeyword::End, true) => {
++                constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
++            }
++            (AlignContentKeyword::FlexEnd, false)
++            | (AlignContentKeyword::FlexStart, true)
++            | (AlignContentKeyword::Stretch, true) => {
++                constants.container_size.main(constants.dir)
++                    - constants.content_box_inset.main_end(constants.dir)
++                    - final_size.main(constants.dir)
++                    - resolved_margin.main_end(constants.dir)
++            }
++            (AlignContentKeyword::SpaceEvenly, _)
++            | (AlignContentKeyword::SpaceAround, _)
++            | (AlignContentKeyword::Center, _) => {
++                (constants.container_size.main(constants.dir)
++                    + constants.content_box_inset.main_start(constants.dir)
++                    - constants.content_box_inset.main_end(constants.dir)
++                    - final_size.main(constants.dir)
++                    + resolved_margin.main_start(constants.dir)
++                    - resolved_margin.main_end(constants.dir))
++                    / 2.0
++            }
++        };
++
++        // Apply main-axis insets after preserving the static flex alignment.
+         let offset_main = if start_main.is_some() || end_main.is_some() {
+             if main_is_rtl && end_main.is_some() {
+                 constants.container_size.main(constants.dir)
+@@ -2425,90 +2513,14 @@
+                     - resolved_margin.main_end(constants.dir)
+             }
+         } else {
+-            // Stretch is an invalid value for justify_content in the flexbox algorithm, so we
+-            // treat it as if it wasn't set (and thus we default to FlexStart behaviour).
+-            //
+-            // The `safe` overflow-position keyword is intentionally NOT applied here, even when
+-            // the abs-positioned item would overflow the main axis: Chrome does not apply safe
+-            // fallback to `justify-content` on absolutely-positioned flex items (only the
+-            // cross-axis `align-self` does so). Matching the layout authority over a strict
+-            // spec read keeps gentest fixtures green; reconsider if Chromium changes behavior.
+-            // `start`/`end` are writing-mode relative (they flip for RTL but not for
+-            // reversed flex-directions), whereas `flex-start`/`flex-end` and the
+-            // distributed keywords' fallbacks are flex-relative.
+-            let start_position = match constants.justify_content.unwrap_or(JustifyContent::FLEX_START).keyword() {
+-                AlignContentKeyword::Start => !main_is_rtl,
+-                AlignContentKeyword::End => main_is_rtl,
+-                _ => true,
+-            };
+-            match (
+-                constants.justify_content.unwrap_or(JustifyContent::FLEX_START).keyword(),
+-                main_axis_flex_start_reversed,
+-            ) {
+-                (AlignContentKeyword::SpaceBetween, false)
+-                | (AlignContentKeyword::Stretch, false)
+-                | (AlignContentKeyword::FlexStart, false)
+-                | (AlignContentKeyword::FlexEnd, true) => {
+-                    constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
+-                }
+-                (AlignContentKeyword::Start | AlignContentKeyword::End, _) => {
+-                    if start_position {
+-                        constants.content_box_inset.main_start(constants.dir)
+-                            + resolved_margin.main_start(constants.dir)
+-                    } else {
+-                        constants.container_size.main(constants.dir)
+-                            - constants.content_box_inset.main_end(constants.dir)
+-                            - final_size.main(constants.dir)
+-                            - resolved_margin.main_end(constants.dir)
+-                    }
+-                }
+-                (AlignContentKeyword::FlexEnd, false)
+-                | (AlignContentKeyword::FlexStart, true)
+-                | (AlignContentKeyword::Stretch, true)
+-                | (AlignContentKeyword::SpaceBetween, true) => {
+-                    constants.container_size.main(constants.dir)
+-                        - constants.content_box_inset.main_end(constants.dir)
+-                        - final_size.main(constants.dir)
+-                        - resolved_margin.main_end(constants.dir)
+-                }
+-                (AlignContentKeyword::SpaceEvenly, _)
+-                | (AlignContentKeyword::SpaceAround, _)
+-                | (AlignContentKeyword::Center, _) => {
+-                    (constants.container_size.main(constants.dir)
+-                        + constants.content_box_inset.main_start(constants.dir)
+-                        - constants.content_box_inset.main_end(constants.dir)
+-                        - final_size.main(constants.dir)
+-                        + resolved_margin.main_start(constants.dir)
+-                        - resolved_margin.main_end(constants.dir))
+-                        / 2.0
+-                }
+-            }
++            static_offset_main
+         };
+ 
+         // Apply cross-axis alignment
+         // let free_cross_space = free_space.cross(constants.dir) - resolved_margin.cross_axis_sum(constants.dir);
+-        let offset_cross = if start_cross.is_some() || end_cross.is_some() {
+-            if cross_is_rtl && end_cross.is_some() {
+-                constants.container_size.cross(constants.dir)
+-                    - constants.border.cross_end(constants.dir)
+-                    - cross_end_scrollbar_offset
+-                    - final_size.cross(constants.dir)
+-                    - end_cross.unwrap_or(0.0)
+-                    - resolved_margin.cross_end(constants.dir)
+-            } else if let Some(start) = start_cross {
+-                start
+-                    + constants.border.cross_start(constants.dir)
+-                    + cross_start_scrollbar_offset
+-                    + resolved_margin.cross_start(constants.dir)
+-            } else {
+-                constants.container_size.cross(constants.dir)
+-                    - constants.border.cross_end(constants.dir)
+-                    - cross_end_scrollbar_offset
+-                    - final_size.cross(constants.dir)
+-                    - end_cross.unwrap_or(0.0)
+-                    - resolved_margin.cross_end(constants.dir)
+-            }
+-        } else {
++        // The cross-axis static position follows the same rule: alignment
++        // with auto insets, before final inset placement.
++        let static_offset_cross = {
+             let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
+                 > constants.container_size.cross(constants.dir)
+                     - constants.content_box_inset.cross_axis_sum(constants.dir);
+@@ -2562,6 +2574,31 @@
+             }
+         };
+ 
++        let offset_cross = if start_cross.is_some() || end_cross.is_some() {
++            if cross_is_rtl && end_cross.is_some() {
++                constants.container_size.cross(constants.dir)
++                    - constants.border.cross_end(constants.dir)
++                    - cross_end_scrollbar_offset
++                    - final_size.cross(constants.dir)
++                    - end_cross.unwrap_or(0.0)
++                    - resolved_margin.cross_end(constants.dir)
++            } else if let Some(start) = start_cross {
++                start
++                    + constants.border.cross_start(constants.dir)
++                    + cross_start_scrollbar_offset
++                    + resolved_margin.cross_start(constants.dir)
++            } else {
++                constants.container_size.cross(constants.dir)
++                    - constants.border.cross_end(constants.dir)
++                    - cross_end_scrollbar_offset
++                    - final_size.cross(constants.dir)
++                    - end_cross.unwrap_or(0.0)
++                    - resolved_margin.cross_end(constants.dir)
++            }
++        } else {
++            static_offset_cross
++        };
++
+         let location = match constants.is_row {
+             true => Point { x: offset_main, y: offset_cross },
+             false => Point { x: offset_cross, y: offset_main },
+@@ -2579,6 +2616,10 @@
+                 content_size: layout_output.content_size,
+                 scrollbar_size,
+                 location,
++                static_location: match constants.is_row {
++                    true => Point { x: static_offset_main, y: static_offset_cross },
++                    false => Point { x: static_offset_cross, y: static_offset_main },
++                },
+                 padding,
+                 border,
+                 margin: resolved_margin,
+diff --git a/src/compute/float.rs b/src/compute/float.rs
+--- a/src/compute/float.rs
++++ b/src/compute/float.rs
+@@ -734,6 +734,51 @@
+             },
+         }
+     }
++
++    /// Snapshot the float exclusion segments active at or below `min_y` (in
++    /// this context's BFC-root coordinate space). Each entry is the segment's
++    /// y-range paired with its float insets `[left, right]` (absolute, measured
++    /// from the BFC edges). Segments that impose no inset on either side are
++    /// omitted, since they exclude nothing from inline content. An empty result
++    /// means no active floats below `min_y`.
++    ///
++    /// genet patch (float wrap-around): a thin read over the existing
++    /// `segments` walk, the raw material for `BlockContext::inline_exclusion_bands`,
++    /// which converts each segment into a content-box-local [`InlineFloatBand`]
++    /// for parley line breaking.
++    pub fn exclusion_bands(&self, min_y: f32) -> Vec<(Range<f32>, [f32; 2])> {
++        if !self.has_active_floats(min_y) {
++            return Vec::new();
++        }
++        self.segments
++            .iter()
++            .filter(|seg| seg.y.end > min_y && (seg.insets[0] > 0.0 || seg.insets[1] > 0.0))
++            .map(|seg| (seg.y.clone(), seg.insets))
++            .collect()
++    }
++}
++
++/// A horizontal exclusion band for wrapping inline content around floats.
++///
++/// Over the y-range `[y_start, y_end)` (in the consuming block's
++/// content-box-local coordinate space), floats narrow the available inline
++/// width by `left` on the inline-start side and `right` on the inline-end side
++/// — both measured inward from the content-box edges. Consumed by inline line
++/// breaking to give each line box its own (narrowed) width, so text wraps to
++/// the side of a float and reclaims the full column below it.
++///
++/// genet patch (float wrap-around): produced by
++/// [`FloatContext::exclusion_bands`] + `BlockContext::inline_exclusion_bands`.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct InlineFloatBand {
++    /// Top of the band (content-box-local y).
++    pub y_start: f32,
++    /// Bottom of the band (content-box-local y).
++    pub y_end: f32,
++    /// Inline-start inset imposed by floats over this band.
++    pub left: f32,
++    /// Inline-end inset imposed by floats over this band.
++    pub right: f32,
+ }
+ 
+ /// Context for computing the intrinsic width contribution of a set of floats
+diff --git a/src/compute/grid/alignment.rs b/src/compute/grid/alignment.rs
+--- a/src/compute/grid/alignment.rs
++++ b/src/compute/grid/alignment.rs
+@@ -82,6 +82,7 @@
+     node: NodeId,
+     order: u32,
+     grid_area: Rect<f32>,
++    static_position_area: Rect<f32>,
+     container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
+     baseline_shim: f32,
+     direction: Direction,
+@@ -282,6 +283,26 @@
+         baseline_shim,
+         Direction::Ltr,
+     );
++    let (static_x, _) = align_item_within_area(
++        Line { start: static_position_area.left, end: static_position_area.right },
++        justify_self.unwrap_or(alignment_styles.horizontal),
++        width,
++        position,
++        Line { start: None, end: None },
++        margin.horizontal_components(),
++        0.0,
++        direction,
++    );
++    let (static_y, _) = align_item_within_area(
++        Line { start: static_position_area.top, end: static_position_area.bottom },
++        align_self.unwrap_or(alignment_styles.vertical),
++        height,
++        position,
++        Line { start: None, end: None },
++        margin.vertical_components(),
++        baseline_shim,
++        Direction::Ltr,
++    );
+ 
+     let scrollbar_size = Size {
+         width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
+@@ -295,6 +316,7 @@
+         &Layout {
+             order,
+             location: Point { x, y },
++            static_location: Point { x: static_x, y: static_y },
+             size: Size { width, height },
+             #[cfg(feature = "content_size")]
+             content_size: layout_output.content_size,
+diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
+--- a/src/compute/grid/mod.rs
++++ b/src/compute/grid/mod.rs
+@@ -57,6 +57,7 @@
+     let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+     let padding_border = padding + border;
+     let padding_border_size = padding_border.sum_axes();
++    let size_containment = style.size_containment();
+     let box_sizing_adjustment =
+         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+ 
+@@ -107,8 +108,13 @@
+     let grid_auto_columns = style.grid_auto_columns();
+     let grid_auto_rows = style.grid_auto_rows();
+ 
+-    let constrained_available_space = known_dimensions
+-        .or(preferred_size)
++    let containment_size = Size {
++        width: size_containment.width.then_some(padding_border_size.width),
++        height: size_containment.height.then_some(padding_border_size.height),
++    };
++    let resolved_outer_size = known_dimensions.or(preferred_size).or(containment_size);
++
++    let constrained_available_space = resolved_outer_size
+         .map(|size| size.map(AvailableSpace::Definite))
+         .unwrap_or(available_space)
+         .maybe_clamp(min_size, max_size)
+@@ -124,7 +130,7 @@
+     };
+ 
+     let outer_node_size =
+-        known_dimensions.or(preferred_size).maybe_clamp(min_size, max_size).maybe_max(padding_border_size);
++        resolved_outer_size.maybe_clamp(min_size, max_size).maybe_max(padding_border_size);
+ 
+     // The track sizing algorithm operates on the grid container's content box, so the min/max sizes
+     // (which are border-box sizes) need converting to content-box sizes before being passed to it
+@@ -350,7 +356,7 @@
+     debug_log!(dbg: rows.iter().map(|track| track.base_size).collect::<Vec<_>>());
+ 
+     // 6. Compute container size
+-    let resolved_style_size = known_dimensions.or(preferred_size);
++    let resolved_style_size = resolved_outer_size;
+     let mut container_border_box = Size {
+         width: resolved_style_size
+             .get(AbstractAxis::Inline)
+@@ -614,6 +620,7 @@
+             item.node,
+             index as u32,
+             grid_area,
++            grid_area,
+             container_alignment_styles,
+             item.baseline_shim,
+             direction,
+@@ -629,8 +636,18 @@
+         }
+     }
+ 
+-    // Position hidden and absolutely positioned children
++    // Position hidden and absolutely positioned children. CSS Positioned
++    // Layout can use the content box, rather than this child's grid area, for
++    // its static-position rectangle.
++    let content_box = Rect {
++        top: content_box_inset.top,
++        right: container_border_box.width - content_box_inset.right,
++        bottom: container_border_box.height - content_box_inset.bottom,
++        left: content_box_inset.left,
++    };
+     let mut order = items.len() as u32;
++    #[cfg(feature = "detailed_layout_info")]
++    let mut positioned_items = Vec::new();
+     (0..tree.child_count(node)).for_each(|index| {
+         let child = tree.get_child_id(node, index);
+         let child_style = tree.get_grid_child_style(child);
+@@ -724,6 +741,9 @@
+                     }
+                 }),
+             };
++            #[cfg(feature = "detailed_layout_info")]
++            positioned_items.push(DetailedGridPositionedItemInfo { node: child, grid_area });
++            let static_position_area = tree.grid_child_static_position_area(node, child, grid_area, content_box);
+             drop(child_style);
+ 
+             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
+@@ -733,6 +753,7 @@
+                 child,
+                 order,
+                 grid_area,
++                static_position_area,
+                 container_alignment_styles,
+                 0.0,
+                 direction,
+@@ -756,6 +777,7 @@
+             rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
+             columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
+             items: items.iter().map(DetailedGridItemsInfo::from_grid_item).collect(),
++            positioned_items,
+         },
+     );
+ 
+@@ -864,6 +886,19 @@
+     pub columns: DetailedGridTracksInfo,
+     /// <https://drafts.csswg.org/css-grid-1/#grid-items>
+     pub items: Vec<DetailedGridItemsInfo>,
++    /// The finalized containing rectangles for absolutely positioned grid
++    /// children, in the grid container's border-box coordinate space.
++    pub positioned_items: Vec<DetailedGridPositionedItemInfo>,
++}
++
++/// One absolutely positioned child's grid area, after grid-line resolution.
++#[derive(Debug, Clone, PartialEq)]
++#[cfg(feature = "detailed_layout_info")]
++pub struct DetailedGridPositionedItemInfo {
++    /// The child whose absolute-positioning containing block is this area.
++    pub node: NodeId,
++    /// The grid area selected before absolute-positioned self-alignment.
++    pub grid_area: Rect<f32>,
+ }
+ 
+ /// Information from the computation of grids tracks
+diff --git a/src/compute/mod.rs b/src/compute/mod.rs
+--- a/src/compute/mod.rs
++++ b/src/compute/mod.rs
+@@ -48,7 +48,7 @@
+ pub use self::grid::compute_grid_layout;
+ 
+ #[cfg(feature = "float_layout")]
+-pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
++pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator, InlineFloatBand};
+ 
+ use crate::geometry::{Line, Point, Size};
+ use crate::style::{AvailableSpace, CoreStyle, Overflow};
+@@ -155,6 +155,7 @@
+         &Layout {
+             order: 0,
+             location,
++            static_location: location,
+             size: output.size,
+             #[cfg(feature = "content_size")]
+             content_size: output.content_size,
+@@ -293,7 +294,10 @@
+ #[cfg(feature = "detailed_layout_info")]
+ pub mod detailed_info {
+     #[cfg(feature = "grid")]
+-    pub use super::grid::{DetailedGridInfo, DetailedGridItemsInfo, DetailedGridTracksInfo};
++    pub use super::grid::{
++        DetailedGridInfo, DetailedGridItemsInfo, DetailedGridPositionedItemInfo,
++        DetailedGridTracksInfo,
++    };
+ }
+ 
+ #[cfg(test)]
+diff --git a/src/style/flex.rs b/src/style/flex.rs
+--- a/src/style/flex.rs
++++ b/src/style/flex.rs
+@@ -64,6 +64,18 @@
+     fn align_self(&self) -> Option<AlignSelf> {
+         Style::<Self::CustomIdent>::DEFAULT.align_self
+     }
++
++    /// The CSS `order` property. Flex items are laid out (and painted) in
++    /// ascending `order`, ties broken by document order ("order-modified
++    /// document order"). Defaults to 0.
++    ///
++    /// genet patch (flex `order`): this method does not exist upstream; the
++    /// flex algorithm stable-sorts items by it before line collection. Style
++    /// adapters that do not override it keep the default 0 (document order).
++    #[inline(always)]
++    fn order(&self) -> i32 {
++        0
++    }
+ }
+ 
+ use crate::geometry::AbsoluteAxis;
+diff --git a/src/style/mod.rs b/src/style/mod.rs
+--- a/src/style/mod.rs
++++ b/src/style/mod.rs
+@@ -161,6 +161,12 @@
+     fn aspect_ratio(&self) -> Option<f32> {
+         Style::<Self::CustomIdent>::DEFAULT.aspect_ratio
+     }
++    /// Whether child content is excluded from intrinsic sizing in each
++    /// physical axis.
++    #[inline(always)]
++    fn size_containment(&self) -> Size<bool> {
++        Style::<Self::CustomIdent>::DEFAULT.size_containment
++    }
+ 
+     // Spacing Properties
+     /// How large should the margin be on each side?
+@@ -492,6 +498,9 @@
+     ///
+     /// The ratio is calculated as width divided by height.
+     pub aspect_ratio: Option<f32>,
++    /// Whether child content is excluded from intrinsic sizing in each
++    /// physical axis.
++    pub size_containment: Size<bool>,
+ 
+     // Spacing Properties
+     /// How large should the margin be on each side?
+@@ -557,6 +566,9 @@
+     /// 1.0 is the default value, and this value must be positive.
+     #[cfg(feature = "flexbox")]
+     pub flex_shrink: f32,
++    /// CSS `order` used to form the order-modified flex item sequence.
++    #[cfg(feature = "flexbox")]
++    pub order: i32,
+ 
+     // Grid container properies
+     /// Defines the track sizing functions (heights) of the grid rows
+@@ -619,6 +631,7 @@
+         min_size: Size::auto(),
+         max_size: Size::auto(),
+         aspect_ratio: None,
++        size_containment: Size { width: false, height: false },
+         #[cfg(any(feature = "flexbox", feature = "grid"))]
+         gap: Size::zero(),
+         // Alignment
+@@ -647,6 +660,8 @@
+         #[cfg(feature = "flexbox")]
+         flex_shrink: 1.0,
+         #[cfg(feature = "flexbox")]
++        order: 0,
++        #[cfg(feature = "flexbox")]
+         flex_basis: Dimension::AUTO,
+         // Grid
+         #[cfg(feature = "grid")]
+@@ -738,6 +753,10 @@
+         self.aspect_ratio
+     }
+     #[inline(always)]
++    fn size_containment(&self) -> Size<bool> {
++        self.size_containment
++    }
++    #[inline(always)]
+     fn margin(&self) -> Rect<LengthPercentageAuto> {
+         self.margin
+     }
+@@ -807,6 +826,10 @@
+         (*self).aspect_ratio()
+     }
+     #[inline(always)]
++    fn size_containment(&self) -> Size<bool> {
++        (*self).size_containment()
++    }
++    #[inline(always)]
+     fn margin(&self) -> Rect<LengthPercentageAuto> {
+         (*self).margin()
+     }
+@@ -957,6 +980,10 @@
+         self.flex_shrink
+     }
+     #[inline(always)]
++    fn order(&self) -> i32 {
++        self.order
++    }
++    #[inline(always)]
+     fn align_self(&self) -> Option<AlignSelf> {
+         self.align_self
+     }
+@@ -977,6 +1004,10 @@
+         (*self).flex_shrink()
+     }
+     #[inline(always)]
++    fn order(&self) -> i32 {
++        (*self).order()
++    }
++    #[inline(always)]
+     fn align_self(&self) -> Option<AlignSelf> {
+         (*self).align_self()
+     }
+@@ -1274,6 +1305,8 @@
+             #[cfg(feature = "flexbox")]
+             flex_shrink: 1.0,
+             #[cfg(feature = "flexbox")]
++            order: 0,
++            #[cfg(feature = "flexbox")]
+             flex_basis: super::Dimension::AUTO,
+             size: Size::auto(),
+             min_size: Size::auto(),
+diff --git a/src/tree/layout.rs b/src/tree/layout.rs
+--- a/src/tree/layout.rs
++++ b/src/tree/layout.rs
+@@ -231,6 +231,8 @@
+     pub order: u32,
+     /// The top-left corner of the node
+     pub location: Point<f32>,
++    /// The pre-inset coordinate produced by the formatting algorithm.
++    pub static_location: Point<f32>,
+     /// The width and height of the node
+     pub size: Size<f32>,
+     #[cfg(feature = "content_size")]
+@@ -264,6 +266,7 @@
+         Self {
+             order: 0,
+             location: Point::ZERO,
++            static_location: Point::ZERO,
+             size: Size::zero(),
+             #[cfg(feature = "content_size")]
+             content_size: Size::zero(),
+@@ -284,6 +287,7 @@
+             order,
+             size: Size::zero(),
+             location: Point::ZERO,
++            static_location: Point::ZERO,
+             #[cfg(feature = "content_size")]
+             content_size: Size::zero(),
+             scrollbar_size: Size::zero(),
+diff --git a/src/tree/traits.rs b/src/tree/traits.rs
+--- a/src/tree/traits.rs
++++ b/src/tree/traits.rs
+@@ -129,7 +129,7 @@
+ use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode};
+ #[cfg(feature = "detailed_layout_info")]
+ use crate::debug::debug_log;
+-use crate::geometry::{AbsoluteAxis, Line, Size};
++use crate::geometry::{AbsoluteAxis, Line, Rect, Size};
+ use crate::style::{AvailableSpace, CoreStyle};
+ #[cfg(feature = "flexbox")]
+ use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
+@@ -273,6 +273,23 @@
+     /// Get the child's styles
+     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_>;
+ 
++    /// Select the alignment container used to calculate an absolutely
++    /// positioned grid child's static location.
++    ///
++    /// The default keeps Taffy's established grid-area behavior. Embedders
++    /// that model the CSS Positioned Layout containing-block chain can select
++    /// the content box when this grid is only the static-position parent.
++    #[inline(always)]
++    fn grid_child_static_position_area(
++        &self,
++        _container_node_id: NodeId,
++        _child_node_id: NodeId,
++        grid_area: Rect<f32>,
++        _content_box: Rect<f32>,
++    ) -> Rect<f32> {
++        grid_area
++    }
++
+     /// Set the node's detailed grid information
+     ///
+     /// Implementing this method is optional. Doing so allows you to access details about the the grid such as
+diff --git a/src/util/print.rs b/src/util/print.rs
+--- a/src/util/print.rs
++++ b/src/util/print.rs
+@@ -63,7 +63,7 @@
+             width = layout.size.width,
+             height = layout.size.height,
+             key = node_id,
+-        );
++        )?;
+         let bar = if has_sibling { "│   " } else { "    " };
+         let new_string = lines_string + bar;
+ 

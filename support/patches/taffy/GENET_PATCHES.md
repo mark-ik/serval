@@ -1,32 +1,108 @@
 # genet's taffy fork — patch log
 
-This is a vendored copy of `taffy 0.12.1` — re-vendored 2026-07-12 from the
-prior `0.11.0-experimental-cache-fix.3` (`float_layout` graduated from
-experimental to stable in 0.12, ending the need to ride the experimental
-line at all; see `docs/2026-07-12_ring3_fork_rename_publish_plan.md`, T0). It
-is wired in via `[patch.crates-io] taffy = { path =
-"support/patches/taffy" }` in the workspace `Cargo.toml`, and redirects only the
-`=0.12.1` requirement (genet-layout + paint + genet-render + genet-wpt +
-the vendored `stylo_taffy`); the workspace's plain `taffy 0.10.1` is
-unaffected.
+This is a vendored copy of `taffy 0.13.0` — re-vendored 2026-08-16 from the
+prior `0.12.1` (itself re-vendored 2026-07-12 from
+`0.11.0-experimental-cache-fix.3`, when `float_layout` graduated from
+experimental to stable in 0.12; see
+`docs/2026-07-12_ring3_fork_rename_publish_plan.md`, T0). The 0.13 bump
+retired patch 0001, which upstream fixed. Note that 0.12.2 was skipped.
+
+It is wired in via `[patch.crates-io] taffy = { path =
+"support/patches/taffy" }` in the workspace `Cargo.toml`, and redirects the
+`0.13.0` requirement (buckram + genet-layout + genet-livery + paint +
+genet-render + genet-wpt + the vendored `stylo_taffy`); the workspace's plain
+`taffy 0.10.1` is unaffected.
 
 It exists because taffy's float / BFC / table layout is still incomplete in
 places, and genet pushes on exactly those paths as CSS conformance climbs.
 This fork is the home for the layout fixes we accumulate, each upstreamed at our
 own pace so the divergence from upstream stays small — see `UPSTREAM_PR.md`
-for the drafted PRs (the first three patches below are PR-able; none has
-landed upstream yet). The fourth is the Livery size-containment seam.
+for the drafted PRs. Of those, 0002 and 0003 remain PR-able and unlanded;
+0001 has since been fixed upstream in 0.13.0 and is retired below. 0004 is the
+Livery size-containment seam, and 0000 is the formatter static position that
+Buckram's K5 work reads.
 
 ## How to keep it in sync
 
-The vendored `src/` is upstream-pristine **except** for the files listed below.
-When bumping taffy, re-vendor the new release and re-apply each patch (the
-`.patch` files here are `git apply -p1`-able against an upstream checkout).
-`diff -rq` against the pristine registry source must show only the listed files.
+`0000-complete-fork-delta.patch` is the **authoritative record**: pristine
+upstream plus that one file reproduces the vendored `src/` byte for byte. It is
+generated mechanically, so it cannot drift from the tree. The per-feature
+patches below exist for upstreaming individual fixes and are **not** a
+reproduction record — see the accuracy note at the end of this section.
+
+To bump taffy:
+
+1. Regenerate the delta against the release currently vendored, and prove it
+   round-trips, before touching anything:
+   ```
+   diff -ruN <pristine-current>/src src > 0000-complete-fork-delta.patch
+   ```
+2. Re-vendor the new release over `src/`, `examples/`, `Cargo.toml`, `README.md`.
+   Everything else in this directory is genet's and stays.
+3. Apply the delta, resolve the rejects, and drop any hunk upstream has since
+   made redundant (record the retirement in the ledger below).
+4. Regenerate `0000-complete-fork-delta.patch` against the **new** pristine
+   release, and re-prove the round trip.
+5. Refresh the per-feature patches you touched, and bump every consumer's
+   version requirement (`components/buckram`, `components/genet-layout`,
+   `components/genet-livery`, `components/genet-render`, `components/paint`,
+   `ports/genet-wpt`, `support/patches/stylo_taffy`). The workspace's separate
+   plain `taffy 0.10.1` is unrelated and stays.
+
+Verify by content, never by exit code. `git apply` run inside the
+`worktrees/genet-k5-positioning` worktree reported success while writing
+nothing, which briefly showed a stale patch set as applying cleanly. Use
+`patch -p1 -d <dir>` and confirm with `diff -rq` plus a grep for a marker the
+patch introduces.
+
+**Accuracy note (2026-08-16).** The per-feature patch files do not reconstruct
+this fork, and the previous claim here that `src/` was pristine except for the
+listed files was wrong. Applying 0001, 0002, 0003 and 0006 to pristine 0.12.1
+leaves eleven files still differing: 0004 and 0005 ship no `.patch` file at
+all, `Layout::static_location` (`src/tree/layout.rs`) and a `src/util/print.rs`
+change were documented nowhere, and 0006's own file no longer applies to its
+stated base (2 of 3 hunks fail in `grid/alignment.rs`). `0000` exists so this
+cannot recur; re-derive it whenever the tree changes.
 
 ## Patches
 
-### 0001 — `find_content_slot` width-fit (`0001-find_content_slot-width-fit.patch`)
+### 0000 — formatter static position (`0000-complete-fork-delta.patch`)
+
+**Files:** `src/tree/layout.rs`, `src/compute/block.rs`,
+`src/compute/flexbox.rs`, `src/compute/grid/alignment.rs`
+**Upstream status:** genet-only, and load-bearing for Buckram's K5 positioning
+work. Undocumented until 2026-08-16; it has no standalone `.patch` file and
+travels in the complete delta.
+
+`Layout` carries only the final, inset-applied `location`, so an embedding
+engine cannot see where a formatter would have placed an out-of-flow box before
+CSS positioning applied its insets. That pre-inset coordinate is the CSS
+*static position*, and an engine owning its own containing-block graph needs it
+as an input rather than a result.
+
+This adds `Layout::static_location`, and has each formatter record its
+alignment result there before insets are applied: block sets it at the
+normal-flow cursor, flex hoists its main- and cross-axis alignment into
+`static_offset_main` / `static_offset_cross` so the aligned position survives
+inset placement, and grid records the position produced within the area 0006
+selects. Buckram reads it through `AlgorithmTree::static_layout`.
+
+Note for the next re-vendor: taffy 0.13.0 reworked the flex abspos alignment
+this hoist sits in (writing-mode-relative `start`/`end`, new
+`AlignItems::SELF_START`/`SELF_END`), so the flex half needs a genuine rebase
+rather than a mechanical re-apply.
+
+### 0001 — `find_content_slot` width-fit (patch file deleted 2026-08-16)
+
+> **RETIRED — fixed upstream in taffy 0.13.0.** Do not carry this patch past
+> the 0.13 bump. Upstream added a `find_bfc_slot` API plus a caller-side loop
+> in `compute/block.rs` that walks down to the first band wide enough for the
+> item's border box, which is a strict superset of this fix: it also resolves
+> the auto-width case against the slot's stretch width and sets
+> `item_pushed_below_float` so the item's top margin stops collapsing with its
+> parent's. `find_content_slot` still has the original width-blind behaviour,
+> but it is no longer the API the BFC-avoids-floats path uses. Drop the PR
+> draft in `UPSTREAM_PR.md` too.
 
 **Files:** `src/compute/float.rs`, `src/compute/block.rs`
 **Upstream status:** present on taffy `main` too (unfixed as of 0.12.1); PR
@@ -114,6 +190,7 @@ same wrap-and-override pattern it already uses for grid placement; no
 
 **Files:** `src/style/mod.rs`, `src/compute/block.rs`,
 `src/compute/flexbox.rs`, `src/compute/grid/mod.rs`
+**Patch file:** none — travels in `0000-complete-fork-delta.patch`.
 **Upstream status:** genet-only. The API shape should be reviewed against
 taffy's current containment direction before upstreaming.
 
@@ -146,6 +223,7 @@ inline-size containers.
 ### 0005 — positioned grid-area diagnostics
 
 **Files:** `src/compute/grid/mod.rs`
+**Patch file:** none — travels in `0000-complete-fork-delta.patch`.
 **Upstream status:** additive and genet-only so far. The API should be reviewed
 alongside Taffy's existing detailed grid output before upstreaming.
 
@@ -162,6 +240,13 @@ It changes no layout. Buckram reads the rectangle as formatter evidence and
 keeps CSS containing-block selection and used geometry outside Taffy.
 
 ### 0006 — positioned grid static-position area (`0006-grid-static-position-area.patch`)
+
+> **Its `.patch` file is stale** (noted 2026-08-16): 2 of 3 hunks in
+> `grid/alignment.rs` no longer apply even to pristine 0.12.1, so the file
+> records an earlier shape of this change rather than what the tree carries.
+> Take the change from `0000-complete-fork-delta.patch` and regenerate this
+> file after the 0.13 bump.
+
 
 **Files:** `src/tree/traits.rs`, `src/compute/grid/mod.rs`,
 `src/compute/grid/alignment.rs`

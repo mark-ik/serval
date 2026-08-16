@@ -22,7 +22,7 @@ style_atoms = { version = "0.19.0", package = "genet-stylo-atoms" }
 # Redirected by the workspace root's `[patch.crates-io]` to
 # `support/patches/taffy` (re-vendored 0.12.1, see its own README) — `taffy`
 # is not renamed, so the patch mechanism applies cleanly here.
-taffy = { version = "=0.12.1", default-features = false }
+taffy = { version = "=0.13.0", default-features = false }
 
 [features]
 default = ["std", "block", "flexbox", "grid"]
