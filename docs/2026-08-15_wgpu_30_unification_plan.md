@@ -41,7 +41,7 @@ a unit.
 | 4 | CubeCL / Burn, then Mere and Quint | Done, via the backport after all |
 | 5 | Renderling and Crabslab | Done, plus mesocosm and paredros |
 | 6 | Downstream applications | Done for all five, plus mesocosm |
-| 7 | wgpu-graft / scry / weld defaults | weld flipped; scry and graft still default 29 |
+| 7 | wgpu-graft / scry / weld defaults | weld + scry flipped; graft stays 29 on purpose |
 
 ### 1. Vello fork
 
@@ -261,8 +261,18 @@ stack. Our own consumers set `default-features = false` and forward the row
 they want, which is exactly why welding was unaffected by it. Flipping this
 one is a call about who the crate is for, not a migration step.
 
-**scrying: still 29, with no stated rationale** beyond the generic row
-comment. It looks like a plain leftover.
+**scrying: flipped to 30 on 2026-08-16**, its 29 default having carried no
+rationale beyond the generic row comment. Same coupled change as welding (the
+workspace pin tracks the default row, because demo-win and demo-mac take both),
+same three API breaks in demo code, same verification: three targets, three
+rows, 15 tests, demo-mac cross-checked on Darwin. demo-scrying-winit had
+already opted into the 30 row explicitly.
+
+**The pattern worth reusing:** in both repos the *library* was already
+multi-row and correct — it was the demos, which quietly ride the default, that
+had never been compiled against 30. A default flip is therefore a real code
+change in the demo tier, not a manifest edit, and it is the only thing that
+compiles those call sites at all.
 
 ## Open question: `apply_limit_buckets`
 
@@ -284,6 +294,13 @@ helpers, which correctly want real limits), the paint vulkan timeline
 interop, genet-wpt's conformance runner, and pelt's three platform smokes.
 
 ## Progress
+
+**2026-08-16 (step 7).** welding and scrying default to wgpu 30; grafting
+deliberately does not. Every step is now done except genet's three inker
+engines, which were waiting on exactly this: `scrying` from wgpu-scry main is
+the dependency that put a second wgpu_types in genet's graph. That should now
+clear — it needs a `cargo update -p scrying` in genet and a rebuild of
+scrying-engine, graft-engine and weld-engine to confirm.
 
 **2026-08-16 (step 4).** Mere is on wgpu 30, by the narrow CubeCL backport
 rather than the prerelease row, for the two reasons in §4 above. One
