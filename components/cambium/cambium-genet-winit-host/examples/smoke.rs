@@ -33,8 +33,8 @@ use cambium::{
     focusable, on_pointer, on_wheel, text,
 };
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommands, read_frame,
-    run,
+    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommand,
+    WindowCommands, read_frame, run,
 };
 use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
@@ -295,11 +295,9 @@ impl Driveable for Probe<'_, '_> {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .ok_or("resize wants a height")?;
-                // Asking the window manager to resize is desktop-only, so it
-                // goes through the native handle rather than the neutral seam.
-                let native = self.ctx.native_window.ok_or("resize needs a window")?;
-                let _ = native.request_inner_size(winit::dpi::LogicalSize::new(w, h));
-                native.request_redraw();
+                // Resizing goes through the window-verb queue, like every
+                // other window verb, rather than through a native handle.
+                self.ctx.window_commands.push(WindowCommand::Resize(w, h));
                 Ok(())
             },
             _ => Err(format!("unknown verb: {line}")),

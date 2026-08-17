@@ -63,14 +63,12 @@ where
             let geometry = self.geometry();
             let commands = self.commands.clone();
             let window = self.s.window.as_deref();
-            let native_window = self.native_window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return false;
             };
             let mut ctx = AppCtx {
                 runner,
                 window,
-                native_window,
                 logical_size,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,

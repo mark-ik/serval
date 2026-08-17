@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cambium::{GenetAppRunner, TextInput};
-use cambium_genet_host::{Accessibility, HostWindow, Surface};
+use cambium_genet_host::Accessibility;
 use cambium_winit::ScrollbarFade;
 use cambium_winit_a11y::A11yHost;
 use genet_layout::{IncrementalLayout, ScrollTarget};
@@ -50,7 +50,7 @@ mod input;
 mod spatial;
 mod wake;
 
-pub use cambium_genet_host::{Direction, Key, KeyPress, Modifiers, NamedKey};
+pub use cambium_genet_host::{Direction, HostWindow, Key, KeyPress, Modifiers, NamedKey, Surface};
 pub use capture::{Frame, read_frame};
 pub use decorations::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 pub use harness::{Harness, inert_hooks};
@@ -325,14 +325,6 @@ where
     /// answers. Naming `&Window` here would have made the hook signature itself
     /// undeliverable on a second event source.
     pub window: Option<&'a dyn HostWindow>,
-    /// The native window, when this host has one.
-    ///
-    /// For the desktop-only verbs the neutral seam deliberately omits: asking
-    /// the window manager to resize, maximizing, dragging the frame. An
-    /// application that reaches for this is a desktop application by
-    /// construction, and says so by naming the field. A browser event source
-    /// leaves it `None`.
-    pub native_window: Option<&'a Window>,
     /// The logical (DPI-independent) size of the surface being laid out — the
     /// coordinate space the layout, the cursor, and [`HostPointer`] all use.
     pub logical_size: (f32, f32),
@@ -416,7 +408,7 @@ pub struct Init<State, Logic> {
 }
 
 type InitFn<State, Logic> =
-    Box<dyn FnOnce(&Window, &WindowCommands, &HostWake) -> Init<State, Logic>>;
+    Box<dyn FnOnce(&dyn HostWindow, &WindowCommands, &HostWake) -> Init<State, Logic>>;
 
 /// A logical window dimension from the environment.
 fn env_size(key: &str) -> Option<f64> {
@@ -580,7 +572,7 @@ pub enum IdlePolicy {
 /// Run a single-root Cambium application to completion.
 pub fn run<State, Logic, V>(
     options: HostOptions,
-    init: impl FnOnce(&Window, &WindowCommands, &HostWake) -> Init<State, Logic> + 'static,
+    init: impl FnOnce(&dyn HostWindow, &WindowCommands, &HostWake) -> Init<State, Logic> + 'static,
     hooks: HostHooks<State, Logic, V>,
 ) -> Result<(), winit::error::EventLoopError>
 where
@@ -647,14 +639,12 @@ where
             let geometry = self.geometry();
             let commands = self.commands.clone();
             let window = self.s.window.as_deref();
-            let native_window = self.native_window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return;
             };
             let mut ctx = AppCtx {
                 runner,
                 window,
-                native_window,
                 logical_size,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
@@ -710,7 +700,6 @@ where
             let geometry = self.geometry();
             let commands = self.commands.clone();
             let window = self.s.window.as_deref();
-            let native_window = self.native_window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 self.s.close_requested = true;
                 return;
@@ -718,7 +707,6 @@ where
             let mut ctx = AppCtx {
                 runner,
                 window,
-                native_window,
                 logical_size,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
@@ -1028,7 +1016,11 @@ where
             state,
             logic,
             sheet,
-        } = init(&window, &self.commands.clone(), &self.wake);
+        } = init(
+            &WinitWindow(window.clone()),
+            &self.commands.clone(),
+            &self.wake,
+        );
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let runner = Runner::new(dom, logic, state);
         let mut a11y = A11yHost::new(self.a11y_waker());

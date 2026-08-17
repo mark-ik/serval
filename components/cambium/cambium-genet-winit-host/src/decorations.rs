@@ -66,7 +66,10 @@ impl AppRegion {
 }
 
 /// A window verb an application asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `PartialEq` but not `Eq`: [`Resize`](WindowCommand::Resize) carries logical
+/// pixels, which are floats.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WindowCommand {
     /// Reveal and redraw a root window that a close policy hid.
     Show,
@@ -80,6 +83,13 @@ pub enum WindowCommand {
     Drag,
     /// Raise the platform's own window menu at the cursor.
     ShowSystemMenu,
+    /// Ask for a new inner size, in logical pixels.
+    ///
+    /// A request, not a command: a window manager may refuse it, and a browser
+    /// tab has nothing to resize. Verbs go through this queue rather than a raw
+    /// handle so a host that cannot honour one simply does not, instead of the
+    /// application holding a window type that only one host can supply.
+    Resize(f64, f64),
     /// Ask the application to close. Its [`CloseDisposition`](crate::CloseDisposition)
     /// decides whether this exits, hides, or keeps the window visible.
     Close,
@@ -350,6 +360,13 @@ where
     /// Run one window verb against the real window.
     fn perform(&mut self, command: WindowCommand) {
         self.performed.push(command);
+        if let WindowCommand::Resize(w, h) = command {
+            if let Some(window) = self.native_window.as_ref() {
+                let _ = window.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                window.request_redraw();
+            }
+            return;
+        }
         if matches!(command, WindowCommand::Close) {
             self.request_close(crate::CloseRequest::Command);
             return;
@@ -364,6 +381,8 @@ where
             return;
         };
         match command {
+            // Handled above, before the window is unwrapped.
+            WindowCommand::Resize(..) => {},
             WindowCommand::Show => {
                 window.set_visible(true);
                 window.set_minimized(false);
