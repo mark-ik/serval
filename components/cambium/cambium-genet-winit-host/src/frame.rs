@@ -7,11 +7,12 @@
 //! run an application's real layout, hit testing, and input routing in an
 //! ordinary `cargo test`.
 
+use crate::decorations::Decorations;
 use std::collections::HashMap;
 
 use cambium::PointerClick;
-use cambium_genet_host::HostWindow;
 use cambium_genet_host::Accessibility;
+use cambium_genet_host::HostWindow;
 use cambium_winit_a11y::A11yAction;
 use genet_layout::{
     Applied, IncrementalLayout, InteractionState, LeafPaintSource, ScrollOffsets, SourceNodeId,
@@ -410,17 +411,11 @@ where
                 None => return,
             };
             let dom_ref = dom.borrow();
-            let (Some(a11y), Some(layout)) = (self.s.a11y.as_mut(), self.s.layout.as_ref())
-            else {
+            let (Some(a11y), Some(layout)) = (self.s.a11y.as_mut(), self.s.layout.as_ref()) else {
                 return;
             };
             // The window is the adapter's own now, so the seam does not carry it.
-            a11y.sync(
-                &dom_ref,
-                layout,
-                &mut self.s.leaves,
-                self.s.last_focus,
-            )
+            a11y.sync(&dom_ref, layout, &mut self.s.leaves, self.s.last_focus)
         };
         self.apply_a11y_requests(&requests);
     }

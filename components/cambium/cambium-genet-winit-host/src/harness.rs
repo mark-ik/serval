@@ -22,6 +22,7 @@
 //! Applications get it too: it is how `signalman-desktop` proves its page
 //! states and its keyboard order without a display.
 
+use crate::decorations::Decorations;
 use cambium_winit_a11y::{A11yAction, A11yRequest};
 use genet_probe::{ProbeSurface, Selector, resolve};
 use genet_scripted_dom::NodeId;
@@ -181,11 +182,11 @@ where
                 hooks,
                 s,
                 resize_hint: None,
-            commands: crate::WindowCommands::new(),
-            cadence: crate::decorations::ClickCadence::new(),
-            performed: Vec::new(),
-            native_window: None,
-            hidden: false,
+                commands: crate::WindowCommands::new(),
+                cadence: crate::decorations::ClickCadence::new(),
+                performed: Vec::new(),
+                native_window: None,
+                hidden: false,
                 wake,
             },
         }
@@ -384,9 +385,7 @@ where
     /// modifiers [`set_modifiers`](Self::set_modifiers) last set.
     pub fn key(&mut self, key: WinitKey) {
         let modifiers = self.host.s.modifiers;
-        self.press_key(
-            &KeyPress::new(crate::key_from_winit(&key)).with_modifiers(modifiers),
-        );
+        self.press_key(&KeyPress::new(crate::key_from_winit(&key)).with_modifiers(modifiers));
     }
 
     /// Deliver text the way an on-screen keyboard or a remapper does: the

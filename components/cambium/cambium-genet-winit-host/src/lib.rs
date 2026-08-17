@@ -21,14 +21,15 @@
 //! run(options, |window, commands, wake| Init { state, logic, sheet }, hooks)
 //! ```
 
+use crate::decorations::Decorations;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cambium::{GenetAppRunner, TextInput};
-use cambium_winit::ScrollbarFade;
 use cambium_genet_host::{Accessibility, HostWindow, Surface};
+use cambium_winit::ScrollbarFade;
 use cambium_winit_a11y::A11yHost;
 use genet_layout::{IncrementalLayout, ScrollTarget};
 use genet_scripted_dom::{NodeId, ScriptedDom};
@@ -49,10 +50,10 @@ mod input;
 mod spatial;
 mod wake;
 
+pub use cambium_genet_host::{Direction, Key, KeyPress, Modifiers, NamedKey};
 pub use capture::{Frame, read_frame};
 pub use decorations::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 pub use harness::{Harness, inert_hooks};
-pub use cambium_genet_host::{Direction, Key, KeyPress, Modifiers, NamedKey};
 pub use wake::HostWake;
 
 use decorations::ClickCadence;
@@ -631,10 +632,7 @@ where
             Some(window) => {
                 let size = window.inner_size();
                 let scale = window.scale_factor() as f32;
-                (
-                    size.0.max(1) as f32 / scale,
-                    size.1.max(1) as f32 / scale,
-                )
+                (size.0.max(1) as f32 / scale, size.1.max(1) as f32 / scale)
             },
             None => self.s.layout_size,
         }
@@ -769,11 +767,7 @@ where
         for event in std::mem::take(&mut self.s.pending_pointer) {
             match event {
                 HostPointer::Moved(x, y) => {
-                    self.s.cursor = (x, y);
-                    self.hover();
-                    self.hover_dispatch();
-                    self.pointer_move();
-                    self.drag_text_selection();
+                    self.pointer_moved(x, y);
                 },
                 HostPointer::Press(x, y) => {
                     self.s.cursor = (x, y);
@@ -1107,14 +1101,10 @@ where
             },
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = self.scale_factor();
-                self.s.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.pointer_moved((position.x / scale) as f32, (position.y / scale) as f32);
+                // The resize-edge cursor is decoration, and reads only the
+                // pointer position, so it follows rather than interleaves.
                 self.update_resize_cursor();
-                self.hover();
-                self.hover_dispatch();
-                // A captured drag gets the move before the text selection: an
-                // `on_pointer` element that took the press owns the gesture.
-                self.pointer_move();
-                self.drag_text_selection();
             },
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1149,9 +1139,7 @@ where
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::Ime(ime) => self.ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => match event.state {
-                ElementState::Pressed => {
-                    self.key(&key_press_from_winit(&event, self.s.modifiers))
-                },
+                ElementState::Pressed => self.key(&key_press_from_winit(&event, self.s.modifiers)),
                 // Releases matter for exactly one thing: letting go of Tab
                 // leaves spatial focus navigation.
                 ElementState::Released => {

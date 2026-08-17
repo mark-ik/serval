@@ -18,8 +18,8 @@
 use genet_scripted_dom::NodeId;
 
 use crate::Host;
-use cambium_genet_host::{Box2, Direction, score};
 use crate::meristem_bounds::RootView;
+use cambium_genet_host::{Box2, Direction, score};
 
 impl<State, Logic, V> Host<State, Logic, V>
 where
@@ -91,4 +91,3 @@ where
         true
     }
 }
-

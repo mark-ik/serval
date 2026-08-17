@@ -9,11 +9,11 @@
 //! to `focus_traverse`, and why click-to-caret and wheel scrolling are gated on
 //! [`default_prevented`](cambium::GenetAppRunner::default_prevented).
 
-use cambium_genet_host::HostWindow;
 use cambium::{
     CaretPosition, CaretSelection, PointerClick, PointerEvent, PointerPhase, TextCommand,
     WheelEvent,
 };
+use cambium_genet_host::HostWindow;
 use cambium_winit::{ime_event_from_winit, wheel_axes};
 use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualSelection};
 use genet_scripted_dom::{NodeId, ScriptedDom};
@@ -76,6 +76,27 @@ where
     pub(crate) fn hit_at_cursor(&self) -> Option<NodeId> {
         let (x, y) = self.s.cursor;
         self.hit_at(x, y)
+    }
+
+    /// The pointer moved to `(x, y)` in logical coordinates.
+    ///
+    /// One call, because the order of what follows is host policy rather than
+    /// event-source policy: a captured drag must get the move before the text
+    /// selection, so an `on_pointer` element that took the press owns the
+    /// gesture. An event source that had to reproduce that sequence would be
+    /// one divergence away from a subtle input bug, and there is about to be a
+    /// second event source.
+    pub(crate) fn pointer_moved(&mut self, x: f32, y: f32) {
+        self.s.cursor = (x, y);
+        self.hover();
+        self.hover_dispatch();
+        self.pointer_move();
+        self.drag_text_selection();
+    }
+
+    /// The pointer position the input path tracks, in logical coordinates.
+    pub(crate) fn cursor(&self) -> (f32, f32) {
+        self.s.cursor
     }
 
     /// The topmost node at an arbitrary point, in the retained layout's own
