@@ -199,6 +199,32 @@ Three things, none of them hardware:
    implicit-modifier refusal fired first, and surfaced the moment the import
    started working.
 
+### Open: headed presentation on this host is unconfirmed
+
+The receipt above covers the **import**, which is what the lane was blocked on
+and what the texture dump proves. It does not cover what reaches the screen.
+Mark, watching the ThinkPad directly, reported the frame visible while the
+window was expanding and closing but not in between.
+
+That is not diagnosed. What is ruled out is buffer decay: probing 19 and 21
+seconds after the last paint still returned 16384/16384 non-zero starting with
+`#EEEEEE`, so the imported memory is intact long after CEF goes quiet, and the
+demo holds the texture and redraws continuously under `ControlFlow::Poll`.
+
+**Do not try to settle this with a screen capture over SSH.** `ffmpeg
+-f x11grab -i :0.0` on this Fedora/Xwayland session returns a black frame
+whatever is on screen: a white 800x600 window put up as a positive control
+captured a mean of `5.58917e-05`, the identical value returned for every
+capture of the demo. Wayland surfaces are not in the X root window, so the
+grab reads an empty root. `import`/`magick import` fail outright here, and
+`grim`, `gnome-screenshot` and `scrot` are not installed. Several captures
+were taken and believed before the control exposed them, which is
+`[[feedback-prove-the-instrument-before-believing-a-negative]]` exactly.
+
+The instrument that would settle it is a readback of the **swapchain** after
+present, not of the imported texture and not of the screen. That reports what
+the render pass actually produced and needs no compositor cooperation.
+
 ### Two traps in reading the probe
 
 **A `VALIDATION PASS` is not a correct-layout receipt.** The probe counts
