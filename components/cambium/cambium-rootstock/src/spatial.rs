@@ -19,7 +19,7 @@ use genet_scripted_dom::NodeId;
 
 use crate::Host;
 use crate::meristem_bounds::RootView;
-use cambium_rootstock::{Box2, Direction, score};
+use crate::{Box2, Direction, score};
 
 impl<State, Logic, V> Host<State, Logic, V>
 where
@@ -51,7 +51,7 @@ where
     /// With nothing focused this takes the topmost-leftmost control, so the
     /// first arrow after entering the mode always lands somewhere rather than
     /// doing nothing.
-    pub(crate) fn focus_spatial(&mut self, dir: Direction) -> bool {
+    pub fn focus_spatial(&mut self, dir: Direction) -> bool {
         let (focused, boxes) = self.focusable_boxes();
         if boxes.is_empty() {
             return false;

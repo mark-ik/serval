@@ -17,7 +17,7 @@ pub struct HostWake {
 }
 
 impl HostWake {
-    pub(crate) fn new(pending: Arc<AtomicBool>, signal: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub fn new(pending: Arc<AtomicBool>, signal: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self { pending, signal }
     }
 

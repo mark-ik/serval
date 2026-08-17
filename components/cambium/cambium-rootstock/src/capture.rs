@@ -10,7 +10,7 @@
 //! What the bytes become is the application's business: woodshed writes a PNG,
 //! the host's own smoke example digests them.
 
-use cambium_rootstock::Surface;
+use crate::Surface;
 use netrender::ExternalTexturePlacement;
 
 /// A presented frame, read back.

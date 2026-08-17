@@ -65,6 +65,24 @@ pub fn modifiers_from_winit(state: ModifiersState) -> Modifiers {
 /// Map a winit IME lifecycle event into the same focused Cambium event channel
 /// as keyboard input. A host sends the result to `runner.dispatch_key`; the
 /// focused text field consumes it while other controls ignore it.
+/// Winit's IME lifecycle in Cambium's neutral composition vocabulary.
+///
+/// Split out from [`ime_event_from_winit`] because the host routes the
+/// composition itself: a browser reports the same four states through
+/// `compositionstart`/`update`/`end`, so the host takes this and each event
+/// source converts.
+pub fn composition_from_winit(ime: &Ime) -> CompositionEvent {
+    match ime {
+        Ime::Enabled => CompositionEvent::Enabled,
+        Ime::Preedit(text, selection) => CompositionEvent::Preedit {
+            text: text.clone(),
+            selection: *selection,
+        },
+        Ime::Commit(text) => CompositionEvent::Commit(text.clone()),
+        Ime::Disabled => CompositionEvent::Disabled,
+    }
+}
+
 pub fn ime_event_from_winit(ime: &Ime) -> KeyEvent {
     let composition = match ime {
         Ime::Enabled => CompositionEvent::Enabled,

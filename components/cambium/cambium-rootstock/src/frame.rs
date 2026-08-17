@@ -9,10 +9,10 @@
 
 use std::collections::HashMap;
 
+use crate::A11yAction;
+use crate::Accessibility;
+use crate::HostWindow;
 use cambium::PointerClick;
-use cambium_rootstock::Accessibility;
-use cambium_rootstock::HostWindow;
-use cambium_winit_a11y::A11yAction;
 use genet_layout::{
     Applied, IncrementalLayout, InteractionState, LeafPaintSource, ScrollOffsets, SourceNodeId,
 };
@@ -92,7 +92,7 @@ where
     /// runner's DOM mutations, apply them incrementally or rebuild, advance the
     /// CSS-transition clock, and re-render the custom-paint leaves at their new
     /// boxes. No GPU, no window. Returns whether an animation is still live.
-    pub(crate) fn relayout(&mut self, lw: f32, lh: f32) -> bool {
+    pub fn relayout(&mut self, lw: f32, lh: f32) -> bool {
         let Some(runner) = self.s.runner.as_ref() else {
             return false;
         };
@@ -311,7 +311,7 @@ where
         }
         // Overlay scrollbar thumbs mid-hold/mid-fade: the engine draws the
         // geometry, the shared fade clock supplies alpha.
-        let now = cambium_rootstock::Instant::now();
+        let now = crate::Instant::now();
         let fade = &self.s.scrollbar_fade;
         layout.append_scrollbars(&*dom_ref, &mut list, &|t| fade.alpha(t, now));
         let translated = paint_list_render::translate_paint_cmd_stream(
@@ -323,7 +323,7 @@ where
         Some(translated.scene)
     }
 
-    pub(crate) fn redraw(&mut self) {
+    pub fn redraw(&mut self) {
         // The application's frame hook first: animation drives, leaf syncs,
         // backend polls. Its return keeps frames coming.
         let animating = self.frame_hook();
@@ -401,7 +401,7 @@ where
     /// goes through the same dispatch a mouse press does; `Focus` is "put the
     /// cursor here" and only moves focus. Collapsing them would fire every
     /// control a reader navigates across.
-    pub(crate) fn sync_a11y(&mut self) {
+    pub fn sync_a11y(&mut self) {
         let requests = {
             let dom = match self.s.runner.as_ref() {
                 Some(runner) => runner.dom(),
@@ -419,7 +419,7 @@ where
 
     /// Route drained screen-reader requests into the retained DOM. Split out of
     /// [`sync_a11y`] so the routing is exercisable without an OS adapter.
-    pub(crate) fn apply_a11y_requests(&mut self, requests: &[cambium_winit_a11y::A11yRequest]) {
+    pub fn apply_a11y_requests(&mut self, requests: &[crate::A11yRequest]) {
         if requests.is_empty() {
             return;
         }
@@ -445,7 +445,7 @@ where
     /// Drive `:hover` / `:focus` restyles on target change (engine
     /// `set_interaction`; `Unchanged` when nothing interaction-sensitive
     /// matched, so idle movement stays free).
-    pub(crate) fn hover(&mut self) {
+    pub fn hover(&mut self) {
         let (Some(runner), Some(layout)) = (self.s.runner.as_ref(), self.s.layout.as_mut()) else {
             return;
         };
@@ -485,7 +485,7 @@ where
     /// owns transition detection; Move is not routed, so idle motion within a
     /// target stays free. Coordinates are zeroed — a peek only needs which
     /// target.
-    pub(crate) fn hover_dispatch(&mut self) {
+    pub fn hover_dispatch(&mut self) {
         use cambium::{HoverEvent, HoverPhase};
         let hit = self.hit_at_cursor();
         if hit == self.s.last_hover_hit {

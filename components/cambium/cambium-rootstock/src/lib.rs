@@ -678,3 +678,35 @@ mod spatial_tests {
         assert!(score(from, b(120.0, 0.0, 100.0, 40.0), Direction::Right).is_some());
     }
 }
+
+mod capture;
+mod frame;
+mod host;
+mod input;
+mod spatial;
+mod wake;
+mod window_verbs;
+
+/// Bounds the host's view type without naming meristem at every use site.
+pub mod meristem_bounds {
+    use cambium::{GenetCtx, GenetElement};
+    use meristem::View;
+
+    pub trait RootView<State: 'static>:
+        View<State, (), GenetCtx, Element = GenetElement> + 'static
+    {
+    }
+    impl<State: 'static, V> RootView<State> for V where
+        V: View<State, (), GenetCtx, Element = GenetElement> + 'static
+    {
+    }
+}
+
+pub use capture::{Frame, read_frame};
+pub use host::{
+    AppCtx, AppHook, CaptureFn, CloseDisposition, CloseRequest, CloseRequestHook, FocusedTextHook,
+    FocusedTextSlot, FrameHook, Hook, Host, HostHooks, HostOptions, HostPointer, HostState,
+    IdlePolicy, Init, KeyInterceptHook, Runner, env_size,
+};
+pub use wake::HostWake;
+pub use window_verbs::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};

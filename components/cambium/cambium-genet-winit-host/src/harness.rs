@@ -27,11 +27,11 @@ use genet_probe::{ProbeSurface, Selector, resolve};
 use genet_scripted_dom::NodeId;
 use winit::keyboard::{Key as WinitKey, NamedKey};
 
-use crate::meristem_bounds::RootView;
 use crate::{
     CloseRequest, Host, HostHooks, HostOptions, HostState, HostWake, Init, KeyPress, Runner,
     WindowCommands, WinitHost,
 };
+use cambium_rootstock::meristem_bounds::RootView;
 
 /// A windowless host for deterministic tests. See the module docs.
 pub struct Harness<State: 'static, Logic, V>
@@ -367,13 +367,11 @@ where
     ///
     /// `(dx, dy)` is the **scroll** delta, in the direction the content moves —
     /// a positive `dy` advances toward the end of the document, which is what a
-    /// wheel handler and `scroll_at_target` both see. (Winit reports the
-    /// opposite sign; the negation here is the same one `wheel_delta_from_winit`
-    /// applies, so a test states the delta it means.)
+    /// wheel handler and `scroll_at_target` both see. (The host takes logical
+    /// deltas now, so a test states the delta it means and no sign flip is
+    /// needed: winit's opposite convention is normalized by its event source.)
     pub fn wheel(&mut self, dx: f32, dy: f32) {
-        self.host.wheel(winit::event::MouseScrollDelta::PixelDelta(
-            winit::dpi::PhysicalPosition::new(-dx as f64, -dy as f64),
-        ));
+        self.host.wheel(dx, dy);
         self.relayout();
     }
 

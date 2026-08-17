@@ -9,12 +9,12 @@
 //! to `focus_traverse`, and why click-to-caret and wheel scrolling are gated on
 //! [`default_prevented`](cambium::GenetAppRunner::default_prevented).
 
+use crate::HostWindow;
 use cambium::{
     CaretPosition, CaretSelection, PointerClick, PointerEvent, PointerPhase, TextCommand,
     WheelEvent,
 };
-use cambium_rootstock::HostWindow;
-use cambium_winit::{ime_event_from_winit, wheel_axes};
+use cambium_winit::wheel_axes;
 use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualSelection};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 
@@ -73,7 +73,7 @@ where
 {
     /// The topmost node under the cursor, in the retained layout's own
     /// coordinates. The one hit-test every pointer path goes through.
-    pub(crate) fn hit_at_cursor(&self) -> Option<NodeId> {
+    pub fn hit_at_cursor(&self) -> Option<NodeId> {
         let (x, y) = self.s.cursor;
         self.hit_at(x, y)
     }
@@ -86,7 +86,7 @@ where
     /// gesture. An event source that had to reproduce that sequence would be
     /// one divergence away from a subtle input bug, and there is about to be a
     /// second event source.
-    pub(crate) fn pointer_moved(&mut self, x: f32, y: f32) {
+    pub fn pointer_moved(&mut self, x: f32, y: f32) {
         self.s.cursor = (x, y);
         self.hover();
         self.hover_dispatch();
@@ -95,7 +95,7 @@ where
     }
 
     /// The pointer position the input path tracks, in logical coordinates.
-    pub(crate) fn cursor(&self) -> (f32, f32) {
+    pub fn cursor(&self) -> (f32, f32) {
         self.s.cursor
     }
 
@@ -105,7 +105,7 @@ where
     /// Hit testing is host machinery, not window machinery: a browser host asks
     /// the same question of the same layout. Client-side decorations compose
     /// this with their own reading of the node, rather than repeating the walk.
-    pub(crate) fn hit_at(&self, x: f32, y: f32) -> Option<NodeId> {
+    pub fn hit_at(&self, x: f32, y: f32) -> Option<NodeId> {
         let runner = self.s.runner.as_ref()?;
         let layout = self.s.layout.as_ref()?;
         let dom = runner.dom();
@@ -114,7 +114,7 @@ where
     }
 
     /// The retained layout, for callers that read it without re-hit-testing.
-    pub(crate) fn layout(&self) -> Option<&genet_layout::IncrementalLayout<NodeId>> {
+    pub fn layout(&self) -> Option<&genet_layout::IncrementalLayout<NodeId>> {
         self.s.layout.as_ref()
     }
 
@@ -144,7 +144,7 @@ where
 
     /// A left-button press in the content area: click, then drag capture, then
     /// the host's own click-to-caret default.
-    pub(crate) fn click(&mut self) {
+    pub fn click(&mut self) {
         self.s.text_drag = None;
         let Some(node) = self.hit_at_cursor() else {
             return;
@@ -217,7 +217,7 @@ where
     /// element even when the cursor has left its box — that is what capture
     /// means, and it is why the coordinates come from the captured element's
     /// rect rather than the hit test.
-    pub(crate) fn pointer_move(&mut self) {
+    pub fn pointer_move(&mut self) {
         let Some(target) = self
             .s
             .runner
@@ -234,7 +234,7 @@ where
     }
 
     /// A left-button release: end any captured drag, then the text-drag anchor.
-    pub(crate) fn release(&mut self) {
+    pub fn release(&mut self) {
         let capture = self
             .s
             .runner
@@ -250,7 +250,7 @@ where
         self.s.text_drag = None;
     }
 
-    pub(crate) fn drag_text_selection(&mut self) {
+    pub fn drag_text_selection(&mut self) {
         let Some(drag_node) = self.s.text_drag else {
             return;
         };
@@ -336,7 +336,7 @@ where
         });
     }
 
-    pub(crate) fn key(&mut self, press: &KeyPress) {
+    pub fn key(&mut self, press: &KeyPress) {
         // `CAMBIUM_HOST_KEY_TRACE=1` reports every key the host was handed and
         // what became of it. It exists because "typing does not work" has three
         // very different causes — the window never got the event, winit could
@@ -431,21 +431,27 @@ where
         self.hover();
     }
 
-    pub(crate) fn ime(&mut self, ime: &winit::event::Ime) {
+    /// A platform IME lifecycle event, already in Cambium's neutral
+    /// composition vocabulary. The event source converts; a browser reports
+    /// the same four states through `compositionstart`/`update`/`end`.
+    pub fn ime(&mut self, composition: cambium::CompositionEvent) {
         let Some(runner) = self.s.runner.as_mut() else {
             return;
         };
         if (self.hooks.focused_text)(runner).is_none() {
             return;
         }
-        runner.dispatch_key(ime_event_from_winit(ime));
+        runner.dispatch_key(cambium::KeyEvent::new(cambium::Key::Composition(
+            composition,
+        )));
         self.after_dispatch();
     }
 
-    pub(crate) fn wheel(&mut self, delta: winit::event::MouseScrollDelta) {
+    /// A wheel notch, in logical pixels. The event source normalizes lines
+    /// versus pixels; both winit and the DOM report both kinds.
+    pub fn wheel(&mut self, dx: f32, dy: f32) {
         // Desktop convention (shared cambium-winit policy): Shift + vertical
         // wheel scrolls horizontally.
-        let (dx, dy) = genet_winit_host::wheel_delta_from_winit(delta);
         let (dx, dy) = wheel_axes(dx, dy, self.s.modifiers.shift);
         let hit = self.hit_at_cursor();
         // 1. The view layer first: the nearest `on_wheel` ancestor of the hit
@@ -487,9 +493,7 @@ where
         if let Some(target) = scrolled {
             // Wake the scrolled target's overlay bar; the fade clock keeps
             // redraws coming until it hides again.
-            self.s
-                .scrollbar_fade
-                .note(target, cambium_rootstock::Instant::now());
+            self.s.scrollbar_fade.note(target, crate::Instant::now());
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();
             }
