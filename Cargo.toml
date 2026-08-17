@@ -70,6 +70,7 @@ members = [
     # not transit to git consumers.
     "components/cambium/cambium",
     "components/cambium/cambium-rootstock",
+    "components/cambium/cambium-genet-web-host",
     "components/cambium/cambium-genet-winit-host",
     "components/cambium/cambium-nematic",
     "components/cambium/cambium-winit",

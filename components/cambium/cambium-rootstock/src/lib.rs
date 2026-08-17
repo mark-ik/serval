@@ -24,9 +24,13 @@
 //! routed one could never be driven from a test. A host that routes one also
 //! cannot be driven from a browser. Same defect, wider blast radius.
 
-use genet_layout::{IncrementalLayout, VisualMovement};
-use genet_scripted_dom::{NodeId, ScriptedDom};
-use sprigging::LeafRegistry;
+// The types an event source implements the seams against, re-exported so a
+// source names this crate rather than four.
+pub use genet_layout::IncrementalLayout;
+pub use genet_scripted_dom::{NodeId, ScriptedDom};
+pub use sprigging::LeafRegistry;
+
+use genet_layout::VisualMovement;
 
 /// The host's clock.
 ///

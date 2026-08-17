@@ -1,0 +1,41 @@
+[package]
+name = "cambium-genet-web-host"
+version = "0.1.0"
+description = "The browser event source for a Cambium application host: DOM events and a canvas, grafted onto cambium-rootstock"
+edition.workspace = true
+rust-version = "1.92"
+license = "MPL-2.0"
+repository = "https://github.com/merely-made/genet"
+# Same posture as the winit event source: it rides genet-layout, which inherits
+# genet's publish = false. Consumers take it from genet.git by branch.
+publish = false
+
+[dependencies]
+# The stock this is grafted onto. Everything below is what a browser adds.
+cambium-rootstock = { version = "0.1.0", path = "../cambium-rootstock" }
+cambium = { version = "0.3.3", path = "../cambium" }
+genet-render-host = { path = "../../genet-render-host" }
+genet-scripted-dom = { path = "../../genet-scripted-dom" }
+netrender = { workspace = true }
+wgpu = { workspace = true }
+
+# The browser itself. Declared for wasm32 only, so a native build of the
+# workspace resolves none of it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "=0.2.126"
+web-sys = { version = "0.3", features = [
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "Document",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "KeyboardEvent",
+    "PointerEvent",
+    "WheelEvent",
+    "Window",
+] }
