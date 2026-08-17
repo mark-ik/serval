@@ -7,8 +7,7 @@ Closes the receipt list from the
 headed composition, CubeCL compute and resident buffers, wasm WebGPU, macOS
 IOSurface, Linux DMA-BUF.
 
-**Six of seven pass. Linux DMA-BUF fails on the only Linux hardware available,
-for a documented pre-existing reason unrelated to wgpu 30.**
+**All seven pass.**
 
 | Receipt | Host | Result |
 |---|---|---|
@@ -18,11 +17,17 @@ for a documented pre-existing reason unrelated to wgpu 30.**
 | wasm WebGPU | this box, Chromium | PASS |
 | macOS IOSurface, x86_64 | Q-PC, Intel iMac | PASS |
 | macOS IOSurface, aarch64 | Mayola's iMac, Apple M4 | PASS |
-| Linux DMA-BUF | ThinkPad, AMD RADV | FAIL — hardware |
+| Linux DMA-BUF | ThinkPad, AMD RADV | PASS |
 
-Both macOS architectures now have a runtime receipt. The aarch64 half was
+Both macOS architectures have a runtime receipt. The aarch64 half was
 outstanding on 2026-08-16 morning because the machine was unreachable; see
 **Hosts** for why that was a network fact rather than a hardware one.
+
+Linux DMA-BUF was written up as a hardware failure earlier the same day and
+then cleared, because the migration itself supplied the missing piece: wgpu 30
+enables the Vulkan extension that AMD's implicit-modifier buffers need, and
+wgpu 29 had no such thing. The failing section is kept below rather than
+deleted, because the reasoning that made it look permanent is worth keeping.
 
 ---
 
@@ -154,7 +159,63 @@ It does mean the "exactly one wgpu row" condition does not hold for the three
 in a deliberately multi-row repo rather than active product packages, so this
 is noted rather than treated as a regression.
 
-## Linux DMA-BUF — FAIL (hardware, pre-existing)
+## Linux DMA-BUF — PASS (after the fix below)
+
+Cleared 2026-08-16 on the Fedora ThinkPad, AMD Renoir/RADV, Mesa 26.1.5, the
+same host that failed earlier the same day.
+
+```
+adapter DMA-BUF import feature: true
+imported frame #1 (1280x701 Bgra8UnormSrgb)
+imported frame #2 (1366x701 Bgra8UnormSrgb)
+VALIDATION PASS: 2 frame(s) imported, 16384/16384 bytes non-zero,
+                 first pixels [238,238,238,255]
+```
+
+Those numbers match the macOS receipt exactly, which is the point: `#EEEEEE`
+uniform across the corner is what example.com's background must be.
+
+**The receipt is the imported texture itself**, dumped with the new
+`WELD_TEXTURE_DUMP` and saved to
+`testing/rendering/2026-08-17_linux_dmabuf_imported_texture.png`. It renders
+the page with clean text and correct layout, which is the evidence a CEF-side
+snapshot could never give: those bytes came out of the wgpu texture backed by
+CEF's DMA-BUF.
+
+### What changed
+
+Three things, none of them hardware:
+
+1. `welding` substitutes `DRM_FORMAT_MOD_LINEAR` when CEF reports
+   `DRM_FORMAT_MOD_INVALID`, gated on the host device carrying
+   `VULKAN_EXTERNAL_MEMORY_DMA_BUF`. wgpu 28 and 29 answer false and keep the
+   old refusal, so the multi-row promise holds; all three rows still compile.
+2. `demo-weld-linux` requests that feature when the adapter offers it. Without
+   the request the device does not advertise it and the gate never opens.
+3. The imported texture now declares `COPY_SRC`, and its `VkImage` declares
+   `TRANSFER_SRC`. **This was a latent second bug**: the macOS path has always
+   declared `COPY_SRC`, Linux never did, so the readback probe would have
+   panicked on the first successful import. It was invisible while the
+   implicit-modifier refusal fired first, and surfaced the moment the import
+   started working.
+
+### Two traps in reading the probe
+
+**A `VALIDATION PASS` is not a correct-layout receipt.** The probe counts
+non-zero bytes, and a wrongly-tiled buffer is scrambled yet non-zero. Only the
+whole-texture dump distinguishes them.
+
+**Probe at least 2 frames.** The first accelerated paint arrives before the
+page does. Frame 1 reported 12160/16384 bytes non-zero starting with black,
+which is exactly what a tiling bug looks like, and cost a detour before frame 2
+reported 16384/16384 starting with `#EEEEEE`. A partial early frame and a
+scrambled one are indistinguishable from one sample.
+
+## Appendix: why this looked permanent (superseded)
+
+Kept as written before the fix.
+
+### Linux DMA-BUF — FAIL (hardware, pre-existing)
 
 `demo-weld-linux` on the Fedora ThinkPad (Fedora 44, **AMD Radeon Renoir,
 radeonsi/RADV/ACO**), over Xwayland (`DISPLAY=:0` plus the mutter auth cookie,
