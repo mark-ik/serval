@@ -9,18 +9,17 @@
 //! to `focus_traverse`, and why click-to-caret and wheel scrolling are gated on
 //! [`default_prevented`](cambium::GenetAppRunner::default_prevented).
 
+use cambium_genet_host::HostWindow;
 use cambium::{
     CaretPosition, CaretSelection, PointerClick, PointerEvent, PointerPhase, TextCommand,
     WheelEvent,
 };
-use cambium_winit::{ime_event_from_winit, key_event_from_winit, modifiers_from_winit, wheel_axes};
-use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection};
+use cambium_winit::{ime_event_from_winit, wheel_axes};
+use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualSelection};
 use genet_scripted_dom::{NodeId, ScriptedDom};
-use winit::keyboard::{Key as WinitKey, NamedKey as WinitNamedKey};
 
 use crate::meristem_bounds::RootView;
-use crate::spatial::Direction;
-use crate::{Host, KeyPress};
+use crate::{Host, Key, KeyPress, NamedKey};
 
 pub(crate) fn to_visual_caret(caret: CaretPosition) -> VisualCaret {
     VisualCaret {
@@ -63,25 +62,6 @@ fn key_trace() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("CAMBIUM_HOST_KEY_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
-    })
-}
-
-/// Which visual caret movement a key means, or `None` for a key the host has no
-/// caret default for.
-fn caret_movement(key: &WinitKey, word: bool) -> Option<VisualMovement> {
-    let WinitKey::Named(named) = key else {
-        return None;
-    };
-    Some(match named {
-        WinitNamedKey::ArrowLeft if word => VisualMovement::PreviousWord,
-        WinitNamedKey::ArrowLeft => VisualMovement::PreviousCluster,
-        WinitNamedKey::ArrowRight if word => VisualMovement::NextWord,
-        WinitNamedKey::ArrowRight => VisualMovement::NextCluster,
-        WinitNamedKey::ArrowUp => VisualMovement::PreviousLine,
-        WinitNamedKey::ArrowDown => VisualMovement::NextLine,
-        WinitNamedKey::Home => VisualMovement::LineStart,
-        WinitNamedKey::End => VisualMovement::LineEnd,
-        _ => return None,
     })
 }
 
@@ -290,8 +270,8 @@ where
         press: &KeyPress,
         base: Option<(NodeId, CaretSelection)>,
     ) {
-        let word = press.modifiers.control_key() || press.modifiers.alt_key();
-        let Some(movement) = caret_movement(&press.key, word) else {
+        let word = press.modifiers.ctrl || press.modifiers.alt;
+        let Some(movement) = press.caret_movement(word) else {
             return;
         };
         let Some((base_node, base_selection)) = base else {
@@ -311,7 +291,7 @@ where
             slot.node,
             to_visual_selection(base_selection),
             movement,
-            press.modifiers.shift_key(),
+            press.modifiers.shift,
         ) else {
             return;
         };
@@ -345,7 +325,7 @@ where
         // arrives, and the initial traversal is simply where the steering
         // starts from.
         if self.options.spatial_focus {
-            if let WinitKey::Named(WinitNamedKey::Tab) = press.key {
+            if let Key::Named(NamedKey::Tab) = press.key {
                 if press.repeat {
                     // Already held: swallow the repeat rather than walking
                     // document order sixty times while steering.
@@ -357,8 +337,7 @@ where
                 self.s.tab_held = true;
                 // Fall through: this press traverses as it always did.
             } else if self.s.tab_held
-                && let WinitKey::Named(named) = &press.key
-                && let Some(dir) = Direction::from_named(named)
+                && let Some(dir) = press.direction()
             {
                 let moved = self.focus_spatial(dir);
                 if trace {
@@ -381,24 +360,13 @@ where
                 return;
             }
         }
-        let mods = modifiers_from_winit(press.modifiers);
-        let kev = match key_event_from_winit(&press.key, mods) {
-            Some(kev) => kev,
-            // The platform could not name the key but did report text: an
-            // on-screen keyboard, a remapper, or an assistive input tool
-            // injected it (on Windows, `VK_PACKET`). Type it, or none of those
-            // can type here at all.
-            None => match press.injected_text() {
-                Some(text) => {
-                    cambium::KeyEvent::with_mods(cambium::Key::Character(text.to_string()), mods)
-                },
-                None => {
-                    if trace {
-                        eprintln!("[cambium-host]   dropped: no Cambium key and no text");
-                    }
-                    return;
-                },
-            },
+        let Some(kev) = press.to_runner_key() else {
+            // No runner key and no injected text: a dead key, or an
+            // unidentified one the platform reported no text for.
+            if trace {
+                eprintln!("[cambium-host]   dropped: no Cambium key and no text");
+            }
+            return;
         };
         if trace {
             eprintln!("[cambium-host]   dispatching {:?}", kev.key);
@@ -442,7 +410,7 @@ where
         // Desktop convention (shared cambium-winit policy): Shift + vertical
         // wheel scrolls horizontally.
         let (dx, dy) = genet_winit_host::wheel_delta_from_winit(delta);
-        let (dx, dy) = wheel_axes(dx, dy, self.s.modifiers.shift_key());
+        let (dx, dy) = wheel_axes(dx, dy, self.s.modifiers.shift);
         let hit = self.hit_at_cursor();
         // 1. The view layer first: the nearest `on_wheel` ancestor of the hit
         //    node gets the notch, with cursor-local coordinates so it can
@@ -485,7 +453,7 @@ where
             // redraws coming until it hides again.
             self.s
                 .scrollbar_fade
-                .note(target, std::time::Instant::now());
+                .note(target, cambium_genet_host::Instant::now());
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();
             }

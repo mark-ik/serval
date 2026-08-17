@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use cambium::{GenetAppRunner, TextInput};
 use cambium_winit::ScrollbarFade;
+use cambium_genet_host::{Accessibility, HostWindow, Surface};
 use cambium_winit_a11y::A11yHost;
 use genet_layout::{IncrementalLayout, ScrollTarget};
 use genet_scripted_dom::{NodeId, ScriptedDom};
@@ -51,7 +52,7 @@ mod wake;
 pub use capture::{Frame, read_frame};
 pub use decorations::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 pub use harness::{Harness, inert_hooks};
-pub use spatial::Direction;
+pub use cambium_genet_host::{Direction, Key, KeyPress, Modifiers, NamedKey};
 pub use wake::HostWake;
 
 use decorations::ClickCadence;
@@ -104,7 +105,7 @@ pub type Runner<State, Logic, V> = GenetAppRunner<State, Logic, V, ()>;
 
 /// A capture armed by the application, run inside the next frame while the
 /// rasterized view is still alive (scenario screenshots).
-pub type CaptureFn = Box<dyn FnOnce(&SurfaceHost, &wgpu::TextureView, u32, u32) + 'static>;
+pub type CaptureFn = Box<dyn FnOnce(&dyn Surface, &wgpu::TextureView, u32, u32) + 'static>;
 
 /// Window and pipeline configuration.
 pub struct HostOptions {
@@ -164,75 +165,124 @@ pub struct FocusedTextSlot<State> {
     pub get_mut: Box<dyn Fn(&mut State) -> &mut TextInput>,
 }
 
-/// A key press as the host routes it: winit's logical key, plus the modifier
-/// state at the time.
+/// The winit window, as the neutral seam sees it.
 ///
-/// Small on purpose. `winit::event::KeyEvent` cannot be constructed outside
-/// winit, so a host whose keyboard path took one could never be driven from a
-/// test — and a keyboard-order receipt that cannot run in `cargo test` is a
-/// receipt nobody collects. This carries exactly what routing reads.
-#[derive(Clone, Debug, PartialEq)]
-pub struct KeyPress {
-    /// The logical key, after the layout and modifiers the OS applied.
-    pub key: winit::keyboard::Key,
-    /// The text this press produces, when the platform reports any.
-    ///
-    /// Carried because `key` alone is not always enough. Windows delivers
-    /// injected text as `VK_PACKET`, which winit surfaces as
-    /// `Key::Unidentified` — and injected text is not an exotic case: on-screen
-    /// keyboards, keyboard remappers, and several assistive input tools all
-    /// type that way. Without this field a person using one of them cannot type
-    /// into the application at all.
-    pub text: Option<String>,
-    /// Modifiers held at the time of the press.
-    pub modifiers: ModifiersState,
-    /// Whether this is an auto-repeat rather than a fresh press.
-    pub repeat: bool,
+/// A newtype for the same reason as [`WinitSurface`]: the trait is not local to
+/// this crate and neither is `Window`. It carries an `Arc` so the adapter keeps
+/// its own handle for the window management the seam deliberately omits.
+#[derive(Clone)]
+pub struct WinitWindow(pub Arc<Window>);
+
+impl HostWindow for WinitWindow {
+    fn request_redraw(&self) {
+        self.0.request_redraw();
+    }
+
+    fn inner_size(&self) -> (u32, u32) {
+        let size = self.0.inner_size();
+        (size.width, size.height)
+    }
+
+    fn scale_factor(&self) -> f64 {
+        self.0.scale_factor()
+    }
+
+    fn set_ime_allowed(&self, allowed: bool) {
+        self.0.set_ime_allowed(allowed);
+    }
+
+    fn set_ime_cursor_area(&self, x: f64, y: f64, width: f64, height: f64) {
+        self.0.set_ime_cursor_area(
+            winit::dpi::LogicalPosition::new(x, y),
+            winit::dpi::LogicalSize::new(width, height),
+        );
+    }
 }
 
-impl KeyPress {
-    /// A press with no modifiers held.
-    pub fn new(key: winit::keyboard::Key) -> Self {
-        let text = match &key {
-            winit::keyboard::Key::Character(c) => Some(c.to_string()),
-            _ => None,
-        };
-        Self {
-            key,
-            text,
-            modifiers: ModifiersState::empty(),
-            repeat: false,
-        }
+/// The winit window's presentation surface, as the neutral seam sees it.
+///
+/// A newtype because neither [`Surface`] nor `SurfaceHost` is local to this
+/// crate, so the implementation cannot be written directly on it. The wrapper
+/// costs nothing and gives the winit surface a name on this side of the seam.
+pub struct WinitSurface(pub SurfaceHost);
+
+impl Surface for WinitSurface {
+    fn core(&self) -> &genet_render_host::RenderCore {
+        self.0.core()
     }
 
-    /// A named-key press (Tab, Enter, ArrowLeft, …).
-    pub fn named(named: winit::keyboard::NamedKey) -> Self {
-        Self::new(winit::keyboard::Key::Named(named))
+    fn format(&self) -> wgpu::TextureFormat {
+        self.0.format()
     }
 
-    /// Hold these modifiers for the press.
-    #[must_use]
-    pub fn with_modifiers(mut self, modifiers: ModifiersState) -> Self {
-        self.modifiers = modifiers;
-        self
+    fn resize(&mut self, width: u32, height: u32) {
+        self.0.resize(width, height);
     }
 
-    /// The character this press should insert when the platform could not name
-    /// the key but did report text. `None` for a named key, a control
-    /// character, or a chord — a shortcut must not become typed text.
-    pub fn injected_text(&self) -> Option<&str> {
-        if !matches!(self.key, winit::keyboard::Key::Unidentified(_)) {
-            return None;
-        }
-        // A modifier chord is a command, not typing.
-        if self.modifiers.control_key() || self.modifiers.super_key() {
-            return None;
-        }
-        let text = self.text.as_deref()?;
-        if text.is_empty() || text.chars().any(char::is_control) {
-            return None;
-        }
-        Some(text)
+    fn acquire(&self) -> Option<wgpu::SurfaceTexture> {
+        self.0.acquire()
+    }
+}
+
+/// Convert a winit named key into the host's neutral vocabulary.
+///
+/// Keys this vocabulary does not special-case become [`NamedKey::Other`], the
+/// same way `cambium_winit`'s mapping treats them.
+fn named_from_winit(named: &winit::keyboard::NamedKey) -> NamedKey {
+    use winit::keyboard::NamedKey as N;
+    match named {
+        N::Backspace => NamedKey::Backspace,
+        N::Enter => NamedKey::Enter,
+        N::Tab => NamedKey::Tab,
+        N::Space => NamedKey::Space,
+        N::Escape => NamedKey::Escape,
+        N::ArrowLeft => NamedKey::ArrowLeft,
+        N::ArrowRight => NamedKey::ArrowRight,
+        N::ArrowUp => NamedKey::ArrowUp,
+        N::ArrowDown => NamedKey::ArrowDown,
+        N::Delete => NamedKey::Delete,
+        N::Home => NamedKey::Home,
+        N::End => NamedKey::End,
+        N::PageUp => NamedKey::PageUp,
+        N::PageDown => NamedKey::PageDown,
+        _ => NamedKey::Other,
+    }
+}
+
+/// Winit's live modifier state, in the host's neutral vocabulary.
+///
+/// `super_key` is winit's name for the platform command key, which is `meta`
+/// here and in Cambium.
+pub(crate) fn modifiers_from_winit_state(state: ModifiersState) -> Modifiers {
+    Modifiers {
+        shift: state.shift_key(),
+        ctrl: state.control_key(),
+        alt: state.alt_key(),
+        meta: state.super_key(),
+    }
+}
+
+/// A winit key event as the host routes it.
+///
+/// The one place winit's keyboard vocabulary is read. `Dead` and `Unidentified`
+/// stay distinct: an unidentified key may still carry injected text and should
+/// type, a dead key is an accent awaiting composition and must not.
+pub(crate) fn key_from_winit(key: &winit::keyboard::Key) -> Key {
+    use winit::keyboard::Key as W;
+    match key {
+        W::Character(c) => Key::Character(c.to_string()),
+        W::Named(named) => Key::Named(named_from_winit(named)),
+        W::Dead(_) => Key::Dead,
+        W::Unidentified(_) => Key::Unidentified,
+    }
+}
+
+fn key_press_from_winit(event: &winit::event::KeyEvent, modifiers: Modifiers) -> KeyPress {
+    KeyPress {
+        key: key_from_winit(&event.logical_key),
+        text: event.text.as_ref().map(|t| t.to_string()),
+        modifiers,
+        repeat: event.repeat,
     }
 }
 
@@ -368,8 +418,14 @@ where
     Logic: FnMut(&State) -> V,
     V: RootView<State>,
 {
-    pub(crate) window: Option<Arc<Window>>,
-    pub(crate) surface: Option<SurfaceHost>,
+    /// The window behind the neutral seam. Held as the wrapper rather than a
+    /// bare `Arc<Window>` so the modules bound for the core reach it through
+    /// [`HostWindow`]; the adapter unwraps `.0` for the window management the
+    /// seam omits.
+    pub(crate) window: Option<WinitWindow>,
+    /// The presentation surface behind the neutral seam. A browser event
+    /// source supplies the same pair against a canvas.
+    pub(crate) surface: Option<Box<dyn Surface>>,
     pub(crate) runner: Option<Runner<State, Logic, V>>,
     /// Retained layout session in logical coordinates — hit-test target and
     /// incremental-apply subject.
@@ -387,7 +443,9 @@ where
     pub(crate) leaf_fragments: std::collections::HashMap<u64, (u64, u64)>,
     /// Cursor position in logical coordinates.
     pub(crate) cursor: (f32, f32),
-    pub(crate) modifiers: ModifiersState,
+    /// Live modifier state, in the neutral vocabulary. Winit's own state is
+    /// converted once, where it arrives, so nothing downstream reads it.
+    pub(crate) modifiers: Modifiers,
     /// The node whose text field anchors an active drag selection.
     pub(crate) text_drag: Option<NodeId>,
     /// Opaque ids for `:hover` / `:focus` restyles on target change.
@@ -395,8 +453,6 @@ where
     pub(crate) last_focus: Option<u64>,
     /// The hovered hit node, for `on_hover` Enter/Leave routing.
     pub(crate) last_hover_hit: Option<NodeId>,
-    /// Last resize-edge the cursor was over (CSD), to dedup cursor sets.
-    pub(crate) resize_hint: Option<winit::window::ResizeDirection>,
     /// The application's end of the window-verb seam; the host drains it
     /// after every dispatch.
     pub(crate) commands: WindowCommands,
@@ -407,8 +463,12 @@ where
     /// windowless harness can prove the frame did what the gesture asked.
     pub(crate) performed: Vec<WindowCommand>,
     /// Monotonic base for the CSS-transition animation clock.
-    pub(crate) anim_base: std::time::Instant,
-    pub(crate) a11y: Option<A11yHost>,
+    pub(crate) anim_base: cambium_genet_host::Instant,
+    /// The accessibility seam, behind the neutral trait rather than named as
+    /// AccessKit. `HostState` holds no winit or AccessKit type through it, so
+    /// this field is ready to move with the struct; a browser event source
+    /// supplies a projection onto the live document instead.
+    pub(crate) a11y: Option<Box<dyn Accessibility>>,
     pub(crate) a11y_wake: Arc<AtomicBool>,
     /// Set by [`HostWake`] until the event loop gives the application one drain
     /// turn. Kept in host state so the harness can exercise the same coalescing
@@ -448,16 +508,15 @@ where
             rendered: sprigging::RenderedLeaves::new(),
             leaf_fragments: std::collections::HashMap::new(),
             cursor: (0.0, 0.0),
-            modifiers: ModifiersState::empty(),
+            modifiers: Modifiers::NONE,
             text_drag: None,
             last_hover: None,
             last_focus: None,
             last_hover_hit: None,
-            resize_hint: None,
             commands: WindowCommands::new(),
             cadence: ClickCadence::new(),
             performed: Vec::new(),
-            anim_base: std::time::Instant::now(),
+            anim_base: cambium_genet_host::Instant::now(),
             a11y: None,
             a11y_wake: Arc::new(AtomicBool::new(false)),
             wake_pending: Arc::new(AtomicBool::new(false)),
@@ -483,6 +542,12 @@ where
     pub(crate) init: Option<InitFn<State, Logic>>,
     pub(crate) hooks: HostHooks<State, Logic, V>,
     pub(crate) s: HostState<State, Logic, V>,
+    /// Last resize-edge the cursor was over, to dedup cursor sets.
+    ///
+    /// Adapter state, not host state: client-side decorations are a desktop
+    /// window's problem, and a browser tab has no frame to grab. It sits here
+    /// rather than in `HostState` so that struct names nothing winit.
+    pub(crate) resize_hint: Option<winit::window::ResizeDirection>,
     pub(crate) wake: HostWake,
 }
 
@@ -526,6 +591,7 @@ where
         init: Some(Box::new(init)),
         hooks,
         s,
+        resize_hint: None,
         wake,
     };
     event_loop.run_app(&mut host)
@@ -549,8 +615,8 @@ where
                 let size = window.inner_size();
                 let scale = window.scale_factor() as f32;
                 (
-                    size.width.max(1) as f32 / scale,
-                    size.height.max(1) as f32 / scale,
+                    size.0.max(1) as f32 / scale,
+                    size.1.max(1) as f32 / scale,
                 )
             },
             None => self.s.layout_size,
@@ -565,7 +631,7 @@ where
             let logical_size = self.logical_size();
             let geometry = self.geometry();
             let commands = self.s.commands.clone();
-            let window = self.s.window.as_deref();
+            let window = self.s.window.as_ref().map(|w| &*w.0);
             let Some(runner) = self.s.runner.as_mut() else {
                 return;
             };
@@ -626,7 +692,7 @@ where
             let logical_size = self.logical_size();
             let geometry = self.geometry();
             let commands = self.s.commands.clone();
-            let window = self.s.window.as_deref();
+            let window = self.s.window.as_ref().map(|w| &*w.0);
             let Some(runner) = self.s.runner.as_mut() else {
                 self.s.close_requested = true;
                 return;
@@ -658,7 +724,7 @@ where
             },
             CloseDisposition::Hide => {
                 if let Some(window) = self.s.window.as_ref() {
-                    window.set_visible(false);
+                    window.0.set_visible(false);
                 }
                 self.s.hidden = true;
             },
@@ -748,7 +814,7 @@ where
     /// accessibility wake flag if one is set. Factored out of `about_to_wait`
     /// so the wake path is assertable: `Wait` really means nothing is pending,
     /// and a raised wake really becomes a repaint rather than being swallowed.
-    pub(crate) fn idle_policy(&mut self, now: std::time::Instant) -> IdlePolicy {
+    pub(crate) fn idle_policy(&mut self, now: cambium_genet_host::Instant) -> IdlePolicy {
         if self.s.a11y_wake.swap(false, Ordering::Relaxed) {
             return IdlePolicy::A11yWake;
         }
@@ -808,7 +874,7 @@ where
             return None;
         }
         let window = self.s.window.as_ref()?;
-        if window.is_maximized() {
+        if window.0.is_maximized() {
             return None;
         }
         let size = window.inner_size();
@@ -816,8 +882,8 @@ where
         resize_edge(
             self.s.cursor.0,
             self.s.cursor.1,
-            size.width as f32 / s,
-            size.height as f32 / s,
+            size.0 as f32 / s,
+            size.1 as f32 / s,
         )
     }
 
@@ -828,10 +894,10 @@ where
             return;
         }
         let dir = self.edge_under_cursor();
-        if dir != self.s.resize_hint {
-            self.s.resize_hint = dir;
+        if dir != self.resize_hint {
+            self.resize_hint = dir;
             if let Some(window) = self.s.window.as_ref() {
-                window.set_cursor(
+                window.0.set_cursor(
                     dir.map(edge_cursor)
                         .unwrap_or(winit::window::CursorIcon::Default),
                 );
@@ -867,13 +933,13 @@ where
             if self.s.surface.is_none() {
                 let size = window.inner_size();
                 match SurfaceHost::boot(
-                    window.clone(),
-                    size.width.max(1),
-                    size.height.max(1),
+                    window.0.clone(),
+                    size.0.max(1),
+                    size.1.max(1),
                     (self.options.netrender)(),
                 ) {
                     Ok(surface) => {
-                        self.s.surface = Some(surface);
+                        self.s.surface = Some(Box::new(WinitSurface(surface)));
                         // The surface is new, so nothing is cached in it: force
                         // a full repaint rather than an incremental one.
                         self.redraw();
@@ -950,10 +1016,12 @@ where
         } = init(&window, &self.s.commands.clone(), &self.wake);
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let runner = Runner::new(dom, logic, state);
-        self.s.a11y = Some(A11yHost::new(self.a11y_waker()));
+        let mut a11y = A11yHost::new(self.a11y_waker());
+        a11y.attach(window.clone());
+        self.s.a11y = Some(Box::new(a11y));
         self.s.sheet = sheet;
-        self.s.window = Some(window);
-        self.s.surface = Some(surface);
+        self.s.window = Some(WinitWindow(window));
+        self.s.surface = Some(Box::new(WinitSurface(surface)));
         self.s.runner = Some(runner);
         // Drive the first frame synchronously while the window is hidden:
         // lay out, install the a11y tree, then reveal. A hidden winit window
@@ -972,7 +1040,7 @@ where
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.idle_policy(std::time::Instant::now()) {
+        match self.idle_policy(cambium_genet_host::Instant::now()) {
             IdlePolicy::A11yWake => {
                 if let Some(window) = self.s.window.as_ref() {
                     window.request_redraw();
@@ -1013,7 +1081,7 @@ where
             },
             WindowEvent::ScaleFactorChanged { .. } => self.note_resize(),
             WindowEvent::ModifiersChanged(mods) => {
-                self.s.modifiers = mods.state();
+                self.s.modifiers = modifiers_from_winit_state(mods.state());
             },
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = self.scale_factor();
@@ -1035,7 +1103,7 @@ where
                 match self.edge_under_cursor() {
                     Some(dir) => {
                         if let Some(w) = self.s.window.as_ref() {
-                            let _ = w.drag_resize_window(dir);
+                            let _ = w.0.drag_resize_window(dir);
                         }
                     },
                     // Then the window frame: a press on an `--app-region: drag`
@@ -1059,12 +1127,9 @@ where
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::Ime(ime) => self.ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => match event.state {
-                ElementState::Pressed => self.key(&KeyPress {
-                    key: event.logical_key,
-                    text: event.text.as_ref().map(|t| t.to_string()),
-                    modifiers: self.s.modifiers,
-                    repeat: event.repeat,
-                }),
+                ElementState::Pressed => {
+                    self.key(&key_press_from_winit(&event, self.s.modifiers))
+                },
                 // Releases matter for exactly one thing: letting go of Tab
                 // leaves spatial focus navigation.
                 ElementState::Released => {

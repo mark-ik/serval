@@ -39,26 +39,23 @@ use layout_dom_api::LayoutDom as _;
 use sprigging::LeafRegistry;
 use winit::window::Window;
 
-/// What a screen reader asked for, kept as the action it actually requested.
+/// The screen-reader request vocabulary, re-exported from the neutral seam.
 ///
-/// AccessKit's `Click` and `Focus` are different requests and a host that
-/// collapses them lies to the reader: navigating a list with a virtual cursor
-/// issues `Focus`, and turning that into a click activates every control the
-/// reader merely moves across. They stay apart here so the host can route
-/// `Click` through its activation path and `Focus` through `set_focus`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum A11yAction {
-    /// Activate the element — the reader's equivalent of a pointer click.
-    Click,
-    /// Move focus to the element, without activating it.
-    Focus,
-}
+/// It lives there rather than here because it never named winit or AccessKit:
+/// an action and a DOM node are the same two things whichever platform asked.
+/// Re-exported so callers that already import it from this crate keep working.
+pub use cambium_genet_host::{A11yAction, A11yRequest, Accessibility};
 
-/// One drained screen-reader request: which action, on which DOM node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct A11yRequest {
-    pub action: A11yAction,
-    pub node: NodeId,
+impl Accessibility for A11yHost {
+    fn sync(
+        &mut self,
+        dom: &ScriptedDom,
+        layout: &IncrementalLayout<NodeId>,
+        leaves: &mut LeafRegistry<u64>,
+        focus: Option<u64>,
+    ) -> Vec<A11yRequest> {
+        self.sync_inner(dom, layout, leaves, focus)
+    }
 }
 
 /// Bridges genet-layout's a11y walk to a Sprigging leaf registry: when the walk
@@ -79,6 +76,17 @@ impl LeafA11ySource for SpriggingA11y<'_> {
 /// genet-backed Cambium app. Create it in `resumed` (with a wake callback that
 /// nudges the event loop), then call [`A11yHost::sync`] after every frame.
 pub struct A11yHost {
+    /// The native handle AccessKit binds its parallel tree to. Held rather than
+    /// passed per call: it is what makes this implementation winit's, and the
+    /// neutral seam has no room for it.
+    ///
+    /// Optional so the host is constructible without one. A window cannot be
+    /// made in a unit test, and requiring one here would put `map_request` and
+    /// the projection out of reach of exactly the receipts that should cover
+    /// them. Until [`attach`](Self::attach), `sync` installs nothing and
+    /// returns no requests, which is the honest answer for a tree no reader can
+    /// see yet.
+    window: Option<std::sync::Arc<Window>>,
     bridge: AccessKitBridge,
     installed: bool,
     /// AccessKit node id -> its DOM node, rebuilt each frame, so a screen
@@ -92,6 +100,7 @@ impl A11yHost {
     /// action gets drained (e.g. set a flag honored in `about_to_wait`).
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
+            window: None,
             bridge: AccessKitBridge::new(wake),
             installed: false,
             action_map: HashMap::new(),
@@ -113,20 +122,23 @@ impl A11yHost {
     /// `focus` is the app's currently-focused DOM node's opaque id (from
     /// `LayoutDom::opaque_id`), used as the tree's focus when it is really in the
     /// tree, so a stale id never points the reader at nothing.
-    pub fn sync(
+    fn sync_inner(
         &mut self,
-        window: &Window,
         dom: &ScriptedDom,
         layout: &IncrementalLayout<NodeId>,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
     ) -> Vec<A11yRequest> {
+        let Some(window) = self.window.clone() else {
+            // No window yet: nothing to install against, and no reader to ask.
+            return Vec::new();
+        };
         let (tree, action_map) = project_tree(dom, layout, leaves, focus);
         self.action_map = action_map;
         let node_count = tree.nodes.len();
 
         if !self.installed {
-            match self.bridge.install(window, tree) {
+            match self.bridge.install(&window, tree) {
                 Ok(()) => eprintln!(
                     "[cambium-winit] accessibility {:?}, {node_count} nodes projected",
                     self.bridge.status()
@@ -154,6 +166,15 @@ impl A11yHost {
                 Some(A11yRequest { action, node })
             })
             .collect()
+    }
+
+    /// Give the host the window AccessKit installs against.
+    ///
+    /// Call once, as soon as the window exists. Before this the host projects
+    /// nothing; after it, the first [`sync`](Accessibility::sync) installs the
+    /// tree and reveals the window.
+    pub fn attach(&mut self, window: std::sync::Arc<Window>) {
+        self.window = Some(window);
     }
 
     /// Map a raw AccessKit request to a typed one against the tree that was

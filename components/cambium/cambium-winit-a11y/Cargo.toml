@@ -16,6 +16,10 @@ publish = false
 
 [dependencies]
 sprigging = { version = "0.2.0", path = "../sprigging" }
+# The neutral accessibility seam this crate implements for winit. The
+# request vocabulary lives there because it never named winit or AccessKit
+# in the first place; only the window handle below is ours.
+cambium-genet-host = { version = "0.1.0", path = "../cambium-genet-host" }
 winit = "0.30.13"
 accesskit = "0.24"
 genet-layout = { path = "../../genet-layout" }

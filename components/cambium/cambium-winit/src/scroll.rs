@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// Map a wheel delta to scroll axes per desktop convention: **Shift + vertical
 /// wheel scrolls horizontally**. A mouse wheel only produces `dy`; holding

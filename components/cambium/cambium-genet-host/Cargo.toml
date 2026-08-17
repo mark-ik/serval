@@ -1,0 +1,38 @@
+[package]
+name = "cambium-genet-host"
+version = "0.1.0"
+description = "The windowing-neutral half of the Cambium application host: input vocabulary, routing, layout, paint, and accessibility, with no event source of its own"
+edition.workspace = true
+rust-version = "1.92"
+license = "MPL-2.0"
+repository = "https://github.com/merely-made/genet"
+# Same posture as cambium-genet-winit-host, which this is being carved out of:
+# it rides genet-layout, which inherits genet's publish = false. Consumers take
+# it from genet.git by branch.
+publish = false
+
+[dependencies]
+# The neutral key vocabulary this crate lowers into when it dispatches to a
+# runner. Named here so the conversion lives on this side of the seam rather
+# than in each event-source adapter.
+cambium = { version = "0.3.3", path = "../cambium" }
+# Retained layout is core host machinery, not an event-source concern, so its
+# vocabulary belongs on this side of the seam. Named now for `VisualMovement`
+# rather than growing a parallel caret enum that would drift from it.
+genet-layout = { path = "../../genet-layout" }
+# The DOM the host lays out and routes against, and the leaf registry a
+# custom-paint leaf describes itself through. Both are host machinery, not
+# event-source concerns.
+genet-scripted-dom = { path = "../../genet-scripted-dom" }
+sprigging = { version = "0.2.1", path = "../sprigging" }
+# The present core, which is already windowing-neutral: `SurfaceHost` is a
+# `RenderCore` plus a window surface, and the browser presenter assembles
+# the same pair by hand against a canvas.
+genet-render-host = { path = "../../genet-render-host" }
+netrender = { workspace = true }
+wgpu = { workspace = true }
+# The host clock. `std::time::Instant::now()` compiles for
+# wasm32-unknown-unknown and panics when called, so a browser host built on
+# std time would pass every type check and die on its first frame. web_time
+# re-exports std on native and uses performance.now() on wasm.
+web-time = "1"

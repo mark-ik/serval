@@ -10,6 +10,8 @@
 use std::collections::HashMap;
 
 use cambium::PointerClick;
+use cambium_genet_host::HostWindow;
+use cambium_genet_host::Accessibility;
 use cambium_winit_a11y::A11yAction;
 use genet_layout::{
     Applied, IncrementalLayout, InteractionState, LeafPaintSource, ScrollOffsets, SourceNodeId,
@@ -59,7 +61,7 @@ where
             let logical_size = self.logical_size();
             let geometry = self.geometry();
             let commands = self.s.commands.clone();
-            let window = self.s.window.as_deref();
+            let window = self.s.window.as_ref().map(|w| &*w.0);
             let Some(runner) = self.s.runner.as_mut() else {
                 return false;
             };
@@ -245,8 +247,10 @@ where
             return;
         };
         window.set_ime_cursor_area(
-            winit::dpi::LogicalPosition::new(rect.x as f64, rect.y as f64),
-            winit::dpi::LogicalSize::new(rect.width.max(2.0) as f64, rect.height.max(1.0) as f64),
+            rect.x as f64,
+            rect.y as f64,
+            rect.width.max(2.0) as f64,
+            rect.height.max(1.0) as f64,
         );
     }
 
@@ -307,7 +311,7 @@ where
         }
         // Overlay scrollbar thumbs mid-hold/mid-fade: the engine draws the
         // geometry, the shared fade clock supplies alpha.
-        let now = std::time::Instant::now();
+        let now = cambium_genet_host::Instant::now();
         let fade = &self.s.scrollbar_fade;
         layout.append_scrollbars(&*dom_ref, &mut list, &|t| fade.alpha(t, now));
         let translated = paint_list_render::translate_paint_cmd_stream(
@@ -324,7 +328,7 @@ where
         // backend polls. Its return keeps frames coming.
         let animating = self.frame_hook();
         let target_size = self.s.window.as_ref().map(|window| {
-            let size = window.inner_size();
+            let size = window.0.inner_size();
             let scale = window.scale_factor() as f32;
             (size.width.max(1), size.height.max(1), scale)
         });
@@ -374,7 +378,7 @@ where
         // A capture armed by the application: run it while the rasterized
         // view is still alive.
         if let Some(capture) = self.s.pending_capture.take() {
-            capture(surface, &view, pw, ph);
+            capture(&**surface, &view, pw, ph);
         }
         if (animating || anim_active)
             && let Some(window) = self.s.window.as_ref()
@@ -404,15 +408,12 @@ where
                 None => return,
             };
             let dom_ref = dom.borrow();
-            let (Some(a11y), Some(window), Some(layout)) = (
-                self.s.a11y.as_mut(),
-                self.s.window.as_ref(),
-                self.s.layout.as_ref(),
-            ) else {
+            let (Some(a11y), Some(layout)) = (self.s.a11y.as_mut(), self.s.layout.as_ref())
+            else {
                 return;
             };
+            // The window is the adapter's own now, so the seam does not carry it.
             a11y.sync(
-                window,
                 &dom_ref,
                 layout,
                 &mut self.s.leaves,

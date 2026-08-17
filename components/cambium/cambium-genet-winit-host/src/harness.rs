@@ -25,7 +25,7 @@
 use cambium_winit_a11y::{A11yAction, A11yRequest};
 use genet_probe::{ProbeSurface, Selector, resolve};
 use genet_scripted_dom::NodeId;
-use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
+use winit::keyboard::{Key as WinitKey, NamedKey};
 
 use crate::meristem_bounds::RootView;
 use crate::{
@@ -180,6 +180,7 @@ where
                 init: None,
                 hooks,
                 s,
+                resize_hint: None,
                 wake,
             },
         }
@@ -370,7 +371,7 @@ where
     }
 
     /// Set the modifier state subsequent keys are delivered with.
-    pub fn set_modifiers(&mut self, modifiers: ModifiersState) {
+    pub fn set_modifiers(&mut self, modifiers: crate::Modifiers) {
         self.host.s.modifiers = modifiers;
     }
 
@@ -378,7 +379,9 @@ where
     /// modifiers [`set_modifiers`](Self::set_modifiers) last set.
     pub fn key(&mut self, key: WinitKey) {
         let modifiers = self.host.s.modifiers;
-        self.press_key(&KeyPress::new(key).with_modifiers(modifiers));
+        self.press_key(
+            &KeyPress::new(crate::key_from_winit(&key)).with_modifiers(modifiers),
+        );
     }
 
     /// Deliver text the way an on-screen keyboard or a remapper does: the
@@ -388,7 +391,7 @@ where
     pub fn key_injected(&mut self, text: &str) {
         let modifiers = self.host.s.modifiers;
         self.press_key(&KeyPress {
-            key: WinitKey::Unidentified(winit::keyboard::NativeKey::Unidentified),
+            key: crate::Key::Unidentified,
             text: Some(text.to_string()),
             modifiers,
             repeat: false,
@@ -422,11 +425,12 @@ where
     /// [`release_tab`](Self::release_tab). The press itself traverses once,
     /// exactly as a tap does.
     pub fn hold_tab(&mut self, forward: bool) {
-        self.press_key(&KeyPress::named(NamedKey::Tab).with_modifiers(if forward {
-            ModifiersState::empty()
-        } else {
-            ModifiersState::SHIFT
-        }));
+        self.press_key(
+            &KeyPress::named(crate::NamedKey::Tab).with_modifiers(crate::Modifiers {
+                shift: !forward,
+                ..crate::Modifiers::NONE
+            }),
+        );
     }
 
     /// Let go of Tab, leaving spatial focus navigation.
@@ -489,7 +493,7 @@ where
     /// [`signal_a11y_wake`](Self::signal_a11y_wake) to prove the wake reaches
     /// a redraw rather than being swallowed.
     pub fn idle_policy(&mut self) -> crate::IdlePolicy {
-        self.host.idle_policy(std::time::Instant::now())
+        self.host.idle_policy(cambium_genet_host::Instant::now())
     }
 
     /// Whether the application asked to close (a hook setting `ctx.close`).

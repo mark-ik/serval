@@ -31,6 +31,7 @@
 //!    honour double-click-to-maximize and the system menu itself, on every
 //!    platform, with no application involvement at all.
 
+use cambium_genet_host::HostWindow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -212,7 +213,7 @@ impl WindowGeometry {
 /// winit reports presses, not clicks, and no platform-independent
 /// double-click signal exists, so the host keeps this small clock itself.
 pub(crate) struct ClickCadence {
-    last: Option<(std::time::Instant, (f32, f32))>,
+    last: Option<(cambium_genet_host::Instant, (f32, f32))>,
 }
 
 impl ClickCadence {
@@ -230,7 +231,7 @@ impl ClickCadence {
     /// Record a press and report whether it completed a double-click. A
     /// double-click consumes the cadence, so a third press starts over rather
     /// than reporting a second double.
-    pub(crate) fn press(&mut self, at: (f32, f32), now: std::time::Instant) -> bool {
+    pub(crate) fn press(&mut self, at: (f32, f32), now: cambium_genet_host::Instant) -> bool {
         let doubled = self.last.is_some_and(|(t, p)| {
             now.duration_since(t) <= Self::INTERVAL
                 && (p.0 - at.0).abs() <= Self::SLOP
@@ -288,7 +289,7 @@ where
     pub(crate) fn press_left(&mut self) {
         let (x, y) = self.s.cursor;
         let region = self.app_region_at(x, y);
-        let doubled = self.s.cadence.press((x, y), std::time::Instant::now());
+        let doubled = self.s.cadence.press((x, y), cambium_genet_host::Instant::now());
 
         self.click();
 
@@ -339,23 +340,23 @@ where
         };
         match command {
             WindowCommand::Show => {
-                window.set_visible(true);
-                window.set_minimized(false);
+                window.0.set_visible(true);
+                window.0.set_minimized(false);
                 window.request_redraw();
                 self.s.hidden = false;
             },
-            WindowCommand::Minimize => window.set_minimized(true),
-            WindowCommand::ToggleMaximize => window.set_maximized(!window.is_maximized()),
+            WindowCommand::Minimize => window.0.set_minimized(true),
+            WindowCommand::ToggleMaximize => window.0.set_maximized(!window.0.is_maximized()),
             // Both of these hand control to the platform for the duration of
             // the gesture; they only mean anything while the press that asked
             // for them is still down, which is why the press path calls them
             // inline rather than queueing.
             WindowCommand::Drag => {
-                let _ = window.drag_window();
+                let _ = window.0.drag_window();
             },
             WindowCommand::ShowSystemMenu => {
                 let (x, y) = self.s.cursor;
-                window.show_window_menu(winit::dpi::Position::Logical(
+                window.0.show_window_menu(winit::dpi::Position::Logical(
                     winit::dpi::LogicalPosition::new(x as f64, y as f64),
                 ));
             },
@@ -382,12 +383,13 @@ where
     pub(crate) fn geometry(&self) -> Option<WindowGeometry> {
         let window = self.s.window.as_ref()?;
         let scale = window.scale_factor();
-        let maximized = window.is_maximized();
+        let maximized = window.0.is_maximized();
         let position = window
+            .0
             .outer_position()
             .map(|p| (p.x as f64 / scale, p.y as f64 / scale))
             .unwrap_or((0.0, 0.0));
-        let size = window.inner_size();
+        let size = window.0.inner_size();
         Some(WindowGeometry {
             position,
             size: (size.width as f64 / scale, size.height as f64 / scale),
@@ -436,7 +438,7 @@ mod tests {
 
     #[test]
     fn double_click_needs_both_time_and_proximity() {
-        let base = std::time::Instant::now();
+        let base = cambium_genet_host::Instant::now();
         let soon = base + std::time::Duration::from_millis(120);
         let late = base + std::time::Duration::from_millis(900);
 
@@ -455,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_double_click_does_not_chain_into_a_third() {
-        let base = std::time::Instant::now();
+        let base = cambium_genet_host::Instant::now();
         let mut cadence = ClickCadence::new();
         cadence.press((0.0, 0.0), base);
         assert!(cadence.press((0.0, 0.0), base + std::time::Duration::from_millis(50)));

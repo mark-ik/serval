@@ -10,7 +10,7 @@
 //! What the bytes become is the application's business: woodshed writes a PNG,
 //! the host's own smoke example digests them.
 
-use genet_winit_host::SurfaceHost;
+use cambium_genet_host::Surface;
 use netrender::ExternalTexturePlacement;
 
 /// A presented frame, read back.
@@ -47,7 +47,7 @@ impl Frame {
 /// Compose `view` — the rasterized frame the host just presented — into an
 /// owned target and read it back. `None` if the readback failed.
 pub fn read_frame(
-    surface: &SurfaceHost,
+    surface: &dyn Surface,
     view: &wgpu::TextureView,
     width: u32,
     height: u32,

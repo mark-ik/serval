@@ -17,9 +17,11 @@ use cambium::{
     AnyView, GenetCtx, GenetElement, PointerEvent, PointerPhase, TextInput, WheelEvent, clickable,
     el, focusable, on_key, on_pointer, on_wheel, text,
 };
-use cambium_genet_winit_host::{FocusedTextSlot, Harness, HostHooks, Init, inert_hooks};
+use cambium_genet_winit_host::{
+    FocusedTextSlot, Harness, HostHooks, Init, Modifiers, inert_hooks,
+};
 use genet_probe::Selector;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, NamedKey};
 
 // ---------------------------------------------------------------- the app
 
@@ -330,7 +332,10 @@ fn an_injected_chord_is_not_typed() {
     let mut h = harness();
     h.click_at(10.0, 12.0);
     let before = h.state().keys.len();
-    h.set_modifiers(ModifiersState::CONTROL);
+    h.set_modifiers(Modifiers {
+        ctrl: true,
+        ..Modifiers::NONE
+    });
     h.key_injected("s");
     assert_eq!(
         h.state().keys.len(),
@@ -398,7 +403,7 @@ fn the_caret_defaults_run_through_the_focused_text_seam() {
         "the click focused the field through the text seam",
     );
     let after_click = h.state().text.caret_position().byte;
-    h.set_modifiers(ModifiersState::empty());
+    h.set_modifiers(Modifiers::NONE);
     h.key(Key::Named(NamedKey::ArrowRight));
     assert!(
         h.state().text.caret_position().byte > after_click,

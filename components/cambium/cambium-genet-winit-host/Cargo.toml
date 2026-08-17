@@ -18,6 +18,9 @@ publish = false
 accesskit = "0.24"
 meristem = { version = "0.1.0", path = "../meristem" }
 cambium = { version = "0.3.3", path = "../cambium" }
+# The windowing-neutral half. This crate is now the winit event source for
+# it: it converts winit input into the neutral vocabulary and routes.
+cambium-genet-host = { version = "0.1.0", path = "../cambium-genet-host" }
 cambium-winit = { version = "0.3.0", path = "../cambium-winit" }
 cambium-winit-a11y = { version = "0.3.0", path = "../cambium-winit-a11y" }
 sprigging = { version = "0.2.1", path = "../sprigging" }
@@ -32,6 +35,9 @@ netrender = { workspace = true }
 paint_list_api = { workspace = true }
 paint_list_render = { workspace = true }
 wgpu = { workspace = true }
+# Named directly for the `Surface` implementation's return type; it already
+# arrived transitively through genet-winit-host.
+genet-render-host = { path = "../../genet-render-host" }
 winit = { workspace = true }
 
 [dev-dependencies]
