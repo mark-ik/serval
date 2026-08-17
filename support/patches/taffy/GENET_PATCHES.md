@@ -267,3 +267,36 @@ returns the alignment area used only to calculate `Layout::static_location`.
 Its default keeps prior Taffy behavior. Buckram selects the content box unless
 K5a selected the same grid as the actual containing block; detailed grid-area
 diagnostics and ordinary absolute layout remain unchanged.
+
+## What upstream support does *not* cover
+
+Read this before deleting genet code that a taffy release note appears to
+make redundant. The trap is real: it was walked into on 2026-08-16 during
+the 0.13 bump and caught only by checking taffy's source.
+
+### `self-start` / `self-end` alignment
+
+taffy 0.13.0's notes announce `AlignItems::SELF_START`/`SELF_END`, resolved
+against the item's own direction, for both in-flow and absolutely positioned
+flex and grid items. That reads like it subsumes Livery's hand-mapping in
+`components/genet-livery/src/layout.rs` — `map_grid_static_self_alignment`,
+`self_alignment_for_axis`, `subject_side_on_axis`,
+`map_vertical_grid_static_alignment`, `set_physical_self_alignment`,
+`same_physical_axis`. **It does not. Do not delete them.**
+
+taffy's `Alignment::resolve_self_relative` flips only when
+`axis_is_inline && item_direction != container_direction`, and `Direction`
+has exactly two variants, `Ltr` and `Rtl`. Its own doc comment states the
+boundary: taffy supports only the `horizontal-tb` writing mode, so in the
+block axis `SelfStart`/`SelfEnd` always collapse to `Start`/`End`.
+
+Livery's `subject_side_on_axis` resolves against the subject's *full* flow
+axes — it tests whether the subject's inline axis coincides with the target
+physical axis and falls back to the subject's block axis — which is exactly
+the vertical-writing-mode case upstream excludes. Genet supports those flows
+and carries receipts for them.
+
+Deleting this would move absolutely positioned static positions in vertical
+writing modes while every horizontal test kept passing, so the suite would
+not catch it. Revisit only if `Direction` grows vertical variants, or taffy
+takes a real writing-mode model.
