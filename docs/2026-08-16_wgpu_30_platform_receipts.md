@@ -174,6 +174,49 @@ verified on. `demo-weld-linux`'s own header says "Validated against Intel/Mesa
 + Vulkan + X11". Clearing this receipt needs an Intel/Mesa Linux box, or
 `VK_EXT_image_drm_format_modifier` support in wgpu.
 
+### wgpu 30 lifts the capability barrier; only the modifier remains
+
+Probed on the ThinkPad, 2026-08-16, and this **supersedes the sentence above**
+about needing modifier support in wgpu. It is there now.
+
+`Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` is new in wgpu-types 30 and absent
+from 29 entirely. wgpu-hal 30 requests `VK_EXT_image_drm_format_modifier`
+whenever the adapter supports it (`vulkan/adapter.rs:1355`) and exposes
+`Device::texture_from_dmabuf_fd`. Welding's comment that "wgpu does not enable
+it" was true when written against 28/29 and became stale on the move to 30.
+
+A standalone probe on RADV RENOIR (Mesa 26.1.5) reports:
+
+```
+VULKAN_EXTERNAL_MEMORY_DMA_BUF : true
+VULKAN_EXTERNAL_MEMORY_FD      : true
+```
+
+`vulkaninfo` confirms all three underlying extensions on the physical device,
+so this is the real hardware answering, not a wgpu default.
+
+What CEF actually supplies, from welding's own trace on the same box:
+
+```
+on_accelerated_paint: planes=1, format=CEF_COLOR_TYPE_BGRA_8888,
+                      modifier=0xffffffffffffff, coded_size=1280x701
+```
+
+Two of the three constraints already fit. `texture_from_dmabuf_fd` documents
+single-plane support only, and CEF supplies exactly one plane, in BGRA8888.
+**The blocker is now solely `modifier = 0x00ffffffffffffff`**, which is
+`DRM_FORMAT_MOD_INVALID`. The new API takes an *explicit* modifier and builds
+`ImageDrmFormatModifierExplicitCreateInfoEXT` from it, so the capability
+exists and the information does not.
+
+Passing `DRM_FORMAT_MOD_LINEAR` on a guess is not obviously safe. On AMD an
+implicit modifier is usually a tiled DCC layout rather than linear, and a wrong
+guess reads as garbage pixels rather than a clean error, which is the worst
+failure shape for a receipt. Closing this needs either a CEF-side route to the
+real modifier, or a readback check that validates the guess before the lane is
+declared working. The probe crate used here is at `~/dmabuf-probe` on the
+ThinkPad.
+
 **The cef wgpu-29 pin is not implicated.** The obvious suspicion, given that
 the weld demos resolve two wgpu rows, is that the Linux import somehow ran on
 cef's 29. It did not. `welding::native_frame::vulkan_dmabuf` refuses
@@ -216,7 +259,8 @@ reverted; the ThinkPad's only dirty path is its untracked CEF download.
 
 - **This box**: Windows 11, RTX 4060 Laptop, rustc 1.97.1.
 - **Q-PC** `markik@192.168.4.105`: Intel iMac, macOS 15.7.7, x86_64, rustc 1.97.1.
-- **ThinkPad** `markik@192.168.4.28`: Fedora 44, AMD Renoir/RADV, rustc 1.96.0.
+- **ThinkPad** `markik@192.168.4.28`: Fedora 44, AMD Renoir/RADV (Mesa 26.1.5),
+  rustc 1.97.1.
 - **Mayola's iMac** `markik@192.168.4.57`: Apple M4 (Mac16,3), macOS 26.5.1
   (25F80), arm64, rustc 1.97.1. Host key ED25519
   `SHA256:0sT34z10ELgEyR8+LJFVDvOov3iGNuPz8gOx4QU48vo`, matching the recorded
