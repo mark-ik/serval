@@ -279,7 +279,7 @@ the 0.13 bump and caught only by checking taffy's source.
 taffy 0.13.0's notes announce `AlignItems::SELF_START`/`SELF_END`, resolved
 against the item's own direction, for both in-flow and absolutely positioned
 flex and grid items. That reads like it subsumes Livery's hand-mapping in
-`components/genet-livery/src/layout.rs` — `map_grid_static_self_alignment`,
+`components/genet-livery/src/layout.rs`, `map_grid_static_self_alignment`,
 `self_alignment_for_axis`, `subject_side_on_axis`,
 `map_vertical_grid_static_alignment`, `set_physical_self_alignment`,
 `same_physical_axis`. **It does not. Do not delete them.**
@@ -291,8 +291,8 @@ boundary: taffy supports only the `horizontal-tb` writing mode, so in the
 block axis `SelfStart`/`SelfEnd` always collapse to `Start`/`End`.
 
 Livery's `subject_side_on_axis` resolves against the subject's *full* flow
-axes — it tests whether the subject's inline axis coincides with the target
-physical axis and falls back to the subject's block axis — which is exactly
+axes, it tests whether the subject's inline axis coincides with the target
+physical axis and falls back to the subject's block axis, which is exactly
 the vertical-writing-mode case upstream excludes. Genet supports those flows
 and carries receipts for them.
 
