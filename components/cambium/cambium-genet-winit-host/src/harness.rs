@@ -22,7 +22,6 @@
 //! Applications get it too: it is how `signalman-desktop` proves its page
 //! states and its keyboard order without a display.
 
-use crate::decorations::Decorations;
 use cambium_winit_a11y::{A11yAction, A11yRequest};
 use genet_probe::{ProbeSurface, Selector, resolve};
 use genet_scripted_dom::NodeId;
@@ -31,7 +30,7 @@ use winit::keyboard::{Key as WinitKey, NamedKey};
 use crate::meristem_bounds::RootView;
 use crate::{
     CloseRequest, Host, HostHooks, HostOptions, HostState, HostWake, Init, KeyPress, Runner,
-    WindowCommands,
+    WindowCommands, WinitHost,
 };
 
 /// A windowless host for deterministic tests. See the module docs.
@@ -40,7 +39,7 @@ where
     Logic: FnMut(&State) -> V,
     V: RootView<State>,
 {
-    host: Host<State, Logic, V>,
+    host: WinitHost<State, Logic, V>,
 }
 
 /// Hooks that do nothing — the starting point for a test that only cares about
@@ -102,13 +101,13 @@ where
             },
             inert_hooks(),
         );
-        harness.host.commands = commands;
+        harness.host.core.s.commands = commands;
         harness
     }
 
     /// The host's end of the window-verb seam.
     pub fn commands(&self) -> WindowCommands {
-        self.host.commands.clone()
+        self.host.s.commands.clone()
     }
 
     /// The thread-safe wake handle an actor or worker would receive from the
@@ -122,6 +121,7 @@ where
     /// redraw would. Returns whether a wake was pending.
     pub fn process_wake(&mut self) -> bool {
         let woke = self.host.process_wake();
+        self.host.run_window_commands();
         if woke {
             self.relayout();
         }
@@ -132,11 +132,12 @@ where
     /// hook the headed host uses.
     pub fn request_close(&mut self, request: CloseRequest) {
         self.host.request_close(request);
+        self.host.run_window_commands();
     }
 
     /// Whether the close policy hid the window while retaining the host state.
     pub fn hidden(&self) -> bool {
-        self.host.hidden
+        self.host.s.hidden
     }
 
     /// Run the ordinary post-dispatch path, including any queued window
@@ -144,6 +145,9 @@ where
     /// close shares the native close policy.
     pub fn after_dispatch(&mut self) {
         self.host.after_dispatch();
+        // The dispatch's own turn boundary: verbs queued during it run now,
+        // exactly as the event loop drains at the end of each turn.
+        self.host.run_window_commands();
     }
 
     /// Build a harness with the application's own hooks — the form a consumer
@@ -176,19 +180,13 @@ where
         s.runner = Some(Runner::new(dom, logic, state));
         let wake = HostWake::new(s.wake_pending.clone(), std::sync::Arc::new(|| {}));
         Self {
-            host: Host {
+            host: WinitHost::new(Host {
                 options,
                 init: None,
                 hooks,
                 s,
-                resize_hint: None,
-                commands: crate::WindowCommands::new(),
-                cadence: crate::decorations::ClickCadence::new(),
-                performed: Vec::new(),
-                native_window: None,
-                hidden: false,
                 wake,
-            },
+            }),
         }
     }
 
@@ -315,12 +313,14 @@ where
         // to reach the same drag/maximize logic the winit host runs, or a
         // receipt proves something the shipping build does not do.
         self.host.press_left();
+        self.host.run_window_commands();
     }
 
     /// Press the right button at a point — the system-menu gesture.
     pub fn right_press_at(&mut self, x: f32, y: f32) {
         self.host.s.cursor = (x, y);
         self.host.press_right();
+        self.host.run_window_commands();
     }
 
     /// What the window frame makes of a point: whether pressing there drags
@@ -342,6 +342,7 @@ where
     pub fn release_at(&mut self, x: f32, y: f32) {
         self.host.s.cursor = (x, y);
         self.host.release();
+        self.host.run_window_commands();
     }
 
     /// Press and release at a point — an ordinary click.
@@ -405,6 +406,7 @@ where
     /// Deliver a fully specified key press.
     pub fn press_key(&mut self, press: &KeyPress) {
         self.host.key(press);
+        self.host.run_window_commands();
         self.relayout();
     }
 
@@ -457,19 +459,15 @@ where
         accesskit::TreeUpdate,
         std::collections::HashMap<accesskit::NodeId, NodeId>,
     ) {
-        let (Some(runner), Some(layout)) =
-            (self.host.s.runner.as_ref(), self.host.s.layout.as_ref())
-        else {
+        // One explicit reborrow of the core: field borrows split inside a
+        // struct, but not across the wrapper's Deref.
+        let core = &mut self.host.core;
+        let (Some(runner), Some(layout)) = (core.s.runner.as_ref(), core.s.layout.as_ref()) else {
             panic!("a11y_tree needs a laid-out harness: call layout_at first");
         };
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        cambium_winit_a11y::project_tree(
-            &dom_ref,
-            layout,
-            &mut self.host.s.leaves,
-            self.host.s.last_focus,
-        )
+        cambium_winit_a11y::project_tree(&dom_ref, layout, &mut core.s.leaves, core.s.last_focus)
     }
 
     /// The DOM node a projected AccessKit node came from.

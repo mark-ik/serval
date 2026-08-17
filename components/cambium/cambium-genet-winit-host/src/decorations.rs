@@ -268,35 +268,10 @@ pub(crate) fn app_region_of(
         .unwrap_or_default()
 }
 
-/// The client-side window frame, as an extension of the host rather than part
-/// of it.
-///
-/// A trait because these methods are desktop-only and the host they hang off is
-/// not: once `Host` lives in the neutral crate, an inherent impl here would not
-/// compile, since inherent impls require a local type. Writing it as a trait
-/// now settles the shape before the move rather than during it.
-///
-/// Nothing here has a browser meaning. A tab has no frame to drag, no maximize
-/// state, and no window menu, so a browser event source implements none of it.
-pub(crate) trait Decorations {
-    /// What the window frame makes of the point `(x, y)` in logical
-    /// coordinates.
-    fn app_region_at(&self, x: f32, y: f32) -> AppRegion;
-    /// A left press on the frame: drag, or double-click to toggle maximize.
-    fn press_left(&mut self);
-    /// A right press on the frame: the system window menu.
-    fn press_right(&mut self);
-    /// Carry out one window verb.
-    fn perform(&mut self, command: WindowCommand);
-    /// Drain the verbs the application queued this dispatch.
-    fn run_window_commands(&mut self);
-    /// The application's handle on the window-verb queue.
-    fn commands(&self) -> WindowCommands;
-    /// Where the window is and how big, in logical coordinates.
-    fn geometry(&self) -> Option<WindowGeometry>;
-}
-
-impl<State, Logic, V> Decorations for crate::Host<State, Logic, V>
+/// The client-side window frame. Inherent on the winit wrapper: every method
+/// here needs a native window, which is exactly what the wrapper adds to the
+/// host. Nothing here has a browser meaning.
+impl<State, Logic, V> crate::WinitHost<State, Logic, V>
 where
     State: 'static,
     Logic: FnMut(&State) -> V + 'static,
@@ -304,7 +279,7 @@ where
 {
     /// What the window frame makes of the point `(x, y)` in logical
     /// coordinates.
-    fn app_region_at(&self, x: f32, y: f32) -> AppRegion {
+    pub(crate) fn app_region_at(&self, x: f32, y: f32) -> AppRegion {
         // The hit test is the host's; what the frame makes of the node is ours.
         let (Some(node), Some(layout)) = (self.hit_at(x, y), self.layout()) else {
             return AppRegion::NoDrag;
@@ -319,7 +294,7 @@ where
     /// then does the frame act, and only if no handler called
     /// `prevent_default` — which is how an application vetoes a drag it does
     /// not want (a slider living inside the bar, say).
-    fn press_left(&mut self) {
+    pub(crate) fn press_left(&mut self) {
         let (x, y) = self.cursor();
         let region = self.app_region_at(x, y);
         let doubled = self
@@ -350,7 +325,7 @@ where
 
     /// A right press. On a drag surface this raises the platform's own window
     /// menu, the way right-clicking a real title bar does.
-    fn press_right(&mut self) {
+    pub(crate) fn press_right(&mut self) {
         let (x, y) = self.cursor();
         if self.app_region_at(x, y).is_drag() {
             self.perform(WindowCommand::ShowSystemMenu);
@@ -358,7 +333,7 @@ where
     }
 
     /// Run one window verb against the real window.
-    fn perform(&mut self, command: WindowCommand) {
+    pub(crate) fn perform(&mut self, command: WindowCommand) {
         self.performed.push(command);
         if let WindowCommand::Resize(w, h) = command {
             if let Some(window) = self.native_window.as_ref() {
@@ -376,7 +351,7 @@ where
             // can assert an application asked for one; there is nothing to
             // act on.
             if matches!(command, WindowCommand::Show) {
-                self.hidden = false;
+                self.s.hidden = false;
             }
             return;
         };
@@ -387,7 +362,7 @@ where
                 window.set_visible(true);
                 window.set_minimized(false);
                 window.request_redraw();
-                self.hidden = false;
+                self.s.hidden = false;
             },
             WindowCommand::Minimize => window.set_minimized(true),
             WindowCommand::ToggleMaximize => window.set_maximized(!window.is_maximized()),
@@ -409,22 +384,17 @@ where
     }
 
     /// Drain and run whatever the application queued this dispatch.
-    fn run_window_commands(&mut self) {
-        for command in self.commands.drain() {
+    pub(crate) fn run_window_commands(&mut self) {
+        for command in self.s.commands.drain() {
             self.perform(command);
         }
-    }
-
-    /// The application's end of the window-verb seam, for storing in state.
-    fn commands(&self) -> WindowCommands {
-        self.commands.clone()
     }
 
     /// Where the window is now, for an application that wants to persist it.
     ///
     /// Reports the *restored* geometry when maximized, because that is what
     /// the platform will restore to and therefore what is worth remembering.
-    fn geometry(&self) -> Option<WindowGeometry> {
+    pub(crate) fn geometry(&self) -> Option<WindowGeometry> {
         let window = self.native_window.as_ref()?;
         let scale = window.scale_factor();
         let maximized = window.is_maximized();

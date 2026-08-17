@@ -7,7 +7,6 @@
 //! run an application's real layout, hit testing, and input routing in an
 //! ordinary `cargo test`.
 
-use crate::decorations::Decorations;
 use std::collections::HashMap;
 
 use cambium::PointerClick;
@@ -60,8 +59,8 @@ where
     fn frame_hook(&mut self) -> bool {
         let animating = {
             let logical_size = self.logical_size();
-            let geometry = self.geometry();
-            let commands = self.commands.clone();
+            let geometry = self.s.geometry;
+            let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return false;

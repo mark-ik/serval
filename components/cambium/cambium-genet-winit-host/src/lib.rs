@@ -21,7 +21,6 @@
 //! run(options, |window, commands, wake| Init { state, logic, sheet }, hooks)
 //! ```
 
-use crate::decorations::Decorations;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -465,6 +464,19 @@ where
     /// supplies a projection onto the live document instead.
     pub(crate) a11y: Option<Box<dyn Accessibility>>,
     pub(crate) a11y_wake: Arc<AtomicBool>,
+    /// Whether presentation is suspended: a close policy hid the root window,
+    /// or, on a future browser source, the tab went background. Portable fact;
+    /// only *how* a host hides (set_visible, document.hidden) is platform.
+    pub(crate) hidden: bool,
+    /// The application's end of the window-verb seam. The queue is plain data
+    /// (`Rc<RefCell<Vec<WindowCommand>>>`, no platform type in it), so it lives
+    /// with the host and every event source shares it; *draining* it is the
+    /// event source's job, since honouring a verb needs a real window.
+    pub(crate) commands: WindowCommands,
+    /// Where the window is and how big, refreshed by the event source. A
+    /// snapshot rather than a live query so the host can hand it to hooks
+    /// without asking a window it does not own.
+    pub(crate) geometry: Option<WindowGeometry>,
     /// Set by [`HostWake`] until the event loop gives the application one drain
     /// turn. Kept in host state so the harness can exercise the same coalescing
     /// contract without a native event loop.
@@ -507,6 +519,9 @@ where
             anim_base: cambium_rootstock::Instant::now(),
             a11y: None,
             a11y_wake: Arc::new(AtomicBool::new(false)),
+            hidden: false,
+            commands: WindowCommands::new(),
+            geometry: None,
             wake_pending: Arc::new(AtomicBool::new(false)),
             scrollbar_fade: ScrollbarFade::new(),
             close_requested: false,
@@ -529,31 +544,92 @@ where
     pub(crate) init: Option<InitFn<State, Logic>>,
     pub(crate) hooks: HostHooks<State, Logic, V>,
     pub(crate) s: HostState<State, Logic, V>,
-    /// Client-side decoration state, which is a desktop window's problem: a
-    /// browser tab has no frame to grab, maximize, or drag. Kept beside the
-    /// event loop rather than in `HostState` so the neutral half carries no
-    /// window management.
-    ///
-    /// Last resize-edge the cursor was over, to dedup cursor sets.
+    pub(crate) wake: HostWake,
+}
+
+/// The winit event source: the host, plus everything only a desktop window
+/// can answer.
+///
+/// Derefs to [`Host`], because the wrapper is not an abstraction boundary; it
+/// is the same host with a native window attached. Adapter code reads core
+/// state through the deref and its own state directly, and the split stays
+/// visible in the field list rather than in every call site.
+pub struct WinitHost<State: 'static, Logic, V>
+where
+    Logic: FnMut(&State) -> V,
+    V: RootView<State>,
+{
+    pub(crate) core: Host<State, Logic, V>,
+    /// The native window, for the management the neutral seam omits. The one
+    /// thing a browser tab cannot supply.
+    pub(crate) native_window: Option<Arc<Window>>,
+    /// Last resize-edge the cursor was over (CSD), to dedup cursor sets.
     pub(crate) resize_hint: Option<winit::window::ResizeDirection>,
-    /// The application's end of the window-verb seam; drained after every
-    /// dispatch.
-    pub(crate) commands: WindowCommands,
     /// Double-click detection for the title bar, which winit does not provide.
     pub(crate) cadence: ClickCadence,
     /// Every window verb performed this run, for tests. The only way a
     /// windowless harness can prove the frame did what the gesture asked.
     pub(crate) performed: Vec<WindowCommand>,
-    /// The native window, for the management the neutral seam omits and for
-    /// the handle applications are handed. Adapter-side on purpose: this is
-    /// the one thing a browser tab cannot supply.
-    pub(crate) native_window: Option<Arc<Window>>,
-    /// Whether a close disposition hid the root window. The native handle stays
-    /// alive, so a later product extension may restore it without rebuilding
-    /// canonical application state. Adapter state: a browser tab has no
-    /// equivalent to hide.
-    pub(crate) hidden: bool,
-    pub(crate) wake: HostWake,
+}
+
+impl<State, Logic, V> std::ops::Deref for WinitHost<State, Logic, V>
+where
+    Logic: FnMut(&State) -> V,
+    V: RootView<State>,
+{
+    type Target = Host<State, Logic, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl<State, Logic, V> std::ops::DerefMut for WinitHost<State, Logic, V>
+where
+    Logic: FnMut(&State) -> V,
+    V: RootView<State>,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
+}
+
+impl<State, Logic, V> WinitHost<State, Logic, V>
+where
+    State: 'static,
+    Logic: FnMut(&State) -> V + 'static,
+    V: RootView<State>,
+{
+    /// Wrap a host for the desktop event loop.
+    pub(crate) fn new(core: Host<State, Logic, V>) -> Self {
+        Self {
+            core,
+            native_window: None,
+            resize_hint: None,
+            cadence: ClickCadence::new(),
+            performed: Vec::new(),
+        }
+    }
+
+    /// Run the application's close policy, then do what only a desktop window
+    /// can: hide on [`CloseDisposition::Hide`], repaint on
+    /// [`CloseDisposition::KeepVisible`].
+    pub(crate) fn request_close(&mut self, request: CloseRequest) {
+        match self.core.decide_close(request) {
+            Some(CloseDisposition::KeepVisible) => {
+                if let Some(window) = self.core.s.window.as_ref() {
+                    window.request_redraw();
+                }
+            },
+            Some(CloseDisposition::Hide) => {
+                if let Some(window) = self.native_window.as_ref() {
+                    window.set_visible(false);
+                }
+                self.core.s.hidden = true;
+            },
+            Some(CloseDisposition::Exit) | None => {},
+        }
+    }
 }
 
 /// What the event loop should do on an idle turn.
@@ -591,19 +667,13 @@ where
             let _ = proxy.send_event(HostEvent::Wake);
         }),
     );
-    let mut host = Host {
+    let mut host = WinitHost::new(Host {
         options,
         init: Some(Box::new(init)),
         hooks,
         s,
-        resize_hint: None,
-        commands: WindowCommands::new(),
-        cadence: ClickCadence::new(),
-        performed: Vec::new(),
-        native_window: None,
-        hidden: false,
         wake,
-    };
+    });
     event_loop.run_app(&mut host)
 }
 
@@ -613,6 +683,12 @@ where
     Logic: FnMut(&State) -> V + 'static,
     V: RootView<State>,
 {
+    /// The application's handle on the window-verb queue. Core data: pushing a
+    /// verb is portable, honouring one is the event source's problem.
+    pub(crate) fn commands(&self) -> WindowCommands {
+        self.s.commands.clone()
+    }
+
     pub(crate) fn scale_factor(&self) -> f64 {
         self.s.window.as_ref().map_or(1.0, |w| w.scale_factor())
     }
@@ -636,8 +712,8 @@ where
     pub(crate) fn with_ctx(&mut self, which: Hook) {
         {
             let logical_size = self.logical_size();
-            let geometry = self.geometry();
-            let commands = self.commands.clone();
+            let geometry = self.s.geometry;
+            let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return;
@@ -684,7 +760,7 @@ where
             return false;
         }
         self.with_ctx(Hook::AfterWake);
-        if !self.hidden {
+        if !self.s.hidden {
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();
             }
@@ -694,15 +770,20 @@ where
 
     /// Ask the application whether a close should keep the window visible,
     /// hide it while its work continues, or terminate the event loop.
-    pub(crate) fn request_close(&mut self, request: CloseRequest) {
+    /// Run the application's close policy and record what the core can act on
+    /// itself ([`CloseDisposition::Exit`] sets the exit flag). `None` when there
+    /// is no runner yet, which also sets the flag: closing an app that never
+    /// booted should succeed. Reacting to `Hide` and `KeepVisible` needs a real
+    /// window, so that half lives with the event source.
+    pub(crate) fn decide_close(&mut self, request: CloseRequest) -> Option<CloseDisposition> {
         let disposition = {
             let logical_size = self.logical_size();
-            let geometry = self.geometry();
-            let commands = self.commands.clone();
+            let geometry = self.s.geometry;
+            let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 self.s.close_requested = true;
-                return;
+                return None;
             };
             let mut ctx = AppCtx {
                 runner,
@@ -721,22 +802,12 @@ where
         };
         self.apply_pending();
         if self.s.close_requested {
-            return;
+            return None;
         }
-        match disposition {
-            CloseDisposition::KeepVisible => {
-                if let Some(window) = self.s.window.as_ref() {
-                    window.request_redraw();
-                }
-            },
-            CloseDisposition::Hide => {
-                if let Some(window) = self.native_window.as_ref() {
-                    window.set_visible(false);
-                }
-                self.hidden = true;
-            },
-            CloseDisposition::Exit => self.s.close_requested = true,
+        if matches!(disposition, CloseDisposition::Exit) {
+            self.s.close_requested = true;
         }
+        Some(disposition)
     }
 
     /// Deliver the pointer events an application queued, in order, through the
@@ -773,11 +844,6 @@ where
     /// host-owned IME and repaint policy.
     pub(crate) fn after_dispatch(&mut self) {
         self.with_ctx(Hook::AfterDispatch);
-        // Window verbs an application queued from a click handler. Drained
-        // here rather than inside the hook so a verb runs after the state
-        // change that asked for it, and so `Drag` still happens while the
-        // press that requested it is down.
-        self.run_window_commands();
         let Some(window) = self.s.window.as_ref() else {
             return;
         };
@@ -864,7 +930,7 @@ fn edge_cursor(dir: winit::window::ResizeDirection) -> winit::window::CursorIcon
     }
 }
 
-impl<State, Logic, V> Host<State, Logic, V>
+impl<State, Logic, V> WinitHost<State, Logic, V>
 where
     State: 'static,
     Logic: FnMut(&State) -> V + 'static,
@@ -919,7 +985,7 @@ where
     }
 }
 
-impl<State, Logic, V> ApplicationHandler<HostEvent> for Host<State, Logic, V>
+impl<State, Logic, V> ApplicationHandler<HostEvent> for WinitHost<State, Logic, V>
 where
     State: 'static,
     Logic: FnMut(&State) -> V + 'static,
@@ -1018,7 +1084,7 @@ where
             sheet,
         } = init(
             &WinitWindow(window.clone()),
-            &self.commands.clone(),
+            &self.s.commands.clone(),
             &self.wake,
         );
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
@@ -1073,6 +1139,7 @@ where
                 self.process_wake();
             },
         }
+        self.run_window_commands();
         if self.s.close_requested {
             event_loop.exit();
         }
@@ -1131,7 +1198,10 @@ where
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::Ime(ime) => self.ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => match event.state {
-                ElementState::Pressed => self.key(&key_press_from_winit(&event, self.s.modifiers)),
+                ElementState::Pressed => {
+                    let press = key_press_from_winit(&event, self.core.s.modifiers);
+                    self.key(&press);
+                },
                 // Releases matter for exactly one thing: letting go of Tab
                 // leaves spatial focus navigation.
                 ElementState::Released => {
@@ -1144,6 +1214,9 @@ where
                 },
             },
             WindowEvent::RedrawRequested => {
+                // The snapshot hooks read; refreshed here so a frame always
+                // sees where the window is now, as the live query used to.
+                self.core.s.geometry = self.geometry();
                 self.redraw();
                 // After the frame is laid out and presented, refresh the
                 // accessibility tree and drain any screen-reader actions,
@@ -1153,6 +1226,11 @@ where
             },
             _ => {},
         }
+        // Verbs queued during this event's dispatch run before the turn ends:
+        // after the state change that asked for them, and for `Drag`, while
+        // the press that requested it is still down. The queue is host data;
+        // performing a verb needs the native window, so the drain lives here.
+        self.run_window_commands();
         if self.s.close_requested {
             event_loop.exit();
         }
