@@ -1,7 +1,7 @@
 [package]
-name = "cambium-genet-host"
+name = "cambium-rootstock"
 version = "0.1.0"
-description = "The windowing-neutral half of the Cambium application host: input vocabulary, routing, layout, paint, and accessibility, with no event source of its own"
+description = "The stock a Cambium application host is grafted onto: input vocabulary, routing, layout, paint, and accessibility, with no event source of its own"
 edition.workspace = true
 rust-version = "1.92"
 license = "MPL-2.0"

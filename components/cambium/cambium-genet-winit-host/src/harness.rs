@@ -497,7 +497,7 @@ where
     /// [`signal_a11y_wake`](Self::signal_a11y_wake) to prove the wake reaches
     /// a redraw rather than being swallowed.
     pub fn idle_policy(&mut self) -> crate::IdlePolicy {
-        self.host.idle_policy(cambium_genet_host::Instant::now())
+        self.host.idle_policy(cambium_rootstock::Instant::now())
     }
 
     /// Whether the application asked to close (a hook setting `ctx.close`).

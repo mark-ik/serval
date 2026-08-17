@@ -1,4 +1,9 @@
-//! The windowing-neutral half of the Cambium application host.
+//! The stock a Cambium application host is grafted onto.
+//!
+//! A rootstock is the body a scion is fitted to: one root system, and tops that
+//! can be exchanged without regrowing it. That is the relation here. The winit
+//! event source is one scion, a browser's DOM will be another, and the living
+//! machinery they are both fitted to does not change between them.
 //!
 //! `cambium-genet-winit-host` grew as one crate because there was one event
 //! source. A browser is a second one, and the machinery it would need is the

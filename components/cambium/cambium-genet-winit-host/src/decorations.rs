@@ -31,7 +31,7 @@
 //!    honour double-click-to-maximize and the system menu itself, on every
 //!    platform, with no application involvement at all.
 
-use cambium_genet_host::HostWindow;
+use cambium_rootstock::HostWindow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -223,7 +223,7 @@ impl WindowGeometry {
 /// winit reports presses, not clicks, and no platform-independent
 /// double-click signal exists, so the host keeps this small clock itself.
 pub(crate) struct ClickCadence {
-    last: Option<(cambium_genet_host::Instant, (f32, f32))>,
+    last: Option<(cambium_rootstock::Instant, (f32, f32))>,
 }
 
 impl ClickCadence {
@@ -241,7 +241,7 @@ impl ClickCadence {
     /// Record a press and report whether it completed a double-click. A
     /// double-click consumes the cadence, so a third press starts over rather
     /// than reporting a second double.
-    pub(crate) fn press(&mut self, at: (f32, f32), now: cambium_genet_host::Instant) -> bool {
+    pub(crate) fn press(&mut self, at: (f32, f32), now: cambium_rootstock::Instant) -> bool {
         let doubled = self.last.is_some_and(|(t, p)| {
             now.duration_since(t) <= Self::INTERVAL
                 && (p.0 - at.0).abs() <= Self::SLOP
@@ -324,7 +324,7 @@ where
         let region = self.app_region_at(x, y);
         let doubled = self
             .cadence
-            .press((x, y), cambium_genet_host::Instant::now());
+            .press((x, y), cambium_rootstock::Instant::now());
 
         self.click();
 
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn double_click_needs_both_time_and_proximity() {
-        let base = cambium_genet_host::Instant::now();
+        let base = cambium_rootstock::Instant::now();
         let soon = base + std::time::Duration::from_millis(120);
         let late = base + std::time::Duration::from_millis(900);
 
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn a_double_click_does_not_chain_into_a_third() {
-        let base = cambium_genet_host::Instant::now();
+        let base = cambium_rootstock::Instant::now();
         let mut cadence = ClickCadence::new();
         cadence.press((0.0, 0.0), base);
         assert!(cadence.press((0.0, 0.0), base + std::time::Duration::from_millis(50)));

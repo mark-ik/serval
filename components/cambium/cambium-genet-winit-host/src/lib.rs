@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cambium::{GenetAppRunner, TextInput};
-use cambium_genet_host::Accessibility;
+use cambium_rootstock::Accessibility;
 use cambium_winit::ScrollbarFade;
 use cambium_winit_a11y::A11yHost;
 use genet_layout::{IncrementalLayout, ScrollTarget};
@@ -50,7 +50,7 @@ mod input;
 mod spatial;
 mod wake;
 
-pub use cambium_genet_host::{Direction, HostWindow, Key, KeyPress, Modifiers, NamedKey, Surface};
+pub use cambium_rootstock::{Direction, HostWindow, Key, KeyPress, Modifiers, NamedKey, Surface};
 pub use capture::{Frame, read_frame};
 pub use decorations::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 pub use harness::{Harness, inert_hooks};
@@ -458,7 +458,7 @@ where
     /// The hovered hit node, for `on_hover` Enter/Leave routing.
     pub(crate) last_hover_hit: Option<NodeId>,
     /// Monotonic base for the CSS-transition animation clock.
-    pub(crate) anim_base: cambium_genet_host::Instant,
+    pub(crate) anim_base: cambium_rootstock::Instant,
     /// The accessibility seam, behind the neutral trait rather than named as
     /// AccessKit. `HostState` holds no winit or AccessKit type through it, so
     /// this field is ready to move with the struct; a browser event source
@@ -504,7 +504,7 @@ where
             last_hover: None,
             last_focus: None,
             last_hover_hit: None,
-            anim_base: cambium_genet_host::Instant::now(),
+            anim_base: cambium_rootstock::Instant::now(),
             a11y: None,
             a11y_wake: Arc::new(AtomicBool::new(false)),
             wake_pending: Arc::new(AtomicBool::new(false)),
@@ -817,7 +817,7 @@ where
     /// accessibility wake flag if one is set. Factored out of `about_to_wait`
     /// so the wake path is assertable: `Wait` really means nothing is pending,
     /// and a raised wake really becomes a repaint rather than being swallowed.
-    pub(crate) fn idle_policy(&mut self, now: cambium_genet_host::Instant) -> IdlePolicy {
+    pub(crate) fn idle_policy(&mut self, now: cambium_rootstock::Instant) -> IdlePolicy {
         if self.s.a11y_wake.swap(false, Ordering::Relaxed) {
             return IdlePolicy::A11yWake;
         }
@@ -1048,7 +1048,7 @@ where
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.idle_policy(cambium_genet_host::Instant::now()) {
+        match self.idle_policy(cambium_rootstock::Instant::now()) {
             IdlePolicy::A11yWake => {
                 if let Some(window) = self.s.window.as_ref() {
                     window.request_redraw();

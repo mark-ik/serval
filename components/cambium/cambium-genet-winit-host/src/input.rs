@@ -13,7 +13,7 @@ use cambium::{
     CaretPosition, CaretSelection, PointerClick, PointerEvent, PointerPhase, TextCommand,
     WheelEvent,
 };
-use cambium_genet_host::HostWindow;
+use cambium_rootstock::HostWindow;
 use cambium_winit::{ime_event_from_winit, wheel_axes};
 use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualSelection};
 use genet_scripted_dom::{NodeId, ScriptedDom};
@@ -489,7 +489,7 @@ where
             // redraws coming until it hides again.
             self.s
                 .scrollbar_fade
-                .note(target, cambium_genet_host::Instant::now());
+                .note(target, cambium_rootstock::Instant::now());
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();
             }

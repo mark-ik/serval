@@ -19,7 +19,7 @@ use genet_scripted_dom::NodeId;
 
 use crate::Host;
 use crate::meristem_bounds::RootView;
-use cambium_genet_host::{Box2, Direction, score};
+use cambium_rootstock::{Box2, Direction, score};
 
 impl<State, Logic, V> Host<State, Logic, V>
 where

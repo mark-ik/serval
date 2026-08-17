@@ -44,7 +44,7 @@ use winit::window::Window;
 /// It lives there rather than here because it never named winit or AccessKit:
 /// an action and a DOM node are the same two things whichever platform asked.
 /// Re-exported so callers that already import it from this crate keep working.
-pub use cambium_genet_host::{A11yAction, A11yRequest, Accessibility};
+pub use cambium_rootstock::{A11yAction, A11yRequest, Accessibility};
 
 impl Accessibility for A11yHost {
     fn sync(

@@ -11,8 +11,8 @@ use crate::decorations::Decorations;
 use std::collections::HashMap;
 
 use cambium::PointerClick;
-use cambium_genet_host::Accessibility;
-use cambium_genet_host::HostWindow;
+use cambium_rootstock::Accessibility;
+use cambium_rootstock::HostWindow;
 use cambium_winit_a11y::A11yAction;
 use genet_layout::{
     Applied, IncrementalLayout, InteractionState, LeafPaintSource, ScrollOffsets, SourceNodeId,
@@ -312,7 +312,7 @@ where
         }
         // Overlay scrollbar thumbs mid-hold/mid-fade: the engine draws the
         // geometry, the shared fade clock supplies alpha.
-        let now = cambium_genet_host::Instant::now();
+        let now = cambium_rootstock::Instant::now();
         let fade = &self.s.scrollbar_fade;
         layout.append_scrollbars(&*dom_ref, &mut list, &|t| fade.alpha(t, now));
         let translated = paint_list_render::translate_paint_cmd_stream(
