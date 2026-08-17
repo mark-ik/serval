@@ -6,8 +6,8 @@
 //! desktop in one expression: the surface target is an `HtmlCanvasElement`
 //! rather than a window handle.
 
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cambium_rootstock::{HostWindow, Surface};
 use genet_render_host::{RenderCore, WindowSurface};
@@ -70,14 +70,19 @@ pub struct WebWindow {
     /// The browser's `requestAnimationFrame` does not coalesce for us the way
     /// winit's `request_redraw` does: repeated calls queue repeated callbacks.
     /// The flag is what makes the two event sources behave alike.
-    pending_frame: Rc<Cell<bool>>,
+    ///
+    /// Atomic rather than a `Cell` because the host's wake handle requires
+    /// `Send + Sync`, and that is a bound the compiler checks, not a statement
+    /// about how many threads exist. It costs nothing here and keeps one
+    /// waker shape across both event sources.
+    pending_frame: Arc<AtomicBool>,
 }
 
 impl WebWindow {
     pub fn new(canvas: HtmlCanvasElement) -> Self {
         Self {
             canvas,
-            pending_frame: Rc::new(Cell::new(false)),
+            pending_frame: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -88,7 +93,15 @@ impl WebWindow {
 
     /// Whether a frame is owed, clearing the flag. Called by the frame loop.
     pub fn take_pending_frame(&self) -> bool {
-        self.pending_frame.replace(false)
+        self.pending_frame.swap(false, Ordering::Relaxed)
+    }
+
+    /// The frame-owed flag, for a waker that must set it from outside.
+    ///
+    /// Shared rather than copied: a wake signal and a redraw request have to
+    /// mean the same pending frame, or a worker's wake draws nothing.
+    pub fn pending_frame_flag(&self) -> Arc<AtomicBool> {
+        self.pending_frame.clone()
     }
 
     /// The size to configure the surface at, in physical pixels.
@@ -100,7 +113,7 @@ impl WebWindow {
 
 impl HostWindow for WebWindow {
     fn request_redraw(&self) {
-        self.pending_frame.set(true);
+        self.pending_frame.store(true, Ordering::Relaxed);
     }
 
     fn inner_size(&self) -> (u32, u32) {

@@ -30,6 +30,7 @@
 
 mod a11y;
 mod input;
+mod mount;
 mod surface;
 
 pub use a11y::DomAccessibility;
@@ -37,6 +38,7 @@ pub use input::{
     CompositionKind, composition_from_dom, key_press_from_dom, modifiers_from_dom,
     wheel_delta_from_dom,
 };
+pub use mount::{Mounted, mount};
 pub use surface::{WebSurface, WebWindow};
 
 /// How far one wheel line scrolls, in logical pixels.
