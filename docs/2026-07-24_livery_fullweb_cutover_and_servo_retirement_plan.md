@@ -909,8 +909,9 @@ the ones to take first, ahead of anything ranked purely by file count.
 | contextual `color-layers()`, `alpha()`, `contrast-color()`, relative colors, and system colors | absolute forms built; retained contextual computation is C1-C3 | inherited | **yes** |
 | `order` with grid auto-placement | not built | inherited | no |
 | relative-position table parts | structural boxes now survive; K4h applies offsets and retires guarded fallback | **new** | no |
+| per-property restyle damage classing (relayout vs paint-only) | **borrowed from Stylo**, not owned; Livery's property DB carries no invalidation class | inherited | **yes** |
 
-**The two that compound, in detail, because they are the ones that will hurt:**
+**The three that compound, in detail, because they are the ones that will hurt:**
 
 - **Block-flow anonymous boxes.** Collapsible white space between two block
   boxes generates a box in the text-measuring pass that should not exist.
@@ -927,6 +928,32 @@ the ones to take first, ahead of anything ranked purely by file count.
   *quietly*: a `min-content` box is sized as though it were `auto` rather
   than visibly breaking. Quiet wrongness is harder to find later than loud
   wrongness, which is why it is ranked here rather than by its file count.
+
+- **Per-property restyle damage classing.** Genet already tells a relayout
+  from a paint-only change, and does it well: `LayoutDamageClass` in
+  `genet-layout/incremental.rs` resolves `None` / `PaintOnly` / `Relayout`,
+  `RestyleOutcome::needs_relayout` reads `RestyleDamage::RELAYOUT`, and
+  `cascade.rs` proves it live by asserting a color swap comes back
+  repaint-only. None of that knowledge is ours. The damage is computed inside
+  Stylo by `compute_style_difference`, out of the incumbent's own per-property
+  metadata; the adapter's `TElement::compute_layout_damage` hook is a stub
+  returning `Default::default()`. Livery's `properties.toml` has no equivalent:
+  123 property entries carrying name, value type, inheritance, initial,
+  grammar, seed values, animation behaviour, and source, with no field saying
+  what a change to the property invalidates. Livery's own invalidation work is
+  selector-scoped, which elements restyle, a different axis from what a changed
+  property costs.
+  It compounds because it is invisible until the retirement stage it blocks.
+  Every incremental-layout receipt that depends on skipping layout for a
+  paint-only change is, today, a receipt for Stylo's property table. When
+  Livery takes the fullweb lane the classing leaves with the fork unless the
+  DB has grown somewhere to put it, and the schema addition is cheap now and
+  expensive once the receipts have to be re-earned.
+  The reference shape worth borrowing when it is built is Mapbox's style-spec
+  split of layout properties from paint properties, which classes every visual
+  property by what invalidates when it changes. Adopt it on this plan's
+  authority, not on a survey's: the forcing consumer is the retirement stage
+  above, and nothing needs building before it.
 
 Nothing in this register is a silent gap: each is named in the code at the
 point where it is taken, and this table is the index.
