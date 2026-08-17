@@ -60,14 +60,16 @@ where
         let animating = {
             let logical_size = self.logical_size();
             let geometry = self.geometry();
-            let commands = self.s.commands.clone();
-            let window = self.s.window.as_ref().map(|w| &*w.0);
+            let commands = self.commands.clone();
+            let window = self.s.window.as_deref();
+            let native_window = self.native_window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return false;
             };
             let mut ctx = AppCtx {
                 runner,
                 window,
+                native_window,
                 logical_size,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
@@ -328,9 +330,9 @@ where
         // backend polls. Its return keeps frames coming.
         let animating = self.frame_hook();
         let target_size = self.s.window.as_ref().map(|window| {
-            let size = window.0.inner_size();
+            let size = window.inner_size();
             let scale = window.scale_factor() as f32;
-            (size.width.max(1), size.height.max(1), scale)
+            (size.0.max(1), size.1.max(1), scale)
         });
         let (Some((pw, ph, scale)), true) = (target_size, self.s.surface.is_some()) else {
             // No window, or suspended with the surface taken away: there is

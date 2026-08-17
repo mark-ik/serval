@@ -318,7 +318,20 @@ where
     /// there is one. `None` under [`Harness`], the windowless test host — an
     /// application that asks for window chrome must tolerate its absence
     /// rather than assume a window exists.
-    pub window: Option<&'a Window>,
+    /// The frame, behind the neutral seam rather than as a winit handle.
+    ///
+    /// Applications ask it for redraws, size and scale, all of which a browser
+    /// answers. Naming `&Window` here would have made the hook signature itself
+    /// undeliverable on a second event source.
+    pub window: Option<&'a dyn HostWindow>,
+    /// The native window, when this host has one.
+    ///
+    /// For the desktop-only verbs the neutral seam deliberately omits: asking
+    /// the window manager to resize, maximizing, dragging the frame. An
+    /// application that reaches for this is a desktop application by
+    /// construction, and says so by naming the field. A browser event source
+    /// leaves it `None`.
+    pub native_window: Option<&'a Window>,
     /// The logical (DPI-independent) size of the surface being laid out — the
     /// coordinate space the layout, the cursor, and [`HostPointer`] all use.
     pub logical_size: (f32, f32),
@@ -418,11 +431,9 @@ where
     Logic: FnMut(&State) -> V,
     V: RootView<State>,
 {
-    /// The window behind the neutral seam. Held as the wrapper rather than a
-    /// bare `Arc<Window>` so the modules bound for the core reach it through
-    /// [`HostWindow`]; the adapter unwraps `.0` for the window management the
-    /// seam omits.
-    pub(crate) window: Option<WinitWindow>,
+    /// The frame behind the neutral seam: redraw, size, scale, IME. A browser
+    /// event source supplies a canvas here.
+    pub(crate) window: Option<Box<dyn HostWindow>>,
     /// The presentation surface behind the neutral seam. A browser event
     /// source supplies the same pair against a canvas.
     pub(crate) surface: Option<Box<dyn Surface>>,
@@ -453,15 +464,6 @@ where
     pub(crate) last_focus: Option<u64>,
     /// The hovered hit node, for `on_hover` Enter/Leave routing.
     pub(crate) last_hover_hit: Option<NodeId>,
-    /// The application's end of the window-verb seam; the host drains it
-    /// after every dispatch.
-    pub(crate) commands: WindowCommands,
-    /// Double-click detection for the title bar, which winit does not provide.
-    pub(crate) cadence: ClickCadence,
-    /// Every window verb performed this run, for tests. Cheap (a handful of
-    /// enum values over an application's lifetime) and the only way a
-    /// windowless harness can prove the frame did what the gesture asked.
-    pub(crate) performed: Vec<WindowCommand>,
     /// Monotonic base for the CSS-transition animation clock.
     pub(crate) anim_base: cambium_genet_host::Instant,
     /// The accessibility seam, behind the neutral trait rather than named as
@@ -476,10 +478,6 @@ where
     pub(crate) wake_pending: Arc<AtomicBool>,
     pub(crate) scrollbar_fade: ScrollbarFade<ScrollTarget<NodeId>>,
     pub(crate) close_requested: bool,
-    /// Whether a close disposition hid the root window. The native handle stays
-    /// alive, so a later product extension may restore it without rebuilding
-    /// canonical application state.
-    pub(crate) hidden: bool,
     pub(crate) pending_sheet: Option<String>,
     pub(crate) pending_capture: Option<CaptureFn>,
     /// Pointer events an application hook asked the host to deliver to itself,
@@ -513,16 +511,12 @@ where
             last_hover: None,
             last_focus: None,
             last_hover_hit: None,
-            commands: WindowCommands::new(),
-            cadence: ClickCadence::new(),
-            performed: Vec::new(),
             anim_base: cambium_genet_host::Instant::now(),
             a11y: None,
             a11y_wake: Arc::new(AtomicBool::new(false)),
             wake_pending: Arc::new(AtomicBool::new(false)),
             scrollbar_fade: ScrollbarFade::new(),
             close_requested: false,
-            hidden: false,
             pending_sheet: None,
             pending_capture: None,
             pending_pointer: Vec::new(),
@@ -542,12 +536,30 @@ where
     pub(crate) init: Option<InitFn<State, Logic>>,
     pub(crate) hooks: HostHooks<State, Logic, V>,
     pub(crate) s: HostState<State, Logic, V>,
-    /// Last resize-edge the cursor was over, to dedup cursor sets.
+    /// Client-side decoration state, which is a desktop window's problem: a
+    /// browser tab has no frame to grab, maximize, or drag. Kept beside the
+    /// event loop rather than in `HostState` so the neutral half carries no
+    /// window management.
     ///
-    /// Adapter state, not host state: client-side decorations are a desktop
-    /// window's problem, and a browser tab has no frame to grab. It sits here
-    /// rather than in `HostState` so that struct names nothing winit.
+    /// Last resize-edge the cursor was over, to dedup cursor sets.
     pub(crate) resize_hint: Option<winit::window::ResizeDirection>,
+    /// The application's end of the window-verb seam; drained after every
+    /// dispatch.
+    pub(crate) commands: WindowCommands,
+    /// Double-click detection for the title bar, which winit does not provide.
+    pub(crate) cadence: ClickCadence,
+    /// Every window verb performed this run, for tests. The only way a
+    /// windowless harness can prove the frame did what the gesture asked.
+    pub(crate) performed: Vec<WindowCommand>,
+    /// The native window, for the management the neutral seam omits and for
+    /// the handle applications are handed. Adapter-side on purpose: this is
+    /// the one thing a browser tab cannot supply.
+    pub(crate) native_window: Option<Arc<Window>>,
+    /// Whether a close disposition hid the root window. The native handle stays
+    /// alive, so a later product extension may restore it without rebuilding
+    /// canonical application state. Adapter state: a browser tab has no
+    /// equivalent to hide.
+    pub(crate) hidden: bool,
     pub(crate) wake: HostWake,
 }
 
@@ -592,6 +604,11 @@ where
         hooks,
         s,
         resize_hint: None,
+        commands: WindowCommands::new(),
+        cadence: ClickCadence::new(),
+        performed: Vec::new(),
+        native_window: None,
+        hidden: false,
         wake,
     };
     event_loop.run_app(&mut host)
@@ -630,14 +647,16 @@ where
         {
             let logical_size = self.logical_size();
             let geometry = self.geometry();
-            let commands = self.s.commands.clone();
-            let window = self.s.window.as_ref().map(|w| &*w.0);
+            let commands = self.commands.clone();
+            let window = self.s.window.as_deref();
+            let native_window = self.native_window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 return;
             };
             let mut ctx = AppCtx {
                 runner,
                 window,
+                native_window,
                 logical_size,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
@@ -677,7 +696,7 @@ where
             return false;
         }
         self.with_ctx(Hook::AfterWake);
-        if !self.s.hidden {
+        if !self.hidden {
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();
             }
@@ -691,8 +710,9 @@ where
         let disposition = {
             let logical_size = self.logical_size();
             let geometry = self.geometry();
-            let commands = self.s.commands.clone();
-            let window = self.s.window.as_ref().map(|w| &*w.0);
+            let commands = self.commands.clone();
+            let window = self.s.window.as_deref();
+            let native_window = self.native_window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
                 self.s.close_requested = true;
                 return;
@@ -700,6 +720,7 @@ where
             let mut ctx = AppCtx {
                 runner,
                 window,
+                native_window,
                 logical_size,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
@@ -723,10 +744,10 @@ where
                 }
             },
             CloseDisposition::Hide => {
-                if let Some(window) = self.s.window.as_ref() {
-                    window.0.set_visible(false);
+                if let Some(window) = self.native_window.as_ref() {
+                    window.set_visible(false);
                 }
-                self.s.hidden = true;
+                self.hidden = true;
             },
             CloseDisposition::Exit => self.s.close_requested = true,
         }
@@ -873,8 +894,8 @@ where
         if self.options.decorations {
             return None;
         }
-        let window = self.s.window.as_ref()?;
-        if window.0.is_maximized() {
+        let window = self.native_window.as_ref()?;
+        if window.is_maximized() {
             return None;
         }
         let size = window.inner_size();
@@ -882,8 +903,8 @@ where
         resize_edge(
             self.s.cursor.0,
             self.s.cursor.1,
-            size.0 as f32 / s,
-            size.1 as f32 / s,
+            size.width as f32 / s,
+            size.height as f32 / s,
         )
     }
 
@@ -896,8 +917,8 @@ where
         let dir = self.edge_under_cursor();
         if dir != self.resize_hint {
             self.resize_hint = dir;
-            if let Some(window) = self.s.window.as_ref() {
-                window.0.set_cursor(
+            if let Some(window) = self.native_window.as_ref() {
+                window.set_cursor(
                     dir.map(edge_cursor)
                         .unwrap_or(winit::window::CursorIcon::Default),
                 );
@@ -929,13 +950,13 @@ where
         // and repaint. Booting from the options factory rather than a stashed
         // value is why `HostOptions::netrender` is a closure: the second
         // surface must have the same renderer configuration as the first.
-        if let Some(window) = self.s.window.clone() {
+        if let Some(window) = self.native_window.clone() {
             if self.s.surface.is_none() {
                 let size = window.inner_size();
                 match SurfaceHost::boot(
-                    window.0.clone(),
-                    size.0.max(1),
-                    size.1.max(1),
+                    window.clone(),
+                    size.width.max(1),
+                    size.height.max(1),
                     (self.options.netrender)(),
                 ) {
                     Ok(surface) => {
@@ -1013,14 +1034,15 @@ where
             state,
             logic,
             sheet,
-        } = init(&window, &self.s.commands.clone(), &self.wake);
+        } = init(&window, &self.commands.clone(), &self.wake);
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let runner = Runner::new(dom, logic, state);
         let mut a11y = A11yHost::new(self.a11y_waker());
         a11y.attach(window.clone());
         self.s.a11y = Some(Box::new(a11y));
         self.s.sheet = sheet;
-        self.s.window = Some(WinitWindow(window));
+        self.native_window = Some(window.clone());
+        self.s.window = Some(Box::new(WinitWindow(window)));
         self.s.surface = Some(Box::new(WinitSurface(surface)));
         self.s.runner = Some(runner);
         // Drive the first frame synchronously while the window is hidden:
@@ -1102,8 +1124,8 @@ where
                 // Edge grab beats content when a CSD window is floating.
                 match self.edge_under_cursor() {
                     Some(dir) => {
-                        if let Some(w) = self.s.window.as_ref() {
-                            let _ = w.0.drag_resize_window(dir);
+                        if let Some(w) = self.native_window.as_ref() {
+                            let _ = w.drag_resize_window(dir);
                         }
                     },
                     // Then the window frame: a press on an `--app-region: drag`

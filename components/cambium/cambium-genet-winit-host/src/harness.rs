@@ -101,13 +101,13 @@ where
             },
             inert_hooks(),
         );
-        harness.host.s.commands = commands;
+        harness.host.commands = commands;
         harness
     }
 
     /// The host's end of the window-verb seam.
     pub fn commands(&self) -> WindowCommands {
-        self.host.s.commands.clone()
+        self.host.commands.clone()
     }
 
     /// The thread-safe wake handle an actor or worker would receive from the
@@ -135,7 +135,7 @@ where
 
     /// Whether the close policy hid the window while retaining the host state.
     pub fn hidden(&self) -> bool {
-        self.host.s.hidden
+        self.host.hidden
     }
 
     /// Run the ordinary post-dispatch path, including any queued window
@@ -181,6 +181,11 @@ where
                 hooks,
                 s,
                 resize_hint: None,
+            commands: crate::WindowCommands::new(),
+            cadence: crate::decorations::ClickCadence::new(),
+            performed: Vec::new(),
+            native_window: None,
+            hidden: false,
                 wake,
             },
         }
@@ -329,7 +334,7 @@ where
     /// recorded rather than enacted — which is exactly what a test wants to
     /// assert against.
     pub fn performed(&self) -> &[crate::WindowCommand] {
-        &self.host.s.performed
+        &self.host.performed
     }
 
     /// Release the left button at a point.

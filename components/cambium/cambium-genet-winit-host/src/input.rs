@@ -74,12 +74,27 @@ where
     /// The topmost node under the cursor, in the retained layout's own
     /// coordinates. The one hit-test every pointer path goes through.
     pub(crate) fn hit_at_cursor(&self) -> Option<NodeId> {
+        let (x, y) = self.s.cursor;
+        self.hit_at(x, y)
+    }
+
+    /// The topmost node at an arbitrary point, in the retained layout's own
+    /// coordinates.
+    ///
+    /// Hit testing is host machinery, not window machinery: a browser host asks
+    /// the same question of the same layout. Client-side decorations compose
+    /// this with their own reading of the node, rather than repeating the walk.
+    pub(crate) fn hit_at(&self, x: f32, y: f32) -> Option<NodeId> {
         let runner = self.s.runner.as_ref()?;
         let layout = self.s.layout.as_ref()?;
-        let (x, y) = self.s.cursor;
         let dom = runner.dom();
         let dom_ref = dom.borrow();
         layout.hit_test(&*dom_ref, x, y, &ScrollOffsets::default())
+    }
+
+    /// The retained layout, for callers that read it without re-hit-testing.
+    pub(crate) fn layout(&self) -> Option<&genet_layout::IncrementalLayout<NodeId>> {
+        self.s.layout.as_ref()
     }
 
     /// The cursor in `node`'s **local** coordinate space, plus `node`'s box

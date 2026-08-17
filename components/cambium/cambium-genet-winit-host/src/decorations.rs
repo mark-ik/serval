@@ -267,13 +267,8 @@ where
     /// What the window frame makes of the point `(x, y)` in logical
     /// coordinates.
     pub(crate) fn app_region_at(&self, x: f32, y: f32) -> AppRegion {
-        let (Some(runner), Some(layout)) = (self.s.runner.as_ref(), self.s.layout.as_ref()) else {
-            return AppRegion::NoDrag;
-        };
-        let dom = runner.dom();
-        let dom_ref = dom.borrow();
-        let Some(node) = layout.hit_test(&*dom_ref, x, y, &genet_layout::ScrollOffsets::default())
-        else {
+        // The hit test is the host's; what the frame makes of the node is ours.
+        let (Some(node), Some(layout)) = (self.hit_at(x, y), self.layout()) else {
             return AppRegion::NoDrag;
         };
         app_region_of(layout, node)
@@ -289,7 +284,7 @@ where
     pub(crate) fn press_left(&mut self) {
         let (x, y) = self.s.cursor;
         let region = self.app_region_at(x, y);
-        let doubled = self.s.cadence.press((x, y), cambium_genet_host::Instant::now());
+        let doubled = self.cadence.press((x, y), cambium_genet_host::Instant::now());
 
         self.click();
 
@@ -324,39 +319,39 @@ where
 
     /// Run one window verb against the real window.
     pub(crate) fn perform(&mut self, command: WindowCommand) {
-        self.s.performed.push(command);
+        self.performed.push(command);
         if matches!(command, WindowCommand::Close) {
             self.request_close(crate::CloseRequest::Command);
             return;
         }
-        let Some(window) = self.s.window.as_ref() else {
+        let Some(window) = self.native_window.as_ref() else {
             // Windowless (the `Harness`). Verbs are still drained so a test
             // can assert an application asked for one; there is nothing to
             // act on.
             if matches!(command, WindowCommand::Show) {
-                self.s.hidden = false;
+                self.hidden = false;
             }
             return;
         };
         match command {
             WindowCommand::Show => {
-                window.0.set_visible(true);
-                window.0.set_minimized(false);
+                window.set_visible(true);
+                window.set_minimized(false);
                 window.request_redraw();
-                self.s.hidden = false;
+                self.hidden = false;
             },
-            WindowCommand::Minimize => window.0.set_minimized(true),
-            WindowCommand::ToggleMaximize => window.0.set_maximized(!window.0.is_maximized()),
+            WindowCommand::Minimize => window.set_minimized(true),
+            WindowCommand::ToggleMaximize => window.set_maximized(!window.is_maximized()),
             // Both of these hand control to the platform for the duration of
             // the gesture; they only mean anything while the press that asked
             // for them is still down, which is why the press path calls them
             // inline rather than queueing.
             WindowCommand::Drag => {
-                let _ = window.0.drag_window();
+                let _ = window.drag_window();
             },
             WindowCommand::ShowSystemMenu => {
                 let (x, y) = self.s.cursor;
-                window.0.show_window_menu(winit::dpi::Position::Logical(
+                window.show_window_menu(winit::dpi::Position::Logical(
                     winit::dpi::LogicalPosition::new(x as f64, y as f64),
                 ));
             },
@@ -366,14 +361,14 @@ where
 
     /// Drain and run whatever the application queued this dispatch.
     pub(crate) fn run_window_commands(&mut self) {
-        for command in self.s.commands.drain() {
+        for command in self.commands.drain() {
             self.perform(command);
         }
     }
 
     /// The application's end of the window-verb seam, for storing in state.
     pub(crate) fn commands(&self) -> WindowCommands {
-        self.s.commands.clone()
+        self.commands.clone()
     }
 
     /// Where the window is now, for an application that wants to persist it.
@@ -381,15 +376,14 @@ where
     /// Reports the *restored* geometry when maximized, because that is what
     /// the platform will restore to and therefore what is worth remembering.
     pub(crate) fn geometry(&self) -> Option<WindowGeometry> {
-        let window = self.s.window.as_ref()?;
+        let window = self.native_window.as_ref()?;
         let scale = window.scale_factor();
-        let maximized = window.0.is_maximized();
+        let maximized = window.is_maximized();
         let position = window
-            .0
             .outer_position()
             .map(|p| (p.x as f64 / scale, p.y as f64 / scale))
             .unwrap_or((0.0, 0.0));
-        let size = window.0.inner_size();
+        let size = window.inner_size();
         Some(WindowGeometry {
             position,
             size: (size.width as f64 / scale, size.height as f64 / scale),

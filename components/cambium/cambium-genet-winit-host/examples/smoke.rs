@@ -295,9 +295,11 @@ impl Driveable for Probe<'_, '_> {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .ok_or("resize wants a height")?;
-                let window = self.ctx.window.ok_or("resize needs a window")?;
-                let _ = window.request_inner_size(winit::dpi::LogicalSize::new(w, h));
-                window.request_redraw();
+                // Asking the window manager to resize is desktop-only, so it
+                // goes through the native handle rather than the neutral seam.
+                let native = self.ctx.native_window.ok_or("resize needs a window")?;
+                let _ = native.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                native.request_redraw();
                 Ok(())
             },
             _ => Err(format!("unknown verb: {line}")),
