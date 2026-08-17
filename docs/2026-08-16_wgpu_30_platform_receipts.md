@@ -199,14 +199,21 @@ Three things, none of them hardware:
    implicit-modifier refusal fired first, and surfaced the moment the import
    started working.
 
-### Open: headed presentation on this host is unconfirmed
+### The window looked black, and the application is not at fault
 
-The receipt above covers the **import**, which is what the lane was blocked on
-and what the texture dump proves. It does not cover what reaches the screen.
-Mark, watching the ThinkPad directly, reported the frame visible while the
-window was expanding and closing but not in between.
+Watching the ThinkPad directly, the frame was visible while the window was
+expanding and closing but not in between. That observation is real. It is
+**not** an application bug.
 
-That is not diagnosed. What is ruled out is buffer decay: probing 19 and 21
+A readback of the swapchain taken 10 seconds after the last paint, immediately
+before present, contains the fully rendered page. Its mean is `0.930155`,
+matching the imported texture's `0.930155` at the same 1366x701, saved as
+`testing/rendering/2026-08-17_linux_swapchain_present.png`. Import, render pass
+and present are therefore all correct in the steady state, and whatever blanks
+the window happens after the application hands the frame over, in the
+compositor on that Fedora/Xwayland session.
+
+Buffer decay is ruled out as well: probing 19 and 21
 seconds after the last paint still returned 16384/16384 non-zero starting with
 `#EEEEEE`, so the imported memory is intact long after CEF goes quiet, and the
 demo holds the texture and redraws continuously under `ControlFlow::Poll`.
@@ -221,9 +228,18 @@ grab reads an empty root. `import`/`magick import` fail outright here, and
 were taken and believed before the control exposed them, which is
 `[[feedback-prove-the-instrument-before-believing-a-negative]]` exactly.
 
-The instrument that would settle it is a readback of the **swapchain** after
-present, not of the imported texture and not of the screen. That reports what
-the render pass actually produced and needs no compositor cooperation.
+The instrument that settled it is `WELD_PRESENT_DUMP`, added to
+`demo-weld-linux`: it copies the swapchain image out just before presenting.
+That reports what the render pass produced and needs nobody's cooperation,
+which is exactly what a screen capture cannot claim here. It needs `COPY_SRC`
+on the surface, so the demo adds that usage only when the variable is set and
+the surface offers it, leaving the ordinary path configured as before.
+
+Three instruments, three different questions, and mixing them up is what cost
+the detour: `WELD_TEXTURE_DUMP` shows what CEF handed over, `WELD_PRESENT_DUMP`
+shows what this application drew, and a screen capture shows what the
+compositor chose to display. Only the last one was ever in doubt, and it is
+the only one that cannot be measured from here.
 
 ### Two traps in reading the probe
 
