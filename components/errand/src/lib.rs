@@ -175,11 +175,12 @@ pub enum Error {
     Protocol(String),
     /// The request did not complete within the caller-supplied timeout.
     Timeout,
-    /// A gemini host's certificate no longer matches its pinned fingerprint —
+    /// A Gemini capsule target's certificate no longer matches its pinned fingerprint —
     /// a man-in-the-middle, a server key rotation, or a moved host. The
     /// request was *not* sent. Never silently re-pinned: the embedder decides
     /// (warn, then re-pin via the [`TofuStore`] if the change is legitimate).
     CertificateChanged {
+        /// Lowercase host, plus a port when it is not Gemini's default.
         host: String,
         /// The previously pinned fingerprint, lowercase hex.
         pinned: String,
