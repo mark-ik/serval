@@ -33,9 +33,10 @@ use cambium::{
     focusable, on_pointer, on_wheel, text,
 };
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommands, read_frame,
-    run,
+    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, read_frame, run,
 };
+#[cfg(not(target_os = "macos"))]
+use cambium_genet_winit_host::WindowCommands;
 use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
 // ------------------------------------------------------------------ state
@@ -43,6 +44,7 @@ use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress,
 #[derive(Default)]
 struct Smoke {
     /// The window-verb seam. One field, not four bools.
+    #[cfg(not(target_os = "macos"))]
     window: WindowCommands,
     clicks: usize,
     /// 0..=1, driven by dragging the rail.
@@ -69,6 +71,7 @@ type Logic = fn(&Smoke) -> Child;
 /// system menu — none of which this file implements. Windows/Linux add the
 /// product-drawn caption buttons; macOS keeps AppKit's traffic lights and the
 /// same stylesheet uses `titlebar-area-*` to place only the title beside them.
+#[cfg(not(target_os = "macos"))]
 fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -> Child {
     Box::new(focusable(clickable(
         el("button", text(label))
@@ -82,6 +85,11 @@ fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -
 }
 
 fn title_bar() -> Child {
+    #[cfg(target_os = "macos")]
+    let children: Vec<Child> = vec![Box::new(
+        el("div", text("host smoke")).attr("class", "caption-title"),
+    )];
+    #[cfg(not(target_os = "macos"))]
     let mut children: Vec<Child> = vec![Box::new(
         el("div", text("host smoke")).attr("class", "caption-title"),
     )];
@@ -462,9 +470,10 @@ fn main() {
         options,
         // The application takes its end of the window-verb seam and keeps it
         // in state; the caption buttons call it from ordinary handlers.
-        |_window, commands, _wake| Init {
+        |_window, _commands, _wake| Init {
             state: Smoke {
-                window: commands.clone(),
+                #[cfg(not(target_os = "macos"))]
+                window: _commands.clone(),
                 ..Smoke::default()
             },
             logic: root as Logic,
