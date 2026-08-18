@@ -19,6 +19,7 @@ use style::values::computed::{FontStyle, FontWeight};
 #[derive(Default, MallocSizeOf)]
 pub(crate) struct FontStore {
     pub(crate) families: HashMap<LowercaseFontFamilyName, FontTemplates>,
+    #[ignore_malloc_size_of = "Stylo stylesheet storage is outside Servo heap accounting"]
     web_fonts_loading_for_stylesheets: Vec<(DocumentStyleSheet, usize)>,
     web_fonts_loading_for_script: usize,
 }

@@ -923,6 +923,7 @@ pub enum FontSearchScope {
 /// The font family parameters for font selection.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub struct FontFamilyDescriptor {
+    #[ignore_malloc_size_of = "Stylo font family storage is outside Servo heap accounting"]
     pub(crate) family: SingleFontFamily,
     pub(crate) scope: FontSearchScope,
 }
