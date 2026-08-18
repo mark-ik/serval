@@ -11,6 +11,6 @@ name = "genet_probe"
 path = "lib.rs"
 
 [dependencies]
-genet-layout = { path = "../genet-layout" }
+genet-livery = { path = "../genet-livery" }
 genet-scripted-dom = { path = "../genet-scripted-dom" }
 layout-dom-api = { path = "../shared/layout-dom" }

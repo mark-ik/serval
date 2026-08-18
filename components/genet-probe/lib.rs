@@ -4,12 +4,12 @@
 //! Shared automatability substrate for the genet apps.
 //!
 //! Every genet app is cambium-based, so every one emits the same thing: a
-//! semantic, ARIA-attributed [`ScriptedDom`] laid out by genet-layout. That is
+//! semantic, ARIA-attributed [`ScriptedDom`] laid out by Livery and Buckram. That is
 //! the substrate a script, test, or model drives an app through — "click the
 //! element labelled X" instead of poking a pixel. This crate is the generic
 //! part of that: resolving a **selector** (a role or class, plus optional text)
 //! to a **window-space point**, across an app's retained surfaces, using only
-//! genet-layout's hit geometry. The app-specific part — which surfaces it has,
+//! the owned engine's hit geometry. The app-specific part — which surfaces it has,
 //! its typed observation, how it routes a delivered point — stays in the app,
 //! behind a small trait (added as consumers pull it; this first slice is the
 //! resolver every one of those verbs stands on).
@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 
-use genet_layout::IncrementalLayout;
+use genet_livery::{Device, InteractionStates, StyleSet, layout, resolve_styles};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 
@@ -190,17 +190,24 @@ fn matching(dom: &ScriptedDom, sel: &Selector) -> Vec<NodeId> {
 /// that as a miss — the target is not on screen).
 pub fn resolve(surfaces: &[ProbeSurface], sel: &Selector) -> Option<Hit> {
     for surface in surfaces {
-        let layout = IncrementalLayout::new(
+        let device = Device::screen(surface.rect[2], surface.rect[3]);
+        let styles = resolve_styles(
             surface.dom,
-            &[surface.sheet],
-            surface.rect[2],
-            surface.rect[3],
+            &StyleSet::cambium(&[surface.sheet]),
+            &device,
+            &InteractionStates::default(),
         );
+        let Ok(layout) = layout(surface.dom, &styles, surface.rect[2], surface.rect[3]) else {
+            continue;
+        };
         for node in matching(surface.dom, sel) {
-            if let Some((x, y, w, h)) = layout.absolute_rect(surface.dom, node) {
+            if let Some(rect) = layout.get(node) {
                 return Some(Hit {
                     surface: surface.name,
-                    point: (surface.rect[0] + x + w / 2.0, surface.rect[1] + y + h / 2.0),
+                    point: (
+                        surface.rect[0] + rect.x + rect.width / 2.0,
+                        surface.rect[1] + rect.y + rect.height / 2.0,
+                    ),
                 });
             }
         }
@@ -411,10 +418,8 @@ mod tests {
         // a unique `data-key` (its url) — the ambiguous-label case that forces
         // attribute targeting.
         //
-        // These are `<button>`s, so the UA sheet's `padding: 2px 6px` and
-        // `border: 1px solid` apply and `width`/`height` name the CONTENT box
-        // (CSS 2.2 §10.2). Their border boxes are therefore 34x26, not 20x20, and
-        // the centres below account for it. See `SWATCH_*` next to the assertions.
+        // Pin the test control's box so selector geometry does not depend on a
+        // particular engine's editable UA defaults.
         for (i, url) in ["https://example.com/", "https://example.org/"]
             .iter()
             .enumerate()
@@ -427,7 +432,7 @@ mod tests {
                 node,
                 qual("style"),
                 &format!(
-                    "position:absolute;left:{}px;top:40px;width:20px;height:20px;",
+                    "position:absolute;left:{}px;top:40px;width:20px;height:20px;padding:0;border:0;",
                     200 + i * 30
                 ),
             );
@@ -457,16 +462,12 @@ mod tests {
         assert_eq!(hit.point, (620.0, 22.0));
     }
 
-    /// A swatch button's border box: the authored 20x20 content box plus the UA
-    /// control ring (`padding: 2px 6px`, `border: 1px solid`), so 7px per side
-    /// horizontally and 3px vertically. `width` names the content box under the
-    /// default `box-sizing` (CSS 2.2 §10.2).
-    const SWATCH_W: f32 = 20.0 + 2.0 * 7.0;
-    const SWATCH_H: f32 = 20.0 + 2.0 * 3.0;
+    const SWATCH_W: f32 = 20.0;
+    const SWATCH_H: f32 = 20.0;
 
     /// The window-space centre of the swatch whose content box starts at
     /// `left`, given the surface origin (500, 10). The border box starts at the
-    /// authored inset, since padding and border grow it rightward and downward.
+    /// authored inset.
     fn swatch_centre(left: f32) -> (f32, f32) {
         (500.0 + left + SWATCH_W / 2.0, 10.0 + 40.0 + SWATCH_H / 2.0)
     }

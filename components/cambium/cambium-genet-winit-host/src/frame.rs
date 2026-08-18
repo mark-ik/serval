@@ -411,13 +411,9 @@ where
             ) else {
                 return;
             };
-            a11y.sync(
-                window,
-                &dom_ref,
-                layout,
-                &mut self.s.leaves,
-                self.s.last_focus,
-            )
+            let (tree, action_map) =
+                crate::a11y::project_tree(&dom_ref, layout, &mut self.s.leaves, self.s.last_focus);
+            a11y.sync(window, tree, action_map)
         };
         self.apply_a11y_requests(&requests);
     }

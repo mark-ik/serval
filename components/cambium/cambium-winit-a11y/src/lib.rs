@@ -2,25 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Accessibility host for a genet-backed Cambium app.
+//! Accessibility adapter lifecycle for a Cambium app.
 //!
-//! Split out of `cambium-winit` on 2026-07-26, code unchanged. It lives apart
-//! for one reason: it needs the laid-out genet DOM and the platform adapter,
-//! which cannot be published, and holding them here leaves `cambium-winit` with
-//! only `cambium` and `winit` so its key translation is reachable from a
-//! registry consumer. A host that wants both takes both crates.
-//!
-//! Every Cambium app emits a semantic, ARIA-attributed DOM laid out by
-//! genet-layout, and paints its custom visuals with Sprigging leaves. This
-//! module turns that into a live accessibility tree for the OS screen reader,
-//! so no app has to hand-roll the wiring:
-//!
-//! - [`SpriggingA11y`] lets the layout walk ask each `<custom-leaf>` for its own
-//!   semantics ([`sprigging::Leaf::accessibility`]) — the mirror of the paint
-//!   registry, for meaning rather than pixels.
-//! - [`A11yHost`] owns the platform adapter and the per-frame lifecycle: project
-//!   the retained layout into an AccessKit tree (leaf semantics included),
-//!   install it the first frame and update it after, and drain a screen reader's
+//! [`A11yHost`] owns the platform adapter and per-frame lifecycle: install a
+//! caller-projected AccessKit tree the first frame, update it after, and drain a screen reader's
 //!   actions, handing back the DOM nodes to activate so the app routes them
 //!   through the same click path a mouse uses.
 //!
@@ -31,12 +16,9 @@
 
 use std::collections::HashMap;
 
-use accesskit::{Action, NodeId as A11yNodeId, Tree, TreeId, TreeUpdate};
-use genet_layout::{IncrementalLayout, LeafA11ySource, project};
-use genet_scripted_dom::{NodeId, ScriptedDom};
+use accesskit::{Action, NodeId as A11yNodeId, TreeUpdate};
+use genet_scripted_dom::NodeId;
 use genet_winit_host::{AccessKitBridge, BridgeStatus};
-use layout_dom_api::LayoutDom as _;
-use sprigging::LeafRegistry;
 use winit::window::Window;
 
 /// What a screen reader asked for, kept as the action it actually requested.
@@ -59,20 +41,6 @@ pub enum A11yAction {
 pub struct A11yRequest {
     pub action: A11yAction,
     pub node: NodeId,
-}
-
-/// Bridges genet-layout's a11y walk to a Sprigging leaf registry: when the walk
-/// reaches a `<custom-leaf>`, the registered leaf fills its own AccessKit node
-/// (a knob announces as a slider, a fretboard as a graphic). Mirrors the paint
-/// registry's role, for semantics.
-pub struct SpriggingA11y<'a>(pub &'a mut LeafRegistry<u64>);
-
-impl LeafA11ySource for SpriggingA11y<'_> {
-    fn describe_leaf(&mut self, key: u64, node: &mut accesskit::Node) {
-        if let Some(leaf) = self.0.get_mut(&key) {
-            leaf.accessibility(node);
-        }
-    }
 }
 
 /// Owns the OS AccessKit adapter and the per-frame tree lifecycle for a
@@ -103,25 +71,19 @@ impl A11yHost {
         self.bridge.status()
     }
 
-    /// Project the current layout into an AccessKit tree (with each leaf's own
-    /// semantics), install it on the first call — revealing `window`, which must
+    /// Install the caller-projected AccessKit tree on the first call, revealing
+    /// `window`, which must
     /// have been created hidden so the adapter attaches first — and update it
     /// after. Returns the screen reader's Click and Focus requests, in request
     /// order and still typed, for the caller to route each through the matching
     /// path (activation for `Click`, focus for `Focus`).
     ///
-    /// `focus` is the app's currently-focused DOM node's opaque id (from
-    /// `LayoutDom::opaque_id`), used as the tree's focus when it is really in the
-    /// tree, so a stale id never points the reader at nothing.
     pub fn sync(
         &mut self,
         window: &Window,
-        dom: &ScriptedDom,
-        layout: &IncrementalLayout<NodeId>,
-        leaves: &mut LeafRegistry<u64>,
-        focus: Option<u64>,
+        tree: TreeUpdate,
+        action_map: HashMap<A11yNodeId, NodeId>,
     ) -> Vec<A11yRequest> {
-        let (tree, action_map) = project_tree(dom, layout, leaves, focus);
         self.action_map = action_map;
         let node_count = tree.nodes.len();
 
@@ -172,54 +134,4 @@ impl A11yHost {
         let node = self.action_map.get(&request.target_node).copied()?;
         Some(A11yRequest { action, node })
     }
-}
-
-/// Project a laid-out Cambium document into an AccessKit tree, with no window
-/// and no platform adapter: the half of [`A11yHost::sync`] that is pure.
-///
-/// Returns the tree update and the AccessKit-id → DOM-node map a drained
-/// action is resolved through. Split out so the projection is assertable in an
-/// ordinary test — an accessibility regression that only a screen reader can
-/// catch is one nobody catches.
-pub fn project_tree(
-    dom: &ScriptedDom,
-    layout: &IncrementalLayout<NodeId>,
-    leaves: &mut LeafRegistry<u64>,
-    focus: Option<u64>,
-) -> (TreeUpdate, HashMap<A11yNodeId, NodeId>) {
-    let root = dom.document();
-    let id_of = |d: &ScriptedDom, n: NodeId| A11yNodeId(d.opaque_id(n));
-    let skip = |_: &ScriptedDom, _: NodeId| false;
-    let projection = {
-        let mut source = SpriggingA11y(leaves);
-        project(
-            dom,
-            layout.fragments(),
-            root,
-            &id_of,
-            &skip,
-            &mut source,
-            true,
-        )
-    };
-
-    let mut nodes = Vec::with_capacity(projection.nodes.len());
-    let mut action_map = HashMap::with_capacity(projection.nodes.len());
-    for p in projection.nodes {
-        action_map.insert(p.id, p.dom);
-        nodes.push((p.id, p.node));
-    }
-    // A stale focus id would point the reader at nothing, so it only stands
-    // when the node is really in this frame's tree.
-    let focus = focus
-        .map(A11yNodeId)
-        .filter(|id| action_map.contains_key(id))
-        .unwrap_or(projection.root);
-    let tree = TreeUpdate {
-        nodes,
-        tree: Some(Tree::new(projection.root)),
-        tree_id: TreeId::ROOT,
-        focus,
-    };
-    (tree, action_map)
 }

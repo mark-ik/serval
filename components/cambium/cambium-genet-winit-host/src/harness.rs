@@ -456,7 +456,7 @@ where
         };
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        cambium_winit_a11y::project_tree(
+        crate::a11y::project_tree(
             &dom_ref,
             layout,
             &mut self.host.s.leaves,

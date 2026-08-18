@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 
-**Status:** L1 and L0 complete (2026-08-18). L2-L7 not started.
+**Status:** L1, L0 and L2 complete (2026-08-18). L3-L7 not started.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
@@ -89,10 +89,7 @@ Apparatus. Independent of every other stage; do it first regardless of what
 else slips.
 
 **L2 - the free leaves.** servo-paint (dev-dep, test-file only), genet-probe
-(one call site), cambium-winit-a11y (four references), style_tests and the
-stylo_taffy vendor (both zero reverse deps; the latter dies with the fork by
-definition, being a pure ComputedValues to taffy adapter). Note the taffy
-vendor at support/patches/taffy is unrelated and survives.
+(one call site), cambium-winit-a11y (four references), and style_tests.
 
 **L3 - the trivial fork edges.** Five crates at one to eight references
 each: servo-canvas-traits, servo-paint, servo-paint-api,
@@ -115,8 +112,9 @@ plumbing only), genet-scripted, pelt-desktop. Unblocked by L4.
 **L6 - genet-wpt is a policy decision, not a refactor.** Gating it off costs
 the incumbent its conformance coverage, which is the oracle. See below.
 
-**L7 - delete.** genet-layout, then the fork dependency, then the servo-*
-cone. Each is the previous one losing its last dependent.
+**L7 - delete.** genet-layout, its stylo_taffy adapter, then the fork
+dependency, then the servo-* cone. Each is the previous one losing its last
+dependent. The support/patches/taffy vendor is unrelated and survives.
 
 ## Execution record
 
@@ -177,6 +175,40 @@ Receipts:
   pre-existing `servo-webgpu-traits` drift against wgpu 30. The all-targets
   wall also exposes the already-stale Stylo oracle tests. Neither failure is
   in the L1 dependency cone.
+
+### L2 - complete (2026-08-18)
+
+`genet-probe` now resolves selector geometry with a stateless Livery + Buckram
+pass. Its fixtures explicitly size controls instead of inheriting engine UA
+padding, so their window-point receipts describe the authored test surface.
+
+`cambium-winit-a11y` now owns only AccessKit adapter lifecycle over a
+caller-projected tree. The frozen genet-layout projection moved beside its
+remaining consumer in `cambium-genet-winit-host`; this cuts the leaf crate's
+layout edge without pretending the incumbent host is already ported.
+
+The `servo-paint` Stylo-to-pixels integration test and its genet-layout-only
+development dependencies are deleted. The orphaned `style_tests` workspace
+member is also deleted. Both remain recoverable from Git history.
+
+The audit was wrong about one named leaf: `stylo_taffy` has many live calls in
+`genet-layout/box_tree.rs` and a patch entry in the out-of-workspace web smoke.
+It is retained until genet-layout dies at L7, and the stage descriptions above
+now say so.
+
+Receipts:
+
+- `cargo tree -p genet-probe --prefix none`: zero `genet-layout` and zero
+  Stylo-family nodes.
+- `cargo tree -p cambium-winit-a11y --prefix none`: zero `genet-layout` and
+  zero Stylo-family nodes.
+- `cargo tree -p servo-paint --prefix none`: zero `genet-layout` nodes; its
+  direct fork vocabulary remains L3 work.
+- `cargo metadata --no-deps --format-version 1`: zero `style_tests` packages.
+- `cargo check -p genet-probe -p cambium-winit-a11y -p servo-paint`: passed.
+- `cargo check -p cambium-genet-winit-host`: passed.
+- `cargo test -p genet-probe`: 17 passed.
+- `cargo test -p cambium-genet-winit-host --test accessibility`: 5 passed.
 
 ## The oracle conflict, and its resolution
 

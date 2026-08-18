@@ -56,6 +56,8 @@ pub use wake::HostWake;
 
 use decorations::ClickCadence;
 
+mod a11y;
+
 /// An application-level close request. Native window chrome and an app's own
 /// Close command deliberately use the same path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
