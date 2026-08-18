@@ -43,6 +43,7 @@ pub use layout::{
     used_value_context,
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
+pub use livery::selector::StatePseudoClass;
 pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
 pub use paint::{

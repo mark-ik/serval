@@ -246,10 +246,7 @@ impl ClickCadence {
 /// Prefers the standard `app-region` longhand and falls back to the custom
 /// property, so the day livery implements the real property this keeps
 /// working and stylesheets written against either spelling are honoured.
-pub(crate) fn app_region_of(
-    layout: &genet_layout::IncrementalLayout<NodeId>,
-    node: NodeId,
-) -> AppRegion {
+pub(crate) fn app_region_of(layout: &crate::owned_layout::OwnedLayout, node: NodeId) -> AppRegion {
     layout
         .computed_value(node, "app-region")
         .or_else(|| layout.computed_custom_property(node, "app-region"))
@@ -271,8 +268,7 @@ where
         };
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        let Some(node) = layout.hit_test(&*dom_ref, x, y, &genet_layout::ScrollOffsets::default())
-        else {
+        let Some(node) = layout.hit_test(&*dom_ref, x, y) else {
             return AppRegion::NoDrag;
         };
         app_region_of(layout, node)

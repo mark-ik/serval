@@ -3,7 +3,7 @@
 //! Every Cambium desktop application so far has hand-assembled the same
 //! machinery: a winit `ApplicationHandler` owning one window, a genet
 //! [`SurfaceHost`] presenting a `netrender` scene, a retained
-//! [`IncrementalLayout`] over the runner's `ScriptedDom`, logical-coordinate
+//! an owned Livery/Buckram session over the runner's `ScriptedDom`, logical-coordinate
 //! hit testing, pointer/keyboard/IME/wheel routing into a
 //! [`GenetAppRunner`], overlay-scrollbar fade policy, and the
 //! [`A11yHost`] install-before-show lifecycle. This crate is that machinery,
@@ -29,11 +29,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cambium::{GenetAppRunner, TextInput};
 use cambium_winit::ScrollbarFade;
 use cambium_winit_a11y::A11yHost;
-use genet_layout::{IncrementalLayout, ScrollTarget};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use genet_winit_host::SurfaceHost;
 use meristem_bounds::RootView;
 use netrender::NetrenderOptions;
+use owned_layout::{OwnedLayout, ScrollTarget};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -45,6 +45,7 @@ mod decorations;
 mod frame;
 mod harness;
 mod input;
+mod owned_layout;
 mod spatial;
 mod wake;
 
@@ -375,7 +376,7 @@ where
     pub(crate) runner: Option<Runner<State, Logic, V>>,
     /// Retained layout session in logical coordinates — hit-test target and
     /// incremental-apply subject.
-    pub(crate) layout: Option<IncrementalLayout<NodeId>>,
+    pub(crate) layout: Option<OwnedLayout>,
     pub(crate) layout_size: (f32, f32),
     pub(crate) sheet: String,
     pub(crate) leaves: sprigging::LeafRegistry<u64>,
@@ -416,7 +417,7 @@ where
     /// turn. Kept in host state so the harness can exercise the same coalescing
     /// contract without a native event loop.
     pub(crate) wake_pending: Arc<AtomicBool>,
-    pub(crate) scrollbar_fade: ScrollbarFade<ScrollTarget<NodeId>>,
+    pub(crate) scrollbar_fade: ScrollbarFade<ScrollTarget>,
     pub(crate) close_requested: bool,
     /// Whether a close disposition hid the root window. The native handle stays
     /// alive, so a later product extension may restore it without rebuilding

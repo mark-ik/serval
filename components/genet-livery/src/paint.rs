@@ -69,6 +69,31 @@ impl LiveryPaintList {
         }));
     }
 
+    /// Splice host-painted commands at a retained document position.
+    ///
+    /// Custom widget interiors are host content rather than CSS paint. Their
+    /// command stream stays local to the leaf and is translated as one stack
+    /// frame so neither the host nor Livery rewrites individual primitives.
+    pub fn push_host_commands_at(&mut self, origin: LayoutPoint, commands: &[PaintCmd]) {
+        if commands.is_empty() {
+            return;
+        }
+        self.commands.push(PaintCmd::PushTransform(TransformSpec {
+            origin,
+            transform: LayoutTransform::identity(),
+            kind: TransformKind::Standard,
+        }));
+        self.commands.extend_from_slice(commands);
+        self.commands.push(PaintCmd::PopTransform);
+    }
+
+    /// Place one renderer-retained host fragment at a document position.
+    pub fn push_host_fragment_at(&mut self, origin: LayoutPoint, id: u64) {
+        self.commands.push(PaintCmd::PlaceRetainedFragment(
+            paint_list_api::RetainedFragmentRef { id, origin },
+        ));
+    }
+
     fn with_image_sources(
         viewport: DeviceIntSize,
         generation: u64,

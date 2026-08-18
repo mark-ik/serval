@@ -11,9 +11,7 @@ use std::collections::HashMap;
 
 use cambium::PointerClick;
 use cambium_winit_a11y::A11yAction;
-use genet_layout::{
-    Applied, IncrementalLayout, InteractionState, LeafPaintSource, ScrollOffsets, SourceNodeId,
-};
+use genet_render::VisualCaret;
 use genet_scripted_dom::NodeId;
 use layout_dom_api::{DomMutation, LayoutDomMut as _};
 use netrender::{ColorLoad, ExternalTexturePlacement};
@@ -32,9 +30,9 @@ struct SpriggingSource<'a> {
     fragments: &'a std::collections::HashMap<u64, (u64, u64)>,
 }
 
-impl LeafPaintSource for SpriggingSource<'_> {
-    fn leaf_commands(&self, key: u64) -> Option<&[paint_list_api::PaintCmd]> {
-        self.rendered.get(key)
+impl SpriggingSource<'_> {
+    fn leaf_commands(&self, key: u64) -> Option<Vec<paint_list_api::PaintCmd>> {
+        self.rendered.get(key).map(<[_]>::to_vec)
     }
 
     fn leaf_fragment(&self, key: u64) -> Option<u64> {
@@ -44,7 +42,7 @@ impl LeafPaintSource for SpriggingSource<'_> {
 
 /// The focused text field's paint inputs for this frame: which node, where the
 /// caret is, and the selection byte range when one should be drawn.
-type FocusedOverlay = (NodeId, genet_layout::VisualCaret, Option<(usize, usize)>);
+type FocusedOverlay = (NodeId, VisualCaret, Option<(usize, usize)>);
 
 impl<State, Logic, V> Host<State, Logic, V>
 where
@@ -87,9 +85,9 @@ where
     }
 
     /// Bring the retained layout up to date at `(lw, lh)` logical px: drain the
-    /// runner's DOM mutations, apply them incrementally or rebuild, advance the
-    /// CSS-transition clock, and re-render the custom-paint leaves at their new
-    /// boxes. No GPU, no window. Returns whether an animation is still live.
+    /// runner's DOM mutations, rebuild the host-owned Livery frame when its
+    /// inputs changed, and re-render custom-paint leaves at their new boxes. No
+    /// GPU, no window. Returns whether an animation is still live.
     pub(crate) fn relayout(&mut self, lw: f32, lh: f32) -> bool {
         let Some(runner) = self.s.runner.as_ref() else {
             return false;
@@ -100,28 +98,22 @@ where
         dom.borrow_mut().drain_mutations(&mut muts);
         let dom_ref = dom.borrow();
         let sheets: Vec<&str> = vec![self.s.sheet.as_str()];
-        let structural = muts
-            .iter()
-            .any(|m| !matches!(m, DomMutation::AttributeChanged { .. }));
         let size_changed = self.s.layout_size != (lw, lh);
         match self.s.layout.as_mut() {
-            Some(layout) if !structural && !size_changed => {
-                // Advance the CSS-transition clock to now, then apply this
-                // frame's mutations, so a transition a class-swap starts runs
-                // from *now*, not a stale idle-frozen clock.
+            Some(layout) if muts.is_empty() && !size_changed => {
                 let _ = layout.tick_animations(&*dom_ref, now_s);
-                if !muts.is_empty() {
-                    let _ = layout.apply(&*dom_ref, &sheets, &muts);
-                }
+            },
+            Some(layout) if !size_changed => {
+                layout.rebuild(&*dom_ref, lw, lh);
             },
             _ => {
-                let mut layout = IncrementalLayout::new(&*dom_ref, &sheets, lw, lh);
+                let mut layout = crate::owned_layout::OwnedLayout::new(&*dom_ref, &sheets, lw, lh);
                 // Carry BOTH scroll planes across rebuilds: element scroll and
                 // the document scroll. Dropping the latter snaps a scrolled
                 // page back to the top on structural re-render.
                 if let Some(prev) = self.s.layout.as_ref() {
                     layout.set_element_scroll(prev.element_scroll().clone());
-                    layout.set_viewport_scroll(&*dom_ref, prev.viewport_scroll());
+                    layout.set_viewport_scroll(prev.viewport_scroll());
                 }
                 self.s.layout = Some(layout);
                 self.s.layout_size = (lw, lh);
@@ -129,7 +121,8 @@ where
         }
         let layout = self.s.layout.as_ref().expect("layout just ensured");
         let anim_active = layout.has_active_animations();
-        let sizes: HashMap<u64, (f32, f32)> = layout.custom_leaf_boxes().into_iter().collect();
+        let sizes: HashMap<u64, (f32, f32)> =
+            layout.custom_leaf_boxes(&*dom_ref).into_iter().collect();
         self.s.leaves.render_into(
             |key| {
                 sizes
@@ -253,9 +246,10 @@ where
     /// Emit this frame's paint list — content, then the caret/selection
     /// overlay, then whatever overlay scrollbars are mid-hold or mid-fade — and
     /// lower it to a netrender scene.
-    fn emit_scene(&self, lw: f32, lh: f32) -> Option<netrender::Scene> {
+    fn emit_scene(&mut self, lw: f32, lh: f32) -> Option<netrender::Scene> {
+        let focused_overlay = self.focused_overlay();
         let runner = self.s.runner.as_ref()?;
-        let layout = self.s.layout.as_ref()?;
+        let layout = self.s.layout.as_mut()?;
         let dom = runner.dom();
         let dom_ref = dom.borrow();
         let source = SpriggingSource {
@@ -264,11 +258,11 @@ where
         };
         let mut list = layout.emit_paint_list_with_leaves(
             &*dom_ref,
-            &ScrollOffsets::default(),
             DeviceIntSize::new(lw as i32, lh as i32),
-            &source,
+            |key| source.leaf_commands(key),
+            |key| source.leaf_fragment(key),
         );
-        if let Some((node, caret, selection)) = self.focused_overlay() {
+        if let Some((node, caret, selection)) = focused_overlay {
             if let Some((start, end)) = selection {
                 let rects = layout.selection_rects(&*dom_ref, node, start, end);
                 let color = layout
@@ -285,7 +279,9 @@ where
                         b: 0.90,
                         a: 0.35,
                     });
-                list.push_selection(&rects, color);
+                for rect in rects {
+                    crate::owned_layout::OwnedLayout::push_rect(&mut list, rect, color);
+                }
             }
             if let Some(rect) = layout.caret_rect_for_position(&*dom_ref, node, caret, 2.0) {
                 let color = layout
@@ -302,7 +298,7 @@ where
                         b: 0.98,
                         a: 1.0,
                     });
-                list.push_caret(rect, color);
+                crate::owned_layout::OwnedLayout::push_rect(&mut list, rect, color);
             }
         }
         // Overlay scrollbar thumbs mid-hold/mid-fade: the engine draws the
@@ -453,12 +449,10 @@ where
         let (x, y) = self.s.cursor;
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        let hovered = layout
-            .hit_test(&*dom_ref, x, y, &ScrollOffsets::default())
-            .map(|n| layout_dom_api::LayoutDom::opaque_id(&*dom_ref, n));
-        let focused = runner
-            .focus()
-            .map(|n| layout_dom_api::LayoutDom::opaque_id(&*dom_ref, n));
+        let hovered_node = layout.hit_test(&*dom_ref, x, y);
+        let focused_node = runner.focus();
+        let hovered = hovered_node.map(|n| layout_dom_api::LayoutDom::opaque_id(&*dom_ref, n));
+        let focused = focused_node.map(|n| layout_dom_api::LayoutDom::opaque_id(&*dom_ref, n));
         if (hovered, focused) == (self.s.last_hover, self.s.last_focus) {
             return;
         }
@@ -469,12 +463,7 @@ where
         // idle-frozen clock.
         let now_s = self.s.anim_base.elapsed().as_secs_f64();
         let _ = layout.tick_animations(&*dom_ref, now_s);
-        let state = InteractionState {
-            hovered: hovered.map(SourceNodeId),
-            focused: focused.map(SourceNodeId),
-            ..Default::default()
-        };
-        if layout.set_interaction(&*dom_ref, &state) != Applied::Unchanged {
+        if layout.set_interaction(&*dom_ref, hovered_node, focused_node) {
             drop(dom_ref);
             if let Some(window) = self.s.window.as_ref() {
                 window.request_redraw();

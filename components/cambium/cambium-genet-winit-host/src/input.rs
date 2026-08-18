@@ -14,8 +14,8 @@ use cambium::{
     WheelEvent,
 };
 use cambium_winit::{ime_event_from_winit, key_event_from_winit, modifiers_from_winit, wheel_axes};
-use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection};
-use genet_scripted_dom::{NodeId, ScriptedDom};
+use genet_render::{VisualAffinity, VisualCaret, VisualMovement, VisualSelection};
+use genet_scripted_dom::NodeId;
 use winit::keyboard::{Key as WinitKey, NamedKey as WinitNamedKey};
 
 use crate::meristem_bounds::RootView;
@@ -99,7 +99,7 @@ where
         let (x, y) = self.s.cursor;
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        layout.hit_test(&*dom_ref, x, y, &ScrollOffsets::default())
+        layout.hit_test(&*dom_ref, x, y)
     }
 
     /// The cursor in `node`'s **local** coordinate space, plus `node`'s box
@@ -307,7 +307,8 @@ where
         if slot.node != base_node {
             return;
         }
-        let Some(moved) = layout.selection_visual_move::<ScriptedDom>(
+        let Some(moved) = layout.selection_visual_move(
+            &*runner.dom().borrow(),
             slot.node,
             to_visual_selection(base_selection),
             movement,
