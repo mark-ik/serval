@@ -1010,7 +1010,10 @@ where
 
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
         let Some(layout) = self.layout.as_ref() else {
-            return false;
+            // Focus, CSSOM, and DOM mutations can invalidate the position-aware
+            // layout between input and the next frame. Viewport scrolling still
+            // has retained extents and must not become a one-frame no-op.
+            return self.scroll_by(dx, dy);
         };
         let active = self.sticky_layout(layout);
         let mut node = hit_test_with_scroll(

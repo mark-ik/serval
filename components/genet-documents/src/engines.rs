@@ -1580,6 +1580,7 @@ mod tests {
         assert_eq!(click, SessionClick::Handled);
         assert!(session.scroll_for_key(SessionScrollKey::Home));
         assert!(session.scroll_by(0.0, 100.0));
+        assert!(session.scroll_for_key(SessionScrollKey::Home));
         assert!(session.scroll_at(10.0, 10.0, 0.0, 100.0));
     }
 
