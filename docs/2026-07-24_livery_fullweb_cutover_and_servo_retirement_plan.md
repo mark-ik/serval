@@ -170,7 +170,10 @@ reviewed; the direction holds and the grind is accepted. Two riders:
   knockout per the established practice, never a silent gap. It was the
   only structural item in either ledger; with it out, every remaining F3b
   cluster is fidelity work.
-- **The genet-layout lift fallback stays in reserve.** It is invoked per
+- **The genet-layout lift fallback stays in reserve.** WITHDRAWN
+  2026-08-16, see the revision at the end of this plan; a frozen fork is
+  not a viable quarry, and any needed Stylo behaviour comes from upstream.
+  The original reasoning is kept below for the record. It is invoked per
   subsystem only if the flexbox/grid fidelity pass shows taffy integration
   cannot close the 386; nothing is lifted preemptively.
 
