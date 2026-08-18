@@ -1130,3 +1130,79 @@ doc.
 The harvest plan's retirement trigger has fired (F5), and F6c's receipt
 holds: no workspace member carries the servo- prefix, and nothing outside
 git history remembers the fork as a build input.
+
+## Revision, 2026-08-16: the parity trigger and the lift fallback
+
+A full-tree Livery/Stylo reftest differential was measured on the current
+branch, the first since K4 closure, K5 and PH4. It changes two of this
+plan's load-bearing assumptions.
+
+### The measurement
+
+Over 36311 `css` files, same corpus, same run, zero errored on either side:
+Stylo passed 11246, Livery 10147. Per-test rather than net:
+
+- Stylo-only passes: **2568**
+- Livery-only passes: **1469**
+- both pass: 8678
+
+Stylo-only failures by area: CSS2 464, css-text 330, WOFF2 298,
+css-grid 197, css-flexbox 192, css-backgrounds 118, css-conditional 91,
+css-images 86.
+
+The stale F4 bar of 901 cannot be carried forward. It was measured against
+a knocked-out subset; this is the full tree, so the figures are not
+comparable and 2568 is now the reference.
+
+### The trigger is the wrong shape
+
+Two things follow. First, the gap is not mostly layout: grid and flexbox
+together are 389 of 2568, while CSS2, css-text and WOFF2 are 1092. So
+"finish K5, then the trigger fires" was never going to hold, and continued
+K5 investment does not move most of the bar.
+
+Second, parity is not a shape a gate can take here. Livery passes 1469
+tests Stylo fails. The engines diverge in both directions rather than
+converging on a line Livery must reach, so a catch-up gate cannot fire
+while also hiding where Livery is already ahead.
+
+The retirement trigger therefore moves from WPT parity to a dogfooding
+gate: a named set of real pages and flows that must work, chosen because
+we use them. Sampling two of the largest non-layout blocks found nothing
+to lift. `hanging-punctuation` is absent from Livery's property catalog
+entirely, so css-text is unbuilt surface rather than broken behaviour, and
+the `css/WOFF2/` directory is format validation against a font stack, not
+a Livery layout gap. CSS2 at 464 is the largest block and remains
+unexamined; it is the one most likely to hold genuinely liftable behaviour.
+
+### The lift fallback is withdrawn
+
+"The genet-layout lift fallback stays in reserve" above no longer holds,
+and should not be relied on as insurance.
+
+Our stylo fork tips at `b157d92526` (2026-07-19), a `genet-stylo 0.19.1`
+release commit on a lineage deliberately diverged from `servo/stylo`. A
+fork held as a quarry has no cheap-and-valuable state: left alone its
+worth as a source decays continuously, so the insurance is worthless
+exactly when reached for; kept synced, it costs the maintenance that
+retirement was meant to shed. Worse, lifting from a frozen fork imports
+fork-time bugs while cutting us off from the upstream fixes that followed,
+which makes it worse than reading upstream cold.
+
+**Rule: if a Stylo behaviour is ever needed, take it from upstream
+`servo/stylo` and decompose that into Livery's catalog. Never from our
+fork.** This is the assumption most likely to be got wrong later, because
+the fork is ours and therefore looks free.
+
+### What this authorises now
+
+F5's first step, feature-gating genet-layout off the default build, is
+taken now rather than after the receipts, because its cost is paid on
+every dependency bump. The taffy 0.13 bump on 2026-08-16 paid it three
+times: the `stylo_taffy` GridTemplateAreas conversion, the
+`Display::FlowRoot` arm in genet-layout, and absorbing the bump twice.
+
+genet-layout stays buildable as a differential oracle only, and that role
+is time-boxed. Staleness degrades an oracle far more slowly than a quarry,
+but not indefinitely; a fork measuring a year behind is a straw man. It
+does not return to the default build.
