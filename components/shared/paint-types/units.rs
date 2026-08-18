@@ -8,6 +8,13 @@ pub enum RasterPixel {}
 pub enum TexelPixel {}
 pub enum WorldPixel {}
 
+/// A CSS pixel at the paint and embedder boundary.
+///
+/// CSS pixels and layout pixels have the same coordinate space. Keeping the
+/// CSS name here lets boundary APIs describe their domain without importing a
+/// styling engine's marker type.
+pub type CSSPixel = LayoutPixel;
+
 pub type DeviceIntPoint = euclid::Point2D<i32, DevicePixel>;
 pub type DeviceIntRect = euclid::Box2D<i32, DevicePixel>;
 pub type DeviceIntSize = euclid::Size2D<i32, DevicePixel>;

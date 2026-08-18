@@ -11,6 +11,7 @@ use embedder_traits::{AnimationState, EventLoopWaker};
 use euclid::{Rect, Scale, Size2D};
 use log::warn;
 use malloc_size_of_derive::MallocSizeOf;
+use paint_types::units::CSSPixel;
 use paint_types::{DocumentId, FontVariation};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
@@ -18,7 +19,6 @@ use servo_base::Epoch;
 use servo_base::id::{PainterId, PipelineId, WebViewId};
 use smallvec::SmallVec;
 use strum::IntoStaticStr;
-use stylo_traits::CSSPixel;
 
 pub mod display_list;
 pub mod largest_contentful_paint_candidate;

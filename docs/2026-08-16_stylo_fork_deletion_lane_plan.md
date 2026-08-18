@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 
-**Status:** L1, L0 and L2 complete (2026-08-18). L3-L7 not started.
+**Status:** L1, L0, L2 and L3 complete (2026-08-18). L4-L7 not started.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
@@ -156,12 +156,12 @@ direct observables edge and the indirect edge through `genet-paint-types` are
 therefore fork-free.
 
 The audit missed one Rust ownership consequence: those bridge impls were used
-by `servo-fonts-traits` and two `servo-canvas-traits` color fields. Because the
+by Stylo-owned fields in `servo-fonts-traits`, `servo-fonts`, and two
+`servo-canvas-traits` color fields. Because the
 accounting trait belongs to `servo-malloc-size-of`, the impls cannot move to an
-incumbent adapter crate. The Stylo-owned font and color fields are now
-explicitly excluded from Servo's memory report instead. Their owning values
-still compile and behave identically; only the retired incumbent's deep-size
-accounting is reduced.
+incumbent adapter crate. The font fields are explicitly
+excluded from Servo's memory report instead. L3 moved the canvas payload to a
+neutral owner, so those two exclusions then disappeared.
 
 Receipts:
 
@@ -209,6 +209,36 @@ Receipts:
 - `cargo check -p cambium-genet-winit-host`: passed.
 - `cargo test -p genet-probe`: 17 passed.
 - `cargo test -p cambium-genet-winit-host --test accessibility`: 5 passed.
+
+### L3 - complete (2026-08-18)
+
+The five boundary crates no longer name a fork package in their manifests.
+`genet-paint-types` now owns the CSS-pixel marker and the lossless absolute
+color payload used by canvas messages. Paint and embedder geometry use that
+neutral pixel vocabulary; the redundant engine-owned geometry conversions are
+gone.
+
+The paint API's unused `Overflow -> ScrollType` convenience impl and the
+embedder's unused `Theme -> PrefersColorScheme` and `OpaqueNode ->
+UntrustedNodeAddress` impls were fork adapters living in the wrong layer. They
+are deleted. `servo-config` still owns and observes its public preferences but
+no longer mirrors eight of them into the frozen Stylo global table.
+
+The wider incumbent compile exposed two more L1 accounting fields in
+`servo-fonts`; those are now marked outside Servo heap accounting. The next
+layer, `servo-layout-api`, exposes the same orphan-rule fallout and remains L5
+work rather than evidence against the completed L3 manifests.
+
+Receipts:
+
+- Cargo metadata reports zero direct fork manifest edges for
+  `servo-canvas-traits`, `servo-paint`, `servo-paint-api`,
+  `servo-embedder-traits`, and `servo-config`.
+- `cargo check -p servo-canvas-traits@0.2.0 -p servo-paint-api -p servo-paint
+  -p servo-embedder-traits -p servo-config`: passed.
+- `cargo test -p servo-config -p servo-canvas-traits@0.2.0
+  -p servo-paint-api -p servo-embedder-traits --lib`: 7 passed.
+- `cargo check -p genet-layout`: passed.
 
 ## The oracle conflict, and its resolution
 

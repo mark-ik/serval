@@ -12,13 +12,13 @@ use fonts_traits::{FontDataAndIndex, FontIdentifier};
 use kurbo::{BezPath, ParamCurveNearest as _, PathEl, Point, Shape, Triangle};
 use malloc_size_of::MallocSizeOf;
 use malloc_size_of_derive::MallocSizeOf;
+use paint_types::AbsoluteColor;
 use paint_types::ImageKey;
 use pixels::SharedSnapshot;
 use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use strum::{Display, EnumString};
-use style::color::AbsoluteColor;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Path(pub BezPath);
@@ -412,7 +412,6 @@ pub struct ShadowOptions {
     pub offset_x: f64,
     pub offset_y: f64,
     pub blur: f64,
-    #[ignore_malloc_size_of = "Stylo color storage is outside Servo heap accounting"]
     pub color: AbsoluteColor,
 }
 
@@ -534,7 +533,6 @@ pub enum Canvas2dMsg {
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct CanvasGradientStop {
     pub offset: f64,
-    #[ignore_malloc_size_of = "Stylo color storage is outside Servo heap accounting"]
     pub color: AbsoluteColor,
 }
 

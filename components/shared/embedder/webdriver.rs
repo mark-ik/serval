@@ -13,12 +13,12 @@ use euclid::{Rect, Size2D};
 use hyper_serde::Serde;
 use image::RgbaImage;
 use malloc_size_of_derive::MallocSizeOf;
+use paint_types::units::CSSPixel;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{GenericOneshotSender, GenericSender};
 use servo_base::id::{BrowsingContextId, WebViewId};
 use servo_geometry::{DeviceIndependentIntRect, DeviceIndependentPixel};
-use stylo_traits::CSSPixel;
 use url::Url;
 use webdriver::error::ErrorStatus;
 

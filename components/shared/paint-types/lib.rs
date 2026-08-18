@@ -15,7 +15,7 @@ pub mod sticky;
 pub mod units;
 
 pub use border::{BorderRadius, BorderStyle, BoxShadowClipMode, LineStyle, NormalBorder};
-pub use color::ColorF;
+pub use color::{AbsoluteColor, ColorComponents, ColorF, ColorFlags, ColorSpace};
 pub use composite::{ImageRendering, MixBlendMode, TransformStyle};
 pub use gradient::{ExtendMode, GradientStop, ReferenceFrameKind, RepeatMode};
 pub use ids::{

@@ -47,7 +47,6 @@ rustc-hash = { workspace = true }
 servo-base = { workspace = true }
 servo-constellation-traits = { workspace = true }
 servo-geometry = { workspace = true }
-stylo_traits = { workspace = true }
 wgpu = { workspace = true }
 webgpu = { workspace = true, optional = true }
 webxr = { workspace = true, optional = true }
