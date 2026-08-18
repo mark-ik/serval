@@ -1,9 +1,10 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** W0 and W1's seam landed, W2 landed, plus window-geometry
-validation from §6. W1's macOS half, W3, and W4 are staged with reasons; see
-§8. Originally a research brief, kept as the design record.
+**Status:** W0 and W2 landed. W1's macOS implementation and native build have
+landed; its headed Intel-macOS receipt still needs an unlocked Aqua session.
+W3 and W4 remain staged with reasons; see §8. Originally a research brief,
+kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -137,11 +138,12 @@ What that buys:
   `app-region: drag` in the app's stylesheet; the host hit-tests it like any
   other region. No product state, no drain block, no host knowledge of an
   app's shape.
-- **macOS becomes correct for free.** On macOS the host reserves the traffic
-  lights' rect and reports the remainder through `titlebar-area-*`; the app's
-  own CSS lays its title and controls out in whatever is left. The same
-  stylesheet that draws three buttons on Windows draws none on macOS, because
-  the env variables told it the region was smaller.
+- **macOS uses the same layout seam.** The host keeps the real traffic lights
+  and reports the remaining rect through `titlebar-area-*`; the app's CSS lays
+  its title and controls out inside it. The numeric environment variables do
+  not conditionally remove authored caption-button DOM. Control ownership is
+  still a platform decision: the smoke omits product-drawn buttons on macOS
+  while sharing the title-bar stylesheet across targets.
 - **The browser/PWA lane gets it at no extra cost.** A woodshed or turnstone
   PWA installed with `display_override: ["window-controls-overlay"]` gets the
   same layout from the same CSS. Genet is a browser engine; this is a
@@ -200,7 +202,8 @@ calls, the platform quirks), not the pixels.
   maximizes, and closes with no chrome fields in `UiState`.
 - **W1 — the reserved region.** `titlebar-area-*` env variables published by
   the host, and the macOS `fullSizeContentView` path that makes them nonzero
-  there. Done when one stylesheet lays out correctly on Windows and macOS.
+  there. Done when one stylesheet lays out each platform's control set
+  correctly on Windows and macOS.
 - **W2 — accessibility and the muscle memory.** Roles/names on the controls,
   double-click maximize, the system menu. Done when the frame is keyboard- and
   screen-reader-complete on the Windows route.
@@ -273,13 +276,29 @@ not evidence six months later. Authentication is ordinary SSH, so
 `personae-agent` serves the vault's SSH slots over the OpenSSH pipe and no key
 sits on disk in the clear.
 
-**Staged, with reasons rather than intentions:**
+**2026-08-18: W1's macOS implementation landed on the Livery/Buckram lane**
+(`c26e598415c`, smoke correction `8d20e35afbd`).
 
-- **W1's macOS half** (`fullSizeContentView`, reserving the traffic lights'
-  rect, publishing `titlebar-area-*`). The seam is in place and the env
-  variables want `env()` support in the cascade, but the *point* of this
-  work is that the same stylesheet lays out correctly on macOS, and that
-  cannot be claimed from a Windows laptop. It wants the iMac.
+Livery now resolves `env()` in longhands, deferred shorthands, custom
+properties, and mixed `var()`/`env()` fallbacks. The host publishes the four
+`titlebar-area-*` values through the same `Device` used by document cascade,
+then recascades when live window geometry changes. On macOS it keeps AppKit's
+traffic lights, uses a transparent full-size content view, and derives the
+available rectangle from the standard close/zoom button frames plus
+`contentLayoutRect`. The smoke uses that rectangle in the shared stylesheet
+and omits its product-drawn caption buttons on macOS.
+
+The native build passes on Q-PC, the Intel iMac. A headed attempt observed
+`x=68, width=352, height=28` at 420 logical pixels wide and
+`x=68, width=492, height=28` after the scripted resize. That is useful geometry
+evidence, but it is not a presentation receipt: `loginwindow` was the front
+application and every Metal surface was `Occluded`. The receipt preflight now
+detects that locked-but-still-logged-in state instead of hanging. W1 becomes
+complete when the same scenario produces its three nonblank frame captures in
+an unlocked Aqua session.
+
+**Still staged, with reasons rather than intentions:**
+
 - **W3's platform quirks.** The maximized-overflow inset is Windows
   `WM_NCCALCSIZE` work behind winit; `_GTK_FRAME_EXTENTS` and the
   libdecor fallback need X11 and Wayland sessions. Each is a receipt on a

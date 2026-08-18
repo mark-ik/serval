@@ -208,6 +208,21 @@ A GUI can only be launched into the Aqua session of the logged-in console
 user. Log in as $sshUser at the machine, then retry.
 "@
     }
+    $frontApp = Invoke-Remote @'
+front="$(lsappinfo front 2>/dev/null)"
+lsappinfo info "$front" 2>/dev/null | sed -n '1p'
+'@
+    if ($frontApp.Code -ne 0 -or -not $frontApp.Output.Trim()) {
+        Fail "could not identify the front application in $sshUser's Aqua session"
+    }
+    if ($frontApp.Output.Trim() -match '^"loginwindow"') {
+        Fail @"
+the Aqua session on $hostLabel is locked (loginwindow is in front).
+Unlock the machine at its own screen, then retry. A console user can remain
+logged in while the lock screen occludes every Metal surface, so checking
+/dev/console alone is not enough for a headed receipt.
+"@
+    }
     Note "session: aqua (console user $sshUser)"
 }
 
