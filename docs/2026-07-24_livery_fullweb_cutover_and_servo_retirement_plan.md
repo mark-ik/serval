@@ -1211,3 +1211,42 @@ genet-layout stays buildable as a differential oracle only, and that role
 is time-boxed. Staleness degrades an oracle far more slowly than a quarry,
 but not indefinitely; a fork measuring a year behind is a straw man. It
 does not return to the default build.
+
+### The goal, restated (ruled 2026-08-16)
+
+The implicit goal this plan inherited, "replace Stylo," is retired along
+with its parity trigger. The ruled goal:
+
+**One owned styling-and-layout system that serves every lane of the
+platform (web content, host UI, canvas swatches, smolweb), where each
+capability is a catalog entry with a receipt, sized by what we dogfood
+rather than by the W3C surface.** Fullweb fidelity is a market this
+system serves as far as the dogfooding gate demands, not the identity of
+the project.
+
+Why the owned pair over upstream Stylo as a dependency (the one honest
+form of "staying", after the fork's withdrawal above):
+
+- The accounting was never one crate into two. Stylo never did layout;
+  the incumbent lane was always Stylo plus genet-layout. Livery and
+  Buckram replace the pair role for role, split on the seam CSS itself
+  draws: computed versus used values.
+- Measured 2026-08-16: incumbent ~172k LOC (stylo/style 133.8k +
+  genet-layout 38.4k, excluding Stylo's sibling crates and Mako
+  machinery) against ~82k for livery 20.9k + genet-livery 36.9k +
+  buckram 24.3k, with the taffy fork carrying an 879-line delta on
+  upstream. Half the code, 90% of the reftest passes, and 1469 reftests
+  the incumbent fails.
+- The catalog is data: a 2,774-line TOML property database plus codegen.
+  Subsetting for wasm size, knockouts with receipts, and the smolweb and
+  host-UI styling lanes all depend on that; Stylo's Mako-generated
+  property space is consumed whole or not at all.
+- Retained layout with identities (K5's containing-block graph, static
+  positions, dirty-root relayout) is what an interactive application
+  host sits on. Servo layout is batch-shaped and upstream Stylo does not
+  touch layout at all, so no form of "stay" provides it.
+
+The cost, stated once so it is never discovered: every bug is ours, the
+coverage climb is ours, and nobody upstreams fixes to us. The
+Livery/Stylo differential above is the instrument that keeps that cost
+visible while the oracle lasts.
