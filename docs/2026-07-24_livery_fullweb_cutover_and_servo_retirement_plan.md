@@ -104,7 +104,8 @@ equivalents and obviate servo-* crates, or delete 'em," with the teardown
 explicitly sequenced **after Livery replaces Stylo**. This plan defines that
 cutover, the stage the
 [harvest plan](./2026-07-20_stylo_harvest_into_livery_plan.md) names only as
-its retirement trigger ("Livery takes the fullweb default with WPT parity
+its retirement trigger, superseded 2026-08-16 by a dogfooding gate (see
+the revision at the end of this plan) ("Livery takes the fullweb default with WPT parity
 receipts"), and the teardown that rides behind it.
 **Companions:** the harvest plan (H0-H6, receipts live there), the
 [consumed-property audit](./2026-07-13_genet_consumed_css_property_audit.md)
@@ -741,7 +742,8 @@ reviewed; the direction holds and the grind is accepted. Two riders:
   Receipt: the bar above holds, and turnstone, isometry, woodshed, and hocket
   build and smoke against genet main with no renderer flag set.
 - **F5 - the retirement event.** The harvest plan's trigger fires ("Livery
-  takes the fullweb default with WPT parity receipts"). Five steps, each
+  takes the fullweb default with WPT parity receipts"; that trigger was
+  superseded 2026-08-16, see the revision at the end of this plan). Five steps, each
   separately revertible, in this order:
 
   1. **Feature-gate genet-layout off the default build.** The first edge to
