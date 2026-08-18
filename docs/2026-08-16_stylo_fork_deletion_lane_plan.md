@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-16
 
-**Status:** L1, L0, L2, L3 and L4 complete (2026-08-18). L5-L7 not started.
+**Status:** L0-L6 complete (2026-08-18). L7 is blocked on the named
+dogfooding gate.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
@@ -107,7 +108,8 @@ incumbent gated off and the paint receipts hold.
 **L5 - the remaining consumers.** genet-documents (one constructor, ~29
 session call sites, one ImageLoader impl; its engines.rs is already
 livery-gated but document.rs is not), cambium-genet-winit-host (type
-plumbing only), genet-scripted, pelt-desktop. Unblocked by L4.
+plumbing only), genet-scripted, pelt-desktop, and the standalone
+genet_web_smoke example. Unblocked by L4.
 
 **L6 - genet-wpt is a policy decision, not a refactor.** Gating it off costs
 the incumbent its conformance coverage, which is the oracle. See below.
@@ -192,9 +194,9 @@ development dependencies are deleted. The orphaned `style_tests` workspace
 member is also deleted. Both remain recoverable from Git history.
 
 The audit was wrong about one named leaf: `stylo_taffy` has many live calls in
-`genet-layout/box_tree.rs` and a patch entry in the out-of-workspace web smoke.
-It is retained until genet-layout dies at L7, and the stage descriptions above
-now say so.
+`genet-layout/box_tree.rs`. Its source is retained until genet-layout dies at
+L7. L5 later removes the out-of-workspace web smoke's patch entry when that
+consumer moves to Livery.
 
 Receipts:
 
@@ -269,6 +271,90 @@ Receipts:
 - `cargo check -p genet-render --no-default-features --features incumbent`:
   passed.
 
+### L5 - complete (2026-08-18)
+
+Every owned consumer route now selects Livery + Buckram without compiling
+`genet-layout`. The old implementation remains reachable only through named
+incumbent features in `genet-render`, `genet-scripted`, `genet-documents`, and
+Pelt. `genet-wpt` is the only unconditional in-workspace consumer left, which
+is exactly the L6 oracle boundary.
+
+`genet-scripted` now defaults to its existing live Livery CSSOM owner. Its
+runtime-owned DOM no longer needs the incumbent `render` feature merely to
+produce a frame. Keyboard scrolling uses a host-neutral enum, and the live
+Livery bridge now exposes retained link, text-target, selection, and DOM-read
+facts for document-session consumers.
+
+`genet-documents` makes that owned scripted document its ordinary `scripted`
+lane. Selection clipping continues to emit a typed DOM-range receipt. Pelt's
+`scripted` and compatibility `livery-scripted` profiles now build on the
+engine-neutral present shell rather than selecting `viewer` and its incumbent
+tile surface.
+
+The standalone wasm smoke now drives Livery cascade, Buckram layout, retained
+text, and Livery paint emission directly over Cambium's `ScriptedDom`. Its
+bundled Roboto bytes enter through `TextSystem`; the authored sheet requests
+that supplied family explicitly. The obsolete `genet-layout` dependency and
+`stylo_taffy` patch entry are gone.
+
+The Cambium host was not "type plumbing only" as the audit claimed. It owned
+custom-leaf paint splicing, nested and viewport scroll, caret and selection
+geometry, interaction restyles, spatial queries, and AccessKit projection. A
+host-local Livery session now owns those responsibilities over Cambium's
+external `ScriptedDom`. Sprigging commands cross an explicit host-command seam
+on `LiveryPaintList`; retained renderer fragments keep their existing marker
+path. The host's entire normal dependency graph is now fork-free.
+
+Receipts:
+
+- `cargo test -p genet-scripted --no-default-features --features livery`: 19
+  passed.
+- `cargo tree -p genet-scripted --prefix none`: Livery and Buckram present;
+  zero `genet-layout` and zero Stylo-family nodes.
+- `cargo check -p genet-documents --no-default-features --features scripted`:
+  passed; its tree contains Livery and Buckram and no incumbent nodes.
+- The focused `genet-documents` selection-and-clip test compiled through the
+  test crate but MSVC could not link its combined Boa + wgpu image:
+  `LNK1318: Unexpected PDB error; LIMIT (12)`. This is not recorded as a test
+  pass.
+- `cargo check -p pelt --no-default-features --features scripted,netfetch` and
+  both Pelt desktop scripted feature spellings: passed. Their trees contain no
+  `genet-layout` or Stylo-family nodes.
+- Both frozen Pelt incumbent checks passed after explicit
+  `genet-render/incumbent` forwarding.
+- `cargo test -p cambium-genet-winit-host`: 42 passed across library,
+  accessibility, decorations, input routing, lifecycle, and spatial focus.
+  The tightened nearest-overflow wheel default was rerun separately and passed.
+- `cargo tree -p cambium-genet-winit-host --prefix none`: Livery and Buckram
+  present; zero `genet-layout` and zero Stylo-family nodes.
+- `cargo build --manifest-path examples/genet_web_smoke/Cargo.toml --target
+  wasm32-unknown-unknown`: passed. Its standalone tree contains Livery and
+  Buckram and no `genet-layout`, `genet-stylo`, or `stylo_taffy`.
+- The rebuilt wasm-bindgen bundle ran in the in-app Chromium WebGPU host. The
+  page title reached `SMOKE PASS`, the console logged `genet web smoke: PASS`,
+  and visual inspection showed the full text, navigation, sidebar, board, and
+  note dots.
+
+### L6 - complete (2026-08-18)
+
+The oracle stays live until the dogfooding gate and receives no further
+rebases. `genet-wpt` is now the sole unconditional in-workspace
+`genet-layout` consumer. Its differential deliberately compiles both the
+frozen Stylo + genet-layout route and the Livery + Buckram route. The remaining
+incumbent features in `genet-render`, `genet-scripted`, `genet-documents`, and
+Pelt are named compatibility paths rather than default ownership.
+
+No refactor was required here. Gating the oracle before the gate would spend
+the evidence while it is still useful; updating its Stylo side would move the
+baseline. The L6 action is the ruled policy boundary and a live compile
+receipt.
+
+Receipts:
+
+- `cargo tree -p genet-wpt --prefix none`: both Livery + Buckram and the frozen
+  Stylo + genet-layout oracle are present.
+- `cargo check -p genet-wpt`: passed.
+
 ## The oracle conflict, and its resolution
 
 Deleting the fork destroys the Livery/Stylo differential, which is our only
@@ -288,8 +374,16 @@ flows that must work, chosen because we use them. Every stage above can
 proceed without it; deletion cannot, because nothing else says when we are
 allowed to stop. This one is Mark to name.
 
-**components/livery/tools/import-stylo-db reads the stylo checkout at
-runtime** to regenerate properties.toml and PROPERTY_SPACE.md. It has no
-cargo edge, so it blocks nothing, but it becomes unrunnable if the checkout
-is archived. Per the upstream-only rule it should be repointed at a fresh
-servo/stylo checkout rather than at our fork.
+## Adjacent tool boundary - resolved (2026-08-18)
+
+`components/livery/tools/import-stylo-db` already accepted an explicit Stylo
+property-directory path, but its generated provenance was hard-coded to
+`mark-ik/stylo` and `genet-rename`. It now defaults to an upstream
+`servo/stylo` source label and accepts `--source-label` for an exact receipt.
+It can therefore regenerate `properties.toml` and `PROPERTY_SPACE.md` from a
+fresh upstream checkout after the frozen oracle is archived. Existing
+generated files retain their historical fork provenance until the next real
+regeneration.
+
+Receipt: `cargo check --manifest-path
+components/livery/tools/import-stylo-db/Cargo.toml`: passed.
