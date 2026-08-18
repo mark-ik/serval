@@ -44,10 +44,25 @@ impl RenderCore {
     pub fn boot(options: NetrenderOptions) -> Result<Self, String> {
         // `options.backends` lets a host force a backend (e.g. D3D12 for same-API
         // system-WebView import); `None` honors `WGPU_BACKEND`, else all available.
-        let handles = match options.backends {
-            Some(b) => netrender::boot_with(b),
-            None => netrender::boot(),
-        }
+        // Limit bucketing is a host policy call and rides on TenantNeeds, so
+        // boot through the shared path even with no tenant: the plain
+        // `boot`/`boot_with` pair takes TenantNeeds::default() and would drop
+        // whatever the host decided.
+        let needs = netrender::TenantNeeds {
+            apply_limit_buckets: options.apply_limit_buckets,
+            ..Default::default()
+        };
+        let handles = netrender::boot_shared(
+            options
+                .backends
+                // None means honour WGPU_BACKEND, then everything available.
+                // Backends::all() alone would silently drop the env override
+                // that the plain boot path applies.
+                .or_else(wgpu::Backends::from_env)
+                .unwrap_or_else(wgpu::Backends::all),
+            None,
+            &needs,
+        )
         .map_err(|e| format!("netrender wgpu boot failed: {e}"))?;
         Self::from_handles(handles, options)
     }
@@ -55,10 +70,22 @@ impl RenderCore {
     /// Async boot: awaits netrender's `boot_async`. The only boot path on wasm
     /// (WebGPU device acquisition is asynchronous); works on every target.
     pub async fn boot_async(options: NetrenderOptions) -> Result<Self, String> {
-        let handles = match options.backends {
-            Some(b) => netrender::boot_async_with(b).await,
-            None => netrender::boot_async().await,
-        }
+        let needs = netrender::TenantNeeds {
+            apply_limit_buckets: options.apply_limit_buckets,
+            ..Default::default()
+        };
+        let handles = netrender::boot_async_shared(
+            options
+                .backends
+                // None means honour WGPU_BACKEND, then everything available.
+                // Backends::all() alone would silently drop the env override
+                // that the plain boot path applies.
+                .or_else(wgpu::Backends::from_env)
+                .unwrap_or_else(wgpu::Backends::all),
+            None,
+            &needs,
+        )
+        .await
         .map_err(|e| format!("netrender wgpu boot failed: {e}"))?;
         Self::from_handles(handles, options)
     }
