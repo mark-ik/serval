@@ -728,6 +728,48 @@ where
         self.buckram.get(node)
     }
 
+    /// Compatibility name for callers that only need a node's outermost
+    /// retained fragment.
+    pub fn rect_of(&self, node: Id) -> Option<&TreeFragment> {
+        self.get(node)
+    }
+
+    /// A retained caret rectangle in document coordinates.
+    pub fn caret_rect(&self, node: Id, byte: usize) -> Option<crate::TextRect> {
+        self.text_frame()?
+            .caret_rect(node, byte, |_, fragment| crate::TextRect {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    }
+
+    /// The shaped source position nearest a document point.
+    pub fn text_position_at_point(&self, x: f32, y: f32) -> Option<(Id, usize)> {
+        self.text_frame()?
+            .text_position_at_point(x, y, |_, fragment| crate::TextRect {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    }
+
+    /// Retained geometry and text for a directed source range.
+    pub fn text_selection(
+        &self,
+        range: crate::TextRange<Id>,
+    ) -> Option<crate::TextSelection<Id>> {
+        self.text_frame()?
+            .text_selection(range, |_, fragment| crate::TextRect {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    }
+
     /// The node's principal box's fragment: a table element's grid box, which
     /// owns background, borders, and used `width`/`height` under CSS 2.1
     /// section 17.4. Rectangle queries and paint-effect anchors use
@@ -6498,7 +6540,7 @@ where
 /// Hit-test a retained fragment plane after applying per-element scroll
 /// offsets to descendants. The ordinary [`hit_test`] path keeps the map empty;
 /// retained sessions use this variant for wheel-scrolled containers.
-pub(crate) fn hit_test_with_scroll<D>(
+pub fn hit_test_with_scroll<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     fragments: &LiveryLayout<D::NodeId>,

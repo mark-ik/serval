@@ -1078,6 +1078,43 @@ where
         )
     }
 
+    /// The outermost retained fragment for a node in viewport coordinates.
+    pub fn fragment_rect(&self, node: D::NodeId) -> Option<[f32; 4]> {
+        let fragment = self.layout.as_ref()?.fragments.get(node)?;
+        let (nested_x, nested_y) = self.ancestor_scroll(node);
+        Some([
+            fragment.x - self.scroll.0 - nested_x,
+            fragment.y - self.scroll.1 - nested_y,
+            fragment.width,
+            fragment.height,
+        ])
+    }
+
+    /// A retained caret rectangle in viewport coordinates.
+    pub fn caret_rect(&self, node: D::NodeId, byte: usize) -> Option<TextRect> {
+        let frame = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.text_frame())?;
+        frame.caret_rect(node, byte, |source, fragment| {
+            self.viewport_text_rect(source, fragment)
+        })
+    }
+
+    /// Retained viewport rectangles for a directed source range.
+    pub fn selection_for_range(
+        &self,
+        range: TextRange<D::NodeId>,
+    ) -> Option<TextSelection<D::NodeId>> {
+        let frame = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.text_frame())?;
+        frame.text_selection(range, |source, fragment| {
+            self.viewport_text_rect(source, fragment)
+        })
+    }
+
     pub fn links(&self) -> Vec<LinkTarget> {
         let Some(layout) = self.layout.as_ref() else {
             return Vec::new();

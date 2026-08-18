@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 
-**Status:** L1, L0, L2 and L3 complete (2026-08-18). L4-L7 not started.
+**Status:** L1, L0, L2, L3 and L4 complete (2026-08-18). L5-L7 not started.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
@@ -239,6 +239,35 @@ Receipts:
 - `cargo test -p servo-config -p servo-canvas-traits@0.2.0
   -p servo-paint-api -p servo-embedder-traits --lib`: 7 passed.
 - `cargo check -p genet-layout`: passed.
+
+### L4 - complete (2026-08-18)
+
+`genet-render` now defaults to the owned Livery + Buckram route. Its one-shot
+and retained-session entries produce the same neutral paint-list vocabulary,
+then cross the existing `paint_list_render` bridge into NetRender. The default
+crate graph contains neither `genet-layout` nor a Stylo-family package.
+
+The render driver now owns the host caret vocabulary that it previously
+re-exported from `genet-layout`. Livery supplies retained fragment, caret,
+selection, element-scroll, and hit-test facts; the driver owns cursor and focus
+overlays plus the AccessKit projection. `LiveryPaintList::push_overlay_rect` is
+the explicit boundary for those host overlays, so they do not become CSS paint
+responsibilities.
+
+The old implementation remains frozen behind the exclusive `incumbent`
+feature. This makes the source and API break visible: Livery session entries
+take `LiveryDocument`, fallible layout returns `LayoutError`, and the old
+`IncrementalLayout` signatures exist only in the oracle build.
+
+Receipts:
+
+- `cargo tree -p genet-render --prefix none`: `genet-livery` and `buckram`
+  present; zero `genet-layout` and zero Stylo-family nodes.
+- `cargo check -p genet-render`: passed.
+- `cargo test -p genet-render`: 6 passed, including concurrent one-shot render,
+  hit-test, live mutation, and retained-session overlay translation.
+- `cargo check -p genet-render --no-default-features --features incumbent`:
+  passed.
 
 ## The oracle conflict, and its resolution
 

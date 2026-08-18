@@ -36,10 +36,9 @@ pub use buckram::{
 pub use document::{ClickOutcome, LayoutDamage, LayoutDamageKind, LinkTarget, LiveryDocument};
 pub use dom::{ElementRef, InteractionStates, SelectorTree};
 pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, RestyleStats};
-pub(crate) use layout::hit_test_with_scroll;
 pub use layout::{
     BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test, layout,
-    layout_with_text_system, resolve_container_query_styles,
+    hit_test_with_scroll, layout_with_text_system, resolve_container_query_styles,
     resolve_container_query_styles_with_images, resolve_container_relative_styles,
     used_value_context,
 };

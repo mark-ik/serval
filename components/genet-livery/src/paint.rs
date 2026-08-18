@@ -57,6 +57,18 @@ impl LiveryPaintList {
         Self::with_image_sources(viewport, generation, &HashMap::new())
     }
 
+    /// Append a host-owned overlay rectangle after document content.
+    ///
+    /// Focus, caret, selection, and inspection overlays belong to the render
+    /// driver rather than CSS paint emission, but they still travel through the
+    /// same engine-neutral paint-list boundary.
+    pub fn push_overlay_rect(&mut self, rect: LayoutRect, color: ColorF) {
+        self.commands.push(PaintCmd::DrawRect(RectItem {
+            placement: CommonPlacement::new(rect),
+            color,
+        }));
+    }
+
     fn with_image_sources(
         viewport: DeviceIntSize,
         generation: u64,
