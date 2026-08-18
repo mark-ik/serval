@@ -17,10 +17,15 @@ use url::Url;
 use crate::{Error, Response, Status};
 
 /// Fetch a `gemini://` URL over TLS, with trust-on-first-use pinning.
-pub(crate) async fn fetch(url: &Url) -> Result<Response, Error> {
-    let response = gemini_protocol::client::fetch_url(url)
-        .await
-        .map_err(map_error)?;
+pub(crate) async fn fetch(
+    url: &Url,
+    identity: Option<gemini_protocol::ClientIdentity<'_>>,
+) -> Result<Response, Error> {
+    let response = match identity {
+        Some(identity) => gemini_protocol::client::fetch_url_with_identity(url, identity).await,
+        None => gemini_protocol::client::fetch_url(url).await,
+    }
+    .map_err(map_error)?;
     Ok(into_errand_response(url, response))
 }
 

@@ -45,6 +45,7 @@ pub mod parse;
 pub mod serve;
 
 pub use gemini::exchange as gemini_exchange;
+pub use gemini_protocol::ClientIdentity as GeminiClientIdentity;
 pub use misfin::{ClientIdentity, MISFIN_PORT, send as misfin_send};
 pub use scroll::fetch_with as scroll_fetch;
 pub use titan::upload as titan_upload;
@@ -219,19 +220,40 @@ pub async fn fetch(url: &str) -> Result<Response, Error> {
 /// This is the single load-bearing transport entry: every public fetch helper
 /// (`fetch`, `fetch_timeout`, `fetch_url_timeout`) routes through it. It emits one
 /// structured `tracing` event per call on target `"errand"` — DEBUG on completion
-/// (scheme, status, raw_status, byte_len, elapsed_ms) and WARN on failure (scheme,
-/// error, elapsed_ms). The facade only emits; the consuming app installs the
-/// subscriber and chooses the level.
+/// (query-free URL, scheme, status, raw_status, byte_len, elapsed_ms) and WARN on
+/// failure (query-free URL, scheme, error, elapsed_ms). The facade only emits;
+/// the consuming app installs the subscriber and chooses the level.
 pub async fn fetch_url(url: &Url) -> Result<Response, Error> {
+    fetch_url_traced(url, None).await
+}
+
+/// Fetch one Gemini URL while presenting a caller-owned client certificate.
+/// Other schemes are refused before the network so identity material can
+/// never cross a protocol boundary by accident.
+pub async fn fetch_url_with_identity(
+    url: &Url,
+    identity: GeminiClientIdentity<'_>,
+) -> Result<Response, Error> {
+    if Scheme::parse(url.scheme()) != Some(Scheme::Gemini) {
+        return Err(Error::UnsupportedScheme(url.scheme().to_string()));
+    }
+    fetch_url_traced(url, Some(identity)).await
+}
+
+async fn fetch_url_traced(
+    url: &Url,
+    identity: Option<GeminiClientIdentity<'_>>,
+) -> Result<Response, Error> {
     let started = std::time::Instant::now();
-    let result = fetch_url_inner(url).await;
+    let result = fetch_url_inner(url, identity).await;
     let elapsed_ms = started.elapsed().as_millis();
     let scheme = url.scheme();
+    let trace_url = trace_url(url);
     match &result {
         Ok(response) => {
             tracing::debug!(
                 target: "errand",
-                url = %url,
+                url = %trace_url,
                 scheme,
                 status = ?response.status,
                 raw_status = ?response.raw_status,
@@ -243,7 +265,7 @@ pub async fn fetch_url(url: &Url) -> Result<Response, Error> {
         Err(error) => {
             tracing::warn!(
                 target: "errand",
-                url = %url,
+                url = %trace_url,
                 scheme,
                 error = %error,
                 elapsed_ms,
@@ -254,11 +276,21 @@ pub async fn fetch_url(url: &Url) -> Result<Response, Error> {
     result
 }
 
+fn trace_url(url: &Url) -> Url {
+    let mut redacted = url.clone();
+    redacted.set_query(None);
+    redacted.set_fragment(None);
+    redacted
+}
+
 /// Scheme routing for [`fetch_url`], split out so the public entry can time and
 /// trace the whole exchange in one place.
-async fn fetch_url_inner(url: &Url) -> Result<Response, Error> {
+async fn fetch_url_inner(
+    url: &Url,
+    identity: Option<GeminiClientIdentity<'_>>,
+) -> Result<Response, Error> {
     match Scheme::parse(url.scheme()) {
-        Some(Scheme::Gemini) => gemini::fetch(url).await,
+        Some(Scheme::Gemini) => gemini::fetch(url, identity).await,
         Some(Scheme::Gopher) => gopher::fetch(url).await,
         Some(Scheme::Finger) => finger::fetch(url).await,
         Some(Scheme::Spartan) => spartan::fetch(url).await,
@@ -285,6 +317,17 @@ pub async fn fetch_url_timeout(url: &Url, timeout: std::time::Duration) -> Resul
         .map_err(|_| Error::Timeout)?
 }
 
+/// [`fetch_url_with_identity`] with a per-request timeout.
+pub async fn fetch_url_timeout_with_identity(
+    url: &Url,
+    identity: GeminiClientIdentity<'_>,
+    timeout: std::time::Duration,
+) -> Result<Response, Error> {
+    tokio::time::timeout(timeout, fetch_url_with_identity(url, identity))
+        .await
+        .map_err(|_| Error::Timeout)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +350,12 @@ mod tests {
     }
 
     #[test]
+    fn trace_url_omits_query_and_fragment() {
+        let url = Url::parse("gemini://capsule.example/search?secret%20answer#part").unwrap();
+        assert_eq!(trace_url(&url).as_str(), "gemini://capsule.example/search");
+    }
+
+    #[test]
     fn mime_strips_params_and_gates_on_success() {
         let mut r = Response {
             url: Url::parse("gemini://x/").unwrap(),
@@ -324,6 +373,19 @@ mod tests {
     async fn http_is_not_routed() {
         let err = fetch("https://example.com/").await.unwrap_err();
         assert!(matches!(err, Error::UnsupportedScheme(s) if s == "https"));
+    }
+
+    #[tokio::test]
+    async fn identity_fetch_refuses_non_gemini_before_transport() {
+        let url = Url::parse("gopher://example.test/").unwrap();
+        let identity = GeminiClientIdentity {
+            certificate_der: b"certificate",
+            private_key_pkcs8_der: b"private-key",
+        };
+        assert!(matches!(
+            fetch_url_with_identity(&url, identity).await,
+            Err(Error::UnsupportedScheme(scheme)) if scheme == "gopher"
+        ));
     }
 
     #[test]
