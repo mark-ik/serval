@@ -68,7 +68,7 @@ mod headless;
 #[cfg(feature = "scripted")]
 mod scripted;
 
-#[cfg(all(feature = "viewer", feature = "scripted"))]
+#[cfg(all(feature = "present", feature = "scripted"))]
 mod scripted_viewer;
 
 #[cfg(feature = "chrome")]
@@ -141,8 +141,6 @@ pub use static_viewer::{StaticViewerConfig, StaticViewerOutcome, run_static_view
 // byte seam `ScriptedDocument::from_body` takes), distinct from `genet_host_api::
 // ResourceFetcher` (the shell-level fetch contract); re-exported so a host can impl
 // it without a direct `genet-scripted` dep.
-#[cfg(feature = "livery-scripted")]
-pub use genet_documents::LiveryScriptedDocument;
 #[cfg(feature = "scripted")]
 pub use scripted::{ScriptResourceFetcher, ScriptedDocument, ScriptedEngine};
 // The host installs a cookie store on a scripted document (e.g. meerkat's session jar)
@@ -160,7 +158,7 @@ pub use chrome_viewer::run_chrome_viewer;
 pub use genet_extract::{Heading, Link, Metadata, PageExtract};
 #[cfg(feature = "livery-scripted")]
 pub use scripted_viewer::run_livery_scripted_viewer;
-#[cfg(all(feature = "viewer", feature = "scripted"))]
+#[cfg(all(feature = "present", feature = "scripted"))]
 pub use scripted_viewer::run_scripted_viewer;
 #[cfg(feature = "chrome")]
 pub use theme::PeltTheme;

@@ -8,19 +8,30 @@
 //! chosen JS engine and present it through the shared [`ViewerApp`](crate::static_viewer)
 //! shell — the same winit loop the static viewer uses, here also driving the page's
 //! script timers and the GC tick at frame cadence (via [`ViewerContent::pump`]). Gated
-//! on both `viewer` (the present stack) and `scripted` (the runtime); the GPU-free
+//! on both `present` (the present stack) and `scripted` (the runtime); the GPU-free
 //! document core lives in [`crate::scripted`].
 
 use script_engine_api::ScriptEngine;
 
-#[cfg(feature = "livery-scripted")]
-use crate::LiveryScriptedDocument;
-use crate::document::LocalFetcher;
 use crate::scripted::{ScriptedDocument, ScriptedEngine};
+use crate::static_viewer::ViewerScrollKey;
 use crate::static_viewer::run_headed_with;
 use crate::static_viewer::windowed::ViewerContent;
-use crate::static_viewer::{ViewerScrollKey, incumbent_scroll_key};
 use crate::{StaticViewerConfig, StaticViewerOutcome, WindowingMode};
+use genet_documents::LocalFetcher;
+
+fn scripted_scroll_key(key: ViewerScrollKey) -> genet_scripted::ScrollKey {
+    match key {
+        ViewerScrollKey::Up => genet_scripted::ScrollKey::Up,
+        ViewerScrollKey::Down => genet_scripted::ScrollKey::Down,
+        ViewerScrollKey::Left => genet_scripted::ScrollKey::Left,
+        ViewerScrollKey::Right => genet_scripted::ScrollKey::Right,
+        ViewerScrollKey::PageUp => genet_scripted::ScrollKey::PageUp,
+        ViewerScrollKey::PageDown => genet_scripted::ScrollKey::PageDown,
+        ViewerScrollKey::Home => genet_scripted::ScrollKey::Home,
+        ViewerScrollKey::End => genet_scripted::ScrollKey::End,
+    }
+}
 
 impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
     fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
@@ -30,7 +41,7 @@ impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
         ScriptedDocument::scroll_by(self, dx, dy)
     }
     fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
-        ScriptedDocument::scroll_for_key(self, incumbent_scroll_key(key))
+        ScriptedDocument::scroll_for_key(self, scripted_scroll_key(key))
     }
     fn click_at(&mut self, x: f32, y: f32) -> bool {
         ScriptedDocument::click_at(self, x, y)
@@ -39,28 +50,6 @@ impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
         // Run due timers + the frame-cadence GC tick, then report whether more timers
         // are pending so the shell keeps the frame loop alive for animation / churn.
         let _ = ScriptedDocument::pump(self, now_ms);
-        self.has_pending_work()
-    }
-}
-
-/// The explicit F4 route uses the same window shell but its frame is produced
-/// by the live Livery CSSOM session, not `IncrementalLayout`.
-#[cfg(feature = "livery-scripted")]
-impl<E: ScriptEngine> ViewerContent for LiveryScriptedDocument<E> {
-    fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
-        LiveryScriptedDocument::frame(self, width, height)
-    }
-    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-        LiveryScriptedDocument::scroll_by(self, dx, dy)
-    }
-    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
-        LiveryScriptedDocument::scroll_for_key(self, incumbent_scroll_key(key))
-    }
-    fn click_at(&mut self, x: f32, y: f32) -> bool {
-        LiveryScriptedDocument::click_at(self, x, y)
-    }
-    fn pump(&mut self, now_ms: f64) -> bool {
-        let _ = LiveryScriptedDocument::pump(self, now_ms);
         self.has_pending_work()
     }
 }
@@ -92,44 +81,7 @@ pub fn run_livery_scripted_viewer(
     config: StaticViewerConfig,
     engine: ScriptedEngine,
 ) -> Result<StaticViewerOutcome, String> {
-    match config.profile.windowing {
-        WindowingMode::Headless => Ok(StaticViewerOutcome {
-            url: config.url,
-            created_window: false,
-            redraws: 0,
-            size: (0, 0),
-        }),
-        WindowingMode::Headed => run_livery_scripted_headed(config, engine),
-    }
-}
-
-#[cfg(feature = "livery-scripted")]
-fn run_livery_scripted_headed(
-    config: StaticViewerConfig,
-    engine: ScriptedEngine,
-) -> Result<StaticViewerOutcome, String> {
-    match engine {
-        ScriptedEngine::Boa => {
-            let doc = LiveryScriptedDocument::<script_engine_boa::BoaEngine>::load(
-                LocalFetcher,
-                &config.url,
-            )?;
-            run_headed_with(config, doc)
-        },
-        #[cfg(feature = "scripted-nova")]
-        ScriptedEngine::Nova => {
-            let doc = LiveryScriptedDocument::<script_engine_nova::NovaEngine>::load(
-                LocalFetcher,
-                &config.url,
-            )?;
-            run_headed_with(config, doc)
-        },
-        #[cfg(not(feature = "scripted-nova"))]
-        ScriptedEngine::Nova => Err(
-            "the Nova engine needs `--features scripted-nova` (this build links Boa only)"
-                .to_string(),
-        ),
-    }
+    run_scripted_viewer(config, engine)
 }
 
 fn run_scripted_headed(
@@ -139,13 +91,13 @@ fn run_scripted_headed(
     match engine {
         ScriptedEngine::Boa => {
             let doc =
-                ScriptedDocument::<script_engine_boa::BoaEngine>::load(&LocalFetcher, &config.url)?;
+                ScriptedDocument::<script_engine_boa::BoaEngine>::load(LocalFetcher, &config.url)?;
             run_headed_with(config, doc)
         },
         #[cfg(feature = "scripted-nova")]
         ScriptedEngine::Nova => {
             let doc = ScriptedDocument::<script_engine_nova::NovaEngine>::load(
-                &LocalFetcher,
+                LocalFetcher,
                 &config.url,
             )?;
             run_headed_with(config, doc)

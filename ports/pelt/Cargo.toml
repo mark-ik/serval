@@ -41,9 +41,9 @@ livery = ["viewer-engine", "pelt-desktop/livery"]
 # <script> on a JS engine and renders the mutated DOM. Pulls pelt-desktop's scripted
 # runtime on top of the present stack. Boa-only by default (a single engine links
 # under the Windows image-size limit alongside wgpu); add `scripted-nova` for Nova.
-scripted = ["incumbent", "pelt-desktop/scripted"]
-# Live scripted Livery route. It remains an explicit hybrid profile until L5.
-livery-scripted = ["incumbent", "pelt-desktop/livery-scripted"]
+scripted = ["viewer-engine", "pelt-desktop/scripted"]
+# Compatibility name for the now-owned scripted route.
+livery-scripted = ["scripted", "pelt-desktop/livery-scripted"]
 scripted-nova = ["scripted", "pelt-desktop/scripted-nova"]
 # The rasterized-PNG reftest lane (V3): `pelt --engine headless --out <file>.png`
 # emits a rendered PNG (human-eyes artifact), and `--reftest <dir>` additionally

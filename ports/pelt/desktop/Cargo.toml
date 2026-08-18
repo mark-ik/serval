@@ -28,7 +28,8 @@ present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
 # windowing. The windowed viewers (`viewer`, `tiles`) build the present stack on top.
 tile-surface = [
     "dep:genet-documents", "genet-documents/incumbent",
-    "dep:netrender", "dep:genet-render", "dep:genet-static-dom", "dep:genet-layout",
+    "dep:netrender", "dep:genet-render", "genet-render/incumbent",
+    "dep:genet-static-dom", "dep:genet-layout",
     "dep:genet-scripted-dom", "dep:layout-dom-api", "dep:cambium",
     "dep:sprigging", "dep:accesskit", "dep:paint_list_api", "dep:paint_list_render",
     "dep:inker",
@@ -46,21 +47,18 @@ livery = [
 # The scripted profile (V4): a live `ScriptedDom` document whose inline `<script>`
 # runs through `script-runtime-api` on a JS engine, mutating the DOM, rendered each
 # frame. GPU-free at the core (scene production only); the headed run reuses the
-# `viewer` feature's present stack. Boa is the default engine (pure Rust, all
+# engine-neutral present stack. Boa is the default engine (pure Rust, all
 # targets); Nova is gated behind `scripted-nova` so the default build links a single
 # engine (Boa+Nova+wgpu together exceed the Windows image-size link limit).
 scripted = [
-    "genet-documents/scripted",
+    "present", "livery", "genet-documents/scripted",
     "dep:genet-scripted",
-    "dep:netrender", "dep:genet-render", "dep:genet-static-dom", "dep:genet-layout",
     "dep:script-runtime-api", "dep:script-engine-api",
-    "dep:genet-scripted-dom", "dep:script-engine-boa", "dep:layout-dom-api",
+    "dep:script-engine-boa",
     "dep:genet-extract",
-    "dep:encoding_rs", "dep:sha2", "dep:base64", "dep:url",
 ]
-# Live scripted Livery product route. It remains hybrid until L5 because the
-# scripted runtime still exposes incumbent layout types.
-livery-scripted = ["viewer", "livery", "scripted", "genet-documents/livery-scripted"]
+# Compatibility name for the now-owned live scripted route.
+livery-scripted = ["scripted", "genet-documents/livery-scripted"]
 # Add the Nova engine to the scripted profile (64-bit targets, including wasm64).
 # Off by default; enabling
 # it links a second engine, which on Windows can exceed the linker's image-size limit
@@ -72,7 +70,8 @@ scripted-nova = ["scripted", "dep:script-engine-nova"]
 # sanctioned mod tier is a later lane). The windowed two-root shell additionally
 # needs `viewer` for the present stack + the content document.
 chrome = [
-    "dep:netrender", "dep:genet-render", "dep:genet-layout", "dep:genet-scripted-dom",
+    "dep:netrender", "dep:genet-render", "genet-render/incumbent",
+    "dep:genet-layout", "dep:genet-scripted-dom",
     "dep:layout-dom-api", "dep:cambium", "dep:genet-clipboard", "dep:tinct",
 ]
 # The windowed tile-tree demo (V5): the GPU-free `tile-surface` lib plus the windowed
@@ -156,7 +155,7 @@ winit = { workspace = true }
 
 # V1 viewer (behind the `viewer` feature): the genet render-driver + present
 # core, the static-document parser, and genet-layout's convenience entries.
-genet-render = { path = "../../../components/genet-render", optional = true }
+genet-render = { path = "../../../components/genet-render", optional = true, default-features = false }
 genet-static-dom = { path = "../../../components/genet-static-dom", optional = true }
 genet-layout = { path = "../../../components/genet-layout", optional = true }
 # The render-free extraction lane: extract a PageExtract from the live post-JS DOM
@@ -199,7 +198,7 @@ url = { workspace = true, optional = true }
 script-runtime-api = { path = "../../../components/script-runtime-api", optional = true }
 script-engine-api = { path = "../../../components/script-engine-api", optional = true }
 genet-scripted-dom = { path = "../../../components/genet-scripted-dom", optional = true }
-genet-scripted = { path = "../../../components/genet-scripted", optional = true }
+genet-scripted = { path = "../../../components/genet-scripted", optional = true, default-features = false }
 script-engine-boa = { path = "../../../components/script-engine-boa", optional = true }
 script-engine-nova = { path = "../../../components/script-engine-nova", optional = true }
 # The `LayoutDom` trait (for the inline-`<script>` DOM walk) + QualName parts.
