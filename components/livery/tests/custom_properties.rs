@@ -3,10 +3,14 @@
 
 use livery::PropertyValue;
 use livery::cascade::{
-    CascadeLayer, DeclarationErrorKind, MatchedCustomDeclaration, MatchedDeclaration, Origin,
-    Specificity, cascade_with_custom, parse_declaration_block,
+    CascadeLayer, ColorComputeContext, DeclarationErrorKind, MatchedCustomDeclaration,
+    MatchedDeclaration, Origin, Specificity, cascade_with_custom,
+    cascade_with_custom_environment_context, parse_declaration_block,
 };
-use livery::custom::{CustomProperties, contains_var, substitute};
+use livery::custom::{
+    CssEnvironment, CustomProperties, EnvironmentRect, contains_env, contains_substitution,
+    contains_var, substitute,
+};
 use livery::values::{Color, Length, LengthPercentage, Margin, Size};
 
 fn matched_block(
@@ -179,6 +183,77 @@ fn var_detection_ignores_quoted_text_and_other_identifiers() {
 }
 
 #[test]
+fn env_detection_ignores_quoted_text_and_other_identifiers() {
+    assert!(contains_env("env(titlebar-area-x)"));
+    assert!(contains_substitution(
+        "calc(env(titlebar-area-width) - 8px)"
+    ));
+    assert!(!contains_env("\"env(titlebar-area-x)\""));
+    assert!(!contains_env("someenv(titlebar-area-x)"));
+    assert!(!contains_env("envelope"));
+}
+
+#[test]
+fn titlebar_environment_values_resolve_with_fallback_semantics() {
+    let environment =
+        CssEnvironment::default().with_titlebar_area(EnvironmentRect::new(78.0, 0.0, 342.0, 28.0));
+    let (declarations, custom) = matched_block(
+        "width: env(titlebar-area-width, 100px); height: env(titlebar-area-height, 40px)",
+        1,
+    );
+    let (computed, _) = cascade_with_custom_environment_context(
+        None,
+        None,
+        declarations,
+        custom,
+        &environment,
+        ColorComputeContext::default(),
+    );
+    assert_eq!(
+        computed.width,
+        Size::Value(LengthPercentage::Length(Length::px(342.0)))
+    );
+    assert_eq!(
+        computed.height,
+        Size::Value(LengthPercentage::Length(Length::px(28.0)))
+    );
+
+    let (computed, _) = resolve("width: env(titlebar-area-width, 100px)");
+    assert_eq!(
+        computed.width,
+        Size::Value(LengthPercentage::Length(Length::px(100.0)))
+    );
+}
+
+#[test]
+fn env_resolves_inside_custom_properties_and_nested_fallbacks() {
+    let environment =
+        CssEnvironment::default().with_titlebar_area(EnvironmentRect::new(80.0, 0.0, 480.0, 28.0));
+    let (declarations, custom) = matched_block(
+        "--available: env(titlebar-area-width); width: var(--available); \
+         height: env(unknown-titlebar-value, var(--fallback, 36px))",
+        1,
+    );
+    let (computed, custom) = cascade_with_custom_environment_context(
+        None,
+        None,
+        declarations,
+        custom,
+        &environment,
+        ColorComputeContext::default(),
+    );
+    assert_eq!(custom.get("--available").map(String::as_str), Some("480px"));
+    assert_eq!(
+        computed.width,
+        Size::Value(LengthPercentage::Length(Length::px(480.0)))
+    );
+    assert_eq!(
+        computed.height,
+        Size::Value(LengthPercentage::Length(Length::px(36.0)))
+    );
+}
+
+#[test]
 fn substitute_reports_unresolvable_and_malformed_references() {
     let map = CustomProperties::new();
     assert!(substitute("var(--missing)", &map).is_err());
@@ -206,9 +281,11 @@ fn empty_and_whitespace_custom_values_are_preserved_as_declared() {
 
 #[test]
 fn pending_values_do_not_error_at_parse_time() {
-    let block = parse_declaration_block("color: var(--x); width: var(--w, 4px)");
+    let block = parse_declaration_block(
+        "color: var(--x); width: var(--w, 4px); height: env(titlebar-area-height, 40px)",
+    );
     assert!(block.errors.is_empty());
-    assert_eq!(block.declarations.len(), 2);
+    assert_eq!(block.declarations.len(), 3);
     let _ = PropertyValue::parse; // corpus uses the generated surface elsewhere
 
     let bad = parse_declaration_block("--: nope");

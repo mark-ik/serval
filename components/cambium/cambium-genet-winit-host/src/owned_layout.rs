@@ -11,6 +11,7 @@ use genet_livery::{
 use genet_render::{VisualAffinity, VisualCaret, VisualMovement, VisualSelection};
 use genet_scripted_dom::NodeId;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
+use livery::custom::CssEnvironment;
 use paint_list_api::{ColorF, DeviceIntSize, LayoutPoint, LayoutRect, LayoutSize};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -41,9 +42,11 @@ impl OwnedLayout {
         sheets: &[&str],
         width: f32,
         height: f32,
+        environment: CssEnvironment,
     ) -> Self {
         let style_set = StyleSet::cambium(sheets);
-        let device = Device::screen(width, height);
+        let mut device = Device::screen(width, height);
+        device.environment = environment;
         let interactions = InteractionStates::default();
         let styles = resolve_styles(dom, &style_set, &device, &interactions);
         let mut text = TextSystem::new();
@@ -80,9 +83,11 @@ impl OwnedLayout {
         dom: &D,
         width: f32,
         height: f32,
+        environment: CssEnvironment,
     ) {
         self.viewport = (width, height);
         self.device.set_viewport_size(width, height);
+        self.device.environment = environment;
         let styles = resolve_styles(dom, &self.style_set, &self.device, &self.interactions);
         let (styles, fragments) = layout_with_text_system(
             dom,
@@ -103,6 +108,10 @@ impl OwnedLayout {
 
     pub(crate) fn fragments(&self) -> &LiveryLayout<NodeId> {
         &self.fragments
+    }
+
+    pub(crate) fn environment(&self) -> CssEnvironment {
+        self.device.environment
     }
 
     pub(crate) fn has_active_animations(&self) -> bool {
@@ -143,7 +152,12 @@ impl OwnedLayout {
             self.focused = focused;
         }
         if changed {
-            self.rebuild(dom, self.viewport.0, self.viewport.1);
+            self.rebuild(
+                dom,
+                self.viewport.0,
+                self.viewport.1,
+                self.device.environment,
+            );
         }
         changed
     }

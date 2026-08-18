@@ -21,7 +21,7 @@ include!(concat!(env!("OUT_DIR"), "/properties.rs"));
 /// shared CSSOM boundary must preserve it rather than treating a bounded
 /// grammar as proof that full-web CSS is invalid.
 pub fn canonicalize_specified_longhand(name: &str, value: &str) -> Option<String> {
-    if custom::contains_var(value) {
+    if custom::contains_substitution(value) {
         return None;
     }
     let property = PropertyId::from_css_name(&name.to_ascii_lowercase())?;
@@ -86,7 +86,7 @@ pub fn canonicalize_specified_value(name: &str, value: &str) -> Option<String> {
 fn canonicalize_border(value: &str) -> Option<String> {
     use values::{BorderStyle, BorderWidth, Color, LengthPercentage};
 
-    if custom::contains_var(value) {
+    if custom::contains_substitution(value) {
         return None;
     }
     let components = top_level_components(value)?;

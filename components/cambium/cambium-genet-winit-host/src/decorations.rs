@@ -35,6 +35,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use genet_scripted_dom::NodeId;
+use livery::custom::CssEnvironment;
+#[cfg(any(target_os = "macos", test))]
+use livery::custom::EnvironmentRect;
+use winit::window::Window;
 
 /// What a hit landed on, as far as the window frame is concerned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -204,6 +208,129 @@ impl WindowGeometry {
             across >= NEEDED_ACROSS && down >= NEEDED_DOWN
         })
     }
+}
+
+/// Publish the title-bar rectangle available beside native window controls.
+///
+/// Only macOS has a W1 platform implementation: an application frame keeps
+/// AppKit's real traffic lights and extends content underneath the transparent
+/// title bar. Other targets keep the environment names absent, so the same
+/// stylesheet follows its ordinary Windows/Linux fallbacks.
+pub(crate) fn css_environment(window: Option<&Window>, application_frame: bool) -> CssEnvironment {
+    if !application_frame {
+        return CssEnvironment::default();
+    }
+    platform_css_environment(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_css_environment(_window: Option<&Window>) -> CssEnvironment {
+    CssEnvironment::default()
+}
+
+#[cfg(target_os = "macos")]
+fn platform_css_environment(window: Option<&Window>) -> CssEnvironment {
+    let Some(window) = window else {
+        return CssEnvironment::default();
+    };
+    let Some(area) = macos_titlebar_area(window) else {
+        eprintln!("[cambium-host] AppKit did not expose a titlebar-area rectangle");
+        return CssEnvironment::default();
+    };
+    CssEnvironment::default().with_titlebar_area(area)
+}
+
+/// Convert AppKit's live traffic-light frames into WCO's available title-bar
+/// rectangle. The padding on the controls' inner edge mirrors the padding on
+/// their outer edge, so the published rectangle begins after the complete
+/// native control overlay rather than at the zoom button's painted edge.
+#[cfg(any(target_os = "macos", test))]
+fn titlebar_area_from_controls(
+    viewport_width: f32,
+    titlebar_height: f32,
+    controls_left: f32,
+    controls_right: f32,
+) -> Option<EnvironmentRect> {
+    if !viewport_width.is_finite()
+        || !titlebar_height.is_finite()
+        || !controls_left.is_finite()
+        || !controls_right.is_finite()
+        || viewport_width <= 0.0
+        || titlebar_height <= 0.0
+        || controls_left < 0.0
+        || controls_right < controls_left
+    {
+        return None;
+    }
+    let x = (controls_right + controls_left).clamp(0.0, viewport_width);
+    Some(EnvironmentRect::new(
+        x,
+        0.0,
+        (viewport_width - x).max(0.0),
+        titlebar_height,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_titlebar_area(window: &Window) -> Option<EnvironmentRect> {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSView, NSWindowButton};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window.window_handle().ok()?.as_raw();
+    let RawWindowHandle::AppKit(appkit) = handle else {
+        return None;
+    };
+    // SAFETY: raw-window-handle guarantees this NonNull pointer is a live
+    // NSView for the lifetime of the borrowed WindowHandle. Retaining it keeps
+    // the object alive while the AppKit geometry calls below run on winit's
+    // main event-loop thread.
+    let view = unsafe { Retained::<NSView>::retain(appkit.ns_view.as_ptr().cast()) }?;
+    let ns_window = view.window()?;
+    let close = ns_window.standardWindowButton(NSWindowButton::CloseButton)?;
+    let zoom = ns_window.standardWindowButton(NSWindowButton::ZoomButton)?;
+
+    // SAFETY: AppKit owns each standard button's superview for at least as long
+    // as the retained button and window. We retain the returned view before
+    // converting its rectangle into the winit content view's coordinates.
+    let close_parent = unsafe { close.superview() }?;
+    // SAFETY: same standard-window-button ownership invariant as above.
+    let zoom_parent = unsafe { zoom.superview() }?;
+    let close_rect = view.convertRect_fromView(close.frame(), Some(&close_parent));
+    let zoom_rect = view.convertRect_fromView(zoom.frame(), Some(&zoom_parent));
+
+    let controls_left = close_rect.origin.x.min(zoom_rect.origin.x) as f32;
+    let controls_right = (close_rect.origin.x + close_rect.size.width)
+        .max(zoom_rect.origin.x + zoom_rect.size.width) as f32;
+    let control_height = close_rect.size.height.max(zoom_rect.size.height) as f32;
+
+    // `contentLayoutRect` is specifically the non-obscured content area for a
+    // full-size content view. Its missing height is therefore the title-bar
+    // overlay height. The button-derived value is a defensive fallback for an
+    // AppKit style that reports the full content height.
+    let view_height = view.bounds().size.height as f32;
+    let unobscured_height = ns_window.contentLayoutRect().size.height as f32;
+    let mut titlebar_height = view_height - unobscured_height;
+    if titlebar_height <= 0.0 {
+        let max_y = (close_rect.origin.y + close_rect.size.height)
+            .max(zoom_rect.origin.y + zoom_rect.size.height) as f32;
+        let min_y = close_rect.origin.y.min(zoom_rect.origin.y) as f32;
+        let top_padding = if view.isFlipped() {
+            min_y
+        } else {
+            view_height - max_y
+        }
+        .max(0.0);
+        titlebar_height = control_height + top_padding * 2.0;
+    }
+
+    let viewport_width = window.inner_size().width as f32 / window.scale_factor() as f32;
+    titlebar_area_from_controls(
+        viewport_width,
+        titlebar_height,
+        controls_left,
+        controls_right,
+    )
 }
 
 /// Detects double-clicks the way the platforms do: two presses close together
@@ -459,6 +586,15 @@ mod tests {
             !cadence.press((0.0, 0.0), base + std::time::Duration::from_millis(100)),
             "the third press starts a new cadence",
         );
+    }
+
+    #[test]
+    fn native_controls_are_excluded_with_their_outer_padding() {
+        let area = titlebar_area_from_controls(420.0, 28.0, 14.0, 66.0).unwrap();
+        assert_eq!(area, EnvironmentRect::new(80.0, 0.0, 340.0, 28.0));
+
+        assert!(titlebar_area_from_controls(0.0, 28.0, 14.0, 66.0).is_none());
+        assert!(titlebar_area_from_controls(420.0, -1.0, 14.0, 66.0).is_none());
     }
 
     #[test]

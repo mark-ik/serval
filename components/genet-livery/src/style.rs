@@ -12,7 +12,7 @@ use livery::{
     ComputedValues, PropertyId, PropertyValue, ShorthandId,
     cascade::{
         CascadeLayer, ColorComputeContext, DeclarationError, MatchedCustomDeclaration,
-        MatchedDeclaration, Origin, Specificity, cascade_with_custom_context,
+        MatchedDeclaration, Origin, Specificity, cascade_with_custom_environment_context,
         parse_declaration_block,
     },
     custom::CustomProperties,
@@ -1187,6 +1187,7 @@ where
             parent_custom,
             matched,
             matched_custom,
+            &device.environment,
             ColorComputeContext::from_device(device),
         );
         resolve_viewport_units(&mut computed, device, tree_counts);
@@ -1238,13 +1239,15 @@ fn cascade_with_logical_properties(
     parent_custom: Option<&CustomProperties>,
     matched: Vec<MatchedDeclaration>,
     matched_custom: Vec<MatchedCustomDeclaration>,
+    environment: &livery::custom::CssEnvironment,
     color_context: ColorComputeContext,
 ) -> (ComputedValues, CustomProperties) {
-    let (logical, _) = cascade_with_custom_context(
+    let (logical, _) = cascade_with_custom_environment_context(
         parent,
         parent_custom,
         matched.clone(),
         matched_custom.clone(),
+        environment,
         color_context,
     );
     let logical_values = PropertyId::ALL
@@ -1263,8 +1266,14 @@ fn cascade_with_logical_properties(
         }
         declaration
     });
-    let (mut computed, custom) =
-        cascade_with_custom_context(parent, parent_custom, mapped, matched_custom, color_context);
+    let (mut computed, custom) = cascade_with_custom_environment_context(
+        parent,
+        parent_custom,
+        mapped,
+        matched_custom,
+        environment,
+        color_context,
+    );
     for (property, value) in logical_values {
         computed
             .set(property, value)

@@ -3,7 +3,8 @@
 use std::{cmp::Ordering, fmt};
 
 use crate::custom::{
-    CustomDeclaration, CustomDeclaredValue, CustomProperties, contains_var, substitute,
+    CssEnvironment, CustomDeclaration, CustomDeclaredValue, CustomProperties,
+    contains_substitution, substitute_with_environment,
 };
 use crate::media::{Device, SystemPalette};
 use crate::values::{
@@ -238,7 +239,7 @@ fn push_longhand(block: &mut DeclarationBlock, name: &str, value: &str, importan
     let Some(property) = PropertyId::from_css_name(name) else {
         return false;
     };
-    if contains_var(value) {
+    if contains_substitution(value) {
         block.declarations.push(Declaration {
             property,
             value: DeclaredValue::Pending(PendingSubstitution {
@@ -323,18 +324,15 @@ fn expand_box_shorthand(
             .map(|values| values.map(|value| DeclaredValue::Value(PropertyValue::Gap(value)))),
         ShorthandId::Overflow => match split_components(value).as_slice() {
             [only] => only.parse::<crate::values::Overflow>().ok().map(|value| {
-                std::array::from_fn(|_| {
-                    DeclaredValue::Value(PropertyValue::Overflow(value))
-                })
+                std::array::from_fn(|_| DeclaredValue::Value(PropertyValue::Overflow(value)))
             }),
             [horizontal, vertical] => horizontal
                 .parse::<crate::values::Overflow>()
                 .ok()
                 .zip(vertical.parse::<crate::values::Overflow>().ok())
                 .map(|(horizontal, vertical)| {
-                    [horizontal, vertical, horizontal, vertical].map(|value| {
-                        DeclaredValue::Value(PropertyValue::Overflow(value))
-                    })
+                    [horizontal, vertical, horizontal, vertical]
+                        .map(|value| DeclaredValue::Value(PropertyValue::Overflow(value)))
                 }),
             _ => None,
         },
@@ -911,7 +909,7 @@ pub fn parse_declaration_block(input: &str) -> DeclarationBlock {
             continue;
         }
         if let Some(shorthand) = ShorthandId::from_css_name(&name)
-            && contains_var(value)
+            && contains_substitution(value)
         {
             // The fork's WithVariables shape: every expanded longhand
             // carries the raw shorthand value and re-expands after
@@ -1165,6 +1163,27 @@ pub fn cascade_with_custom_context(
     custom_declarations: impl IntoIterator<Item = MatchedCustomDeclaration>,
     color_context: ColorComputeContext,
 ) -> (ComputedValues, CustomProperties) {
+    cascade_with_custom_environment_context(
+        parent,
+        parent_custom,
+        declarations,
+        custom_declarations,
+        &CssEnvironment::default(),
+        color_context,
+    )
+}
+
+/// Resolve one element with both color and CSS environment facts supplied by
+/// the host. This is the browser/desktop path; the narrower cascade helpers
+/// retain an empty environment for callers that do not own a window overlay.
+pub fn cascade_with_custom_environment_context(
+    parent: Option<&ComputedValues>,
+    parent_custom: Option<&CustomProperties>,
+    declarations: impl IntoIterator<Item = MatchedDeclaration>,
+    custom_declarations: impl IntoIterator<Item = MatchedCustomDeclaration>,
+    environment: &CssEnvironment,
+    color_context: ColorComputeContext,
+) -> (ComputedValues, CustomProperties) {
     let mut custom_winners: std::collections::BTreeMap<String, (Priority, CustomDeclaredValue)> =
         std::collections::BTreeMap::new();
     for matched in custom_declarations {
@@ -1187,11 +1206,12 @@ pub fn cascade_with_custom_context(
             },
         }
     }
-    let custom = crate::custom::resolve_custom_map(
+    let custom = crate::custom::resolve_custom_map_with_environment(
         parent_custom,
         custom_winners
             .into_iter()
             .map(|(name, (_, value))| (name, value)),
+        environment,
     );
 
     let mut winners = (0..PropertyId::ALL.len())
@@ -1216,7 +1236,9 @@ pub fn cascade_with_custom_context(
         };
         let property = PropertyId::ALL[index];
         let value = match value {
-            DeclaredValue::Pending(pending) => resolve_pending(&pending, property, &custom),
+            DeclaredValue::Pending(pending) => {
+                resolve_pending(&pending, property, &custom, environment)
+            },
             other => other,
         };
         match value {
@@ -1304,8 +1326,9 @@ fn resolve_pending(
     pending: &PendingSubstitution,
     property: PropertyId,
     custom: &CustomProperties,
+    environment: &CssEnvironment,
 ) -> DeclaredValue {
-    let Ok(substituted) = substitute(&pending.raw, custom) else {
+    let Ok(substituted) = substitute_with_environment(&pending.raw, custom, environment) else {
         return DeclaredValue::Unset;
     };
     match pending.from_shorthand {

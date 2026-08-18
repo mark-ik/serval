@@ -2,6 +2,7 @@
 
 use std::{error::Error, fmt, str::FromStr};
 
+use crate::custom::{CssEnvironment, EnvironmentRect};
 use crate::values::{Color, SystemColor};
 
 pub use crate::values::ColorScheme;
@@ -270,6 +271,9 @@ pub struct Device {
     pub update: UpdateFrequency,
     pub primary_pointer: PointerCapabilities,
     pub any_pointer: AnyPointerCapabilities,
+    /// Values the host publishes to CSS `env()`. Kept beside media state
+    /// because both are viewport-wide inputs to computed-value resolution.
+    pub environment: CssEnvironment,
 }
 
 impl Device {
@@ -292,6 +296,7 @@ impl Device {
             update: UpdateFrequency::Fast,
             primary_pointer: PointerCapabilities::MOUSE,
             any_pointer: AnyPointerCapabilities::MOUSE,
+            environment: CssEnvironment::default(),
         }
     }
 
@@ -320,6 +325,10 @@ impl Device {
 
     pub fn set_system_palette(&mut self, palette: SystemPalette) {
         self.system_palette = palette;
+    }
+
+    pub fn set_titlebar_area(&mut self, area: Option<EnvironmentRect>) {
+        self.environment.set_titlebar_area(area);
     }
 }
 

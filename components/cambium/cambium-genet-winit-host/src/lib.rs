@@ -804,10 +804,17 @@ where
     Logic: FnMut(&State) -> V + 'static,
     V: RootView<State>,
 {
+    /// Whether this platform needs the application-side 8px resize border.
+    /// macOS keeps a titled native window for an application frame, so AppKit
+    /// continues to own resizing even while content extends under the titlebar.
+    fn draws_resize_edges(&self) -> bool {
+        !self.options.decorations && !cfg!(target_os = "macos")
+    }
+
     /// CSD only: the resize edge under the cursor, when the window is
     /// floating.
     fn edge_under_cursor(&self) -> Option<winit::window::ResizeDirection> {
-        if self.options.decorations {
+        if !self.draws_resize_edges() {
             return None;
         }
         let window = self.s.window.as_ref()?;
@@ -827,7 +834,7 @@ where
     /// CSD only: show the matching resize arrow near the border, deduped on
     /// transitions.
     fn update_resize_cursor(&mut self) {
-        if self.options.decorations {
+        if !self.draws_resize_edges() {
             return;
         }
         let dir = self.edge_under_cursor();
@@ -919,22 +926,36 @@ where
                 winit::dpi::LogicalPosition::new(40.0, 8.0),
                 winit::dpi::LogicalSize::new(want.0, want.1),
             ));
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title(self.options.title.clone())
-                        .with_decorations(self.options.decorations)
-                        // Hidden until the a11y adapter is installed on the
-                        // first frame — the Windows AccessKit adapter must
-                        // attach before the window is shown. Revealed in
-                        // `sync_a11y`.
-                        .with_visible(false)
-                        .with_position(initial_pos)
-                        .with_inner_size(initial_size),
-                )
-                .expect("create window"),
-        );
+        let attributes = Window::default_attributes()
+            .with_title(self.options.title.clone())
+            // Hidden until the a11y adapter is installed on the first frame —
+            // the Windows AccessKit adapter must attach before the window is
+            // shown. Revealed in `sync_a11y`.
+            .with_visible(false)
+            .with_position(initial_pos)
+            .with_inner_size(initial_size);
+        #[cfg(target_os = "macos")]
+        let attributes = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+
+            if self.options.decorations {
+                attributes.with_decorations(true)
+            } else {
+                // AppKit is the controls owner on macOS. Keep a titled native
+                // window and extend our content behind its transparent title
+                // bar; hiding decorations here would also hide the traffic
+                // lights and their native hover/full-screen behavior.
+                attributes
+                    .with_decorations(true)
+                    .with_titlebar_transparent(true)
+                    .with_title_hidden(true)
+                    .with_fullsize_content_view(true)
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let attributes = attributes.with_decorations(self.options.decorations);
+
+        let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         let size = window.inner_size();
         let surface = SurfaceHost::boot(
             window.clone(),

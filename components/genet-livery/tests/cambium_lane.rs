@@ -2,10 +2,39 @@ use genet_livery::{InteractionStates, LiveryDocument, StyleSet, layout, resolve_
 use genet_static_dom::StaticDocument;
 use layout_dom_api::LayoutDom;
 use livery::{
+    custom::EnvironmentRect,
     media::Device,
     selector::StatePseudoClass,
     values::{Color, FontSize, Length, LengthPercentage, Size},
 };
+
+#[test]
+fn host_environment_reaches_document_style_resolution() {
+    let document =
+        StaticDocument::parse(r#"<html><body><div class="titlebar"></div></body></html>"#);
+    let styles = StyleSet::cambium(&[
+        ".titlebar { left: env(titlebar-area-x, 0px); width: env(titlebar-area-width, 100%); height: env(titlebar-area-height, 40px); }",
+    ]);
+    let mut device = Device::screen(420.0, 320.0);
+    device.set_titlebar_area(Some(EnvironmentRect::new(80.0, 0.0, 340.0, 28.0)));
+    let plane = resolve_styles(&document, &styles, &device, &InteractionStates::default());
+    let titlebar = document
+        .first_with_class(document.document(), "titlebar")
+        .unwrap();
+    let computed = plane.get(titlebar).unwrap();
+    assert_eq!(
+        computed.left,
+        livery::values::Inset::Value(LengthPercentage::Length(Length::px(80.0)))
+    );
+    assert_eq!(
+        computed.width,
+        Size::Value(LengthPercentage::Length(Length::px(340.0)))
+    );
+    assert_eq!(
+        computed.height,
+        Size::Value(LengthPercentage::Length(Length::px(28.0)))
+    );
+}
 
 const THEME: &str = include_str!("../../livery/tests/fixtures/cambium-component-catalog.css");
 

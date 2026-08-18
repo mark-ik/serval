@@ -29,11 +29,20 @@ genet-probe = { path = "../../genet-probe" }
 genet-scripted-dom = { path = "../../genet-scripted-dom" }
 genet-winit-host = { path = "../../genet-winit-host" }
 layout_dom_api = { package = "layout-dom-api", path = "../../shared/layout-dom" }
+livery = { version = "0.0.2", path = "../../livery" }
 netrender = { workspace = true }
 paint_list_api = { workspace = true }
 paint_list_render = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# W1: query AppKit's real traffic-light geometry from winit's NSView so the
+# standard titlebar-area-* environment rectangle follows the running macOS
+# style instead of baking one machine's title-bar measurements into the host.
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true, features = ["std", "NSButton", "NSControl", "NSView", "NSWindow"] }
+raw-window-handle = { workspace = true }
 
 [dev-dependencies]
 # The tests drive the harness by role/label, and read the DOM directly for the

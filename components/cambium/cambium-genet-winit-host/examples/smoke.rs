@@ -66,10 +66,9 @@ type Logic = fn(&Smoke) -> Child;
 ///
 /// The whole bar is `--app-region: drag` (see the sheet), so pressing it moves
 /// the window, double-clicking it maximizes, and right-clicking raises the
-/// system menu — none of which this file implements. The caption buttons
-/// declare `--app-region: no-drag` to carve themselves out, and each carries a
-/// role and an accessible name, because a hand-drawn frame is invisible to a
-/// screen reader unless the application says otherwise.
+/// system menu — none of which this file implements. Windows/Linux add the
+/// product-drawn caption buttons; macOS keeps AppKit's traffic lights and the
+/// same stylesheet uses `titlebar-area-*` to place only the title beside them.
 fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -> Child {
     Box::new(focusable(clickable(
         el("button", text(label))
@@ -83,18 +82,16 @@ fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -
 }
 
 fn title_bar() -> Child {
-    Box::new(
-        el(
-            "div",
-            (
-                el("div", text("host smoke")).attr("class", "caption-title"),
-                caption("–", "Minimize", WindowCommands::minimize),
-                caption("□", "Maximize", WindowCommands::toggle_maximize),
-                caption("×", "Close", WindowCommands::close),
-            ),
-        )
-        .attr("class", "bar"),
-    )
+    let mut children: Vec<Child> = vec![Box::new(
+        el("div", text("host smoke")).attr("class", "caption-title"),
+    )];
+    #[cfg(not(target_os = "macos"))]
+    children.extend([
+        caption("–", "Minimize", WindowCommands::minimize),
+        caption("□", "Maximize", WindowCommands::toggle_maximize),
+        caption("×", "Close", WindowCommands::close),
+    ]);
+    Box::new(el("div", children).attr("class", "bar"))
 }
 
 fn root(state: &Smoke) -> Child {
@@ -178,11 +175,11 @@ fn root(state: &Smoke) -> Child {
 // still to reach the atomic-inline path. That is a sizing gap, not a reachability
 // one — the rect the driver gets is the rect that paints.
 const SHEET: &str = "
-.bar { --app-region: drag; background: #1d2733; padding: 6px 8px; margin-bottom: 12px; }
-.caption-title { color: #9fb0c4; }
+.bar { --app-region: drag; position: fixed; display: flex; left: env(titlebar-area-x, 0px); top: env(titlebar-area-y, 0px); width: env(titlebar-area-width, 100%); height: env(titlebar-area-height, 32px); background: #1d2733; }
+.caption-title { flex-grow: 1; color: #9fb0c4; padding: 6px 8px; }
 .caption { --app-region: no-drag; width: 32px; background: #29486b; color: #f0ebdd; }
 .caption:hover { background: #3a5d85; }
-.frame { padding: 24px; font-size: 16px; background: #14181f; color: #f0ebdd; }
+.frame { padding: calc(env(titlebar-area-height, 32px) + 24px) 24px 24px; font-size: 16px; background: #14181f; color: #f0ebdd; }
 .title { margin-bottom: 12px; }
 .button { padding: 8px 12px; margin-bottom: 8px; background: #29486b; color: #f0ebdd; width: 240px; }
 .button:hover { background: #3a5d85; }

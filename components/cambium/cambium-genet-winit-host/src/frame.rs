@@ -89,6 +89,10 @@ where
     /// inputs changed, and re-render custom-paint leaves at their new boxes. No
     /// GPU, no window. Returns whether an animation is still live.
     pub(crate) fn relayout(&mut self, lw: f32, lh: f32) -> bool {
+        let environment = crate::decorations::css_environment(
+            self.s.window.as_deref(),
+            !self.options.decorations,
+        );
         let Some(runner) = self.s.runner.as_ref() else {
             return false;
         };
@@ -99,15 +103,29 @@ where
         let dom_ref = dom.borrow();
         let sheets: Vec<&str> = vec![self.s.sheet.as_str()];
         let size_changed = self.s.layout_size != (lw, lh);
+        let environment_changed = self
+            .s
+            .layout
+            .as_ref()
+            .is_none_or(|layout| layout.environment() != environment);
+        if environment_changed {
+            if let Some(area) = environment.titlebar_area() {
+                eprintln!(
+                    "[cambium-host] titlebar-area x={} y={} width={} height={}",
+                    area.x, area.y, area.width, area.height
+                );
+            }
+        }
         match self.s.layout.as_mut() {
-            Some(layout) if muts.is_empty() && !size_changed => {
+            Some(layout) if muts.is_empty() && !size_changed && !environment_changed => {
                 let _ = layout.tick_animations(&*dom_ref, now_s);
             },
             Some(layout) if !size_changed => {
-                layout.rebuild(&*dom_ref, lw, lh);
+                layout.rebuild(&*dom_ref, lw, lh, environment);
             },
             _ => {
-                let mut layout = crate::owned_layout::OwnedLayout::new(&*dom_ref, &sheets, lw, lh);
+                let mut layout =
+                    crate::owned_layout::OwnedLayout::new(&*dom_ref, &sheets, lw, lh, environment);
                 // Carry BOTH scroll planes across rebuilds: element scroll and
                 // the document scroll. Dropping the latter snaps a scrolled
                 // page back to the top on structural re-render.
