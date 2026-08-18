@@ -18,17 +18,20 @@ use genet_document_resources::{
     StylesheetOwner,
 };
 use genet_host_api::ResourceFetcher;
+#[cfg(feature = "incumbent")]
 use genet_layout::{ScrollKey, TextSelection};
 use inker::session_engine::{
     DocumentClip, DocumentSession, SessionClick, SessionEngine, SessionError, SessionLink,
     SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };
-use layout_dom_api::LayoutDom;
+use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use netrender::Scene;
 
+#[cfg(feature = "incumbent")]
 use crate::document::{ClickOutcome, LoadedDocument};
 
 /// Map the host-neutral scroll-key vocabulary onto genet-layout's.
+#[cfg(feature = "incumbent")]
 pub(crate) fn layout_scroll_key(key: SessionScrollKey) -> ScrollKey {
     match key {
         SessionScrollKey::LineUp => ScrollKey::Up,
@@ -43,6 +46,7 @@ pub(crate) fn layout_scroll_key(key: SessionScrollKey) -> ScrollKey {
 /// Map the static lane's click outcome onto the unified enum. The host
 /// resolves a relative href against the current URL (see
 /// [`resolve_href`](crate::href::resolve_href)), same contract as today.
+#[cfg(feature = "incumbent")]
 pub fn session_click_from_outcome(outcome: ClickOutcome) -> SessionClick {
     match outcome {
         ClickOutcome::None => SessionClick::Miss,
@@ -54,16 +58,19 @@ pub fn session_click_from_outcome(outcome: ClickOutcome) -> SessionClick {
 // ── Static lane (genet.web) ───────────────────────────────────────────────
 
 /// Session engine for the static HTML lane. Holds the shell's fetcher.
+#[cfg(feature = "incumbent")]
 pub struct StaticSessionEngine<Fetch> {
     fetcher: Fetch,
 }
 
+#[cfg(feature = "incumbent")]
 impl<Fetch> StaticSessionEngine<Fetch> {
     pub fn new(fetcher: Fetch) -> Self {
         Self { fetcher }
     }
 }
 
+#[cfg(feature = "incumbent")]
 impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for StaticSessionEngine<Fetch> {
     fn engine_id(&self) -> &str {
         inker::routing::ENGINE_GENET_WEB
@@ -89,6 +96,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for StaticSessio
 /// small host seam for compositions such as Pelt tiles: the static and
 /// smolweb session implementations stay private, while the host stores one
 /// honest `DocumentSession<Scene>` per pane.
+#[cfg(feature = "incumbent")]
 pub fn open_document_session(
     fetcher: &impl ResourceFetcher,
     address: &str,
@@ -106,7 +114,7 @@ pub fn open_document_session(
     }))
 }
 
-#[cfg(feature = "smolweb")]
+#[cfg(all(feature = "incumbent", feature = "smolweb"))]
 fn is_smolweb_address(address: &str) -> bool {
     matches!(
         address.split_once("://").map(|(scheme, _)| scheme),
@@ -124,11 +132,13 @@ fn is_smolweb_address(address: &str) -> bool {
     )
 }
 
+#[cfg(feature = "incumbent")]
 struct StaticDocumentSession {
     doc: LoadedDocument,
     address: String,
 }
 
+#[cfg(feature = "incumbent")]
 impl DocumentSession<Scene> for StaticDocumentSession {
     fn frame(&mut self, width: u32, height: u32) -> Scene {
         self.doc.frame_for_viewer(width, height)
@@ -533,7 +543,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     /// session inspects (and a11y-projects) instead of answering "none for
     /// this lane".
     fn inspect(&self) -> Option<inker::ContentReport> {
-        Some(genet_render::content_report(self.doc.dom()))
+        Some(content_report(self.doc.dom()))
     }
 
     fn clip(&self) -> Option<DocumentClip> {
@@ -544,23 +554,13 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                 semantic_clip_from_selection_with_links(
                     &self.address,
                     self.doc.dom(),
-                    TextSelection {
-                        range: genet_layout::TextRange {
+                    ClipSelection {
+                        range: ClipRange {
                             anchor_node: selection.range.anchor_node,
                             anchor_offset: selection.range.anchor_offset,
                             focus_node: selection.range.focus_node,
                             focus_offset: selection.range.focus_offset,
                         },
-                        rects: selection
-                            .rects
-                            .into_iter()
-                            .map(|rect| genet_layout::CaretRect {
-                                x: rect.x,
-                                y: rect.y,
-                                width: rect.width,
-                                height: rect.height,
-                            })
-                            .collect(),
                         text: selection.text,
                     },
                     links,
@@ -579,8 +579,115 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ClipRange<Id> {
+    anchor_node: Id,
+    anchor_offset: usize,
+    focus_node: Id,
+    focus_offset: usize,
+}
+
+#[cfg(feature = "incumbent")]
+#[derive(Clone, Copy)]
+struct ClipRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+struct ClipSelection<Id> {
+    range: ClipRange<Id>,
+    text: String,
+}
+
+fn content_report<D: LayoutDom>(dom: &D) -> inker::ContentReport {
+    fn direct_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
+        let mut name = String::new();
+        for child in dom.dom_children(node) {
+            if dom.kind(child) == NodeKind::Text
+                && let Some(text) = dom.text(child)
+            {
+                name.push_str(text);
+            }
+        }
+        name.trim().to_string()
+    }
+
+    fn role_of(tag: &str) -> &'static str {
+        match tag {
+            "a" => "link",
+            "button" => "button",
+            "input" | "textarea" => "textbox",
+            "p" => "paragraph",
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
+            "ul" | "ol" => "list",
+            "li" => "listitem",
+            "img" => "image",
+            "label" => "label",
+            "nav" => "navigation",
+            "header" => "banner",
+            "footer" => "contentinfo",
+            "main" => "main",
+            "section" | "article" => "region",
+            _ => "group",
+        }
+    }
+
+    fn walk<D: LayoutDom>(
+        dom: &D,
+        node: D::NodeId,
+        depth: usize,
+        report: &mut inker::ContentReport,
+    ) {
+        let mut child_depth = depth;
+        if let Some(tag) = dom.element_name(node).map(|name| name.local.to_string()) {
+            if !matches!(
+                tag.as_str(),
+                "head" | "style" | "script" | "title" | "meta" | "link" | "base" | "html"
+            ) {
+                report.outline.push(inker::OutlineEntry {
+                    depth,
+                    role: role_of(&tag),
+                    name: direct_text(dom, node),
+                });
+                child_depth = depth + 1;
+            }
+            match tag.as_str() {
+                "title" => {
+                    let text = direct_text(dom, node);
+                    if !text.is_empty() {
+                        report.title = Some(text);
+                    }
+                },
+                "a" => {
+                    if let Some(href) =
+                        dom.attribute(node, &Namespace::default(), &LocalName::from("href"))
+                    {
+                        report.links.push(href.to_string());
+                    }
+                },
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    let text = direct_text(dom, node);
+                    if !text.is_empty() {
+                        report.headings.push(text);
+                    }
+                },
+                _ => {},
+            }
+        }
+        for child in dom.dom_children(node) {
+            walk(dom, child, child_depth, report);
+        }
+    }
+
+    let mut report = inker::ContentReport::default();
+    walk(dom, dom.document(), 0, &mut report);
+    report
+}
+
 fn semantic_clip_from_dom<D: LayoutDom>(address: &str, dom: &D) -> Option<DocumentClip> {
-    let report = genet_render::content_report(dom);
+    let report = content_report(dom);
     let text = genet_extract::extract_main_text(dom).unwrap_or_else(|| report.headings.join("\n"));
     let text = text.trim().to_string();
     (!text.is_empty()).then(|| DocumentClip {
@@ -592,6 +699,7 @@ fn semantic_clip_from_dom<D: LayoutDom>(address: &str, dom: &D) -> Option<Docume
     })
 }
 
+#[cfg(feature = "incumbent")]
 fn semantic_clip_from_selection<D>(
     address: &str,
     dom: &D,
@@ -604,22 +712,41 @@ where
 {
     let mut links = Vec::new();
     for (url, rect) in link_rects {
-        if selection
-            .rects
-            .iter()
-            .any(|selected| rect_intersects_selection(rect, selected))
-            && !links.iter().any(|seen| seen == &url)
+        if selection.rects.iter().any(|selected| {
+            rect_intersects_selection(
+                rect,
+                &ClipRect {
+                    x: selected.x,
+                    y: selected.y,
+                    width: selected.width,
+                    height: selected.height,
+                },
+            )
+        }) && !links.iter().any(|seen| seen == &url)
         {
             links.push(url);
         }
     }
-    semantic_clip_from_selection_with_links(address, dom, selection, links)
+    semantic_clip_from_selection_with_links(
+        address,
+        dom,
+        ClipSelection {
+            range: ClipRange {
+                anchor_node: selection.range.anchor_node,
+                anchor_offset: selection.range.anchor_offset,
+                focus_node: selection.range.focus_node,
+                focus_offset: selection.range.focus_offset,
+            },
+            text: selection.text,
+        },
+        links,
+    )
 }
 
 fn semantic_clip_from_selection_with_links<D>(
     address: &str,
     dom: &D,
-    selection: TextSelection<D::NodeId>,
+    selection: ClipSelection<D::NodeId>,
     links: Vec<String>,
 ) -> Option<DocumentClip>
 where
@@ -645,7 +772,7 @@ where
         "quote": selection.text,
     })
     .to_string();
-    let report = genet_render::content_report(dom);
+    let report = content_report(dom);
     Some(DocumentClip {
         source_url: address.to_string(),
         title: report.title,
@@ -671,7 +798,8 @@ where
     Some(path)
 }
 
-fn rect_intersects_selection(rect: [f32; 4], selected: &genet_layout::CaretRect) -> bool {
+#[cfg(feature = "incumbent")]
+fn rect_intersects_selection(rect: [f32; 4], selected: &ClipRect) -> bool {
     let selected_right = selected.x + selected.width;
     let selected_bottom = selected.y + selected.height;
     rect[0] < selected_right
@@ -825,7 +953,7 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
     }
     fn inspect(&self) -> Option<inker::ContentReport> {
         let dom = self.doc.dom();
-        Some(genet_render::content_report(&*dom))
+        Some(content_report(&*dom))
     }
     fn clip(&self) -> Option<DocumentClip> {
         let links = self.doc.links();
@@ -942,7 +1070,7 @@ impl DocumentSession<Scene> for SmolwebDocumentSession {
         self.doc.scroll_at(x, y, dx, dy)
     }
     fn scroll_for_key(&mut self, key: SessionScrollKey) -> bool {
-        self.doc.scroll_for_key(layout_scroll_key(key))
+        self.doc.scroll_for_key(key)
     }
     fn scroll_to(&mut self, y: f32) {
         self.doc.scroll_to(y);
@@ -1098,6 +1226,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "incumbent")]
     #[test]
     fn static_session_spawns_from_body_and_navigates() {
         let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
@@ -1129,6 +1258,7 @@ mod tests {
     /// The structural report is reachable THROUGH THE TRAIT — the accessor a
     /// host without downcast access (turnstone: this session type is private)
     /// stands on. Title, links, and headings come back from the live session.
+    #[cfg(feature = "incumbent")]
     #[test]
     fn static_session_reports_structure_through_the_trait() {
         let engine = StaticSessionEngine::new(NoFetch);
@@ -1147,6 +1277,7 @@ mod tests {
         assert_eq!(report.links, vec!["/next"]);
     }
 
+    #[cfg(feature = "incumbent")]
     #[test]
     fn static_session_exposes_a_host_neutral_semantic_clip() {
         let engine = StaticSessionEngine::new(NoFetch);
@@ -1164,6 +1295,7 @@ mod tests {
         assert_eq!(clip.selector, None, "v1 captures the whole document");
     }
 
+    #[cfg(feature = "incumbent")]
     #[test]
     fn static_session_pointer_selection_scopes_clip_and_selector() {
         let engine = StaticSessionEngine::new(NoFetch);
@@ -1273,6 +1405,7 @@ mod tests {
         assert!(selector["focus"]["path"].is_array());
     }
 
+    #[cfg(feature = "incumbent")]
     #[test]
     fn static_session_scrolls_long_content() {
         let engine = StaticSessionEngine::new(NoFetch);
@@ -1447,7 +1580,7 @@ mod tests {
         assert_eq!(click, SessionClick::Handled);
         assert!(session.scroll_for_key(SessionScrollKey::Home));
         assert!(session.scroll_by(0.0, 100.0));
-        assert!(session.scroll_at(10.0, 10.0, 0.0, -100.0));
+        assert!(session.scroll_at(10.0, 10.0, 0.0, 100.0));
     }
 
     #[cfg(feature = "livery")]

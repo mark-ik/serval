@@ -11,7 +11,7 @@ use genet_host_api::{DeferredShellEngine, EngineProfile, ShellEngine};
 use crate::VERSION;
 
 pub(crate) fn main() {
-    let mut engine_profile = EngineProfile::Viewer;
+    let mut engine_profile = EngineProfile::Livery;
     let mut url = None;
     // JS backend for `--engine scripted` (boa default; nova needs --features
     // scripted-nova). Parsed as a string so the flag exists even in builds without
@@ -672,8 +672,9 @@ fn run_scripted_profile(
 /// The headless reftest harness. With `reftest`, run every `name.html` fixture in the
 /// directory against its committed `name.scene` snapshot (or write them under `bless`);
 /// otherwise render `url` to a single scene snapshot, to `out` (or stdout). Exits
-/// non-zero on any reftest failure / error. (Always available here — viewer.rs is
-/// wholly under `viewer-engine`, which enables pelt-desktop's viewer stack.)
+/// non-zero on any reftest failure / error. This is the frozen incumbent oracle
+/// and therefore requires the explicit `incumbent` feature.
+#[cfg(feature = "incumbent")]
 fn run_headless_profile(
     url: String,
     out: Option<String>,
@@ -767,6 +768,19 @@ fn run_headless_profile(
     }
 }
 
+#[cfg(not(feature = "incumbent"))]
+fn run_headless_profile(
+    _url: String,
+    _out: Option<String>,
+    _reftest: Option<String>,
+    _bless: bool,
+    _size: Option<(u32, u32)>,
+    _frames: Option<u32>,
+) {
+    eprintln!("the frozen headless oracle needs `--features incumbent`");
+    std::process::exit(2);
+}
+
 /// Render `url` to a PNG and write it to `path`. Present only with `--features
 /// png-reftest` (it boots wgpu); without it, a clean pointer to the feature.
 #[cfg(feature = "png-reftest")]
@@ -796,6 +810,7 @@ fn write_headless_png(_url: &str, _path: &str, _size: (u32, u32)) {
     std::process::exit(2);
 }
 
+#[cfg(feature = "viewer-netrender")]
 fn run_optional_netrender_smoke() {
     match pelt_desktop::run_netrender_smoke() {
         Ok(outcome) => {
@@ -811,6 +826,13 @@ fn run_optional_netrender_smoke() {
     }
 }
 
+#[cfg(not(feature = "viewer-netrender"))]
+fn run_optional_netrender_smoke() {
+    eprintln!("the netrender smoke needs `--features viewer-netrender`");
+    std::process::exit(2);
+}
+
+#[cfg(feature = "viewer-netrender")]
 fn run_optional_webgl_wgpu_smoke() {
     match pelt_desktop::run_webgl_wgpu_smoke() {
         Ok(outcome) => {
@@ -828,6 +850,12 @@ fn run_optional_webgl_wgpu_smoke() {
             std::process::exit(1);
         },
     }
+}
+
+#[cfg(not(feature = "viewer-netrender"))]
+fn run_optional_webgl_wgpu_smoke() {
+    eprintln!("the WebGL smoke needs `--features viewer-netrender`");
+    std::process::exit(2);
 }
 
 #[cfg(feature = "windows-present")]

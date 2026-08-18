@@ -25,7 +25,7 @@ bench = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }
 
 [features]
-default = ["viewer-netrender", "netfetch"]
+default = ["livery", "netfetch"]
 # viewer-engine pulls the desktop host (smoke runners, present backends).
 # The Masonry-era Xilem viewer (pelt-viewer) was retired 2026-06-12 — its
 # CPU-readback render path predated direct present; pelt-live is the
@@ -33,40 +33,39 @@ default = ["viewer-netrender", "netfetch"]
 # genet-host-api/pelt-desktop contracts. (The egui chrome crate was retired
 # 2026-05-20 before it.)
 viewer-engine = ["dep:pelt-desktop"]
-viewer-netrender = ["viewer-engine", "pelt-desktop/netrender"]
-# Explicit clean-room CSS/layout route. It remains opt-in at runtime through
-# `pelt --engine livery`; the default static path stays incumbent Stylo.
+incumbent = ["viewer-engine", "pelt-desktop/incumbent"]
+viewer-netrender = ["incumbent", "pelt-desktop/netrender"]
+# Owned CSS/layout route and the default reference-browser engine.
 livery = ["viewer-engine", "pelt-desktop/livery"]
 # The scripted profile (V4): `pelt --engine scripted <file>` runs a page's inline
 # <script> on a JS engine and renders the mutated DOM. Pulls pelt-desktop's scripted
 # runtime on top of the present stack. Boa-only by default (a single engine links
 # under the Windows image-size limit alongside wgpu); add `scripted-nova` for Nova.
-scripted = ["viewer-engine", "pelt-desktop/viewer", "pelt-desktop/scripted"]
-# Explicit live Livery route. The default static and incumbent scripted paths
-# stay unchanged; select it with `--engine livery-scripted`.
-livery-scripted = ["viewer-engine", "pelt-desktop/livery-scripted"]
+scripted = ["incumbent", "pelt-desktop/scripted"]
+# Live scripted Livery route. It remains an explicit hybrid profile until L5.
+livery-scripted = ["incumbent", "pelt-desktop/livery-scripted"]
 scripted-nova = ["scripted", "pelt-desktop/scripted-nova"]
 # The rasterized-PNG reftest lane (V3): `pelt --engine headless --out <file>.png`
 # emits a rendered PNG (human-eyes artifact), and `--reftest <dir>` additionally
 # compares an optional `name.png` per fixture under a fuzz threshold. GPU-required,
 # so opt-in on top of the GPU-free scene-snapshot lane.
-png-reftest = ["viewer-engine", "pelt-desktop/png-reftest"]
+png-reftest = ["incumbent", "pelt-desktop/png-reftest"]
 # The chrome demo (V2): `pelt --chrome <url>` wraps the content viewer in a
 # xilem-serval omnibar + back/forward strip. Pulls pelt-desktop's chrome runtime on
 # top of the present stack.
-chrome = ["viewer-engine", "pelt-desktop/viewer", "pelt-desktop/chrome"]
+chrome = ["incumbent", "pelt-desktop/chrome"]
 # The tile-tree demo (V5): `pelt --tiles <url>...` splits the window into tiles, each
 # showing a document, with switchable tabs. Pulls pelt-desktop's tile surface.
-tiles = ["viewer-engine", "pelt-desktop/viewer", "pelt-desktop/tiles"]
-# Remote document loading (V1's http(s) half): `pelt --engine static https://…`
-# loads over the netfetcher engine in the default reference-browser build. The
+tiles = ["incumbent", "pelt-desktop/tiles"]
+# Remote document loading: the default Livery profile loads http(s) through the
+# netfetcher engine. The
 # feature remains selectable so `--no-default-features` can keep the light contracts
 # profile free of the async network stack.
-netfetch = ["viewer-engine", "pelt-desktop/viewer", "pelt-desktop/netfetch"]
+netfetch = ["viewer-engine", "pelt-desktop/netfetch"]
 # Smolweb document loading: `pelt --features smolweb --engine static gemini://…`
 # renders a native, per-site-themed capsule (gemtext / gopher / feed) over the errand
 # transport. Off by default — the async network stack is opt-in.
-smolweb = ["viewer-engine", "pelt-desktop/viewer", "pelt-desktop/chrome", "pelt-desktop/smolweb"]
+smolweb = ["incumbent", "pelt-desktop/chrome", "pelt-desktop/smolweb"]
 # C4 headed-presentation smoke. Pulls genet's `WindowsDxgiBackend`
 # in through `pelt-desktop`. Inner code is `cfg(target_os = "windows")`
 # gated so the feature still builds on non-Windows hosts.
@@ -84,5 +83,5 @@ linux-present = ["viewer-engine", "pelt-desktop/linux-present"]
 [dependencies]
 cfg-if = { workspace = true }
 genet-host-api = { workspace = true }
-pelt-desktop = { workspace = true, optional = true }
+pelt-desktop = { workspace = true, optional = true, default-features = false }
 windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console"] }

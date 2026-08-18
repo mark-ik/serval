@@ -15,7 +15,10 @@ path = "lib.rs"
 bench = false
 
 [features]
-default = ["viewer", "netfetch"]
+default = ["livery", "netfetch"]
+# Engine-neutral headed presentation. Both engines can produce a `Scene`; this
+# feature owns only the winit/wgpu shell that presents one.
+present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
 # The GPU-free surface lib: the `LoadedDocument` loader/scene-producer and the
 # tile-tree surface (`TileSurface` / `TileShell`) — everything a host needs to load
 # documents and render a tile frame, WITHOUT the windowed present stack (no
@@ -24,20 +27,22 @@ default = ["viewer", "netfetch"]
 # surface as its workbench pane (V6) without dragging in pelt's reference-shell
 # windowing. The windowed viewers (`viewer`, `tiles`) build the present stack on top.
 tile-surface = [
-    "dep:genet-documents",
+    "dep:genet-documents", "genet-documents/incumbent",
     "dep:netrender", "dep:genet-render", "dep:genet-static-dom", "dep:genet-layout",
     "dep:genet-scripted-dom", "dep:layout-dom-api", "dep:cambium",
     "dep:sprigging", "dep:accesskit", "dep:paint_list_api", "dep:paint_list_render",
     "dep:inker",
 ]
-# The on-screen static-document viewer (V1): the GPU-free `tile-surface` lib plus the
-# windowed present stack (`genet-winit-host` + `wgpu`). Default-on so `pelt --engine
-# static <file>` works out of the box; `--no-default-features` keeps the light
-# contracts + smoke build.
-viewer = ["tile-surface", "dep:genet-winit-host", "dep:wgpu"]
-# Registry-routed clean-room static engine. Kept separate from `viewer` so a
-# normal Pelt build cannot silently switch the default engine.
-livery = ["viewer", "genet-documents/livery"]
+# The frozen on-screen incumbent viewer: the GPU-free `tile-surface` lib plus
+# the windowed present stack (`genet-winit-host` + `wgpu`).
+incumbent = ["present", "tile-surface"]
+# Compatibility name for the frozen Stylo + genet-layout oracle route.
+viewer = ["incumbent"]
+# Registry-routed owned static engine plus the engine-neutral present shell.
+livery = [
+    "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
+    "dep:genet-static-dom", "dep:layout-dom-api",
+]
 # The scripted profile (V4): a live `ScriptedDom` document whose inline `<script>`
 # runs through `script-runtime-api` on a JS engine, mutating the DOM, rendered each
 # frame. GPU-free at the core (scene production only); the headed run reuses the
@@ -53,9 +58,8 @@ scripted = [
     "dep:genet-extract",
     "dep:encoding_rs", "dep:sha2", "dep:base64", "dep:url",
 ]
-# Explicit live Livery product route. It uses the same present shell as
-# `scripted`, while `LiveryScriptedDocument` owns Livery CSSOM, resources, and
-# geometry from the first parser-blocking script onward.
+# Live scripted Livery product route. It remains hybrid until L5 because the
+# scripted runtime still exposes incumbent layout types.
 livery-scripted = ["viewer", "livery", "scripted", "genet-documents/livery-scripted"]
 # Add the Nova engine to the scripted profile (64-bit targets, including wasm64).
 # Off by default; enabling
@@ -82,7 +86,7 @@ tiles = ["tile-surface", "chrome", "viewer", "smolweb"]
 # exercises real pages; `--no-default-features` remains the light contracts build.
 # The host owns networking here (pelt is the reference shell), matching meerkat
 # driving netfetcher in the product; genet's engine components stay byte-consuming.
-netfetch = ["tile-surface", "genet-documents/netfetch"]
+netfetch = ["dep:genet-documents", "genet-documents/netfetch"]
 # Smolweb document loading (the `smolweb` feature): the `LocalFetcher` gains a
 # gemini/gopher/nex/finger/spartan/guppy branch backed by the errand transport (the
 # sibling smolweb engine), bridged onto the sync `ResourceFetcher` through the same
@@ -141,7 +145,7 @@ netrender = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 paint = { workspace = true, optional = true }
 genet-host-api = { workspace = true }
-genet-documents = { workspace = true, optional = true }
+genet-documents = { workspace = true, optional = true, default-features = false }
 inker = { workspace = true, optional = true }
 tinct = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }

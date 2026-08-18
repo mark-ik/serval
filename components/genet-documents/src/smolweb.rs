@@ -14,7 +14,7 @@ use document_canvas::{
     layout_document, netrender_backend::scene_from_packet,
 };
 use genet_host_api::ResourceFetcher;
-use genet_layout::ScrollKey;
+use inker::SessionScrollKey;
 use inker::{Engine, EngineDocument, EngineInput};
 use netrender::Scene;
 
@@ -156,20 +156,19 @@ impl SmolwebDocument {
     }
 
     /// Apply the established Genet keyboard-scroll vocabulary.
-    pub fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
+    pub fn scroll_for_key(&mut self, key: SessionScrollKey) -> bool {
         if self.layout.is_none() {
             return false;
         }
         let before = self.scroll_y;
         let page = self.size.1 as f32 * 0.9;
         self.scroll_y = match key {
-            ScrollKey::Up => self.scroll_y - 40.0,
-            ScrollKey::Down => self.scroll_y + 40.0,
-            ScrollKey::PageUp => self.scroll_y - page,
-            ScrollKey::PageDown => self.scroll_y + page,
-            ScrollKey::Home => 0.0,
-            ScrollKey::End => self.max_scroll(),
-            ScrollKey::Left | ScrollKey::Right => self.scroll_y,
+            SessionScrollKey::LineUp => self.scroll_y - 40.0,
+            SessionScrollKey::LineDown => self.scroll_y + 40.0,
+            SessionScrollKey::PageUp => self.scroll_y - page,
+            SessionScrollKey::PageDown => self.scroll_y + page,
+            SessionScrollKey::Home => 0.0,
+            SessionScrollKey::End => self.max_scroll(),
         }
         .clamp(0.0, self.max_scroll());
         self.scroll_y != before

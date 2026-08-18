@@ -62,7 +62,7 @@ pub use genet_documents::{SmolwebPalette, SmolwebTheme};
 #[cfg(all(feature = "smolweb", feature = "viewer"))]
 pub use smolweb_glue::run_smolweb_viewer;
 
-#[cfg(feature = "viewer")]
+#[cfg(feature = "incumbent")]
 mod headless;
 
 #[cfg(feature = "scripted")]
@@ -106,7 +106,7 @@ mod smoke_windows;
 
 #[cfg(feature = "tile-surface")]
 pub use document::{ClickOutcome, LoadedDocument, LocalFetcher};
-#[cfg(feature = "viewer")]
+#[cfg(feature = "incumbent")]
 pub use headless::{
     DEFAULT_HEIGHT, DEFAULT_WIDTH, Outcome, ReftestResult, render_snapshot, run_reftests,
 };

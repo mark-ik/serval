@@ -412,6 +412,7 @@ pub struct ShadowOptions {
     pub offset_x: f64,
     pub offset_y: f64,
     pub blur: f64,
+    #[ignore_malloc_size_of = "Stylo color storage is outside Servo heap accounting"]
     pub color: AbsoluteColor,
 }
 
@@ -533,6 +534,7 @@ pub enum Canvas2dMsg {
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct CanvasGradientStop {
     pub offset: f64,
+    #[ignore_malloc_size_of = "Stylo color storage is outside Servo heap accounting"]
     pub color: AbsoluteColor,
 }
 

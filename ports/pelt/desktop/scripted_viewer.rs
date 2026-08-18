@@ -11,7 +11,6 @@
 //! on both `viewer` (the present stack) and `scripted` (the runtime); the GPU-free
 //! document core lives in [`crate::scripted`].
 
-use genet_layout::ScrollKey;
 use script_engine_api::ScriptEngine;
 
 #[cfg(feature = "livery-scripted")]
@@ -20,6 +19,7 @@ use crate::document::LocalFetcher;
 use crate::scripted::{ScriptedDocument, ScriptedEngine};
 use crate::static_viewer::run_headed_with;
 use crate::static_viewer::windowed::ViewerContent;
+use crate::static_viewer::{ViewerScrollKey, incumbent_scroll_key};
 use crate::{StaticViewerConfig, StaticViewerOutcome, WindowingMode};
 
 impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
@@ -29,8 +29,8 @@ impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
         ScriptedDocument::scroll_by(self, dx, dy)
     }
-    fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
-        ScriptedDocument::scroll_for_key(self, key)
+    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
+        ScriptedDocument::scroll_for_key(self, incumbent_scroll_key(key))
     }
     fn click_at(&mut self, x: f32, y: f32) -> bool {
         ScriptedDocument::click_at(self, x, y)
@@ -53,8 +53,8 @@ impl<E: ScriptEngine> ViewerContent for LiveryScriptedDocument<E> {
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
         LiveryScriptedDocument::scroll_by(self, dx, dy)
     }
-    fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
-        LiveryScriptedDocument::scroll_for_key(self, key)
+    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
+        LiveryScriptedDocument::scroll_for_key(self, incumbent_scroll_key(key))
     }
     fn click_at(&mut self, x: f32, y: f32) -> bool {
         LiveryScriptedDocument::click_at(self, x, y)

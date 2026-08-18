@@ -12,6 +12,9 @@ path = "src/lib.rs"
 
 [features]
 default = []
+# Frozen Stylo + genet-layout lane. It is an explicit oracle/compatibility
+# selection and never enters a Livery-only graph.
+incumbent = ["dep:genet-layout", "dep:genet-render"]
 # Clean-room Livery implementation of the static HTML session lane.
 livery = ["dep:genet-livery", "dep:paint_list_render", "dep:url"]
 # Remote http(s) loading for LocalFetcher via the netfetcher engine.
@@ -23,6 +26,7 @@ smolweb = [
 ]
 # The scripted lane: a live ScriptedDocument on Boa.
 scripted = [
+    "incumbent",
     "dep:genet-scripted", "dep:script-engine-api", "dep:script-engine-boa", "dep:url",
 ]
 # Explicit live Livery route. This adds a second scripted construction path;
@@ -38,8 +42,8 @@ inker = { workspace = true }
 genet-host-api = { workspace = true }
 genet-document-resources = { workspace = true }
 netrender = { workspace = true }
-genet-layout = { path = "../genet-layout" }
-genet-render = { path = "../genet-render" }
+genet-layout = { path = "../genet-layout", optional = true }
+genet-render = { path = "../genet-render", optional = true }
 genet-extract = { path = "../genet-extract" }
 genet-static-dom = { path = "../genet-static-dom" }
 layout_dom_api = { workspace = true }

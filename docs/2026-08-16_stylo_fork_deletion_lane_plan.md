@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 
-**Status:** L1 complete (2026-08-18). L0 and L2-L7 not started.
+**Status:** L1 and L0 complete (2026-08-18). L2-L7 not started.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
@@ -120,6 +120,35 @@ cone. Each is the previous one losing its last dependent.
 
 ## Execution record
 
+### L0 - complete (2026-08-18)
+
+Engine selection is now exclusive at the default host boundary. Pelt defaults
+to `livery`; the frozen Stylo + genet-layout route is named `incumbent` and is
+reachable through the compatibility `viewer` feature. The winit/wgpu shell is
+an engine-neutral `present` feature, so selecting Livery no longer selects the
+incumbent tile surface as a side effect.
+
+`genet-documents` now carries the same either/or seam. Its local, data, file,
+and optional network fetcher moved out of the incumbent `document` module, and
+its Livery session produces inspection and clip reports without routing through
+`genet-render`. The incumbent document and render dependencies are optional and
+selected only by `incumbent` or the still-hybrid scripted compatibility lane.
+
+The native-window keyboard vocabulary also moved above layout. The present
+shell emits `ViewerScrollKey`; each engine adapter translates that into its own
+scroll command. A Livery-only Pelt graph therefore contains neither
+`genet-layout` nor fork types.
+
+Receipts:
+
+- `cargo check` (the default Pelt member and default Livery graph): passed.
+- `cargo check -p pelt-desktop --no-default-features --features livery,netfetch`:
+  passed.
+- `cargo tree -p pelt --prefix none`: zero `genet-layout` nodes and zero
+  `genet-stylo` / `style` / `style_traits` nodes in the default graph.
+- `cargo check -p genet-documents --no-default-features --features livery`:
+  passed.
+
 ### L1 - complete (2026-08-18)
 
 `engine-observables-api` no longer derives or exposes Servo heap-accounting
@@ -129,12 +158,12 @@ direct observables edge and the indirect edge through `genet-paint-types` are
 therefore fork-free.
 
 The audit missed one Rust ownership consequence: those bridge impls were used
-by `servo-fonts-traits`. Because the accounting trait belongs to
-`servo-malloc-size-of`, the impls cannot move to an incumbent adapter crate.
-The Stylo-owned fields in the font descriptors, templates, and cache keys are
-now explicitly excluded from Servo's memory report instead. Their owning
-values still compile and behave identically; only the retired incumbent's
-deep-size accounting is reduced.
+by `servo-fonts-traits` and two `servo-canvas-traits` color fields. Because the
+accounting trait belongs to `servo-malloc-size-of`, the impls cannot move to an
+incumbent adapter crate. The Stylo-owned font and color fields are now
+explicitly excluded from Servo's memory report instead. Their owning values
+still compile and behave identically; only the retired incumbent's deep-size
+accounting is reduced.
 
 Receipts:
 
