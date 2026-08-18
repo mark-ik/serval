@@ -14,7 +14,7 @@ path = "src/lib.rs"
 default = []
 # Frozen Stylo + genet-layout lane. It is an explicit oracle/compatibility
 # selection and never enters a Livery-only graph.
-incumbent = ["dep:genet-layout", "dep:genet-render"]
+incumbent = ["dep:genet-layout", "dep:genet-render", "genet-render/incumbent"]
 # Clean-room Livery implementation of the static HTML session lane.
 livery = ["dep:genet-livery", "dep:paint_list_render", "dep:url"]
 # Remote http(s) loading for LocalFetcher via the netfetcher engine.
@@ -24,14 +24,13 @@ netfetch = ["dep:netfetcher", "dep:tokio", "dep:bytes", "dep:url"]
 smolweb = [
     "dep:errand", "dep:nematic", "dep:document-canvas", "dep:tokio", "dep:url",
 ]
-# The scripted lane: a live ScriptedDocument on Boa.
+# The scripted lane: a live LiveryScriptedDocument on Boa.
 scripted = [
-    "incumbent",
-    "dep:genet-scripted", "dep:script-engine-api", "dep:script-engine-boa", "dep:url",
+    "livery", "dep:genet-scripted", "genet-scripted/livery",
+    "dep:script-engine-api", "dep:script-engine-boa", "dep:url",
 ]
-# Explicit live Livery route. This adds a second scripted construction path;
-# the incumbent `scripted` engine and its Stylo geometry remain unchanged.
-livery-scripted = ["livery", "scripted", "genet-scripted/livery"]
+# Compatibility name for the now-owned scripted route.
+livery-scripted = ["scripted"]
 # Add the Nova engine as a second scripted rung (64-bit targets).
 scripted-nova = ["scripted", "dep:script-engine-nova"]
 
@@ -43,7 +42,7 @@ genet-host-api = { workspace = true }
 genet-document-resources = { workspace = true }
 netrender = { workspace = true }
 genet-layout = { path = "../genet-layout", optional = true }
-genet-render = { path = "../genet-render", optional = true }
+genet-render = { path = "../genet-render", optional = true, default-features = false }
 genet-extract = { path = "../genet-extract" }
 genet-static-dom = { path = "../genet-static-dom" }
 layout_dom_api = { workspace = true }
@@ -52,8 +51,7 @@ genet-livery = { path = "../genet-livery", optional = true }
 paint_list_render = { workspace = true, optional = true }
 data-url = { workspace = true }
 
-genet-scripted-dom = { path = "../genet-scripted-dom", optional = true }
-genet-scripted = { path = "../genet-scripted", features = ["render"], optional = true }
+genet-scripted = { path = "../genet-scripted", optional = true, default-features = false }
 script-engine-api = { path = "../script-engine-api", optional = true }
 script-engine-boa = { path = "../script-engine-boa", optional = true }
 script-engine-nova = { path = "../script-engine-nova", optional = true }

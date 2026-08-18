@@ -43,6 +43,19 @@ pub(crate) fn layout_scroll_key(key: SessionScrollKey) -> ScrollKey {
     }
 }
 
+/// Map the host-neutral scroll-key vocabulary onto the owned scripted lane.
+#[cfg(feature = "scripted")]
+pub(crate) fn scripted_scroll_key(key: SessionScrollKey) -> genet_scripted::ScrollKey {
+    match key {
+        SessionScrollKey::LineUp => genet_scripted::ScrollKey::Up,
+        SessionScrollKey::LineDown => genet_scripted::ScrollKey::Down,
+        SessionScrollKey::PageUp => genet_scripted::ScrollKey::PageUp,
+        SessionScrollKey::PageDown => genet_scripted::ScrollKey::PageDown,
+        SessionScrollKey::Home => genet_scripted::ScrollKey::Home,
+        SessionScrollKey::End => genet_scripted::ScrollKey::End,
+    }
+}
+
 /// Map the static lane's click outcome onto the unified enum. The host
 /// resolves a relative href against the current URL (see
 /// [`resolve_href`](crate::href::resolve_href)), same contract as today.
@@ -587,7 +600,6 @@ struct ClipRange<Id> {
     focus_offset: usize,
 }
 
-#[cfg(feature = "incumbent")]
 #[derive(Clone, Copy)]
 struct ClipRect {
     x: f32,
@@ -798,7 +810,6 @@ where
     Some(path)
 }
 
-#[cfg(feature = "incumbent")]
 fn rect_intersects_selection(rect: [f32; 4], selected: &ClipRect) -> bool {
     let selected_right = selected.x + selected.width;
     let selected_bottom = selected.y + selected.height;
@@ -838,7 +849,7 @@ impl<E, Fetch> ScriptedSessionEngine<E, Fetch> {
 impl<E, Fetch> SessionEngine<Scene> for ScriptedSessionEngine<E, Fetch>
 where
     E: script_engine_api::ScriptEngine + 'static,
-    Fetch: genet_scripted::ResourceFetcher + Send + Sync,
+    Fetch: genet_scripted::ResourceFetcher + Clone + Send + Sync + 'static,
 {
     fn engine_id(&self) -> &str {
         &self.engine_id
@@ -849,13 +860,15 @@ where
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let doc = match &request.body {
-            Some(body) => genet_scripted::ScriptedDocument::<E>::from_body(
+            Some(body) => genet_scripted::LiveryScriptedDocument::<E>::from_body(
                 body,
-                &self.fetcher,
+                self.fetcher.clone(),
                 &request.address,
-                None,
             ),
-            None => genet_scripted::ScriptedDocument::<E>::load(&self.fetcher, &request.address),
+            None => genet_scripted::LiveryScriptedDocument::<E>::load(
+                self.fetcher.clone(),
+                &request.address,
+            ),
         }
         .map_err(SessionError::SpawnFailed)?;
         let mut session = ScriptedDocumentSession {
@@ -874,17 +887,20 @@ where
 /// itself and wraps it; the engine above is the simple-seam path.
 #[cfg(feature = "scripted")]
 pub struct ScriptedDocumentSession<E: script_engine_api::ScriptEngine> {
-    doc: genet_scripted::ScriptedDocument<E>,
+    doc: genet_scripted::LiveryScriptedDocument<E>,
     address: String,
 }
 
 #[cfg(feature = "scripted")]
 impl<E: script_engine_api::ScriptEngine + 'static> ScriptedDocumentSession<E> {
-    pub fn new(doc: genet_scripted::ScriptedDocument<E>) -> Self {
+    pub fn new(doc: genet_scripted::LiveryScriptedDocument<E>) -> Self {
         Self::new_at(doc, "about:blank")
     }
 
-    pub fn new_at(doc: genet_scripted::ScriptedDocument<E>, address: impl Into<String>) -> Self {
+    pub fn new_at(
+        doc: genet_scripted::LiveryScriptedDocument<E>,
+        address: impl Into<String>,
+    ) -> Self {
         Self {
             doc,
             address: address.into(),
@@ -903,7 +919,7 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
         self.doc.scroll_by(dx, dy)
     }
     fn scroll_for_key(&mut self, key: SessionScrollKey) -> bool {
-        self.doc.scroll_for_key(layout_scroll_key(key))
+        self.doc.scroll_for_key(scripted_scroll_key(key))
     }
     fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
         // The scripted lane's bool is "a handler consumed it"; navigation
@@ -952,17 +968,47 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
         self.doc.set_hidden(hidden);
     }
     fn inspect(&self) -> Option<inker::ContentReport> {
-        let dom = self.doc.dom();
-        Some(content_report(&*dom))
+        Some(self.doc.with_dom(content_report))
     }
     fn clip(&self) -> Option<DocumentClip> {
         let links = self.doc.links();
         let selection = self.doc.text_selection();
-        let dom = self.doc.dom();
-        match selection {
-            Some(selection) => semantic_clip_from_selection(&self.address, &*dom, selection, links),
-            None => semantic_clip_from_dom(&self.address, &*dom),
-        }
+        self.doc.with_dom(|dom| match selection {
+            Some(selection) => {
+                let mut selected_links = Vec::new();
+                for (url, rect) in links {
+                    if selection.rects.iter().any(|selected| {
+                        rect_intersects_selection(
+                            rect,
+                            &ClipRect {
+                                x: selected.x,
+                                y: selected.y,
+                                width: selected.width,
+                                height: selected.height,
+                            },
+                        )
+                    }) && !selected_links.iter().any(|seen| seen == &url)
+                    {
+                        selected_links.push(url);
+                    }
+                }
+                semantic_clip_from_selection_with_links(
+                    &self.address,
+                    dom,
+                    ClipSelection {
+                        range: ClipRange {
+                            anchor_node: selection.range.anchor_node,
+                            anchor_offset: selection.range.anchor_offset,
+                            focus_node: selection.range.focus_node,
+                            focus_offset: selection.range.focus_offset,
+                        },
+                        text: selection.text,
+                    },
+                    selected_links,
+                )
+            },
+            None => semantic_clip_from_dom(&self.address, dom),
+        })
     }
     /// Observation extras (extract, dom_snapshot, dispatch_event, dom stats)
     /// stay on the concrete type until the observation contract lands
@@ -980,7 +1026,7 @@ impl<E: script_engine_api::ScriptEngine> ScriptedDocumentSession<E> {
     /// The concrete document, for observation downcasts (phase 3 rescope:
     /// extract / dom_snapshot / dispatch_event stay concrete until the
     /// observation contract lands).
-    pub fn document_mut(&mut self) -> &mut genet_scripted::ScriptedDocument<E> {
+    pub fn document_mut(&mut self) -> &mut genet_scripted::LiveryScriptedDocument<E> {
         &mut self.doc
     }
 }
@@ -1121,6 +1167,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// Byte source for spawn-with-body tests; never fetches.
+    #[derive(Clone)]
     struct NoFetch;
     impl ResourceFetcher for NoFetch {
         fn fetch(&self, _url: &str) -> Option<Vec<u8>> {

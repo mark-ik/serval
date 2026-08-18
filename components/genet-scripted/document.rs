@@ -1218,6 +1218,40 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
         handled
     }
 
+    pub fn links(&self) -> Vec<(String, [f32; 4])> {
+        let host = self.rt.host().borrow();
+        let mut links = Vec::new();
+        collect_livery_links(&host.dom, host.dom.document(), &self.cssom, &mut links);
+        links
+    }
+
+    pub fn begin_text_selection(&mut self, x: f32, y: f32) -> bool {
+        self.cssom.begin_text_selection(x, y)
+    }
+
+    pub fn extend_text_selection(&mut self, x: f32, y: f32) -> bool {
+        self.cssom.extend_text_selection(x, y)
+    }
+
+    pub fn finish_text_selection(&mut self, x: f32, y: f32) -> bool {
+        self.cssom.finish_text_selection(x, y)
+    }
+
+    pub fn text_selection(&self) -> Option<genet_livery::TextSelection<NodeId>> {
+        self.cssom.text_selection()
+    }
+
+    pub fn text_target(&self, text: &str) -> Option<([f32; 2], [f32; 2])> {
+        self.cssom.text_target(text)
+    }
+
+    /// Read the runtime-owned live DOM without exposing the runtime handle or
+    /// allowing a borrow to escape the callback.
+    pub fn with_dom<R>(&self, inspect: impl FnOnce(&ScriptedDom) -> R) -> R {
+        let host = self.rt.host().borrow();
+        inspect(&host.dom)
+    }
+
     pub fn pump(&mut self, now_ms: f64) -> (usize, usize) {
         if self.frozen {
             return (0, 0);
@@ -1309,6 +1343,27 @@ fn find_id(dom: &ScriptedDom, node: NodeId, id: &str) -> Option<NodeId> {
     }
     dom.dom_children(node)
         .find_map(|child| find_id(dom, child, id))
+}
+
+#[cfg(feature = "livery")]
+fn collect_livery_links(
+    dom: &ScriptedDom,
+    node: NodeId,
+    cssom: &LiveryCssom,
+    links: &mut Vec<(String, [f32; 4])>,
+) {
+    if dom.kind(node) == layout_dom_api::NodeKind::Element
+        && dom
+            .element_name(node)
+            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("a"))
+        && let Some(href) = dom.attribute(node, &Namespace::default(), &LocalName::from("href"))
+        && let Some(rect) = cssom.fragment_rect(node)
+    {
+        links.push((href.to_owned(), rect));
+    }
+    for child in dom.dom_children(node) {
+        collect_livery_links(dom, child, cssom, links);
+    }
 }
 
 /// Which JS engine the scripted profile runs on. Boa is pure Rust (all targets, the

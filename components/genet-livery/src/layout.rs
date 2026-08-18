@@ -770,6 +770,14 @@ where
             })
     }
 
+    /// Resolve the first shaped occurrence of `text` to its source range.
+    ///
+    /// Retained hosts use this to turn find results into ordinary pointer
+    /// selection gestures without reaching into Livery's text-frame storage.
+    pub fn text_range_for_text(&self, text: &str) -> Option<crate::TextRange<Id>> {
+        self.text_frame()?.find_text_range(text)
+    }
+
     /// The node's principal box's fragment: a table element's grid box, which
     /// owns background, borders, and used `width`/`height` under CSS 2.1
     /// section 17.4. Rectangle queries and paint-effect anchors use

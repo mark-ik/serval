@@ -31,11 +31,10 @@ pub mod smolweb;
 #[cfg(feature = "smolweb")]
 pub use smolweb::{SmolwebDocument, SmolwebPalette, SmolwebTheme};
 
-#[cfg(feature = "livery-scripted")]
-pub use genet_scripted::LiveryScriptedDocument;
 #[cfg(feature = "scripted")]
 pub use genet_scripted::{
-    ResourceFetcher as ScriptResourceFetcher, ScriptedDocument, ScriptedEngine,
+    LiveryScriptedDocument, LiveryScriptedDocument as ScriptedDocument,
+    ResourceFetcher as ScriptResourceFetcher, ScriptedEngine,
 };
 
 pub mod engines;
