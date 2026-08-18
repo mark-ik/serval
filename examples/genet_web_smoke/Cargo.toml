@@ -7,7 +7,7 @@ publish = false
 # Standalone project — intentionally NOT a genet workspace member
 # (same pattern as ../netrender_smoke). Proves the genet engine core
 # renders in a browser: cambium view tree -> ScriptedDom ->
-# genet-layout -> PaintList -> paint_list_render -> netrender ->
+# Livery + Buckram -> PaintList -> paint_list_render -> netrender ->
 # WebGPU canvas surface. No Servo shell, no winit, no JS engine.
 #
 # Build (from genet/ root):
@@ -33,16 +33,16 @@ path = "src/lib.rs"
 # in-genet xilem-serval; same sibling-path pattern as netrender below).
 # Cambium currently declares genet-scripted-dom by version. Patch that
 # registry edge back to this checkout so the ScriptedDom and observable
-# contracts unify with genet-layout's graph.
+# contracts unify with genet-livery's graph.
 cambium = { path = "../../components/cambium/cambium" }
 
 # genet engine core (path deps resolve workspace-inherited fields
 # against the genet workspace root).
 genet-scripted-dom = { path = "../../components/genet-scripted-dom" }
-genet-layout = { path = "../../components/genet-layout" }
+genet-livery = { path = "../../components/genet-livery" }
 
 # rasterizer stack — git deps matching the genet workspace's own
-# netrender source, so paint_list_api unifies with genet-layout's copy
+# netrender source, so paint_list_api unifies with genet-livery's copy
 # (the per-target-webgpu commit is on main; the netrender_smoke pattern).
 netrender = { git = "https://github.com/merely-made/netrender.git", branch = "main" }
 netrender_device = { git = "https://github.com/merely-made/netrender.git", branch = "main" }
@@ -71,10 +71,6 @@ console_error_panic_hook = "0.1"
 # which still selects the old Stylo 0.16 links crate beside genet-stylo 0.19.
 genet-scripted-dom = { path = "../../components/genet-scripted-dom" }
 layout-dom-api = { path = "../../components/shared/layout-dom" }
-# stylo_taffy fork vendored at 0.3.0-beta.1, re-targeted at the
-# genet-stylo fork surface (the old stylo/stylo_atoms git redirect is
-# gone — genet-stylo 0.19 is the one `links = "servo_style_crate"`).
-stylo_taffy = { path = "../../support/patches/stylo_taffy" }
 # taffy fork re-vendored on 0.12.1 (float fixes + flex `order`).
 taffy = { path = "../../support/patches/taffy" }
 # ahash runtime-rng/getrandom-0.3 drop for the wasm graph.

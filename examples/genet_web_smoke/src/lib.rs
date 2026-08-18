@@ -5,11 +5,11 @@
 //! Genet-in-a-browser smoke — the wasm sibling of `netrender_smoke`.
 //!
 //! Receipt shape:
-//! - Register a bundled font (`genet_layout::register_host_font`; wasm has
-//!   no system font registry)
+//! - Register a bundled font in Livery's retained text system (wasm has no
+//!   system font registry)
 //! - Build a woodshed-flavored view tree through `cambium::GenetAppRunner`
 //!   into a `ScriptedDom`
-//! - `genet_layout::lay_out_content` + `emit_band` -> `PaintList`
+//! - Livery cascade + Buckram layout + paint emission -> `PaintList`
 //! - `paint_list_render::translate_paint_cmd_stream` -> `netrender::Scene`
 //! - `netrender_device::boot_async` (WebGPU backend) + canvas surface
 //! - `Renderer::render_vello` -> present
@@ -30,7 +30,10 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use cambium::{AnyView, GenetAppRunner, GenetCtx, GenetElement, View, el, text};
 #[cfg(target_arch = "wasm32")]
-use genet_layout::{NoImageLoader, ScrollOffsets};
+use genet_livery::{
+    Device, InteractionStates, StyleSet, TextSystem, ViewportSizes,
+    emit_paint_list_with_text_system, layout_with_text_system, resolve_styles,
+};
 #[cfg(target_arch = "wasm32")]
 use genet_scripted_dom::ScriptedDom;
 #[cfg(target_arch = "wasm32")]
@@ -50,7 +53,7 @@ const H: u32 = 600;
 #[cfg(target_arch = "wasm32")]
 const SHEET: &str = r#"
 .root { width: 900px; height: 600px; background-color: #171a21; color: #d7dae0;
-        font-family: sans-serif; font-size: 14px; padding: 16px; }
+        font-family: Roboto; font-size: 14px; padding: 16px; }
 .title { font-size: 18px; color: #e8e2d4; margin-bottom: 12px; }
 .pills { display: flex; margin-bottom: 16px; }
 .pill { padding: 6px 14px; margin-right: 6px; border-radius: 14px; color: #9aa0ac; }
@@ -177,7 +180,7 @@ fn view() -> impl View<(), (), GenetCtx, Element = GenetElement> {
             .attr("class", "body"),
             el(
                 "div",
-                text("cambium → genet-layout → paint list → netrender → WebGPU"),
+                text("cambium → Livery + Buckram → paint list → netrender → WebGPU"),
             )
             .attr("class", "caption"),
         ),
@@ -216,7 +219,8 @@ async fn run() -> Result<(), String> {
     // where a hang happens without CDP access.
     set_title("stage: fonts");
     // Fonts: wasm has no system registry; supply Roboto as the sans-serif face.
-    genet_layout::register_host_font(include_bytes!("../assets/Roboto-Regular.ttf").to_vec());
+    let mut text = TextSystem::new();
+    text.register_font_bytes(include_bytes!("../assets/Roboto-Regular.ttf").to_vec());
 
     // View tree -> ScriptedDom.
     set_title("stage: dom");
@@ -227,10 +231,31 @@ async fn run() -> Result<(), String> {
 
     // Layout + paint-list emission.
     set_title("stage: layout");
-    let sheets: Vec<&str> = vec![SHEET];
-    let layout = genet_layout::lay_out_content(&*dom_ref, &sheets, &NoImageLoader, W, H);
+    let styles = resolve_styles(
+        &*dom_ref,
+        &StyleSet::cambium(&[SHEET]),
+        &Device::screen(W as f32, H as f32),
+        &InteractionStates::default(),
+    );
+    let (styles, layout) = layout_with_text_system(
+        &*dom_ref,
+        &styles,
+        W as f32,
+        H as f32,
+        ViewportSizes::uniform(W as f32, H as f32),
+        &mut text,
+        &Default::default(),
+    )
+    .map_err(|error| format!("livery layout: {error:?}"))?;
     set_title("stage: emit");
-    let (list, _scroll, _links) = layout.emit_band(&*dom_ref, 0, H, &ScrollOffsets::default());
+    let list = emit_paint_list_with_text_system(
+        &*dom_ref,
+        &styles,
+        &layout,
+        paint_list_api::DeviceIntSize::new(W as i32, H as i32),
+        1,
+        &mut text,
+    );
     set_title("stage: translate");
     let translated = paint_list_render::translate_paint_cmd_stream(
         list.viewport(),
