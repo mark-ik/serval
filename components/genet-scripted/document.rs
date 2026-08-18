@@ -44,23 +44,23 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use netrender::Scene;
 #[cfg(feature = "render")]
 use std::cell::{Ref, RefCell};
-#[cfg(feature = "render")]
+#[cfg(any(feature = "render", feature = "livery"))]
 use std::rc::Rc;
 
 use engine_observables_api::DomArenaStats;
 #[cfg(feature = "render")]
 use engine_observables_api::LayoutBatchStats;
-#[cfg(feature = "render")]
+#[cfg(any(feature = "render", feature = "livery"))]
 use genet_document_resources::ResolvedDocumentResources;
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 use genet_document_resources::ResourceLimits;
 #[cfg(feature = "render")]
-use genet_layout::{IncrementalLayout, ScrollKey, ScrollOffsets, TextRange, TextSelection};
-#[cfg(all(feature = "livery", feature = "render"))]
+use genet_layout::{IncrementalLayout, ScrollOffsets, TextRange, TextSelection};
+#[cfg(feature = "livery")]
 use genet_livery::Device;
 #[cfg(feature = "render")]
 use genet_render::translated_frame_from_session_dom;
-#[cfg(feature = "render")]
+#[cfg(any(feature = "render", feature = "livery"))]
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use genet_static_dom::{StaticDocument, StaticNodeId};
 use script_engine_api::ScriptEngine;
@@ -68,10 +68,23 @@ use script_engine_api::ScriptEngine;
 use script_runtime_api::ComputedStyleHandler;
 use script_runtime_api::{CookieProvider, Runtime, WebGlFactory};
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 use crate::LiveryCssom;
 use crate::ResourceFetcher;
 use crate::capture::DomCaptureRecorder;
+
+/// Host-neutral keyboard scrolling for either scripted layout engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScrollKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
 
 /// Shared handle to the most recently laid-out frame, so the `getComputedStyle`
 /// bridge can read computed values off it. `None` before the first frame.
@@ -739,7 +752,17 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
         let sheets: Vec<&str> = self.sheets.iter().map(String::as_str).collect();
         let mut session = IncrementalLayout::new(dom, &sheets, w as f32, h as f32);
         session.set_viewport_scroll(dom, self.scroll);
-        let moved = session.scroll_for_key(dom, key);
+        let incumbent_key = match key {
+            ScrollKey::Up => genet_layout::ScrollKey::Up,
+            ScrollKey::Down => genet_layout::ScrollKey::Down,
+            ScrollKey::Left => genet_layout::ScrollKey::Left,
+            ScrollKey::Right => genet_layout::ScrollKey::Right,
+            ScrollKey::PageUp => genet_layout::ScrollKey::PageUp,
+            ScrollKey::PageDown => genet_layout::ScrollKey::PageDown,
+            ScrollKey::Home => genet_layout::ScrollKey::Home,
+            ScrollKey::End => genet_layout::ScrollKey::End,
+        };
+        let moved = session.scroll_for_key(dom, incumbent_key);
         let scroll = session.viewport_scroll();
         let range = session.scroll_range(dom);
         drop(host);
@@ -938,11 +961,11 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
 /// A cloneable, host-owned resource handle. The Livery CSSOM retains one clone
 /// for live stylesheet and asset reconciliation while parser-blocking scripts
 /// read through the other clone during construction.
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 #[derive(Clone)]
 struct SharedResourceFetcher(Rc<dyn ResourceFetcher>);
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 impl ResourceFetcher for SharedResourceFetcher {
     fn fetch(&self, url: &str) -> Option<Vec<u8>> {
         self.0.fetch(url)
@@ -953,10 +976,10 @@ impl ResourceFetcher for SharedResourceFetcher {
     }
 }
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 struct EmptyResourceFetcher;
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 impl ResourceFetcher for EmptyResourceFetcher {
     fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
         None
@@ -969,7 +992,7 @@ impl ResourceFetcher for EmptyResourceFetcher {
 /// keeps no mirror DOM. Livery observes that runtime's exact mutation suffix,
 /// resolves the same host-owned resource graph, then supplies shaped layout and
 /// paint to the product shell.
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 pub struct LiveryScriptedDocument<E: ScriptEngine> {
     // These retained engines are sizeable in a native UI event loop. Heap-own
     // them so the route does not consume the Windows main-thread stack merely
@@ -983,7 +1006,7 @@ pub struct LiveryScriptedDocument<E: ScriptEngine> {
     last_hidden_pump_ms: f64,
 }
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     /// Fetch a document and build the Livery CSSOM session before its first
     /// parser-blocking script executes.
@@ -1277,7 +1300,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     }
 }
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 fn find_id(dom: &ScriptedDom, node: NodeId, id: &str) -> Option<NodeId> {
     if dom.kind(node) == layout_dom_api::NodeKind::Element
         && dom.attribute(node, &Namespace::default(), &LocalName::from("id")) == Some(id)
