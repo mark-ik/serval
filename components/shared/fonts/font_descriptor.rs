@@ -21,13 +21,19 @@ use style::values::computed::{Au, FontStretch, FontStyle, FontSynthesis, FontWei
 /// font data (weight, stretch, etc.).
 #[derive(Clone, Debug, Deserialize, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub struct FontDescriptor {
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub weight: FontWeight,
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub stretch: FontStretch,
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub style: FontStyle,
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub variant: font_variant_caps::T,
     pub pt_size: Au,
     pub variation_settings: Vec<FontVariation>,
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub synthesis_weight: FontSynthesis,
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub optical_sizing: FontOpticalSizing,
 }
 

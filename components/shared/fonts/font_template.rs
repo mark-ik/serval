@@ -43,8 +43,11 @@ impl Deref for FontTemplateRef {
 /// NB: If you change this, you will need to update `style::properties::compute_font_hash()`.
 #[derive(Clone, Debug, Deserialize, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub struct FontTemplateDescriptor {
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub weight: (FontWeight, FontWeight),
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub stretch: (FontStretch, FontStretch),
+    #[ignore_malloc_size_of = "Stylo owns memory accounting for computed font values"]
     pub style: (FontStyle, FontStyle),
     #[ignore_malloc_size_of = "MallocSizeOf does not yet support RangeInclusive"]
     pub unicode_range: Option<Vec<RangeInclusive<u32>>>,
@@ -159,11 +162,13 @@ pub struct FontTemplate {
     /// This is not serialized, as it's only useful in the [`super::FontContext`]
     /// that it is created in.
     #[serde(skip)]
+    #[ignore_malloc_size_of = "Stylo owns stylesheet memory accounting"]
     pub stylesheet: Option<DocumentStyleSheet>,
 
     /// If this font is a web font, this is a reference to the `@font-face` rule that
     /// created it.
     #[serde(skip)]
+    #[ignore_malloc_size_of = "Stylo owns font-face rule memory accounting"]
     pub font_face_rule: Option<FontFaceRule>,
 }
 

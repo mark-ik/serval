@@ -9,7 +9,6 @@
 //! permanent ABI; internal plane storage (IndexVec / FxHashMap /
 //! whatever) stays each lane's implementation detail.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{Point, Rect, SourceNodeId, SourceRange};
@@ -55,7 +54,7 @@ pub trait FragmentQuery {
 /// containing source node, and the local hit point inside the
 /// fragment (so consumers can drive caret positioning without
 /// re-walking).
-#[derive(Clone, Copy, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct FragmentHit<FragmentId: Copy> {
     pub fragment: FragmentId,
     pub source_node: SourceNodeId,
@@ -68,7 +67,7 @@ pub struct FragmentHit<FragmentId: Copy> {
 /// rectangles — content / padding / border / margin — are each in
 /// viewport coordinates. Consumers wanting `getBoundingClientRect`
 /// shape read `border` (the border-edge rect).
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct BoxModel {
     /// Content-box rect (inside padding).
     pub content: Rect,

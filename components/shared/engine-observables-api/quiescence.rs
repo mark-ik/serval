@@ -42,14 +42,13 @@
 //! perpetual sources opts in explicitly via [`fully_idle`](PendingWork::fully_idle)
 //! and owns the hang risk it is accepting.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 /// One surface's pending work, by source, at the moment of asking.
 ///
 /// A snapshot, not a subscription: settling is level-triggered (ask again), so a
 /// harness loop is "apply step, ask until settled, assert" with no sleep in it.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct PendingWork {
     /// In-flight loads (document, subresources) on this surface.
     pub loads: usize,

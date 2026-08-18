@@ -9,7 +9,6 @@
 //! adapters) emit loading events; Hekate records the normalized
 //! snapshot per session; the host displays status / error / progress.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 /// Common-minimum loading-state queries. Implemented by Hekate's
@@ -37,7 +36,7 @@ pub trait LoadingQuery {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub enum LoadingState {
     /// No load in progress yet; session created but request not sent.
@@ -53,7 +52,7 @@ pub enum LoadingState {
 }
 
 /// Progress signal: bytes received vs (optionally) total bytes.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct LoadProgress {
     pub bytes_received: u64,
     /// Total bytes if Content-Length / equivalent is known, else
@@ -63,7 +62,7 @@ pub struct LoadProgress {
 
 /// Minimal TLS handshake summary. Lane-specific protocols (Gemini,
 /// Tor onion) may extend this in their own observables.
-#[derive(Clone, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct TlsSummary {
     pub protocol: String, // e.g., "TLS 1.3"
     pub cipher_suite: String,
@@ -74,7 +73,7 @@ pub struct TlsSummary {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub enum CacheOrigin {
     /// Response came from cache (HTTP cache, lane-specific cache).
@@ -89,7 +88,7 @@ pub enum CacheOrigin {
 /// Categorized load error. Concrete shape per error kind kept
 /// intentionally narrow — consumers usually only need the kind +
 /// summary for display, not deep structured access.
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct LoadError {
     pub kind: LoadErrorKind,
     /// Human-readable summary. Lane-specific.
@@ -97,7 +96,7 @@ pub struct LoadError {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub enum LoadErrorKind {
     /// Couldn't reach the host (DNS, connection refused, timeout).

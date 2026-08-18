@@ -7,11 +7,10 @@
 //! These are cheap, lane-neutral diagnostic shapes: integer counts and rough
 //! byte estimates, not raw plane internals.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 /// Per-kind live-node counts for a DOM arena.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DomNodeKindStats {
     pub documents: usize,
     pub document_fragments: usize,
@@ -23,7 +22,7 @@ pub struct DomNodeKindStats {
 }
 
 /// Cheap live stats for a DOM arena.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DomArenaStats {
     pub live_nodes: usize,
     pub node_kinds: DomNodeKindStats,
@@ -33,7 +32,7 @@ pub struct DomArenaStats {
 }
 
 /// What the last incremental-layout batch did.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LayoutApplyKind {
     #[default]
     Unchanged,
@@ -44,7 +43,7 @@ pub enum LayoutApplyKind {
 }
 
 /// Coarse damage class for the last batch.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LayoutDamageClass {
     #[default]
     None,
@@ -53,7 +52,7 @@ pub enum LayoutDamageClass {
 }
 
 /// Cheap stats for the last incremental-layout batch.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct LayoutBatchStats {
     pub applied: LayoutApplyKind,
     pub damage: LayoutDamageClass,

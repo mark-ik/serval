@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 
-**Status:** founded. No stage started.
+**Status:** L1 complete (2026-08-18). L0 and L2-L7 not started.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
@@ -117,6 +117,37 @@ the incumbent its conformance coverage, which is the oracle. See below.
 
 **L7 - delete.** genet-layout, then the fork dependency, then the servo-*
 cone. Each is the previous one losing its last dependent.
+
+## Execution record
+
+### L1 - complete (2026-08-18)
+
+`engine-observables-api` no longer derives or exposes Servo heap-accounting
+traits. `servo-malloc-size-of` no longer depends on `genet-stylo` or
+`genet-stylo-dom`, and its 53 fork-type bridge references are gone. Both the
+direct observables edge and the indirect edge through `genet-paint-types` are
+therefore fork-free.
+
+The audit missed one Rust ownership consequence: those bridge impls were used
+by `servo-fonts-traits`. Because the accounting trait belongs to
+`servo-malloc-size-of`, the impls cannot move to an incumbent adapter crate.
+The Stylo-owned fields in the font descriptors, templates, and cache keys are
+now explicitly excluded from Servo's memory report instead. Their owning
+values still compile and behave identically; only the retired incumbent's
+deep-size accounting is reduced.
+
+Receipts:
+
+- `cargo tree -p engine-observables-api --prefix none`: zero
+  `genet-stylo` nodes.
+- `cargo tree -p servo-malloc-size-of --prefix none`: zero `genet-stylo`
+  nodes.
+- `cargo test -p engine-observables-api -p servo-malloc-size-of`: 5 passed.
+- `cargo check -p servo-fonts-traits -p genet-layout -p genet-livery`: passed.
+- The wider non-test workspace wall crossed the edited crates and stopped on
+  pre-existing `servo-webgpu-traits` drift against wgpu 30. The all-targets
+  wall also exposes the already-stale Stylo oracle tests. Neither failure is
+  in the L1 dependency cone.
 
 ## The oracle conflict, and its resolution
 
