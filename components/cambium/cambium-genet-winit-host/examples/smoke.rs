@@ -32,9 +32,11 @@ use cambium::{
     AnyView, GenetCtx, GenetElement, PointerEvent, PointerPhase, WheelEvent, clickable, el,
     focusable, on_pointer, on_wheel, text,
 };
+#[cfg(not(target_os = "macos"))]
+use cambium_genet_winit_host::WindowCommands;
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommand,
-    WindowCommands, read_frame, run,
+    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommand, read_frame,
+    run,
 };
 use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
@@ -43,6 +45,7 @@ use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress,
 #[derive(Default)]
 struct Smoke {
     /// The window-verb seam. One field, not four bools.
+    #[cfg(not(target_os = "macos"))]
     window: WindowCommands,
     clicks: usize,
     /// 0..=1, driven by dragging the rail.
@@ -66,10 +69,10 @@ type Logic = fn(&Smoke) -> Child;
 ///
 /// The whole bar is `--app-region: drag` (see the sheet), so pressing it moves
 /// the window, double-clicking it maximizes, and right-clicking raises the
-/// system menu — none of which this file implements. The caption buttons
-/// declare `--app-region: no-drag` to carve themselves out, and each carries a
-/// role and an accessible name, because a hand-drawn frame is invisible to a
-/// screen reader unless the application says otherwise.
+/// system menu — none of which this file implements. Windows/Linux add the
+/// product-drawn caption buttons; macOS keeps AppKit's traffic lights and the
+/// same stylesheet uses `--titlebar-area-*` to place only the title beside them.
+#[cfg(not(target_os = "macos"))]
 fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -> Child {
     Box::new(focusable(clickable(
         el("button", text(label))
@@ -83,18 +86,21 @@ fn caption(label: &'static str, name: &'static str, verb: fn(&WindowCommands)) -
 }
 
 fn title_bar() -> Child {
-    Box::new(
-        el(
-            "div",
-            (
-                el("div", text("host smoke")).attr("class", "caption-title"),
-                caption("–", "Minimize", WindowCommands::minimize),
-                caption("□", "Maximize", WindowCommands::toggle_maximize),
-                caption("×", "Close", WindowCommands::close),
-            ),
-        )
-        .attr("class", "bar"),
-    )
+    #[cfg(target_os = "macos")]
+    let children: Vec<Child> = vec![Box::new(
+        el("div", text("host smoke")).attr("class", "caption-title"),
+    )];
+    #[cfg(not(target_os = "macos"))]
+    let mut children: Vec<Child> = vec![Box::new(
+        el("div", text("host smoke")).attr("class", "caption-title"),
+    )];
+    #[cfg(not(target_os = "macos"))]
+    children.extend([
+        caption("–", "Minimize", WindowCommands::minimize),
+        caption("□", "Maximize", WindowCommands::toggle_maximize),
+        caption("×", "Close", WindowCommands::close),
+    ]);
+    Box::new(el("div", children).attr("class", "bar"))
 }
 
 fn root(state: &Smoke) -> Child {
@@ -104,62 +110,68 @@ fn root(state: &Smoke) -> Child {
             "div",
             (
                 title_bar(),
-                el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
-                focusable(clickable(
-                    el("button", text(format!("clicked {} times", state.clicks)))
-                        .attr("class", "button"),
-                    |s: &mut Smoke, _| {
-                        s.clicks += 1;
-                        let n = s.clicks;
-                        s.note(format!("clicks {n}"));
-                    },
-                )),
-                focusable(clickable(
-                    el("button", text("Reset")).attr("class", "button"),
-                    |s: &mut Smoke, _| {
-                        s.clicks = 0;
-                        s.level = 0.0;
-                        s.note("reset".into());
-                    },
-                )),
-                // A drag rail: the receipt that Down/Move/Up carry the
-                // captured element's own coordinates. The handler normalizes
-                // with nothing but `local` and `size`.
-                on_pointer(
-                    el(
-                        "div",
-                        el("div", ())
-                            .attr("class", "rail-fill")
-                            .attr("style", format!("width:{filled}px;")),
-                    )
-                    .attr("class", "rail")
-                    .attr("role", "slider")
-                    .attr("aria-label", "Level"),
-                    |s: &mut Smoke, e: PointerEvent| {
-                        if e.size.0 > 0.0 && !matches!(e.phase, PointerPhase::Up) {
-                            let level = (e.local.0 / e.size.0).clamp(0.0, 1.0);
-                            if (level - s.level).abs() > 0.004 {
-                                s.level = level;
-                                let pct = (level * 100.0).round() as i32;
-                                s.note(format!("level {pct}"));
-                            }
-                        }
-                    },
-                ),
-                // A wheel panel: the receipt that a handler sees the notch
-                // before the layout scrolls, and can keep it.
-                on_wheel(
-                    el("div", text(format!("wheel notches: {}", state.notches)))
-                        .attr("class", "panel")
-                        .attr("aria-label", "Wheel panel"),
-                    |s: &mut Smoke, e: WheelEvent| {
-                        s.notches += e.delta.1.signum() as i32;
-                        let n = s.notches;
-                        s.note(format!("notches {n}"));
-                        // Keep the notch: the page behind must not also scroll.
-                        e.prevent_default();
-                    },
-                ),
+                el(
+                    "div",
+                    (
+                        el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
+                        focusable(clickable(
+                            el("button", text(format!("clicked {} times", state.clicks)))
+                                .attr("class", "button"),
+                            |s: &mut Smoke, _| {
+                                s.clicks += 1;
+                                let n = s.clicks;
+                                s.note(format!("clicks {n}"));
+                            },
+                        )),
+                        focusable(clickable(
+                            el("button", text("Reset")).attr("class", "button"),
+                            |s: &mut Smoke, _| {
+                                s.clicks = 0;
+                                s.level = 0.0;
+                                s.note("reset".into());
+                            },
+                        )),
+                        // A drag rail: the receipt that Down/Move/Up carry the
+                        // captured element's own coordinates. The handler normalizes
+                        // with nothing but `local` and `size`.
+                        on_pointer(
+                            el(
+                                "div",
+                                el("div", ())
+                                    .attr("class", "rail-fill")
+                                    .attr("style", format!("width:{filled}px;")),
+                            )
+                            .attr("class", "rail")
+                            .attr("role", "slider")
+                            .attr("aria-label", "Level"),
+                            |s: &mut Smoke, e: PointerEvent| {
+                                if e.size.0 > 0.0 && !matches!(e.phase, PointerPhase::Up) {
+                                    let level = (e.local.0 / e.size.0).clamp(0.0, 1.0);
+                                    if (level - s.level).abs() > 0.004 {
+                                        s.level = level;
+                                        let pct = (level * 100.0).round() as i32;
+                                        s.note(format!("level {pct}"));
+                                    }
+                                }
+                            },
+                        ),
+                        // A wheel panel: the receipt that a handler sees the notch
+                        // before the layout scrolls, and can keep it.
+                        on_wheel(
+                            el("div", text(format!("wheel notches: {}", state.notches)))
+                                .attr("class", "panel")
+                                .attr("aria-label", "Wheel panel"),
+                            |s: &mut Smoke, e: WheelEvent| {
+                                s.notches += e.delta.1.signum() as i32;
+                                let n = s.notches;
+                                s.note(format!("notches {n}"));
+                                // Keep the notch: the page behind must not also scroll.
+                                e.prevent_default();
+                            },
+                        ),
+                    ),
+                )
+                .attr("class", "content"),
             ),
         )
         .attr("class", "frame"),
@@ -178,11 +190,12 @@ fn root(state: &Smoke) -> Child {
 // still to reach the atomic-inline path. That is a sizing gap, not a reachability
 // one — the rect the driver gets is the rect that paints.
 const SHEET: &str = "
-.bar { --app-region: drag; background: #1d2733; padding: 6px 8px; margin-bottom: 12px; }
-.caption-title { color: #9fb0c4; }
+.bar { --app-region: drag; display: flex; margin-left: var(--titlebar-area-x, 0px); margin-top: var(--titlebar-area-y, 0px); width: var(--titlebar-area-width, 100%); height: 32px; background: #1d2733; }
+.caption-title { flex-grow: 1; color: #9fb0c4; padding: 6px 8px; }
 .caption { --app-region: no-drag; width: 32px; background: #29486b; color: #f0ebdd; }
 .caption:hover { background: #3a5d85; }
-.frame { padding: 24px; font-size: 16px; background: #14181f; color: #f0ebdd; }
+.frame { font-size: 16px; background: #14181f; color: #f0ebdd; }
+.content { padding: 24px; }
 .title { margin-bottom: 12px; }
 .button { padding: 8px 12px; margin-bottom: 8px; background: #29486b; color: #f0ebdd; width: 240px; }
 .button:hover { background: #3a5d85; }
@@ -203,6 +216,10 @@ struct Lane {
     receipt: Option<std::path::PathBuf>,
     /// Frames captured this run: `(name, width, height, digest, blank)`.
     captures: Vec<(String, u32, u32, u64, bool)>,
+    /// Optional directory for exact frame artifacts. The textual receipt keeps
+    /// compact digests; a headed geometry receipt also needs inspectable pixels.
+    capture_dir: Option<std::path::PathBuf>,
+    capture_errors: Vec<String>,
     finished: bool,
 }
 
@@ -332,6 +349,23 @@ impl Lane {
             Some(frame) => {
                 let digest = frame.digest();
                 let blank = frame.is_blank();
+                if let Some(dir) = self.capture_dir.as_ref() {
+                    let safe_name: String = name
+                        .chars()
+                        .map(|ch| {
+                            if ch.is_ascii_alphanumeric() || ch == '-' {
+                                ch
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect();
+                    let path = dir.join(format!("{safe_name}.bmp"));
+                    if let Err(error) = write_bmp(&path, &frame) {
+                        self.capture_errors
+                            .push(format!("could not write {}: {error}", path.display()));
+                    }
+                }
                 self.captures
                     .push((name, frame.width, frame.height, digest, blank));
             },
@@ -353,7 +387,8 @@ impl Lane {
         let distinct: std::collections::BTreeSet<u64> = self.captures.iter().map(|c| c.3).collect();
         let sizes: std::collections::BTreeSet<(u32, u32)> =
             self.captures.iter().map(|c| (c.1, c.2)).collect();
-        let frames_ok = blanks == 0 && distinct.len() > 1 && sizes.len() > 1;
+        let frames_ok =
+            blanks == 0 && distinct.len() > 1 && sizes.len() > 1 && self.capture_errors.is_empty();
         let ok = outcome.ok && frames_ok;
 
         let result = if ok { "RESULT ok" } else { "RESULT fail" };
@@ -375,9 +410,12 @@ impl Lane {
         if !frames_ok {
             body.push(
                 "FAIL: frames must be non-blank, must differ across a state change, \
-                 and must change size across the resize"
+                 must change size across the resize, and requested artifacts must be written"
                     .to_string(),
             );
+        }
+        for error in &self.capture_errors {
+            body.push(format!("FAIL: {error}"));
         }
         let text = body.join("\n");
         eprintln!("[host-smoke] {text}");
@@ -385,6 +423,51 @@ impl Lane {
             let _ = std::fs::write(path, format!("{text}\n"));
         }
     }
+}
+
+/// Write an inspectable 32-bit BMP without pulling an image codec into the
+/// host example. Rows are bottom-up BGRA, the ordinary uncompressed BMP form.
+fn write_bmp(path: &std::path::Path, frame: &Frame) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "capture path has no parent",
+        )
+    })?)?;
+    let pixel_bytes = frame
+        .width
+        .checked_mul(frame.height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| std::io::Error::other("capture dimensions overflow BMP size"))?;
+    let file_size = 54_u32
+        .checked_add(pixel_bytes)
+        .ok_or_else(|| std::io::Error::other("capture is too large for BMP"))?;
+    let width = i32::try_from(frame.width)
+        .map_err(|_| std::io::Error::other("capture width does not fit BMP"))?;
+    let height = i32::try_from(frame.height)
+        .map_err(|_| std::io::Error::other("capture height does not fit BMP"))?;
+
+    let mut bytes = Vec::with_capacity(file_size as usize);
+    bytes.extend_from_slice(b"BM");
+    bytes.extend_from_slice(&file_size.to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&54_u32.to_le_bytes());
+    bytes.extend_from_slice(&40_u32.to_le_bytes());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&height.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&32_u16.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&pixel_bytes.to_le_bytes());
+    bytes.extend_from_slice(&[0; 16]);
+    for row in (0..frame.height as usize).rev() {
+        let start = row * frame.width as usize * 4;
+        let end = start + frame.width as usize * 4;
+        for rgba in frame.rgba[start..end].chunks_exact(4) {
+            bytes.extend_from_slice(&[rgba[2], rgba[1], rgba[0], 255]);
+        }
+    }
+    std::fs::write(path, bytes)
 }
 
 thread_local! {
@@ -409,6 +492,8 @@ fn main() {
                 scenario: Some(scenario),
                 receipt: std::env::var("HOST_SMOKE_RECEIPT").ok().map(Into::into),
                 captures: Vec::new(),
+                capture_dir: std::env::var("HOST_SMOKE_CAPTURE_DIR").ok().map(Into::into),
+                capture_errors: Vec::new(),
                 finished: false,
             }
         },
@@ -465,9 +550,10 @@ fn main() {
         options,
         // The application takes its end of the window-verb seam and keeps it
         // in state; the caption buttons call it from ordinary handlers.
-        |_window, commands, _wake| Init {
+        |_window, _commands, _wake| Init {
             state: Smoke {
-                window: commands.clone(),
+                #[cfg(not(target_os = "macos"))]
+                window: _commands.clone(),
                 ..Smoke::default()
             },
             logic: root as Logic,
