@@ -1,8 +1,7 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** W0 and W2 landed. W1's macOS implementation and native build have
-landed; its headed Intel-macOS receipt still needs an unlocked Aqua session.
+**Status:** W0, W1, and W2 landed, including W1's headed Intel-macOS receipt.
 W3 and W4 remain staged with reasons; see §8. Originally a research brief,
 kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
@@ -276,8 +275,9 @@ not evidence six months later. Authentication is ordinary SSH, so
 `personae-agent` serves the vault's SSH slots over the OpenSSH pipe and no key
 sits on disk in the clear.
 
-**2026-08-18: W1's macOS implementation landed on the Livery/Buckram lane**
-(`c26e598415c`, smoke correction `8d20e35afbd`).
+**2026-08-18: W1's macOS implementation and headed receipt landed on the
+Livery/Buckram lane** (`c26e598415c`, final smoke/receipt correction
+`f888633f28e`).
 
 Livery now resolves `env()` in longhands, deferred shorthands, custom
 properties, and mixed `var()`/`env()` fallbacks. The host publishes the four
@@ -288,14 +288,24 @@ available rectangle from the standard close/zoom button frames plus
 `contentLayoutRect`. The smoke uses that rectangle in the shared stylesheet
 and omits its product-drawn caption buttons on macOS.
 
-The native build passes on Q-PC, the Intel iMac. A headed attempt observed
-`x=68, width=352, height=28` at 420 logical pixels wide and
-`x=68, width=492, height=28` after the scripted resize. That is useful geometry
-evidence, but it is not a presentation receipt: `loginwindow` was the front
-application and every Metal surface was `Occluded`. The receipt preflight now
-detects that locked-but-still-logged-in state instead of hanging. W1 becomes
-complete when the same scenario produces its three nonblank frame captures in
-an unlocked Aqua session.
+The native build and headed scenario pass on Q-PC, the Intel iMac, at clean
+commit `f888633f28e663fbb428ece002fd38302739983e`. The fetched evidence is
+`testing/genet/192.168.4.105-2026-08-18_203431/`: manifest exit 0 and
+`receipt_result: ok`, receipt SHA-256
+`00778169b6c782477ac27e1e7d10cc46ff0130aa1d8a35a3a2dc224863d3eee2`.
+AppKit published `x=68, width=352, height=28` at 420 logical pixels wide and
+`x=68, width=492, height=28` after the scripted resize. The scenario captured
+three nonblank frames with three distinct digests and two distinct sizes, and
+its semantic button/slider assertions passed.
+
+The receipt also found two lane defects rather than laundering them into a
+pass. A locked Aqua session still reports a console user but leaves every
+Metal surface `Occluded`, so preflight now rejects `loginwindow` in front. The
+first unlocked run exited 0 while its app receipt said `RESULT fail`; the
+script now treats the app-authored result as authoritative. That failure also
+showed that a fixed-position smoke titlebar left probe geometry inconsistent
+with hit-testing. Keeping the titlebar in normal flow and padding its content
+separately passes the same scenario on Windows and macOS.
 
 **Still staged, with reasons rather than intentions:**
 
