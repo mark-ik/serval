@@ -1,10 +1,10 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** W0, W1's seam and W2 landed, plus window-geometry validation from
-§6. W1's macOS half compiles on Intel macOS; its headed same-stylesheet
-receipt remains. W3 and W4 remain staged with reasons. See §8. Originally a
-research brief, kept as the design record.
+**Status:** W0, W1 and W2 landed, plus window-geometry validation from §6. W1
+has a same-stylesheet headed receipt on Windows and Intel macOS. W3 and W4
+remain staged with reasons. See §8. Originally a research brief, kept as the
+design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -274,28 +274,40 @@ not evidence six months later. Authentication is ordinary SSH, so
 `personae-agent` serves the vault's SSH slots over the OpenSSH pipe and no key
 sits on disk in the clear.
 
+**2026-08-19: W1 landed on Windows and Intel macOS** (genet
+`02a71acbda5`). `HostWindow::titlebar_insets` is the seam: the platform reports
+what it reserved along the top edge and the neutral layer turns that into the
+four Window-Controls-Overlay values, because computing them needs a window
+width the platform layer does not have. They are published as a `:root` rule
+carrying `--titlebar-area-*` custom properties, not an inline style on the
+root, whose `style` attribute belongs to the application. This stands in for
+`env()` exactly as `--app-region` stands in for the `app-region` longhand.
+macOS keeps its frame decorated and makes the title bar transparent over a
+full-size content view; passing `decorations = false` there is borderless and
+takes the traffic lights with it. The insets are measured from the buttons'
+own frames rather than assumed at a size Apple has changed before.
+
+The smoke's one stylesheet uses those four values on both platforms and now
+writes exact frame readbacks. Windows returned `RESULT ok` with three nonblank,
+distinct frames at 840x640 and 1120x800 in
+`testing/genet/w1-current-main-windows-2026-08-19_142326/`. The unlocked Intel
+iMac ran the same scenario from a clean `02a71acbda5` checkout in its Aqua
+session and returned `RESULT ok` with the same sizes in
+`testing/genet/192.168.4.105-2026-08-19_152925/`. The macOS frames reserve 138
+pixels at the left of the overlay for AppKit's controls, start the app title in
+the remaining region, and keep ordinary content below the 32-pixel bar through
+resize. Native traffic lights are compositor chrome and therefore absent from
+the in-process pixels; Aqua preflight plus the AppKit-measured reservation is
+the headed platform half of the proof. The macOS `opened.bmp` SHA-256 is
+`0c9d31cbb54c5f6b73a86b3bdd7e2e653d0796b81447e93cf780835f553bff1c`.
+
+The iMac compile initially exposed dependency drift: its ignored lockfile still
+resolved Netrender before `apply_limit_buckets` landed. Resolving Netrender at
+`f6d449843` fixed that compatibility defect; both the compile and headed receipt
+then passed on current `main`.
+
 **Staged, with reasons rather than intentions:**
 
-- **W1's macOS half: compiled 2026-08-19; headed receipt remains.**
-  `HostWindow::titlebar_insets` is the seam: the platform reports what it
-  reserved along the top edge and the neutral layer turns that into the four
-  Window-Controls-Overlay values, because computing them needs a window width
-  the platform layer does not have. They are published as a `:root` rule
-  carrying `--titlebar-area-*` custom properties — not an inline style on the
-  root, whose `style` attribute belongs to the application — standing in for
-  `env()` exactly as `--app-region` stands in for the `app-region` longhand.
-  macOS keeps its frame *decorated* and makes the title bar transparent over a
-  full-size content view; passing `decorations = false` there is borderless and
-  takes the traffic lights with it. The insets are measured off the buttons'
-  own frames rather than assumed at a size Apple has changed before.
-
-  Windows-side compiles and four geometry tests pass. On 2026-08-19,
-  `cargo check -p cambium-genet-winit-host` also passed on the Intel iMac at
-  Genet `722db15ae04`, resolving Netrender at `f6d449843`. The earlier failure
-  was dependency drift: the iMac still resolved Netrender before its
-  `apply_limit_buckets` API landed. **What remains is the headed receipt**,
-  since the done-condition is that one stylesheet lays out correctly on both
-  platforms, which a compile does not show.
 - **W3's platform quirks.** The maximized-overflow inset is Windows
   `WM_NCCALCSIZE` work behind winit; `_GTK_FRAME_EXTENTS` and the
   libdecor fallback need X11 and Wayland sessions. Each is a receipt on a
