@@ -220,6 +220,10 @@ struct Lane {
     /// compact digests; a headed geometry receipt also needs inspectable pixels.
     capture_dir: Option<std::path::PathBuf>,
     capture_errors: Vec<String>,
+    /// Optional file an external platform probe creates when it has finished
+    /// observing this exact window. This keeps a headed receipt bounded without
+    /// guessing how many frames native inspection will take.
+    release_file: Option<std::path::PathBuf>,
     finished: bool,
 }
 
@@ -254,6 +258,13 @@ impl Automatable for Probe<'_, '_> {
             .with_field("level", ((state.level * 100.0).round() as i32).to_string())
             .with_field("notches", state.notches.to_string())
             .with_field("captures", self.lane.captures.len().to_string())
+            .with_field(
+                "maximized",
+                self.ctx
+                    .geometry
+                    .map(|geometry| geometry.maximized.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            )
     }
 
     fn drain_events(&mut self) -> Vec<String> {
@@ -291,9 +302,12 @@ impl Automatable for Probe<'_, '_> {
     }
 
     fn busy(&mut self) -> Option<bool> {
-        // Nothing asynchronous in this example: a step's effect is in the
-        // state by the time the next frame lays out.
-        Some(false)
+        Some(
+            self.lane
+                .release_file
+                .as_ref()
+                .is_some_and(|path| !path.exists()),
+        )
     }
 }
 
@@ -315,6 +329,13 @@ impl Driveable for Probe<'_, '_> {
                 // Resizing goes through the window-verb queue, like every
                 // other window verb, rather than through a native handle.
                 self.ctx.window_commands.push(WindowCommand::Resize(w, h));
+                Ok(())
+            },
+            Some("await-release") => {
+                let path = std::env::var_os("HOST_SMOKE_RELEASE_FILE")
+                    .map(std::path::PathBuf::from)
+                    .ok_or("await-release wants HOST_SMOKE_RELEASE_FILE")?;
+                self.lane.release_file = Some(path);
                 Ok(())
             },
             _ => Err(format!("unknown verb: {line}")),
@@ -494,6 +515,7 @@ fn main() {
                 captures: Vec::new(),
                 capture_dir: std::env::var("HOST_SMOKE_CAPTURE_DIR").ok().map(Into::into),
                 capture_errors: Vec::new(),
+                release_file: None,
                 finished: false,
             }
         },

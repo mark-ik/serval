@@ -1,0 +1,23 @@
+# Windows W3a: the actual Cambium CSD window must fill the monitor work area
+# without painting under the taskbar or spilling past another monitor edge.
+# `scripts/windows-maximized-receipt.ps1` observes the same HWND while this
+# scenario remains maximized, then creates HOST_SMOKE_RELEASE_FILE.
+
+log W3a: opened the restored Cambium window
+assert snap maximized == false
+capture restored
+
+click role:button Maximize
+settle 4
+assert snap maximized == true
+capture maximized
+
+await-release
+wait 600
+assert snap maximized == true
+
+click role:button Maximize
+settle 4
+assert snap maximized == false
+capture restored-again
+log W3a: maximized client rect matched the Windows work area and restored
