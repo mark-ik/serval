@@ -44,3 +44,10 @@ winit = { workspace = true }
 # The tests drive the harness by role/label, and read the DOM directly for the
 # assertions the state does not carry.
 layout_dom_api = { package = "layout-dom-api", path = "../../shared/layout-dom" }
+
+# macOS only, and only for one thing: reading the traffic lights' own frames so
+# the reserved region is measured rather than guessed at a size Apple has
+# changed before. winit already builds on objc2, so this adds no new toolchain.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3"
+raw-window-handle = "0.6"

@@ -90,6 +90,10 @@ impl HostWindow for WinitWindow {
             winit::dpi::LogicalSize::new(width, height),
         );
     }
+
+    fn titlebar_insets(&self) -> cambium_rootstock::TitlebarInsets {
+        crate::decorations::titlebar_insets(&self.0)
+    }
 }
 /// The winit window's presentation surface, as the neutral seam sees it.
 ///
@@ -436,12 +440,43 @@ where
                 winit::dpi::LogicalPosition::new(40.0, 8.0),
                 winit::dpi::LogicalSize::new(want.0, want.1),
             ));
+        // macOS does not do client-side decorations the way Windows and Linux
+        // do. Turning decorations off there removes the traffic lights along
+        // with the title bar, which is not what a Mac user expects of a
+        // window; the platform's own answer is a full-size content view --
+        // content extends under a transparent title bar while the system keeps
+        // drawing and placing the buttons. That is why this path exists and
+        // why `titlebar_insets` is nonzero only here.
+        //
+        // Note what this does NOT do: pass `decorations = false` through. On
+        // macOS that is borderless, which takes the traffic lights with it.
+        // The frame stays decorated and the title bar is made transparent
+        // instead, so the buttons remain exactly where a Mac user reaches for
+        // them while the page draws behind them.
+        #[cfg(target_os = "macos")]
+        let (attributes, decorated) = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            let attributes = Window::default_attributes();
+            if self.options.decorations {
+                (attributes, true)
+            } else {
+                (
+                    attributes
+                        .with_titlebar_transparent(true)
+                        .with_fullsize_content_view(true)
+                        .with_title_hidden(true),
+                    true,
+                )
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (attributes, decorated) = (Window::default_attributes(), self.options.decorations);
         let window = Arc::new(
             event_loop
                 .create_window(
-                    Window::default_attributes()
+                    attributes
                         .with_title(self.options.title.clone())
-                        .with_decorations(self.options.decorations)
+                        .with_decorations(decorated)
                         // Hidden until the a11y adapter is installed on the
                         // first frame — the Windows AccessKit adapter must
                         // attach before the window is shown. Revealed in

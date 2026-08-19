@@ -490,6 +490,11 @@ pub(crate) fn run_for_element<NodeId: Copy + Eq + Hash>(
         word_spacing: word_spacing_of(styles, id).unwrap_or(0.0),
         line_height: line_height_of(styles, id).unwrap_or_default(),
         no_wrap: no_wrap_of(styles, id),
+        overflow_wrap: styles
+            .get(id)
+            .and_then(|e| e.borrow_data())
+            .map(|d| overflow_wrap_from_computed(d.styles.primary()))
+            .unwrap_or_default(),
     }
 }
 
@@ -553,6 +558,7 @@ pub(crate) fn run_from_computed(cv: &ComputedValues, text: String) -> InlineRun 
         word_spacing: itext.word_spacing.resolve(Length::new(fs)).px(),
         line_height,
         no_wrap: no_wrap_from_computed(cv),
+        overflow_wrap: overflow_wrap_from_computed(cv),
     }
 }
 

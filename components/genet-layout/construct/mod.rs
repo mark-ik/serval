@@ -30,7 +30,7 @@ use crate::image_decode::ImagePlane;
 use crate::style::StylePlane;
 use crate::text_measure::{
     EdgeSizes, FontFamilySpec, GenericFamilyKind, InlineBlockBox, InlineBoxItem, InlineContent,
-    InlineRun, InlineTextAlign, LineHeightSpec,
+    InlineOverflowWrap, InlineRun, InlineTextAlign, LineHeightSpec,
 };
 
 /// Default font size used for runs whose element has no cascaded
@@ -230,6 +230,15 @@ fn no_wrap_of<NodeId: Copy + Eq + Hash>(styles: &StylePlane<NodeId>, id: NodeId)
 fn no_wrap_from_computed(cv: &ComputedValues) -> bool {
     use style::properties::longhands::text_wrap_mode::computed_value::T as Mode;
     matches!(cv.get_inherited_text().text_wrap_mode, Mode::Nowrap)
+}
+
+fn overflow_wrap_from_computed(cv: &ComputedValues) -> InlineOverflowWrap {
+    use style::values::computed::OverflowWrap;
+    match cv.get_inherited_text().overflow_wrap {
+        OverflowWrap::Normal => InlineOverflowWrap::Normal,
+        OverflowWrap::BreakWord => InlineOverflowWrap::BreakWord,
+        OverflowWrap::Anywhere => InlineOverflowWrap::Anywhere,
+    }
 }
 
 /// Map the readable CSS alignment values onto Parley's three stable line

@@ -92,22 +92,49 @@ where
     /// runner's DOM mutations, apply them incrementally or rebuild, advance the
     /// CSS-transition clock, and re-render the custom-paint leaves at their new
     /// boxes. No GPU, no window. Returns whether an animation is still live.
+    /// Republish the Window-Controls-Overlay titlebar area when it changes.
+    ///
+    /// As a stylesheet rule rather than an inline style on the root: the root's
+    /// `style` attribute belongs to the application, and a host that
+    /// overwrites it each frame would silently drop whatever the app put
+    /// there. A `:root` rule declares the same inheriting custom properties
+    /// without touching the DOM at all.
+    ///
+    /// Returns whether the values moved, because a changed sheet has to force
+    /// the full relayout path — the incremental one applies DOM mutations, and
+    /// this is not one.
+    fn publish_titlebar_area(&mut self, lw: f32) -> bool {
+        let insets = self
+            .s
+            .window
+            .as_ref()
+            .map_or(crate::TitlebarInsets::NONE, |w| w.titlebar_insets());
+        if self.s.titlebar_published == Some((insets, lw)) {
+            return false;
+        }
+        self.s.titlebar_published = Some((insets, lw));
+        self.s.titlebar_sheet = format!(":root {{ {} }}", insets.declarations(lw));
+        true
+    }
+
     pub fn relayout(&mut self, lw: f32, lh: f32) -> bool {
         let Some(runner) = self.s.runner.as_ref() else {
             return false;
         };
         let now_s = self.s.anim_base.elapsed().as_secs_f64();
+        let titlebar_moved = self.publish_titlebar_area(lw);
+        let runner = self.s.runner.as_ref().expect("checked above");
         let dom = runner.dom();
         let mut muts: Vec<DomMutation<NodeId>> = Vec::new();
         dom.borrow_mut().drain_mutations(&mut muts);
         let dom_ref = dom.borrow();
-        let sheets: Vec<&str> = vec![self.s.sheet.as_str()];
+        let sheets: Vec<&str> = vec![self.s.sheet.as_str(), self.s.titlebar_sheet.as_str()];
         let structural = muts
             .iter()
             .any(|m| !matches!(m, DomMutation::AttributeChanged { .. }));
         let size_changed = self.s.layout_size != (lw, lh);
         match self.s.layout.as_mut() {
-            Some(layout) if !structural && !size_changed => {
+            Some(layout) if !structural && !size_changed && !titlebar_moved => {
                 // Advance the CSS-transition clock to now, then apply this
                 // frame's mutations, so a transition a class-swap starts runs
                 // from *now*, not a stale idle-frozen clock.

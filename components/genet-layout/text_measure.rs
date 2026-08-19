@@ -28,7 +28,8 @@ use std::sync::Mutex;
 
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, GenericFamily,
-    InlineBox, InlineBoxKind, Layout, LayoutContext, LineHeight, StyleProperty, TextWrapMode,
+    InlineBox, InlineBoxKind, Layout, LayoutContext, LineHeight, OverflowWrap, StyleProperty,
+    TextWrapMode,
 };
 use rustc_hash::FxHashMap;
 use taffy::InlineFloatBand;
@@ -93,6 +94,27 @@ pub enum LineHeightSpec {
     Px(f32),
 }
 
+/// A run's cascaded `overflow-wrap`, mirrored locally so construction does not
+/// leak Stylo values into measurement. Parley receives the equivalent value at
+/// shaping time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InlineOverflowWrap {
+    #[default]
+    Normal,
+    BreakWord,
+    Anywhere,
+}
+
+impl InlineOverflowWrap {
+    fn parley(self) -> OverflowWrap {
+        match self {
+            Self::Normal => OverflowWrap::Normal,
+            Self::BreakWord => OverflowWrap::BreakWord,
+            Self::Anywhere => OverflowWrap::Anywhere,
+        }
+    }
+}
+
 /// One styled run of text within an inline formatting context — a
 /// maximal span sharing one cascaded font + color (the text of a
 /// single inline element / text node). `construct` produces these by
@@ -139,6 +161,8 @@ pub struct InlineRun {
     /// rather than a leaf-wide measure shortcut, so Parley can still receive the
     /// real line width and position a centered or end-aligned no-wrap line.
     pub no_wrap: bool,
+    /// Emergency breaking for an otherwise unbreakable run.
+    pub overflow_wrap: InlineOverflowWrap,
 }
 
 impl InlineRun {
@@ -160,6 +184,7 @@ impl InlineRun {
             word_spacing: 0.0,
             line_height: LineHeightSpec::Normal,
             no_wrap: false,
+            overflow_wrap: InlineOverflowWrap::Normal,
         }
     }
 }
@@ -340,6 +365,7 @@ impl<NodeId> InlineContent<NodeId> {
                 word_spacing: 0.0,
                 line_height: LineHeightSpec::Normal,
                 no_wrap: false,
+                overflow_wrap: InlineOverflowWrap::Normal,
             }],
             boxes: Vec::new(),
             align: InlineTextAlign::Start,
@@ -932,6 +958,10 @@ fn shape_inline_layout<NodeId>(
             } else {
                 TextWrapMode::Wrap
             }),
+            range.clone(),
+        );
+        builder.push(
+            StyleProperty::OverflowWrap(run.overflow_wrap.parley()),
             range.clone(),
         );
     }

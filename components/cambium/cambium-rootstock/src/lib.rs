@@ -75,6 +75,73 @@ pub trait HostWindow {
 
     /// Where the composition window should sit, in logical coordinates.
     fn set_ime_cursor_area(&self, x: f64, y: f64, width: f64, height: f64);
+
+    /// What the platform keeps for itself across the window's top edge, in
+    /// logical pixels.
+    ///
+    /// Unlike maximize, both implementations can answer this honestly: a PWA
+    /// in a browser window has exactly this concept, and it is the same one --
+    /// Window Controls Overlay's `env(titlebar-area-*)` names the complement,
+    /// the part of the title bar the page may draw into. So it belongs here
+    /// rather than on the winit side alone.
+    ///
+    /// The default reserves nothing, which is the truth on a platform where
+    /// the host draws every control itself (Windows and Linux CSD). macOS is
+    /// the case that is not zero: its traffic lights stay system-drawn even
+    /// under a full-size content view.
+    fn titlebar_insets(&self) -> TitlebarInsets {
+        TitlebarInsets::default()
+    }
+}
+
+/// What the platform reserved along the top edge, in logical pixels.
+///
+/// Insets rather than the spec's rect because that is the part the platform
+/// actually knows. What the page gets is the window's width minus these, which
+/// needs a width the window has and the platform layer does not -- so the
+/// neutral layer computes the published values from this.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TitlebarInsets {
+    /// Reserved at the leading edge — macOS's traffic lights.
+    pub left: f32,
+    /// Reserved at the trailing edge — a platform that puts its controls right.
+    pub right: f32,
+    /// How tall the reserved strip is. Zero means nothing is reserved at all,
+    /// so a stylesheet reserving `--titlebar-area-height` gets a no-op rather
+    /// than a mystery gap.
+    pub height: f32,
+}
+
+impl TitlebarInsets {
+    /// Nothing reserved.
+    pub const NONE: Self = Self {
+        left: 0.0,
+        right: 0.0,
+        height: 0.0,
+    };
+
+    /// The four Window-Controls-Overlay values for a window `width` logical
+    /// pixels across: the run of title bar the page may draw into.
+    ///
+    /// Clamped at zero so a window narrower than its own controls publishes an
+    /// empty area rather than a negative width that would lay out inside out.
+    pub fn titlebar_area(&self, width: f32) -> (f32, f32, f32, f32) {
+        let available = (width - self.left - self.right).max(0.0);
+        (self.left, 0.0, available, self.height)
+    }
+
+    /// The published declarations, in the order x, y, width, height.
+    ///
+    /// Custom properties rather than `env()` because genet has no `env()` yet,
+    /// exactly as `--app-region` stands in for the `app-region` longhand. A
+    /// stylesheet reads `var(--titlebar-area-height)` today and `env(...)` the
+    /// day livery grows it; the host publishing does not change either way.
+    pub fn declarations(&self, width: f32) -> String {
+        let (x, y, w, h) = self.titlebar_area(width);
+        format!(
+            "--titlebar-area-x: {x}px; --titlebar-area-y: {y}px;              --titlebar-area-width: {w}px; --titlebar-area-height: {h}px;"
+        )
+    }
 }
 
 /// What the host presents onto.

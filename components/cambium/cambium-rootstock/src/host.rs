@@ -266,6 +266,12 @@ where
     /// The frame behind the neutral seam: redraw, size, scale, IME. A browser
     /// event source supplies a canvas here.
     pub window: Option<Box<dyn HostWindow>>,
+    /// The last published titlebar area and the width it was computed for, so
+    /// the sheet is rebuilt only when one of them actually moves.
+    pub titlebar_published: Option<(crate::TitlebarInsets, f32)>,
+    /// The `:root` rule carrying the published custom properties. Empty until
+    /// the first publish, which is a valid stylesheet.
+    pub titlebar_sheet: String,
     /// The presentation surface behind the neutral seam. A browser event
     /// source supplies the same pair against a canvas.
     pub surface: Option<Box<dyn Surface>>,
@@ -342,6 +348,8 @@ where
     pub fn new() -> Self {
         Self {
             window: None,
+            titlebar_published: None,
+            titlebar_sheet: String::new(),
             surface: None,
             runner: None,
             layout: None,

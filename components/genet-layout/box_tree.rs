@@ -3310,6 +3310,51 @@ mod tests {
         );
     }
 
+    /// `overflow-wrap` reaches Parley's emergency-break policy. Normal wrapping
+    /// leaves an unbroken token on one overflowing line; either emergency mode
+    /// breaks the same intact source text across the available width.
+    #[test]
+    fn overflow_wrap_breaks_an_unbroken_token() {
+        let line_count = |overflow_wrap: &str| {
+            let document = StaticDocument::parse(
+                "<html><body><p>averyveryverylongunbrokenwatchtargetwithoutpunctuation</p></body></html>",
+            );
+            let sheet = format!(
+                "p {{ display: block; width: 40px; font-size: 16px; overflow-wrap: {overflow_wrap}; }}"
+            );
+            let mut styles: StylePlane<StaticNodeId> = StylePlane::new();
+            run_cascade(
+                &document,
+                &mut styles,
+                euclid::Size2D::new(VIEWPORT, VIEWPORT),
+                &[sheet.as_str()],
+                None,
+            );
+            let images = ImagePlane::decode_from_dom(&document);
+            let viewport = Size {
+                width: AvailableSpace::Definite(VIEWPORT),
+                height: AvailableSpace::Definite(VIEWPORT),
+            };
+            let mut text_ctx = TextMeasureCtx::new();
+            let (_f, built) =
+                layout_via_box_tree(&document, &styles, &images, viewport, &mut text_ctx);
+            let p = find_all(&document, html5ever::local_name!("p"))[0];
+            let taffy_id = *built.node_map.get(&p).expect("p box");
+            text_ctx
+                .layouts
+                .get(&taffy_id)
+                .expect("p text laid out")
+                .len()
+        };
+
+        assert_eq!(line_count("normal"), 1, "normal leaves the token intact");
+        assert!(line_count("anywhere") > 1, "anywhere adds emergency breaks");
+        assert!(
+            line_count("break-word") > 1,
+            "break-word adds emergency breaks"
+        );
+    }
+
     /// A block-`display` `::before` / `::after` becomes a synthetic block box
     /// child (first / last), laid out in block flow: each stretches to the
     /// container width and stacks vertically, with the element's own text between.

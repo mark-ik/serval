@@ -34,6 +34,7 @@
 use cambium_rootstock::HostWindow;
 use std::cell::RefCell;
 
+use cambium_rootstock::TitlebarInsets;
 use genet_scripted_dom::NodeId;
 
 use crate::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
@@ -332,5 +333,133 @@ mod tests {
             maximized: false,
         };
         assert!(!sunk.is_reachable_on(&[laptop]));
+    }
+}
+
+/// What this platform reserves along the window's top edge.
+///
+/// Windows and Linux under CSD reserve nothing: the host draws every caption
+/// control itself, inside the page, so the whole top edge is the stylesheet's.
+/// macOS is the exception and the reason W1 exists — its traffic lights stay
+/// system-drawn and system-placed even under a full-size content view, so a
+/// stylesheet that puts a control at the top-left would put it underneath
+/// them.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn titlebar_insets(_window: &winit::window::Window) -> TitlebarInsets {
+    TitlebarInsets::NONE
+}
+
+/// macOS: the traffic lights, measured rather than assumed.
+///
+/// Their size and spacing are the system's to change (and did change between
+/// releases), so the rect is read off the buttons themselves. A window without
+/// them — one created with the standard title bar rather than the full-size
+/// content view — reserves nothing, because the page is not drawing up there
+/// at all.
+#[cfg(target_os = "macos")]
+pub(crate) fn titlebar_insets(window: &winit::window::Window) -> TitlebarInsets {
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return TitlebarInsets::NONE;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return TitlebarInsets::NONE;
+    };
+    // The handle names the content view; its window owns the buttons.
+    let view: &objc2_app_kit::NSView = unsafe { handle.ns_view.cast().as_ref() };
+    let Some(ns_window) = view.window() else {
+        return TitlebarInsets::NONE;
+    };
+    let mut right = 0.0f32;
+    let mut bottom = 0.0f32;
+    for which in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        let Some(button) = ns_window.standardWindowButton(which) else {
+            continue;
+        };
+        // Buttons are laid out in the window's flipped-y coordinates; convert
+        // to the content view's so the values mean what a stylesheet means by
+        // "from the top".
+        let frame = button.frame();
+        let in_view = view.convertRect_fromView(frame, unsafe { ns_window.contentView() }.as_deref());
+        right = right.max((in_view.origin.x + in_view.size.width) as f32);
+        bottom = bottom.max((in_view.origin.y + in_view.size.height) as f32);
+    }
+    if right <= 0.0 {
+        return TitlebarInsets::NONE;
+    }
+    // A margin past the last button, so a control butted against the reserved
+    // region does not sit flush with the zoom button.
+    const GUTTER: f32 = 8.0;
+    TitlebarInsets {
+        left: right + GUTTER,
+        right: 0.0,
+        height: bottom.max(28.0),
+    }
+}
+
+#[cfg(test)]
+mod titlebar_tests {
+    use super::*;
+
+    /// The published area is what is left after the platform's own controls.
+    #[test]
+    fn the_area_is_the_window_minus_the_reserved_edges() {
+        let insets = TitlebarInsets {
+            left: 78.0,
+            right: 0.0,
+            height: 28.0,
+        };
+        assert_eq!(insets.titlebar_area(1000.0), (78.0, 0.0, 922.0, 28.0));
+    }
+
+    /// A window narrower than its own controls publishes an empty area rather
+    /// than a negative width, which would lay a reserving stylesheet out
+    /// inside out.
+    #[test]
+    fn a_window_narrower_than_its_controls_publishes_nothing() {
+        let insets = TitlebarInsets {
+            left: 78.0,
+            right: 40.0,
+            height: 28.0,
+        };
+        let (x, _, width, _) = insets.titlebar_area(50.0);
+        assert_eq!(x, 78.0);
+        assert_eq!(width, 0.0);
+    }
+
+    /// Reserving nothing is the honest answer where the host draws every
+    /// control, and it publishes a zero-height strip so a stylesheet's
+    /// reservation collapses instead of leaving a gap.
+    #[test]
+    fn reserving_nothing_publishes_a_full_width_zero_height_area() {
+        assert_eq!(
+            TitlebarInsets::NONE.titlebar_area(800.0),
+            (0.0, 0.0, 800.0, 0.0)
+        );
+    }
+
+    /// The declarations are the four custom properties a stylesheet reads.
+    #[test]
+    fn the_declarations_name_all_four_properties() {
+        let text = TitlebarInsets {
+            left: 78.0,
+            right: 0.0,
+            height: 28.0,
+        }
+        .declarations(1000.0);
+        for property in [
+            "--titlebar-area-x: 78px",
+            "--titlebar-area-y: 0px",
+            "--titlebar-area-width: 922px",
+            "--titlebar-area-height: 28px",
+        ] {
+            assert!(text.contains(property), "{property} in {text}");
+        }
     }
 }
