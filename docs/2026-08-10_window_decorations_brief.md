@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-10
 **Status:** W0, W1 and W2 landed, plus window-geometry validation from §6. W1
-has a same-stylesheet headed receipt on Windows and Intel macOS. W3 and W4
-remain staged with reasons. See §8. Originally a research brief, kept as the
-design record.
+has same-stylesheet headed receipts on Windows, Intel macOS and Apple Silicon
+macOS. W3 and W4 remain staged with reasons. See §8. Originally a research
+brief, kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -274,7 +274,7 @@ not evidence six months later. Authentication is ordinary SSH, so
 `personae-agent` serves the vault's SSH slots over the OpenSSH pipe and no key
 sits on disk in the clear.
 
-**2026-08-19: W1 landed on Windows and Intel macOS** (genet
+**2026-08-19: W1 landed on Windows and both macOS architectures** (genet
 `02a71acbda5`). `HostWindow::titlebar_insets` is the seam: the platform reports
 what it reserved along the top edge and the neutral layer turns that into the
 four Window-Controls-Overlay values, because computing them needs a window
@@ -300,6 +300,15 @@ resize. Native traffic lights are compositor chrome and therefore absent from
 the in-process pixels; Aqua preflight plus the AppKit-measured reservation is
 the headed platform half of the proof. The macOS `opened.bmp` SHA-256 is
 `0c9d31cbb54c5f6b73a86b3bdd7e2e653d0796b81447e93cf780835f553bff1c`.
+
+Mayola's Apple M4 iMac then ran the same scenario from a clean `b0d5120fe74`
+checkout in its Aqua session, returning `RESULT ok` with the same frame counts
+and sizes in `testing/genet/192.168.4.57-2026-08-19_153505/`. Its measured
+traffic-light reservation is 154 pixels rather than the Intel iMac's 138. The
+same stylesheet adapts to both measurements and preserves the content boundary
+through resize, which is stronger evidence for the platform seam than two
+machines returning the same assumed constant. The M4 `opened.bmp` SHA-256 is
+`976a0972e91bba6e7059083faf79c8ef39868eede55fd69e20cafb7259a779c5`.
 
 The iMac compile initially exposed dependency drift: its ignored lockfile still
 resolved Netrender before `apply_limit_buckets` landed. Resolving Netrender at
