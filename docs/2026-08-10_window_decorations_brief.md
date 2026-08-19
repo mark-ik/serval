@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-10
 **Status:** W0, W1's seam and W2 landed, plus window-geometry validation from
-§6. W1's macOS half is written but not yet compiled on macOS; W3 and W4 remain
-staged with reasons. See §8. Originally a research brief, kept as the design record.
+§6. W1's macOS half compiles on Intel macOS; its headed same-stylesheet
+receipt remains. W3 and W4 remain staged with reasons. See §8. Originally a
+research brief, kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -275,7 +276,7 @@ sits on disk in the clear.
 
 **Staged, with reasons rather than intentions:**
 
-- **W1's macOS half — written 2026-08-17, compile-unverified on macOS.**
+- **W1's macOS half: compiled 2026-08-19; headed receipt remains.**
   `HostWindow::titlebar_insets` is the seam: the platform reports what it
   reserved along the top edge and the neutral layer turns that into the four
   Window-Controls-Overlay values, because computing them needs a window width
@@ -288,16 +289,13 @@ sits on disk in the clear.
   takes the traffic lights with it. The insets are measured off the buttons'
   own frames rather than assumed at a size Apple has changed before.
 
-  Windows-side compiles and four geometry tests pass. The macOS compile could
-  not be taken: the iMac's tree fails in `genet-render-host`, which expects
-  `apply_limit_buckets` on netrender types the resolved netrender does not
-  have — a cross-repo drift from concurrent work. Verified as not-mine by a
-  control: the identical error occurs with my patch stashed. Retry by applying
-  the W1 commit's `components/cambium` diff to the iMac and running
-  `cargo check -p cambium-genet-winit-host` once that drift settles. **What
-  remains after that is the receipt**, since the done-condition is that one
-  stylesheet lays out correctly on both platforms, which a compile does not
-  show.
+  Windows-side compiles and four geometry tests pass. On 2026-08-19,
+  `cargo check -p cambium-genet-winit-host` also passed on the Intel iMac at
+  Genet `722db15ae04`, resolving Netrender at `f6d449843`. The earlier failure
+  was dependency drift: the iMac still resolved Netrender before its
+  `apply_limit_buckets` API landed. **What remains is the headed receipt**,
+  since the done-condition is that one stylesheet lays out correctly on both
+  platforms, which a compile does not show.
 - **W3's platform quirks.** The maximized-overflow inset is Windows
   `WM_NCCALCSIZE` work behind winit; `_GTK_FRAME_EXTENTS` and the
   libdecor fallback need X11 and Wayland sessions. Each is a receipt on a
