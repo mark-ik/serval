@@ -32,7 +32,9 @@ mod path;
 mod slot;
 
 pub use arrange::{Placement, VirtualWindow};
-pub use glyphs::{GraphCanvas, GraphGlyph, GraphGlyphNode, GraphViewport, Knob, Meter};
+pub use glyphs::{
+    GraphCanvas, GraphGlyph, GraphGlyphNode, GraphGlyphRelation, GraphViewport, Knob, Meter,
+};
 pub use grid::{GridColumn, GridSpec};
 pub use path::Path;
 pub use slot::SceneSlot;

@@ -19,6 +19,17 @@ pub struct GraphGlyphNode {
     pub color: ColorF,
 }
 
+/// One independently painted relation route in normalized graph coordinates.
+///
+/// The route is already resolved by the caller. Sprigging owns projection and
+/// paint only, so a straight edge, a fanned parallel edge, and an authored
+/// multi-segment route all travel through the same leaf path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphGlyphRelation {
+    pub points: Vec<(f32, f32)>,
+    pub emphasized: bool,
+}
+
 /// Pane-local camera for a [`GraphCanvas`]. Pan is expressed in normalized
 /// scene coordinates; zoom is centred on `(0.5, 0.5)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,6 +67,9 @@ pub struct GraphCanvas {
     nodes: Vec<GraphGlyphNode>,
     /// Index pairs into `nodes`; out-of-range pairs are skipped.
     edges: Vec<(u16, u16)>,
+    /// Routed relations. Kept beside legacy endpoint edges so existing glyph
+    /// callers do not need to manufacture routes.
+    relations: Vec<GraphGlyphRelation>,
     pub node_radius: f32,
     pub edge_width: f32,
     pub edge_color: ColorF,
@@ -76,6 +90,7 @@ impl GraphCanvas {
         Self {
             nodes,
             edges,
+            relations: Vec::new(),
             node_radius: 2.5,
             edge_width: 1.0,
             edge_color: ColorF {
@@ -110,6 +125,15 @@ impl GraphCanvas {
         self.nodes = nodes;
         self.edges = edges;
         self.dirty = true;
+    }
+
+    /// Replace independently routed relations. Points are normalized and pass
+    /// through the same viewport as nodes and endpoint-only edges.
+    pub fn set_relations(&mut self, relations: Vec<GraphGlyphRelation>) {
+        if self.relations != relations {
+            self.relations = relations;
+            self.dirty = true;
+        }
     }
 
     /// Change the pane-local camera. A bounded swatch and a full canvas use the
@@ -167,7 +191,7 @@ impl Leaf for GraphCanvas {
             node.set_label(format!(
                 "graph: {} nodes, {} links",
                 self.nodes.len(),
-                self.edges.len()
+                self.edges.len() + self.relations.len()
             ));
         }
     }
@@ -192,6 +216,31 @@ impl Leaf for GraphCanvas {
             cx.stroke_path(
                 Path::polyline(&[(ax, ay), (bx, by)]),
                 round_stroke(self.edge_color, self.edge_width),
+            );
+        }
+        for relation in &self.relations {
+            if relation.points.len() < 2 {
+                continue;
+            }
+            let points = relation
+                .points
+                .iter()
+                .map(|point| self.viewport.project(*point, s, inset))
+                .collect::<Vec<_>>();
+            cx.stroke_path(
+                Path::polyline(&points),
+                round_stroke(
+                    if relation.emphasized {
+                        self.selection_color
+                    } else {
+                        self.edge_color
+                    },
+                    if relation.emphasized {
+                        self.edge_width * 2.0
+                    } else {
+                        self.edge_width
+                    },
+                ),
             );
         }
         for (index, n) in self.nodes.iter().enumerate() {
@@ -555,6 +604,38 @@ mod tests {
             count(&cmds, |cmd| matches!(cmd, PaintCmd::DrawPath(_))),
             4,
             "hover wash + selection ring + focus ring + node"
+        );
+    }
+
+    #[test]
+    fn graph_canvas_paints_authored_and_fanned_routes_as_polylines() {
+        let mut canvas = GraphCanvas::new(
+            Vec::new(),
+            Vec::new(),
+            Size {
+                width: 100.0,
+                height: 60.0,
+            },
+        );
+        canvas.set_relations(vec![
+            GraphGlyphRelation {
+                points: vec![(0.1, 0.5), (0.5, 0.25), (0.9, 0.5)],
+                emphasized: false,
+            },
+            GraphGlyphRelation {
+                points: vec![(0.1, 0.5), (0.5, 0.75), (0.9, 0.5)],
+                emphasized: true,
+            },
+        ]);
+
+        let cmds = paint_of(&mut canvas, 100.0, 60.0);
+        assert_eq!(
+            count(
+                &cmds,
+                |cmd| matches!(cmd, PaintCmd::DrawPath(path) if path.stroke.is_some())
+            ),
+            2,
+            "each relation remains a separately painted route"
         );
     }
 

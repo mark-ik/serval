@@ -9,7 +9,7 @@
 //! [`GraphViewport`] as the leaf. Paint, hit targets, keyboard focus, and hover
 //! therefore stay aligned without teaching a paint leaf about app actions.
 
-use sprigging::{ColorF, GraphCanvas, GraphGlyphNode, GraphViewport, Size};
+use sprigging::{ColorF, GraphCanvas, GraphGlyphNode, GraphGlyphRelation, GraphViewport, Size};
 
 use crate::component::{ComponentView, component};
 use crate::{
@@ -127,13 +127,17 @@ pub struct GraphCanvasEdge<Id> {
 /// the source relation. Unlike [`GraphCanvasEdge`], it deliberately does not
 /// collapse two relations that share endpoints. Visibility and emphasis are
 /// projection state: they do not change graph truth.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GraphCanvasRelation<Id> {
     pub id: String,
     pub from: Id,
     pub to: Id,
     pub kind: String,
     pub label: String,
+    /// Authored normalized route. Two points name a straight route and may be
+    /// fanned when sibling relation cells share its endpoints; three or more
+    /// points are preserved as an explicit polyline.
+    pub route: Vec<(f32, f32)>,
     pub visible: bool,
     pub emphasized: bool,
 }
@@ -277,15 +281,7 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
                 })
                 .collect()
         } else {
-            self.relations
-                .iter()
-                .filter(|relation| relation.visible)
-                .filter_map(|relation| {
-                    let from = self.node_index(Some(&relation.from))?;
-                    let to = self.node_index(Some(&relation.to))?;
-                    Some((from, to))
-                })
-                .collect()
+            Vec::new()
         };
         let mut leaf = GraphCanvas::new(
             nodes,
@@ -297,6 +293,17 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
         );
         leaf.node_radius = self.node_radius;
         leaf.edge_width = self.edge_width;
+        if !self.relations.is_empty() {
+            leaf.set_relations(
+                self.relation_routes()
+                    .into_iter()
+                    .map(|(relation, points)| GraphGlyphRelation {
+                        points,
+                        emphasized: relation.emphasized,
+                    })
+                    .collect(),
+            );
+        }
         leaf.set_viewport(self.viewport);
         leaf.set_emphasis(
             self.node_index(self.selected.as_ref()),
@@ -321,16 +328,36 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
             .collect()
     }
 
-    /// Visible relation cells with their projected route endpoints. This is
-    /// shared by retained paint and native relation targets, so a relation is
-    /// neither hittable when hidden nor represented at a stale position.
-    pub fn projected_relations(&self) -> Vec<(&GraphCanvasRelation<Id>, (f32, f32), (f32, f32))> {
+    /// Visible relation cells with their projected polylines. This is shared by
+    /// retained paint and native relation targets, so a relation is neither
+    /// hittable when hidden nor represented at stale endpoint geometry.
+    pub fn projected_relations(&self) -> Vec<(&GraphCanvasRelation<Id>, Vec<(f32, f32)>)> {
         let size = Size {
             width: self.width as f32,
             height: self.height as f32,
         };
         let inset = self.node_radius + self.edge_width;
-        self.relations
+        self.relation_routes()
+            .into_iter()
+            .map(|(relation, route)| {
+                (
+                    relation,
+                    route
+                        .into_iter()
+                        .map(|point| self.viewport.project(point, size, inset))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Resolve authored routes and endpoint-only relation cells into distinct
+    /// normalized polylines. Parallel cells fan around their shared chord;
+    /// authored routes with a real interior are left alone.
+    fn relation_routes(&self) -> Vec<(&GraphCanvasRelation<Id>, Vec<(f32, f32)>)> {
+        const FAN_GAP: f32 = 0.075;
+        let visible = self
+            .relations
             .iter()
             .filter(|relation| relation.visible)
             .filter_map(|relation| {
@@ -338,17 +365,66 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
                     .graph
                     .nodes
                     .iter()
-                    .find(|node| node.id == relation.from)?;
+                    .position(|node| node.id == relation.from)?;
                 let to = self
                     .graph
                     .nodes
                     .iter()
-                    .find(|node| node.id == relation.to)?;
-                Some((
-                    relation,
-                    self.viewport.project(from.position, size, inset),
-                    self.viewport.project(to.position, size, inset),
-                ))
+                    .position(|node| node.id == relation.to)?;
+                Some((relation, from, to))
+            })
+            .collect::<Vec<_>>();
+
+        visible
+            .iter()
+            .enumerate()
+            .map(|(visible_index, (relation, from, to))| {
+                if relation.route.len() > 2 {
+                    return (*relation, relation.route.clone());
+                }
+
+                let a = self.graph.nodes[*from].position;
+                let b = self.graph.nodes[*to].position;
+                if from == to {
+                    let rank = visible[..visible_index]
+                        .iter()
+                        .filter(|(_, peer_from, peer_to)| peer_from == from && peer_to == to)
+                        .count() as f32;
+                    let radius = 0.08 + rank * 0.035;
+                    return (
+                        *relation,
+                        vec![
+                            a,
+                            (a.0 + radius, a.1 - radius),
+                            (a.0 + radius * 1.35, a.1 + radius),
+                            a,
+                        ],
+                    );
+                }
+
+                let same_pair = |peer_from: usize, peer_to: usize| {
+                    (peer_from == *from && peer_to == *to) || (peer_from == *to && peer_to == *from)
+                };
+                let peers = visible
+                    .iter()
+                    .filter(|(_, peer_from, peer_to)| same_pair(*peer_from, *peer_to))
+                    .collect::<Vec<_>>();
+                if peers.len() == 1 {
+                    return (*relation, vec![a, b]);
+                }
+                let rank = peers
+                    .iter()
+                    .position(|(peer, _, _)| std::ptr::eq(*peer, *relation))
+                    .unwrap_or_default() as f32;
+                let offset = (rank - (peers.len() as f32 - 1.0) * 0.5) * FAN_GAP;
+                let dx = b.0 - a.0;
+                let dy = b.1 - a.1;
+                let length = (dx * dx + dy * dy).sqrt().max(0.0001);
+                let middle = (
+                    (a.0 + b.0) * 0.5 - dy / length * offset,
+                    (a.1 + b.1) * 0.5 + dx / length * offset,
+                );
+                (*relation, vec![a, middle, b])
             })
             .collect()
     }
@@ -393,6 +469,29 @@ fn graph_position_at(
         ((x - 0.5 - viewport.pan.0) / zoom + 0.5).clamp(0.0, 1.0),
         ((y - 0.5 - viewport.pan.1) / zoom + 0.5).clamp(0.0, 1.0),
     )
+}
+
+/// The segment crossing a polyline's half-length point. Relation hit targets
+/// sit on this segment, which keeps parallel fanned cells independently
+/// reachable instead of stacking every target on the shared endpoint chord.
+fn route_midpoint_segment(points: &[(f32, f32)]) -> Option<((f32, f32), (f32, f32))> {
+    let segments = points
+        .windows(2)
+        .map(|pair| {
+            let dx = pair[1].0 - pair[0].0;
+            let dy = pair[1].1 - pair[0].1;
+            (pair[0], pair[1], (dx * dx + dy * dy).sqrt())
+        })
+        .collect::<Vec<_>>();
+    let total = segments.iter().map(|(_, _, length)| *length).sum::<f32>();
+    let mut walked = 0.0;
+    for (from, to, length) in &segments {
+        if walked + length >= total * 0.5 {
+            return Some((*from, *to));
+        }
+        walked += length;
+    }
+    segments.last().map(|(from, to, _)| (*from, *to))
 }
 
 /// Render a bounded graph canvas with one native node target per painted node.
@@ -727,7 +826,8 @@ where
     let relation_targets: Vec<_> = swatch
         .projected_relations()
         .into_iter()
-        .map(|(relation, (from_x, from_y), (to_x, to_y))| {
+        .filter_map(|(relation, route)| {
+            let ((from_x, from_y), (to_x, to_y)) = route_midpoint_segment(&route)?;
             let dx = to_x - from_x;
             let dy = to_y - from_y;
             let length = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -746,9 +846,9 @@ where
                 .attr(
                     "style",
                     format!(
-                        "position:absolute;left:{}px;top:{}px;width:{length}px;height:44px;transform:rotate({angle}deg);",
+                        "position:absolute;left:{}px;top:{}px;width:{length}px;height:20px;transform:rotate({angle}deg);",
                         midpoint_x - length / 2.0,
-                        midpoint_y - 22.0,
+                        midpoint_y - 10.0,
                     ),
                 );
             if relation.emphasized {
@@ -758,7 +858,7 @@ where
             let click_id = relation.id.clone();
             let hover = on_relation_hover.clone();
             let hover_id = relation.id.clone();
-            on_hover(
+            Some(on_hover(
                 on_click(target, move |state: &mut State, _: PointerClick| {
                     click(state, click_id.clone())
                 }),
@@ -767,7 +867,7 @@ where
                     HoverPhase::Leave => hover(state, None),
                     HoverPhase::Move => {}
                 },
-            )
+            ))
         })
         .collect();
     let targets: Vec<_> = swatch
@@ -1237,6 +1337,7 @@ mod tests {
                 to: 2,
                 kind: "Citation".into(),
                 label: "First node cites Second node".into(),
+                route: Vec::new(),
                 visible: true,
                 emphasized: true,
             },
@@ -1246,6 +1347,7 @@ mod tests {
                 to: 2,
                 kind: "Quotation".into(),
                 label: "First node quotes Second node".into(),
+                route: Vec::new(),
                 visible: true,
                 emphasized: false,
             },
@@ -1255,6 +1357,7 @@ mod tests {
                 to: 2,
                 kind: "Hidden".into(),
                 label: "This relation is hidden".into(),
+                route: Vec::new(),
                 visible: false,
                 emphasized: false,
             },
@@ -1301,10 +1404,42 @@ mod tests {
             to: 2,
             kind: "Hidden".into(),
             label: "This relation is hidden".into(),
+            route: Vec::new(),
             visible: false,
             emphasized: false,
         }]);
         assert!(swatch.projected_relations().is_empty());
+    }
+
+    #[test]
+    fn parallel_relation_cells_fan_into_distinct_painted_routes() {
+        let swatch = model(None, None).with_relations(vec![
+            GraphCanvasRelation {
+                id: "one".into(),
+                from: 1,
+                to: 2,
+                kind: "First".into(),
+                label: "First relation".into(),
+                route: Vec::new(),
+                visible: true,
+                emphasized: false,
+            },
+            GraphCanvasRelation {
+                id: "two".into(),
+                from: 1,
+                to: 2,
+                kind: "Second".into(),
+                label: "Second relation".into(),
+                route: Vec::new(),
+                visible: true,
+                emphasized: false,
+            },
+        ]);
+        let routes = swatch.projected_relations();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].1.len(), 3);
+        assert_eq!(routes[1].1.len(), 3);
+        assert_ne!(routes[0].1[1], routes[1].1[1], "fan midpoints diverge");
     }
 
     #[test]
