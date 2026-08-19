@@ -32,11 +32,11 @@ use cambium::{
     AnyView, GenetCtx, GenetElement, PointerEvent, PointerPhase, WheelEvent, clickable, el,
     focusable, on_pointer, on_wheel, text,
 };
+#[cfg(not(target_os = "macos"))]
+use cambium_genet_winit_host::WindowCommands;
 use cambium_genet_winit_host::{
     AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, read_frame, run,
 };
-#[cfg(not(target_os = "macos"))]
-use cambium_genet_winit_host::WindowCommands;
 use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
 // ------------------------------------------------------------------ state
@@ -109,62 +109,68 @@ fn root(state: &Smoke) -> Child {
             "div",
             (
                 title_bar(),
-                el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
-                focusable(clickable(
-                    el("button", text(format!("clicked {} times", state.clicks)))
-                        .attr("class", "button"),
-                    |s: &mut Smoke, _| {
-                        s.clicks += 1;
-                        let n = s.clicks;
-                        s.note(format!("clicks {n}"));
-                    },
-                )),
-                focusable(clickable(
-                    el("button", text("Reset")).attr("class", "button"),
-                    |s: &mut Smoke, _| {
-                        s.clicks = 0;
-                        s.level = 0.0;
-                        s.note("reset".into());
-                    },
-                )),
-                // A drag rail: the receipt that Down/Move/Up carry the
-                // captured element's own coordinates. The handler normalizes
-                // with nothing but `local` and `size`.
-                on_pointer(
-                    el(
-                        "div",
-                        el("div", ())
-                            .attr("class", "rail-fill")
-                            .attr("style", format!("width:{filled}px;")),
-                    )
-                    .attr("class", "rail")
-                    .attr("role", "slider")
-                    .attr("aria-label", "Level"),
-                    |s: &mut Smoke, e: PointerEvent| {
-                        if e.size.0 > 0.0 && !matches!(e.phase, PointerPhase::Up) {
-                            let level = (e.local.0 / e.size.0).clamp(0.0, 1.0);
-                            if (level - s.level).abs() > 0.004 {
-                                s.level = level;
-                                let pct = (level * 100.0).round() as i32;
-                                s.note(format!("level {pct}"));
-                            }
-                        }
-                    },
-                ),
-                // A wheel panel: the receipt that a handler sees the notch
-                // before the layout scrolls, and can keep it.
-                on_wheel(
-                    el("div", text(format!("wheel notches: {}", state.notches)))
-                        .attr("class", "panel")
-                        .attr("aria-label", "Wheel panel"),
-                    |s: &mut Smoke, e: WheelEvent| {
-                        s.notches += e.delta.1.signum() as i32;
-                        let n = s.notches;
-                        s.note(format!("notches {n}"));
-                        // Keep the notch: the page behind must not also scroll.
-                        e.prevent_default();
-                    },
-                ),
+                el(
+                    "div",
+                    (
+                        el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
+                        focusable(clickable(
+                            el("button", text(format!("clicked {} times", state.clicks)))
+                                .attr("class", "button"),
+                            |s: &mut Smoke, _| {
+                                s.clicks += 1;
+                                let n = s.clicks;
+                                s.note(format!("clicks {n}"));
+                            },
+                        )),
+                        focusable(clickable(
+                            el("button", text("Reset")).attr("class", "button"),
+                            |s: &mut Smoke, _| {
+                                s.clicks = 0;
+                                s.level = 0.0;
+                                s.note("reset".into());
+                            },
+                        )),
+                        // A drag rail: the receipt that Down/Move/Up carry the
+                        // captured element's own coordinates. The handler normalizes
+                        // with nothing but `local` and `size`.
+                        on_pointer(
+                            el(
+                                "div",
+                                el("div", ())
+                                    .attr("class", "rail-fill")
+                                    .attr("style", format!("width:{filled}px;")),
+                            )
+                            .attr("class", "rail")
+                            .attr("role", "slider")
+                            .attr("aria-label", "Level"),
+                            |s: &mut Smoke, e: PointerEvent| {
+                                if e.size.0 > 0.0 && !matches!(e.phase, PointerPhase::Up) {
+                                    let level = (e.local.0 / e.size.0).clamp(0.0, 1.0);
+                                    if (level - s.level).abs() > 0.004 {
+                                        s.level = level;
+                                        let pct = (level * 100.0).round() as i32;
+                                        s.note(format!("level {pct}"));
+                                    }
+                                }
+                            },
+                        ),
+                        // A wheel panel: the receipt that a handler sees the notch
+                        // before the layout scrolls, and can keep it.
+                        on_wheel(
+                            el("div", text(format!("wheel notches: {}", state.notches)))
+                                .attr("class", "panel")
+                                .attr("aria-label", "Wheel panel"),
+                            |s: &mut Smoke, e: WheelEvent| {
+                                s.notches += e.delta.1.signum() as i32;
+                                let n = s.notches;
+                                s.note(format!("notches {n}"));
+                                // Keep the notch: the page behind must not also scroll.
+                                e.prevent_default();
+                            },
+                        ),
+                    ),
+                )
+                .attr("class", "content"),
             ),
         )
         .attr("class", "frame"),
@@ -183,11 +189,12 @@ fn root(state: &Smoke) -> Child {
 // still to reach the atomic-inline path. That is a sizing gap, not a reachability
 // one — the rect the driver gets is the rect that paints.
 const SHEET: &str = "
-.bar { --app-region: drag; position: fixed; display: flex; left: env(titlebar-area-x, 0px); top: env(titlebar-area-y, 0px); width: env(titlebar-area-width, 100%); height: env(titlebar-area-height, 32px); background: #1d2733; }
+.bar { --app-region: drag; display: flex; margin-left: env(titlebar-area-x, 0px); margin-top: env(titlebar-area-y, 0px); width: env(titlebar-area-width, 100%); height: env(titlebar-area-height, 32px); background: #1d2733; }
 .caption-title { flex-grow: 1; color: #9fb0c4; padding: 6px 8px; }
 .caption { --app-region: no-drag; width: 32px; background: #29486b; color: #f0ebdd; }
 .caption:hover { background: #3a5d85; }
-.frame { padding: calc(env(titlebar-area-height, 32px) + 24px) 24px 24px; font-size: 16px; background: #14181f; color: #f0ebdd; }
+.frame { font-size: 16px; background: #14181f; color: #f0ebdd; }
+.content { padding: 24px; }
 .title { margin-bottom: 12px; }
 .button { padding: 8px 12px; margin-bottom: 8px; background: #29486b; color: #f0ebdd; width: 240px; }
 .button:hover { background: #3a5d85; }

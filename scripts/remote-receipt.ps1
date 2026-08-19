@@ -325,6 +325,24 @@ if (Test-Path $landed) {
 $fetched = Get-ChildItem -Recurse -File $Out
 Note "fetched $($fetched.Count) file(s) to $Out"
 
+# Cargo exiting cleanly only says the receipt app shut down normally. The
+# scenario can still have failed its own assertions, so the app-authored
+# RESULT line is authoritative whenever a receipt path was requested.
+$fetchedReceipt = $null
+$receiptResult = $null
+if ($ReceiptEnv) {
+    $fetchedReceipt = Join-Path $Out (Split-Path $remoteReceipt -Leaf)
+    if (Test-Path $fetchedReceipt) {
+        $resultLine = Get-Content $fetchedReceipt |
+            Where-Object { $_ -match '^RESULT\s+' } |
+            Select-Object -First 1
+        if ($resultLine -match '^RESULT\s+(\S+)') { $receiptResult = $Matches[1] }
+        else { $receiptResult = 'missing' }
+    } else {
+        $receiptResult = 'missing'
+    }
+}
+
 # ---------------------------------------------------------------- manifest
 #
 # The receipt about the receipt: what ran, where, against which commit. A
@@ -346,6 +364,7 @@ $manifest = [ordered]@{
     session      = if ($Platform -eq 'linux') { $sessionKind } else { 'aqua' }
     ran_at_utc   = (Get-Date).ToUniversalTime().ToString('o')
     exit_code    = $runCode
+    receipt_result = $receiptResult
     env          = $envPairs
     artifacts    = @($fetched | ForEach-Object {
         [ordered]@{
@@ -366,8 +385,12 @@ Note "$Repo on $hostLabel ($remoteOs)"
 Note "commit $($remoteCommit.Substring(0, 12))$(if ($remoteDirty -gt 0) { ' + local edits' })"
 foreach ($file in $fetched | Sort-Object Name) { Note "  $($file.Name) ($($file.Length) bytes)" }
 
-$appReceipt = Get-ChildItem $Out -Filter '*.receipt' -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+$appReceipt = if ($fetchedReceipt -and (Test-Path $fetchedReceipt)) {
+    Get-Item $fetchedReceipt
+} else {
+    Get-ChildItem $Out -Filter '*.receipt' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
 if ($appReceipt) {
     Write-Host ''
     Get-Content $appReceipt.FullName | ForEach-Object { Write-Host "    $_" }
@@ -398,6 +421,10 @@ Write-Host ''
 if ($runCode -ne 0) {
     Warn "the run exited $runCode — artifacts were kept, but this is not a pass"
     exit $runCode
+}
+if ($ReceiptEnv -and $receiptResult -ne 'ok') {
+    Warn "the app receipt reported RESULT $receiptResult; artifacts were kept, but this is not a pass"
+    exit 1
 }
 Write-Host "Receipt in $Out" -ForegroundColor Green
 if (-not $IngestBin) {
