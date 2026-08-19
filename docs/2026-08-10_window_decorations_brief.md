@@ -3,8 +3,9 @@
 **Date:** 2026-08-10
 **Status:** W0, W1 and W2 landed, plus window-geometry validation from §6. W1
 has same-stylesheet headed receipts on Windows, Intel macOS and Apple Silicon
-macOS. W3 and W4 remain staged with reasons. See §8. Originally a research
-brief, kept as the design record.
+macOS. W3's Windows maximized-overflow receipt also landed; its Linux halves
+and W4 remain staged with reasons. See §8. Originally a research brief, kept as
+the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -315,12 +316,34 @@ resolved Netrender before `apply_limit_buckets` landed. Resolving Netrender at
 `f6d449843` fixed that compatibility defect; both the compile and headed receipt
 then passed on current `main`.
 
+**2026-08-19: W3a Windows maximized overflow verified** (genet
+`82caf0d71e6`). The pinned winit already handles `WM_NCCALCSIZE`; this was a
+receipt task, not new Win32 frame code. `scripts/windows-maximized-receipt.ps1`
+runs the real Cambium CSD window, waits until the semantic scenario has
+maximized it, and measures that same HWND before releasing the scenario to
+restore.
+
+The clean run in
+`testing/genet/w3a-windows-maximized-2026-08-19_171837/` returned `RESULT ok`
+from both sides. Win32 reported an outer DWM rect of
+`[-7,-7,1286,758]`, but the drawable client and monitor work rect were both
+exactly `[0,0,1280,752]`: zero overflow on all four edges. The app captured
+three nonblank frames at 840x640, 2560x1504 and 840x640; the restored frames
+have the same digest, so maximize/restore returned to the original pixels. The
+`maximized.bmp` SHA-256 is
+`34c23ad84d430bb51c9b1596207cfeea765c8eb5cf25356f9c1d1be06e03d0e4`.
+
 **Staged, with reasons rather than intentions:**
 
-- **W3's platform quirks.** The maximized-overflow inset is Windows
-  `WM_NCCALCSIZE` work behind winit; `_GTK_FRAME_EXTENTS` and the
-  libdecor fallback need X11 and Wayland sessions. Each is a receipt on a
-  machine, not a refactor.
+- **W3b Wayland frame policy.** The current host sets `decorations = false`
+  for its app-drawn frame, so pinned winit explicitly requests client mode and
+  hides its SCTK `WinitFrame`. The earlier “SSD-preferring fallback” description
+  is not a route the product currently has. Before another decoration
+  implementation, expose a user choice of `System`, `App`, or `Prefer system`
+  and project the effective compositor result back to the app so native and app
+  titlebars cannot both appear.
+- **W3c X11 shadow.** `_GTK_FRAME_EXTENTS` is still absent and wants its own
+  headed X11 shadow receipt. It is independent of Wayland frame negotiation.
 - **W4 Snap Layouts.** Still gated on winit#3884 or the `tauri-plugin-frame`
   child-HWND route, and worth its cost only for a Windows-first product.
 - **Window-state persistence** has its host half (`AppCtx::geometry` plus
