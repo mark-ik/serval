@@ -1777,7 +1777,51 @@ const SHELL_GLOBALS_BOOTSTRAP: &str = r#"
   globalThis.opener = null;
   // `globalThis.location` is installed by the `platform` surface (a live view of
   // the document URL, defaulting to about:blank); not snapshotted here.
-  globalThis.navigator = { userAgent: 'genet', platform: '', language: 'en-US' };
+  function Navigator() {}
+  globalThis.Navigator = Navigator;
+  globalThis.navigator = new Navigator();
+  globalThis.navigator.userAgent = 'genet';
+  globalThis.navigator.platform = '';
+  globalThis.navigator.language = 'en-US';
+
+  // Window Controls Overlay's non-installed browsing-context answer. The
+  // browser lane has no app-owned native title bar, so the overlay is hidden
+  // and its titlebar area is the empty DOMRect. Keep this object stable: the
+  // WebIDL attribute is [SameObject], and consumers retain it for
+  // `geometrychange` listeners even while it is hidden.
+  function DOMRect(x, y, width, height) {
+    this.x = Number(x || 0);
+    this.y = Number(y || 0);
+    this.width = Number(width || 0);
+    this.height = Number(height || 0);
+    this.left = Math.min(this.x, this.x + this.width);
+    this.right = Math.max(this.x, this.x + this.width);
+    this.top = Math.min(this.y, this.y + this.height);
+    this.bottom = Math.max(this.y, this.y + this.height);
+  }
+  globalThis.DOMRect = DOMRect;
+
+  function WindowControlsOverlay() {
+    EventTarget.call(this);
+  }
+  WindowControlsOverlay.prototype = Object.create(EventTarget.prototype);
+  WindowControlsOverlay.prototype.constructor = WindowControlsOverlay;
+  WindowControlsOverlay.prototype.ongeometrychange = null;
+  Object.defineProperty(WindowControlsOverlay.prototype, 'visible', {
+    configurable: true,
+    enumerable: true,
+    get: function() { return false; }
+  });
+  WindowControlsOverlay.prototype.getTitlebarAreaRect = function() {
+    return new DOMRect(0, 0, 0, 0);
+  };
+  globalThis.WindowControlsOverlay = WindowControlsOverlay;
+  var windowControlsOverlay = new WindowControlsOverlay();
+  Object.defineProperty(Navigator.prototype, 'windowControlsOverlay', {
+    configurable: true,
+    enumerable: true,
+    get: function() { return windowControlsOverlay; }
+  });
 
   // AnimationFrameProvider (window). The window's associated document is this
   // runtime's one document, so window-global state realizes the document's
@@ -1891,6 +1935,24 @@ mod tests {
             .expect("console");
 
         assert_eq!(rt.host().borrow().console, vec!["one", "two", "three"]);
+    }
+
+    fn window_controls_overlay_hidden_context_works<E: ScriptEngine>() {
+        let mut rt = Runtime::<E>::new().expect("runtime");
+        rt.eval(
+            "var wco = navigator.windowControlsOverlay; \
+             var rect = wco.getTitlebarAreaRect(); \
+             console.log(String(wco === navigator.windowControlsOverlay)); \
+             console.log(String(wco.visible)); \
+             console.log(String(rect instanceof DOMRect)); \
+             console.log([rect.x, rect.y, rect.width, rect.height].join(',')); \
+             console.log(String('ongeometrychange' in wco));",
+        )
+        .expect("window controls overlay");
+        assert_eq!(
+            rt.host().borrow().console,
+            vec!["true", "false", "true", "0,0,0,0", "true"]
+        );
     }
 
     /// The event loop, exercised against any backend: timers fire in `(delay,
@@ -2761,6 +2823,11 @@ mod tests {
         event_target_works::<script_engine_boa::BoaEngine>();
     }
 
+    #[test]
+    fn window_controls_overlay_hidden_context_on_boa() {
+        window_controls_overlay_hidden_context_works::<script_engine_boa::BoaEngine>();
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn host_surface_on_nova() {
@@ -2777,5 +2844,11 @@ mod tests {
     #[test]
     fn event_target_on_nova() {
         event_target_works::<script_engine_nova::NovaEngine>();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn window_controls_overlay_hidden_context_on_nova() {
+        window_controls_overlay_hidden_context_works::<script_engine_nova::NovaEngine>();
     }
 }
