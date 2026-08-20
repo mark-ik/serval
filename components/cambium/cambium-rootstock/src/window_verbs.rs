@@ -180,7 +180,10 @@ impl WindowGeometry {
         const BAR: f64 = 32.0;
 
         let (x, y) = self.position;
-        let (w, _h) = self.size;
+        let (w, h) = self.size;
+        if ![x, y, w, h].into_iter().all(f64::is_finite) || w <= 0.0 || h <= 0.0 {
+            return false;
+        }
         monitors.iter().any(|&(mx, my, mw, mh)| {
             let across = (x + w).min(mx + mw) - x.max(mx);
             let down = (y + BAR).min(my + mh) - y.max(my);

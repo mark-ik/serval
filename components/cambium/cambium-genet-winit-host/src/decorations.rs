@@ -37,10 +37,18 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace};
 
 use crate::{AppRegion, WindowCommand, WindowGeometry};
 
+fn remember_geometry(previous: Option<WindowGeometry>, current: WindowGeometry) -> WindowGeometry {
+    if current.maximized {
+        let mut restored = previous.unwrap_or(current);
+        restored.maximized = true;
+        restored
+    } else {
+        current
+    }
+}
+
 #[cfg(test)]
 use crate::WindowCommands;
-#[cfg(test)]
-use std::cell::RefCell;
 
 /// Detects double-clicks the way the platforms do: two presses close together
 /// in both time and space.
@@ -210,6 +218,7 @@ where
             return;
         }
         if matches!(command, WindowCommand::Close) {
+            self.refresh_geometry();
             self.request_close(crate::CloseRequest::Command);
             return;
         }
@@ -257,12 +266,15 @@ where
         }
     }
 
-    /// Where the window is now, for an application that wants to persist it.
-    ///
-    /// Reports the *restored* geometry when maximized, because that is what
-    /// the platform will restore to and therefore what is worth remembering.
+    /// Where the native window is now. Maximized state is folded onto the last
+    /// floating rectangle by [`Self::refresh_geometry`].
     pub(crate) fn geometry(&self) -> Option<WindowGeometry> {
         let window = self.native_window.as_ref()?;
+        // Windows reports a minimized window at a sentinel off-screen
+        // position. Keep the last useful snapshot instead of persisting it.
+        if window.is_minimized() == Some(true) {
+            return None;
+        }
         let scale = window.scale_factor();
         let maximized = window.is_maximized();
         let position = window
@@ -275,6 +287,16 @@ where
             size: (size.width as f64 / scale, size.height as f64 / scale),
             maximized,
         })
+    }
+
+    /// Refresh the application-facing snapshot without replacing a maximized
+    /// window's floating restore rectangle with its screen-filling rectangle.
+    pub(crate) fn refresh_geometry(&mut self) {
+        let Some(current) = self.geometry() else {
+            return;
+        };
+        self.restored_geometry = Some(remember_geometry(self.restored_geometry, current));
+        self.core.s.geometry = self.restored_geometry;
     }
 }
 
@@ -399,6 +421,34 @@ mod tests {
             maximized: false,
         };
         assert!(!sunk.is_reachable_on(&[laptop]));
+
+        let invalid = WindowGeometry {
+            position: (100.0, 100.0),
+            size: (800.0, -1.0),
+            maximized: false,
+        };
+        assert!(!invalid.is_reachable_on(&[laptop]));
+    }
+
+    #[test]
+    fn maximized_window_keeps_its_floating_restore_rectangle() {
+        let floating = WindowGeometry {
+            position: (120.0, 80.0),
+            size: (900.0, 640.0),
+            maximized: false,
+        };
+        let maximized = WindowGeometry {
+            position: (0.0, 0.0),
+            size: (1920.0, 1040.0),
+            maximized: true,
+        };
+        assert_eq!(
+            remember_geometry(Some(floating), maximized),
+            WindowGeometry {
+                maximized: true,
+                ..floating
+            }
+        );
     }
 }
 

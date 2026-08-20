@@ -130,6 +130,11 @@ pub struct HostOptions {
     pub maximize_control_label: String,
     /// Logical size to open at when no environment override is present.
     pub initial_logical_size: (f64, f64),
+    /// Application-restored position, size, and maximized state.
+    ///
+    /// The winit event source validates this against the monitors present at
+    /// launch before applying it. Persistence remains application-owned.
+    pub initial_geometry: Option<WindowGeometry>,
     /// Environment variable names overriding the logical width and height,
     /// for reproducible scenario receipts (`WOODSHED_WIDTH`-shaped).
     pub size_env: Option<(String, String)>,
@@ -158,6 +163,7 @@ impl Default for HostOptions {
             app_frame_insets: AppFrameInsets::NONE,
             maximize_control_label: "Maximize".into(),
             initial_logical_size: (1_100.0, 664.0),
+            initial_geometry: None,
             size_env: None,
             netrender: Box::new(|| NetrenderOptions {
                 tile_cache_size: Some(1024),

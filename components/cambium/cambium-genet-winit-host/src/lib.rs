@@ -74,6 +74,56 @@ fn perf_trace() -> bool {
     std::env::var_os("CAMBIUM_HOST_PERF_TRACE").is_some_and(|value| value != "0")
 }
 
+fn usable_restored_geometry(
+    geometry: Option<WindowGeometry>,
+    monitors: &[(f64, f64, f64, f64)],
+    size_overridden: bool,
+) -> Option<WindowGeometry> {
+    if size_overridden {
+        return None;
+    }
+    geometry.filter(|geometry| geometry.is_reachable_on(monitors))
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    const PRIMARY: (f64, f64, f64, f64) = (0.0, 0.0, 1920.0, 1040.0);
+
+    fn geometry(position: (f64, f64)) -> WindowGeometry {
+        WindowGeometry {
+            position,
+            size: (900.0, 640.0),
+            maximized: true,
+        }
+    }
+
+    #[test]
+    fn reachable_restored_geometry_is_used() {
+        assert_eq!(
+            usable_restored_geometry(Some(geometry((120.0, 80.0))), &[PRIMARY], false),
+            Some(geometry((120.0, 80.0)))
+        );
+    }
+
+    #[test]
+    fn unreachable_restored_geometry_is_discarded() {
+        assert_eq!(
+            usable_restored_geometry(Some(geometry((2400.0, 80.0))), &[PRIMARY], false),
+            None
+        );
+    }
+
+    #[test]
+    fn receipt_size_override_wins_over_restored_geometry() {
+        assert_eq!(
+            usable_restored_geometry(Some(geometry((120.0, 80.0))), &[PRIMARY], true),
+            None
+        );
+    }
+}
+
 /// The winit window, as the neutral seam sees it.
 ///
 /// A newtype for the same reason as [`WinitSurface`]: the trait is not local to
@@ -215,6 +265,9 @@ where
     pub(crate) resize_hint: Option<winit::window::ResizeDirection>,
     /// Double-click detection for the title bar, which winit does not provide.
     pub(crate) cadence: ClickCadence,
+    /// Last floating geometry. Maximized windows keep this rectangle and only
+    /// change its `maximized` bit, so persistence records the restore target.
+    pub(crate) restored_geometry: Option<WindowGeometry>,
     /// Every window verb performed this run, for tests. The only way a
     /// windowless harness can prove the frame did what the gesture asked.
     pub(crate) performed: Vec<WindowCommand>,
@@ -254,6 +307,7 @@ where
             native_window: None,
             resize_hint: None,
             cadence: ClickCadence::new(),
+            restored_geometry: None,
             performed: Vec::new(),
         }
     }
@@ -493,7 +547,13 @@ where
             }
             return;
         }
-        // Start comfortably on a large desktop, but never assume one.
+        // Start comfortably on a large desktop, but never assume one. A
+        // receipt's explicit size wins over application-restored geometry.
+        let size_overridden = self
+            .options
+            .size_env
+            .as_ref()
+            .is_some_and(|(w_key, h_key)| env_size(w_key).is_some() || env_size(h_key).is_some());
         let want = self
             .options
             .size_env
@@ -505,27 +565,52 @@ where
                 )
             })
             .unwrap_or(self.options.initial_logical_size);
-        let (initial_pos, initial_size) = event_loop
-            .primary_monitor()
+        let monitors = event_loop
+            .available_monitors()
             .map(|monitor| {
                 let scale = monitor.scale_factor();
                 let size = monitor.size();
                 let pos = monitor.position();
-                let logical_w = size.width as f64 / scale;
-                let logical_h = size.height as f64 / scale;
-                let width = want.0.min((logical_w - 48.0).max(480.0));
-                let height = want.1.min((logical_h - 48.0).max(360.0));
-                let x = pos.x as f64 / scale + ((logical_w - width) / 2.0).max(8.0);
-                let y = pos.y as f64 / scale + ((logical_h - height) / 2.0).max(8.0);
                 (
-                    winit::dpi::LogicalPosition::new(x, y),
-                    winit::dpi::LogicalSize::new(width, height),
+                    pos.x as f64 / scale,
+                    pos.y as f64 / scale,
+                    size.width as f64 / scale,
+                    size.height as f64 / scale,
                 )
             })
-            .unwrap_or((
-                winit::dpi::LogicalPosition::new(40.0, 8.0),
-                winit::dpi::LogicalSize::new(want.0, want.1),
-            ));
+            .collect::<Vec<_>>();
+        let restored =
+            usable_restored_geometry(self.options.initial_geometry, &monitors, size_overridden);
+        let (initial_pos, initial_size, initial_maximized) = match restored {
+            Some(geometry) => (
+                winit::dpi::LogicalPosition::new(geometry.position.0, geometry.position.1),
+                winit::dpi::LogicalSize::new(geometry.size.0, geometry.size.1),
+                geometry.maximized,
+            ),
+            None => event_loop
+                .primary_monitor()
+                .map(|monitor| {
+                    let scale = monitor.scale_factor();
+                    let size = monitor.size();
+                    let pos = monitor.position();
+                    let logical_w = size.width as f64 / scale;
+                    let logical_h = size.height as f64 / scale;
+                    let width = want.0.min((logical_w - 48.0).max(480.0));
+                    let height = want.1.min((logical_h - 48.0).max(360.0));
+                    let x = pos.x as f64 / scale + ((logical_w - width) / 2.0).max(8.0);
+                    let y = pos.y as f64 / scale + ((logical_h - height) / 2.0).max(8.0);
+                    (
+                        winit::dpi::LogicalPosition::new(x, y),
+                        winit::dpi::LogicalSize::new(width, height),
+                        false,
+                    )
+                })
+                .unwrap_or((
+                    winit::dpi::LogicalPosition::new(40.0, 8.0),
+                    winit::dpi::LogicalSize::new(want.0, want.1),
+                    false,
+                )),
+        };
         // macOS does not do client-side decorations the way Windows and Linux
         // do. Turning decorations off there removes the traffic lights along
         // with the title bar, which is not what a Mac user expects of a
@@ -573,7 +658,8 @@ where
                         // `sync_a11y`.
                         .with_visible(false)
                         .with_position(initial_pos)
-                        .with_inner_size(initial_size),
+                        .with_inner_size(initial_size)
+                        .with_maximized(initial_maximized),
                 )
                 .expect("create window"),
         );
@@ -631,6 +717,8 @@ where
         self.s.sheet = sheet;
         self.native_window = Some(window.clone());
         self.s.window = Some(Box::new(WinitWindow(window)));
+        self.restored_geometry = restored;
+        self.refresh_geometry();
         self.s.surface = Some(Box::new(WinitSurface(surface)));
         self.s.runner = Some(runner);
         // Drive the first frame synchronously while the window is hidden:
@@ -683,11 +771,16 @@ where
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => self.request_close(CloseRequest::Native),
+            WindowEvent::CloseRequested => {
+                self.refresh_geometry();
+                self.request_close(CloseRequest::Native);
+            },
+            WindowEvent::Moved(_) => self.refresh_geometry(),
             WindowEvent::Resized(size) => {
                 if let Some(surface) = self.s.surface.as_mut() {
                     surface.resize(size.width.max(1), size.height.max(1));
                 }
+                self.refresh_geometry();
                 self.note_resize();
             },
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -695,6 +788,7 @@ where
                 if let Some(window) = self.native_window.as_ref() {
                     self.publish_x11_frame_extents(window);
                 }
+                self.refresh_geometry();
                 self.note_resize();
             },
             WindowEvent::ModifiersChanged(mods) => {
@@ -761,7 +855,7 @@ where
             WindowEvent::RedrawRequested => {
                 // The snapshot hooks read; refreshed here so a frame always
                 // sees where the window is now, as the live query used to.
-                self.core.s.geometry = self.geometry();
+                self.refresh_geometry();
                 self.redraw();
                 // After the frame is laid out and presented, refresh the
                 // accessibility tree and drain any screen-reader actions,
