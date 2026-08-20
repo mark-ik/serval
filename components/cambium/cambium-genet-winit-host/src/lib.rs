@@ -31,9 +31,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
-#[cfg(test)]
 use genet_scripted_dom::ScriptedDom;
-#[cfg(test)]
 use std::{cell::RefCell, rc::Rc};
 
 mod decorations;
