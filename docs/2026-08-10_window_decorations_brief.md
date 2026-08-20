@@ -413,6 +413,17 @@ while the scenario waits. The same scenario then drives the semantic Maximize
 control through maximize and restore and requires matching app-authored
 frames.
 
+The headed run in
+`testing/genet/w4-windows-snap-2026-08-20_025315/` returned `RESULT ok` from
+both sides at committed `556753b209c`. At scale 2 the retained control became
+device rect `[656,0,748,64]`; `WM_NCHITTEST` returned 9 (`HTMAXBUTTON`) at its
+center and 1 (`HTCLIENT`) just outside. Visual inspection of
+`snap-layout-hover.png` confirms the real Windows picker over the foreground
+smoke window. Its SHA-256 is
+`e96423c8a407f79c981a6590f550b546872dba52ac4198ccd9870a72007461a9`.
+The manifest separately records four unrelated dirty files in the concurrent
+pointer and WebGL lanes.
+
 The browser lane implements the non-installed-context WCO answer: a stable
 `navigator.windowControlsOverlay`, `visible == false`, and an empty `DOMRect`.
 The vendored
