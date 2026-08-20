@@ -333,15 +333,39 @@ have the same digest, so maximize/restore returned to the original pixels. The
 `maximized.bmp` SHA-256 is
 `34c23ad84d430bb51c9b1596207cfeea765c8eb5cf25356f9c1d1be06e03d0e4`.
 
+**2026-08-19: W3b Wayland frame policy verified** (genet
+`01a682b3d06`; policy introduced in `41cbfa552c3`, effective-frame trace in
+`f07e2f23f9f`). The earlier three-choice model was false precision. Pinned
+winit exposes two application-visible providers: the app draws the frame, or
+the host does. On Wayland the host choice prefers compositor decoration when
+the protocol exists and uses winit's SCTK client frame otherwise. Those are
+the same result to the app, so `System` and `Prefer system` cannot be separate
+settings without new lower-level winit work and a consumer that needs it.
+
+`WindowFrame::{Host, App}` now names that boundary. The same value creates the
+native window and decides whether the smoke view includes its title row, so
+the two providers cannot overlap. `Host` is the default. The old
+`decorations: false` input still maps to `App` for source compatibility with
+Woodshed's moving lane; it is explicit migration debt rather than a second
+policy.
+
+The paired Fedora 44 / GNOME 50.4 Wayland run in
+`testing/genet/w3b-wayland-frame-01a682b3-2026-08-19/` came from a clean
+`01a682b3d06` checkout. Host mode reported
+`backend=wayland policy=Host decorated=true`, while its app-authored opening
+frame omitted the app title row and measured 420x285. App mode reported
+`backend=wayland policy=App decorated=false`; its opening frame contained the
+single Cambium title row and measured 420x320. Both scenarios returned
+`RESULT ok` with three nonblank frames, three distinct digests and two sizes.
+The opening-frame SHA-256 values are
+`cc4a13bd5d4bf7da49aee6ce0f36544cb1aa1483b3dfa40ff4098e84a476d67a`
+for Host and
+`58a512302d20df068a0834dc6eeea473f260dee5a841e134666a2ccde20145ee`
+for App. `scripts/wayland-frame-receipt.ps1` reproduces the paired run and
+requires the complementary post-configure decoration results.
+
 **Staged, with reasons rather than intentions:**
 
-- **W3b Wayland frame policy.** The current host sets `decorations = false`
-  for its app-drawn frame, so pinned winit explicitly requests client mode and
-  hides its SCTK `WinitFrame`. The earlier “SSD-preferring fallback” description
-  is not a route the product currently has. Before another decoration
-  implementation, expose a user choice of `System`, `App`, or `Prefer system`
-  and project the effective compositor result back to the app so native and app
-  titlebars cannot both appear.
 - **W3c X11 shadow.** `_GTK_FRAME_EXTENTS` is still absent and wants its own
   headed X11 shadow receipt. It is independent of Wayland frame negotiation.
 - **W4 Snap Layouts.** Still gated on winit#3884 or the `tauri-plugin-frame`
