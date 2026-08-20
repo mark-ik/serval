@@ -54,7 +54,9 @@ pub(crate) fn publish_gtk_frame_extents(
         .atom;
     connection
         .change_property32(PropMode::REPLACE, xid, atom, AtomEnum::CARDINAL, &extents)
-        .map_err(|error| format!("could not set _GTK_FRAME_EXTENTS: {error}"))?;
+        .map_err(|error| format!("could not set _GTK_FRAME_EXTENTS: {error}"))?
+        .check()
+        .map_err(|error| format!("X11 server rejected _GTK_FRAME_EXTENTS: {error}"))?;
     connection
         .flush()
         .map_err(|error| format!("could not flush _GTK_FRAME_EXTENTS: {error}"))?;
