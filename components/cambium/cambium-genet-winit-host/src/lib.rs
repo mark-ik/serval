@@ -59,6 +59,15 @@ use decorations::ClickCadence;
 enum HostEvent {
     Wake,
 }
+
+/// `CAMBIUM_HOST_FRAME_TRACE=1` publishes the platform's post-configure answer
+/// to the frame-policy request. This is deliberately a diagnostic rather than
+/// application state: both compositor SSD and winit CSD are a `Host` frame to
+/// the application, so it has no reason to branch between them.
+fn frame_trace() -> bool {
+    std::env::var_os("CAMBIUM_HOST_FRAME_TRACE").is_some_and(|value| value != "0")
+}
+
 /// The winit window, as the neutral seam sees it.
 ///
 /// A newtype for the same reason as [`WinitSurface`]: the trait is not local to
@@ -490,6 +499,24 @@ where
                 )
                 .expect("create window"),
         );
+        if frame_trace() {
+            #[cfg(target_os = "linux")]
+            let backend = {
+                use winit::platform::wayland::ActiveEventLoopExtWayland;
+                if event_loop.is_wayland() {
+                    "wayland"
+                } else {
+                    "x11"
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let backend = std::env::consts::OS;
+            eprintln!(
+                "[cambium-winit] window-frame backend={backend} policy={:?} decorated={}",
+                self.options.effective_window_frame(),
+                window.is_decorated(),
+            );
+        }
         let size = window.inner_size();
         let surface = SurfaceHost::boot(
             window.clone(),
