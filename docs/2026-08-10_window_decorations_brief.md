@@ -1,10 +1,11 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** W0 through W3 landed, plus window-geometry validation from §6. W1
+**Status:** W0 through W4 landed, plus window-geometry validation from §6. W1
 has same-stylesheet headed receipts on Windows, Intel macOS and Apple Silicon
 macOS. W3 has Windows maximized-overflow, Wayland frame-policy and XWayland
-client-shadow receipts. W4 remains staged with reasons. See §8. Originally a
+client-shadow receipts. W4 has a headed Windows Snap Layout receipt and the
+paired Boa/Nova WCO subset. See §8. Originally a
 research brief, kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
@@ -90,13 +91,14 @@ repositioning bugs. **So the portable abstraction cannot be "our three
 buttons everywhere."** It has to be "reserve a region; the platform fills it
 where it has controls, we fill it where it does not."
 
-**Windows 11 Snap Layouts need a native answer we do not have.** Hovering the
+**Windows 11 Snap Layouts need a native answer outside winit.** Hovering the
 maximize button should raise the layout picker; that requires returning
 `HTMAXBUTTON` from `WM_NCHITTEST`, which winit has not exposed
 ([winit#3884](https://github.com/rust-windowing/winit/issues/3884), opened
-2024-08-21 and still open with no linked PR when re-checked 2026-08-17). The known-good workaround, from `tauri-plugin-frame`, is a small native
-child `HWND` over the custom maximize button that answers `HTMAXBUTTON`. Until
-that exists, an undecorated Windows app silently loses a feature users have.
+2024-08-21 and still open with no linked PR when re-checked 2026-08-20).
+Cambium now subclasses the existing winit `HWND` and answers only over the
+actual laid-out accessible maximize button. That is the platform contract
+without a second native window or a synthetic keyboard shortcut.
 
 **The undecorated-maximize overflow is the classic Windows CSD bug.** A
 frameless window, maximized, extends past the work area by the resize-border
@@ -112,7 +114,7 @@ only CSD, so an app that draws its own frame is *more* native there, not less.
 | Source | What to take |
 |---|---|
 | [Window Controls Overlay](https://wicg.github.io/window-controls-overlay/) (WICG) | The model itself, and the CSS vocabulary — see §5 |
-| [`tauri-plugin-frame`](https://crates.io/crates/tauri-plugin-frame) | The child-HWND trick for Snap Layouts; the only shipping Rust answer |
+| [`tauri-plugin-frame`](https://crates.io/crates/tauri-plugin-frame) | A shipping synthetic Win+Z fallback, useful prior art but not the native hit-test contract |
 | [libdecor](https://xeechou.net/posts/libdecor/) | The Wayland fallback when a compositor wants SSD and we have no frame |
 | [NSWindowStyles](https://github.com/lukakerr/NSWindowStyles) | The catalogue of what `NSWindow` masks actually produce |
 | [Microsoft's Snap Layout guidance](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/ui/apply-snap-layout-menu) | The `HTMAXBUTTON` contract, from the platform owner |
@@ -173,7 +175,7 @@ frame does not do:
 2. **Double-click to maximize, and the system menu.** Double-clicking a title
    bar toggles maximize on every platform; right-click (or Alt+Space) opens
    the system menu on Windows. Both are muscle memory, both are missing.
-3. **Snap Layouts** (§3), once the child-HWND route is worth its cost.
+3. **Snap Layouts** (§3), supplied by the native hit-test bridge.
 4. **Window state persistence.** Position, size, and maximized-ness restored
    across launches, monitor-validated so a window on a since-unplugged
    display does not open off-screen. The host already clamps to the primary
@@ -211,8 +213,8 @@ calls, the platform quirks), not the pixels.
   desktop targets each have a receipt.
 - **W4 — Snap Layouts**, and the WPT WCO subset as the browser-lane receipt.
 
-W0 and W1 are the ones that pay for themselves immediately; W4 is optional
-until a Windows-first product ships.
+W0 and W1 are the ones that pay for themselves immediately. W4 became small
+once W2 supplied a real accessible maximize control and retained layout box.
 
 ## 8. Progress
 
@@ -395,17 +397,31 @@ This is deliberately labelled XWayland. It proves the X11 protocol exchange
 against Mutter, not behavior specific to another window manager or a
 non-compositing X server.
 
+**2026-08-20: W4 Windows Snap Layouts and browser WCO landed** (genet
+`810b1e9689e`, `97d7030674b`). Re-checking the gate corrected this brief:
+`winit#3884` remains open, but current `tauri-plugin-frame` synthesizes Win+Z
+rather than placing a child `HWND` over the control. Cambium takes the smaller
+native route. It subclasses the existing winit `HWND`, projects the actual
+retained box for the accessible maximize button after each layout, scales that
+box to device pixels, and returns `HTMAXBUTTON` only inside it. The accessible
+label is a `HostOptions` value so localized frames can name the same control.
+
+`scripts/windows-snap-receipt.ps1` probes the exact headed HWND at the center
+and just outside that projected box, requires the smoke window itself to be
+foreground, moves the real cursor to the center, and captures the desktop
+while the scenario waits. The same scenario then drives the semantic Maximize
+control through maximize and restore and requires matching app-authored
+frames.
+
+The browser lane implements the non-installed-context WCO answer: a stable
+`navigator.windowControlsOverlay`, `visible == false`, and an empty `DOMRect`.
+The vendored
+`navigator-window-controls-overlay.tentative.html` now passes all seven
+subtests on both Boa and Nova, so its seven expected-failure entries were
+removed.
+
 **Staged, with reasons rather than intentions:**
 
-- **W4 Snap Layouts.** Gate re-checked 2026-08-17 rather than assumed:
-  [winit#3884](https://github.com/rust-windowing/winit/issues/3884) is **still
-  open**, labelled `DS - win32` / `S - enhancement`, unassigned, with no linked
-  PR and no in-API workaround — unchanged since it was opened 2024-08-21. Nor
-  does an upgrade help: 0.30.13 (2026-03-02) is the newest stable winit and is
-  what genet already pins; 0.31 has not left beta. So the only route remains
-  `tauri-plugin-frame`'s native child `HWND` over the custom maximize button,
-  and W4 stays worth its cost only for a Windows-first product. Re-check the
-  issue before starting, not the brief.
 - **Window-state persistence** has its host half (`AppCtx::geometry` plus
   `WindowGeometry::is_reachable_on`, unit-tested against the
   unplugged-monitor and dragged-off-the-bottom cases). The storing half is
