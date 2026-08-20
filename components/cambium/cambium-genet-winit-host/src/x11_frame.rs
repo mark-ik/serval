@@ -25,13 +25,16 @@ fn device_extents(insets: AppFrameInsets, scale: f64) -> [u32; 4] {
 
 /// Publish the client-drawn transparent margins on an X11 window.
 ///
-/// `None` means this is a Wayland window. Zeroes are published deliberately
-/// for an app frame without an outer effect, clearing a property left by a
-/// previous scale/configuration rather than leaving stale geometry behind.
+/// `None` means this is a Wayland window or the app reserved no transparent
+/// margins. Property presence itself tells Mutter that the client owns outer
+/// frame geometry, so an ordinary host-framed window must leave it absent.
 pub(crate) fn publish_gtk_frame_extents(
     window: &Window,
     insets: AppFrameInsets,
 ) -> Result<Option<[u32; 4]>, String> {
+    if insets.is_empty() {
+        return Ok(None);
+    }
     let handle = window
         .window_handle()
         .map_err(|error| format!("window handle unavailable: {error}"))?;
