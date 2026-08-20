@@ -26,12 +26,12 @@ use paint_api::display_list::PaintDisplayListInfo;
 use paint_api::rendering_context_core::RenderingContextCore;
 use paint_api::{PaintMessage, PaintProxy, WebRenderExternalImageIdManager, WebViewTrait};
 use paint_types::PipelineId;
+use paint_types::units::CSSPixel;
 use paint_types::units::{DevicePixel, DevicePoint};
 use rustc_hash::FxHashMap;
 use servo_base::generic_channel::RoutedReceiver;
 use servo_base::id::{PainterId, WebViewId};
 use servo_geometry::DeviceIndependentPixel;
-use stylo_traits::CSSPixel;
 
 use crate::InitialPaintState;
 use crate::compositor::{PaintCompositor, WgpuMasterCaptureBackend};

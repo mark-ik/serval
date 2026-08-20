@@ -23,8 +23,8 @@ use livery::{
     },
     values::{
         BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FontSize, Length,
-        LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Size, SystemColor, TreeCounts,
-        UsedColorContext,
+        LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size, SystemColor,
+        TreeCounts, UsedColorContext,
     },
 };
 
@@ -569,6 +569,112 @@ where
 {
     pub fn get(&self, id: Id) -> Option<&ComputedValues> {
         self.values.get(&id)
+    }
+
+    /// Whether only `background-color` changed for already styled elements.
+    /// This is the first K5h paint-only reuse admission: it deliberately
+    /// excludes every property that can alter box generation, geometry,
+    /// inherited metrics, resources, or paint ordering.
+    pub(crate) fn differs_only_in_background_color(&self, previous: &Self) -> bool {
+        let mut changed = false;
+        let only_background = self.values.len() == previous.values.len()
+            && self.custom == previous.custom
+            && self.inline_diagnostics == previous.inline_diagnostics
+            && self.color_context == previous.color_context
+            && self.values.iter().all(|(id, current)| {
+                let Some(previous) = previous.values.get(id) else {
+                    return false;
+                };
+                changed |= current != previous;
+                let mut normalized = previous.clone();
+                normalized.background_color = current.background_color.clone();
+                normalized == *current
+            });
+        only_background && changed
+    }
+
+    /// Return the sole absolute/fixed element whose computed insets changed.
+    ///
+    /// This is a deliberately narrow K5h admission: every other computed
+    /// value, custom property, diagnostic, and style-plane identity must stay
+    /// unchanged. The retained layout can then rerun only Buckram's final
+    /// positioning equation for a fragment subtree whose used size is proven
+    /// stable.
+    pub(crate) fn only_positioned_insets_changed(&self, previous: &Self) -> Option<Id>
+    where
+        Id: Copy,
+    {
+        if self.values.len() != previous.values.len()
+            || self.custom != previous.custom
+            || self.inline_diagnostics != previous.inline_diagnostics
+            || self.color_context != previous.color_context
+        {
+            return None;
+        }
+
+        let mut changed = None;
+        for (id, current) in &self.values {
+            let previous = previous.values.get(id)?;
+            if current == previous {
+                continue;
+            }
+            if !matches!(current.position, Position::Absolute | Position::Fixed)
+                || current.position != previous.position
+            {
+                return None;
+            }
+            let mut normalized = previous.clone();
+            normalized.top = current.top;
+            normalized.right = current.right;
+            normalized.bottom = current.bottom;
+            normalized.left = current.left;
+            if normalized != *current || changed.replace(*id).is_some() {
+                return None;
+            }
+        }
+        changed
+    }
+
+    /// Return the sole absolute/fixed element whose insets and preferred
+    /// physical size changed, but no other computed value did. This admission
+    /// is for a retained leaf only: a descendant-bearing formatting root must
+    /// be reformatted rather than have its border box resized in place.
+    pub(crate) fn only_positioned_leaf_geometry_changed(&self, previous: &Self) -> Option<Id>
+    where
+        Id: Copy,
+    {
+        if self.values.len() != previous.values.len()
+            || self.custom != previous.custom
+            || self.inline_diagnostics != previous.inline_diagnostics
+            || self.color_context != previous.color_context
+        {
+            return None;
+        }
+
+        let mut changed = None;
+        for (id, current) in &self.values {
+            let previous = previous.values.get(id)?;
+            if current == previous {
+                continue;
+            }
+            if !matches!(current.position, Position::Absolute | Position::Fixed)
+                || current.position != previous.position
+                || (current.width == previous.width && current.height == previous.height)
+            {
+                return None;
+            }
+            let mut normalized = previous.clone();
+            normalized.top = current.top;
+            normalized.right = current.right;
+            normalized.bottom = current.bottom;
+            normalized.left = current.left;
+            normalized.width = current.width;
+            normalized.height = current.height;
+            if normalized != *current || changed.replace(*id).is_some() {
+                return None;
+            }
+        }
+        changed
     }
 
     /// Resolve contextual colors for one element using the exact palette and

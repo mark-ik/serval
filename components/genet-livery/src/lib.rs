@@ -29,21 +29,21 @@ mod text;
 
 pub use buckram::{
     AnonymousBoxKind, Baselines, BoxGeneration, BoxId, BoxOrigin, BreakToken, ContainingBlock,
-    ContainingBlockRule, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
+    ContainingBlockEstablishment, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
     FormattingContextKind, Fragment, FragmentId, FragmentTree, FragmentationContextId,
     InternalTableRole, LayoutResult, LogicalRect, PhysicalRect, PositioningScheme, PseudoElement,
 };
-pub use document::{ClickOutcome, LinkTarget, LiveryDocument};
+pub use document::{ClickOutcome, LayoutDamage, LayoutDamageKind, LinkTarget, LiveryDocument};
 pub use dom::{ElementRef, InteractionStates, SelectorTree};
 pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, RestyleStats};
-pub(crate) use layout::hit_test_with_scroll;
 pub use layout::{
     BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test, layout,
-    layout_with_text_system, resolve_container_query_styles,
+    hit_test_with_scroll, layout_with_text_system, resolve_container_query_styles,
     resolve_container_query_styles_with_images, resolve_container_relative_styles,
     used_value_context,
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
+pub use livery::selector::StatePseudoClass;
 pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
 pub use paint::{

@@ -321,6 +321,23 @@ fn expand_box_shorthand(
             .ok()
             .and_then(|values| box_sides(&values))
             .map(|values| values.map(|value| DeclaredValue::Value(PropertyValue::Gap(value)))),
+        ShorthandId::Overflow => match split_components(value).as_slice() {
+            [only] => only.parse::<crate::values::Overflow>().ok().map(|value| {
+                std::array::from_fn(|_| {
+                    DeclaredValue::Value(PropertyValue::Overflow(value))
+                })
+            }),
+            [horizontal, vertical] => horizontal
+                .parse::<crate::values::Overflow>()
+                .ok()
+                .zip(vertical.parse::<crate::values::Overflow>().ok())
+                .map(|(horizontal, vertical)| {
+                    [horizontal, vertical, horizontal, vertical].map(|value| {
+                        DeclaredValue::Value(PropertyValue::Overflow(value))
+                    })
+                }),
+            _ => None,
+        },
         ShorthandId::BorderColor => split_components(value)
             .into_iter()
             .map(str::parse::<ComputedColor>)

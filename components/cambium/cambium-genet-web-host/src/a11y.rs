@@ -34,7 +34,7 @@
 //! reader see the tree in the first place.
 
 use cambium_rootstock::{
-    A11yRequest, Accessibility, IncrementalLayout, LeafRegistry, NodeId, ScriptedDom,
+    A11yRequest, Accessibility, LeafRegistry, NodeId, OwnedLayout, ScriptedDom,
 };
 use web_sys::HtmlCanvasElement;
 
@@ -79,7 +79,7 @@ impl Accessibility for DomAccessibility {
     fn sync(
         &mut self,
         _dom: &ScriptedDom,
-        _layout: &IncrementalLayout<NodeId>,
+        _layout: &OwnedLayout,
         _leaves: &mut LeafRegistry<u64>,
         _focus: Option<u64>,
     ) -> Vec<A11yRequest> {

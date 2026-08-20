@@ -5,23 +5,19 @@
 //! differs is grafted on: an event source converts platform events into this
 //! crate's vocabulary and drives the methods below.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cambium::{GenetAppRunner, TextInput};
 use cambium_winit::ScrollbarFade;
-use genet_layout::{IncrementalLayout, ScrollTarget};
-use genet_scripted_dom::{NodeId, ScriptedDom};
+use genet_scripted_dom::NodeId;
 use netrender::NetrenderOptions;
 
 use crate::meristem_bounds::RootView;
 use crate::wake::HostWake;
-use crate::{
-    Accessibility, HostWindow, Instant, Surface, WindowCommand, WindowCommands, WindowGeometry,
-};
+use crate::{Accessibility, HostWindow, Surface, WindowCommands, WindowGeometry};
 use crate::{KeyPress, Modifiers};
+use crate::{OwnedLayout, ScrollTarget};
 
 /// An application-level close request. Native window chrome and an app's own
 /// Close command deliberately use the same path.
@@ -29,7 +25,7 @@ use crate::{KeyPress, Modifiers};
 pub enum CloseRequest {
     /// The operating system asked the window to close.
     Native,
-    /// The application queued [`WindowCommand::Close`].
+    /// The application queued [`crate::WindowCommand::Close`].
     Command,
 }
 
@@ -42,23 +38,6 @@ pub enum CloseDisposition {
     Hide,
     /// End the event loop.
     Exit,
-}
-
-/// The bound every root view satisfies. A module rather than a trait alias so
-/// the host's signatures stay readable: `V: RootView<State>` means
-/// `meristem::View<State, (), GenetCtx, Element = GenetElement>`.
-mod meristem_bounds {
-    use cambium::{GenetCtx, GenetElement};
-    use meristem::View;
-
-    pub trait RootView<State: 'static>:
-        View<State, (), GenetCtx, Element = GenetElement> + 'static
-    {
-    }
-    impl<State: 'static, V> RootView<State> for V where
-        V: View<State, (), GenetCtx, Element = GenetElement> + 'static
-    {
-    }
 }
 
 /// The runner shape this host drives: one state, one tree, unit actions.
@@ -507,9 +486,8 @@ where
     /// source supplies the same pair against a canvas.
     pub surface: Option<Box<dyn Surface>>,
     pub runner: Option<Runner<State, Logic, V>>,
-    /// Retained layout session in logical coordinates — hit-test target and
-    /// incremental-apply subject.
-    pub layout: Option<IncrementalLayout<NodeId>>,
+    /// Retained Livery/Buckram session in logical coordinates.
+    pub layout: Option<OwnedLayout>,
     pub layout_size: (f32, f32),
     pub(crate) last_layout_update_us: u64,
     pub(crate) last_layout_tick_us: u64,
@@ -567,7 +545,7 @@ where
     /// turn. Kept in host state so the harness can exercise the same coalescing
     /// contract without a native event loop.
     pub wake_pending: Arc<AtomicBool>,
-    pub scrollbar_fade: ScrollbarFade<ScrollTarget<NodeId>>,
+    pub scrollbar_fade: ScrollbarFade<ScrollTarget>,
     pub close_requested: bool,
     pub pending_sheet: Option<String>,
     pub pending_capture: Option<CaptureFn>,

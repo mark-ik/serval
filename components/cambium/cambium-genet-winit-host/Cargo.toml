@@ -1,12 +1,12 @@
 [package]
 name = "cambium-genet-winit-host"
 version = "0.1.0"
-description = "The single-root Cambium desktop host: winit lifecycle, genet layout/paint/present, input routing, and AccessKit sync over one GenetAppRunner"
+description = "The single-root Cambium desktop host: winit lifecycle, Livery/Buckram layout and paint, input routing, and AccessKit sync over one GenetAppRunner"
 edition.workspace = true
 rust-version = "1.92"
 license = "MPL-2.0"
 repository = "https://github.com/merely-made/genet"
-# Rides genet-layout / genet-winit-host, which inherit genet's publish = false,
+# Rides genet-livery / genet-winit-host, which inherit genet's publish = false,
 # so this host can never publish either — the same posture as
 # cambium-winit-a11y, and the reason cambium-winit stays a separate thin
 # published crate. Consumers take this from genet.git by branch.
@@ -24,7 +24,6 @@ cambium-rootstock = { version = "0.1.0", path = "../cambium-rootstock" }
 cambium-winit = { version = "0.3.0", path = "../cambium-winit" }
 cambium-winit-a11y = { version = "0.3.0", path = "../cambium-winit-a11y" }
 sprigging = { version = "0.2.1", path = "../sprigging" }
-genet-layout = { path = "../../genet-layout" }
 # The semantic-selector resolver the headless `Harness` drives applications by,
 # so a host test targets a control by role and label rather than by pixel.
 genet-probe = { path = "../../genet-probe" }

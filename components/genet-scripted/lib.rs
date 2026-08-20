@@ -32,9 +32,9 @@ mod document;
 #[cfg(feature = "livery")]
 mod livery;
 
-#[cfg(all(feature = "livery", feature = "render"))]
+#[cfg(feature = "livery")]
 pub use document::LiveryScriptedDocument;
-pub use document::{ScriptedDocument, ScriptedEngine};
+pub use document::{ScriptedDocument, ScriptedEngine, ScrollKey};
 #[cfg(feature = "livery")]
 pub use livery::LiveryCssom;
 

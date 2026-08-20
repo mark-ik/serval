@@ -1,20 +1,21 @@
 # Livery fullweb cutover and the servo-* retirement
 
 **Date:** 2026-07-24
-**Status:** in execution, current-state correction 2026-08-08. D0 is ruled
+**Status:** in execution, current-state correction 2026-08-15. D0 is ruled
 (lane, at the revised price; multicol knocked out). Every stage F0-F6 carries
-its detail, instrument, and receipt. Product reachability is now an earlier
-projection gate rather than part of the final F4 flip; see the
+its detail, instrument, and receipt. Product reachability completed as an
+earlier projection gate rather than part of the final F4 flip; see the
 [Livery product route and document resources plan](2026-08-08_livery_product_route_and_document_resources_execution_plan.md).
 
-**Current truth.** Pelt still routes static HTML through `genet.web` and
-Stylo; no shipping port enables `genet-documents/livery`. The product-facing
-`LiverySessionEngine` exists, but it assembles host CSS plus inline `<style>`
-blocks and does not share the linked-stylesheet/resource path Pelt just proved
-on the incumbent route. Buckram has advanced through live table dispatch,
-captions, and collapsed tracks; K4g1 is accepted and K4g2 is next after
-contextual-color C1. The recorded F0/F3 figures below remain the latest full
-cutover ledger, not a fresh 2026-08-08 rerun.
+**Current truth.** Product-route R0-R4 and R5a-R5d are landed. Pelt exposes
+explicit `livery` and `livery-scripted` routes over the shared document-resource
+boundary, including linked CSS, image and font replacement, and Livery's
+supported CSS rule-object projection. The incumbent `viewer` and scripted
+routes remain the defaults. The F4 scripted implementation boundary is
+complete, but the default flip is still gated by its parity receipts. Buckram
+K4 is closed at `610df0981a8`; K5 is active on `buckram-k5-positioning`, and
+K6 is planned but blocked on K5h closure. The recorded F0/F3 figures below
+remain the latest full cutover ledger, not a fresh 2026-08-15 rerun.
 
 **Where the two lanes stand.**
 
@@ -61,10 +62,10 @@ had to be corrected. Prefer a bisect to a hypothesis: reverting one hunk
 attributed a 128-file CSS2 regression precisely and cleared three other
 changes of suspicion in one run.
 
-**Ruling closed 2026-07-26:** Buckram owns table layout. The parity emulation
-was a useful falsifier and is now a deletion target. K4 has reached live
-dispatch, row/column fragments, captions, and collapsed tracks; collapsed
-border resolution/paint and the positioned-table closure remain K4g/K4h.
+**Ruling closed 2026-07-26, implementation closed 2026-08-10:** Buckram owns
+table layout. The parity emulation was a useful falsifier and has been deleted.
+K4 closed at `610df0981a8` with table sizing, fragments, captions, separated
+and collapsed borders, positioned parts, and compatibility-bridge deletion.
 
 **Open, in measured value order:** the `content` longhand (F0 ratchet plus
 19 CSS2 files, one slice paid twice), contextual color computation
@@ -103,7 +104,8 @@ equivalents and obviate servo-* crates, or delete 'em," with the teardown
 explicitly sequenced **after Livery replaces Stylo**. This plan defines that
 cutover, the stage the
 [harvest plan](./2026-07-20_stylo_harvest_into_livery_plan.md) names only as
-its retirement trigger ("Livery takes the fullweb default with WPT parity
+its retirement trigger, superseded 2026-08-16 by a dogfooding gate (see
+the revision at the end of this plan) ("Livery takes the fullweb default with WPT parity
 receipts"), and the teardown that rides behind it.
 **Companions:** the harvest plan (H0-H6, receipts live there), the
 [consumed-property audit](./2026-07-13_genet_consumed_css_property_audit.md)
@@ -169,7 +171,10 @@ reviewed; the direction holds and the grind is accepted. Two riders:
   knockout per the established practice, never a silent gap. It was the
   only structural item in either ledger; with it out, every remaining F3b
   cluster is fidelity work.
-- **The genet-layout lift fallback stays in reserve.** It is invoked per
+- **The genet-layout lift fallback stays in reserve.** WITHDRAWN
+  2026-08-16, see the revision at the end of this plan; a frozen fork is
+  not a viable quarry, and any needed Stylo behaviour comes from upstream.
+  The original reasoning is kept below for the record. It is invoked per
   subsystem only if the flexbox/grid fidelity pass shows taffy integration
   cannot close the 386; nothing is lifted preemptively.
 
@@ -737,7 +742,8 @@ reviewed; the direction holds and the grind is accepted. Two riders:
   Receipt: the bar above holds, and turnstone, isometry, woodshed, and hocket
   build and smoke against genet main with no renderer flag set.
 - **F5 - the retirement event.** The harvest plan's trigger fires ("Livery
-  takes the fullweb default with WPT parity receipts"). Five steps, each
+  takes the fullweb default with WPT parity receipts"; that trigger was
+  superseded 2026-08-16, see the revision at the end of this plan). Five steps, each
   separately revertible, in this order:
 
   1. **Feature-gate genet-layout off the default build.** The first edge to
@@ -897,21 +903,20 @@ the ones to take first, ahead of anything ranked purely by file count.
 | capability | state | new or inherited | compounds |
 |---|---|---|---|
 | multicol (`column-*`) | **recorded knockout**, ruled D0 | inherited | no |
-| table model, fixed/auto sizing, rows, spans, captions, colgroups, fixup, collapsed tracks | **built through Buckram K4f**, with named per-table fallback | inherited | no |
-| collapsed-border conflict, metrics, and paint | K4g1 topology accepted; K4g2 next after contextual-color C1 | inherited | **yes** |
-| positioned-table closure and compatibility-bridge deletion | K4h | inherited | no |
+| table model, fixed/auto sizing, rows, spans, captions, colgroups, fixup, and collapsed tracks | **built; K4 closed at `610df0981a8`** | inherited | no |
+| collapsed-border conflict, metrics, and paint | **built through accepted K4g** | inherited | no |
+| positioned-table closure and compatibility-bridge deletion | **built through accepted K4h** | inherited | no |
 | `display` outer/inner roles and admitted normal-flow formatting contexts | **Buckram K0-K3 accepted**; remaining positioned, fragmented, and sizing shapes route to K5-K7 | inherited | no |
-| `position: fixed` and `sticky` | retained as named K5 gaps; compatibility mappings survive | inherited | no |
+| `position: fixed` and `sticky` | live K5 routes with remaining closure work recorded in K5d-K5h | inherited | no |
 | CSSOM used values | handwritten per-property list (box-tree B6) | inherited | no |
 | block-flow anonymous boxes | **wrong behaviour retained**, scoped away (box-tree B1) | **new** | **yes** |
 | `min-content` / `max-content` sizing | admitted Buckram K3 queries built; cycles, percentages, replaced/atomic, and fragmentainer-dependent shapes route to K5-K7 | inherited | **yes** |
 | gamut mapping (out-of-gamut colors clip per channel) | not built | inherited | no |
 | contextual `color-layers()`, `alpha()`, `contrast-color()`, relative colors, and system colors | absolute forms built; retained contextual computation is C1-C3 | inherited | **yes** |
 | `order` with grid auto-placement | not built | inherited | no |
-| relative-position table parts | structural boxes now survive; K4h applies offsets and retires guarded fallback | **new** | no |
-| per-property restyle damage classing (relayout vs paint-only) | **borrowed from Stylo**, not owned; Livery's property DB carries no invalidation class | inherited | **yes** |
+| relative-position table parts | **built through accepted K4h/K5c integration** | **new** | no |
 
-**The three that compound, in detail, because they are the ones that will hurt:**
+**The two that compound, in detail, because they are the ones that will hurt:**
 
 - **Block-flow anonymous boxes.** Collapsible white space between two block
   boxes generates a box in the text-measuring pass that should not exist.
@@ -928,32 +933,6 @@ the ones to take first, ahead of anything ranked purely by file count.
   *quietly*: a `min-content` box is sized as though it were `auto` rather
   than visibly breaking. Quiet wrongness is harder to find later than loud
   wrongness, which is why it is ranked here rather than by its file count.
-
-- **Per-property restyle damage classing.** Genet already tells a relayout
-  from a paint-only change, and does it well: `LayoutDamageClass` in
-  `genet-layout/incremental.rs` resolves `None` / `PaintOnly` / `Relayout`,
-  `RestyleOutcome::needs_relayout` reads `RestyleDamage::RELAYOUT`, and
-  `cascade.rs` proves it live by asserting a color swap comes back
-  repaint-only. None of that knowledge is ours. The damage is computed inside
-  Stylo by `compute_style_difference`, out of the incumbent's own per-property
-  metadata; the adapter's `TElement::compute_layout_damage` hook is a stub
-  returning `Default::default()`. Livery's `properties.toml` has no equivalent:
-  123 property entries carrying name, value type, inheritance, initial,
-  grammar, seed values, animation behaviour, and source, with no field saying
-  what a change to the property invalidates. Livery's own invalidation work is
-  selector-scoped, which elements restyle, a different axis from what a changed
-  property costs.
-  It compounds because it is invisible until the retirement stage it blocks.
-  Every incremental-layout receipt that depends on skipping layout for a
-  paint-only change is, today, a receipt for Stylo's property table. When
-  Livery takes the fullweb lane the classing leaves with the fork unless the
-  DB has grown somewhere to put it, and the schema addition is cheap now and
-  expensive once the receipts have to be re-earned.
-  The reference shape worth borrowing when it is built is Mapbox's style-spec
-  split of layout properties from paint properties, which classes every visual
-  property by what invalidates when it changes. Adopt it on this plan's
-  authority, not on a survey's: the forcing consumer is the retirement stage
-  above, and nothing needs building before it.
 
 Nothing in this register is a silent gap: each is named in the code at the
 point where it is taken, and this table is the index.
@@ -977,12 +956,10 @@ confirmed plus F0-F3 receipts. F5 fires the harvest plan's trigger. F6 is
 strictly after F5, per the 2026-07-24 ruling, with F6b's media knockout held
 to that sequencing even though it is technically independent today.
 
-**Correction 2026-08-08:** product reachability R0-R4 now precedes F4 rather
-than waiting inside it. It can proceed while F0 and the ledgers remain open,
-but it stops with an explicit Livery pin. Contextual-color C1 is the entry
-dependency for K4g2's Livery adapter and for presentational-hint PH0; K4g5
-headed paint additionally requires C2/C3. These gates touch overlapping
-cascade and style seams and land serially.
+**Correction 2026-08-15:** product reachability R0-R4 and resource work R5a-R5d
+are complete. Pelt now has explicit static and scripted Livery pins over the
+shared resource boundary, while its defaults remain incumbent. This closes the
+projection gate only; F4 still owns the measured default flip.
 
 **Ordered 2026-07-25 (audit with Mark), and where each stands:**
 
@@ -1158,3 +1135,118 @@ doc.
 The harvest plan's retirement trigger has fired (F5), and F6c's receipt
 holds: no workspace member carries the servo- prefix, and nothing outside
 git history remembers the fork as a build input.
+
+## Revision, 2026-08-16: the parity trigger and the lift fallback
+
+A full-tree Livery/Stylo reftest differential was measured on the current
+branch, the first since K4 closure, K5 and PH4. It changes two of this
+plan's load-bearing assumptions.
+
+### The measurement
+
+Over 36311 `css` files, same corpus, same run, zero errored on either side:
+Stylo passed 11246, Livery 10147. Per-test rather than net:
+
+- Stylo-only passes: **2568**
+- Livery-only passes: **1469**
+- both pass: 8678
+
+Stylo-only failures by area: CSS2 464, css-text 330, WOFF2 298,
+css-grid 197, css-flexbox 192, css-backgrounds 118, css-conditional 91,
+css-images 86.
+
+The stale F4 bar of 901 cannot be carried forward. It was measured against
+a knocked-out subset; this is the full tree, so the figures are not
+comparable and 2568 is now the reference.
+
+### The trigger is the wrong shape
+
+Two things follow. First, the gap is not mostly layout: grid and flexbox
+together are 389 of 2568, while CSS2, css-text and WOFF2 are 1092. So
+"finish K5, then the trigger fires" was never going to hold, and continued
+K5 investment does not move most of the bar.
+
+Second, parity is not a shape a gate can take here. Livery passes 1469
+tests Stylo fails. The engines diverge in both directions rather than
+converging on a line Livery must reach, so a catch-up gate cannot fire
+while also hiding where Livery is already ahead.
+
+The retirement trigger therefore moves from WPT parity to a dogfooding
+gate: a named set of real pages and flows that must work, chosen because
+we use them. Sampling two of the largest non-layout blocks found nothing
+to lift. `hanging-punctuation` is absent from Livery's property catalog
+entirely, so css-text is unbuilt surface rather than broken behaviour, and
+the `css/WOFF2/` directory is format validation against a font stack, not
+a Livery layout gap. CSS2 at 464 is the largest block and remains
+unexamined; it is the one most likely to hold genuinely liftable behaviour.
+
+### The lift fallback is withdrawn
+
+"The genet-layout lift fallback stays in reserve" above no longer holds,
+and should not be relied on as insurance.
+
+Our stylo fork tips at `b157d92526` (2026-07-19), a `genet-stylo 0.19.1`
+release commit on a lineage deliberately diverged from `servo/stylo`. A
+fork held as a quarry has no cheap-and-valuable state: left alone its
+worth as a source decays continuously, so the insurance is worthless
+exactly when reached for; kept synced, it costs the maintenance that
+retirement was meant to shed. Worse, lifting from a frozen fork imports
+fork-time bugs while cutting us off from the upstream fixes that followed,
+which makes it worse than reading upstream cold.
+
+**Rule: if a Stylo behaviour is ever needed, take it from upstream
+`servo/stylo` and decompose that into Livery's catalog. Never from our
+fork.** This is the assumption most likely to be got wrong later, because
+the fork is ours and therefore looks free.
+
+### What this authorises now
+
+F5's first step, feature-gating genet-layout off the default build, is
+taken now rather than after the receipts, because its cost is paid on
+every dependency bump. The taffy 0.13 bump on 2026-08-16 paid it three
+times: the `stylo_taffy` GridTemplateAreas conversion, the
+`Display::FlowRoot` arm in genet-layout, and absorbing the bump twice.
+
+genet-layout stays buildable as a differential oracle only, and that role
+is time-boxed. Staleness degrades an oracle far more slowly than a quarry,
+but not indefinitely; a fork measuring a year behind is a straw man. It
+does not return to the default build.
+
+### The goal, restated (ruled 2026-08-16)
+
+The implicit goal this plan inherited, "replace Stylo," is retired along
+with its parity trigger. The ruled goal:
+
+**One owned styling-and-layout system that serves every lane of the
+platform (web content, host UI, canvas swatches, smolweb), where each
+capability is a catalog entry with a receipt, sized by what we dogfood
+rather than by the W3C surface.** Fullweb fidelity is a market this
+system serves as far as the dogfooding gate demands, not the identity of
+the project.
+
+Why the owned pair over upstream Stylo as a dependency (the one honest
+form of "staying", after the fork's withdrawal above):
+
+- The accounting was never one crate into two. Stylo never did layout;
+  the incumbent lane was always Stylo plus genet-layout. Livery and
+  Buckram replace the pair role for role, split on the seam CSS itself
+  draws: computed versus used values.
+- Measured 2026-08-16: incumbent ~172k LOC (stylo/style 133.8k +
+  genet-layout 38.4k, excluding Stylo's sibling crates and Mako
+  machinery) against ~82k for livery 20.9k + genet-livery 36.9k +
+  buckram 24.3k, with the taffy fork carrying an 879-line delta on
+  upstream. Half the code, 90% of the reftest passes, and 1469 reftests
+  the incumbent fails.
+- The catalog is data: a 2,774-line TOML property database plus codegen.
+  Subsetting for wasm size, knockouts with receipts, and the smolweb and
+  host-UI styling lanes all depend on that; Stylo's Mako-generated
+  property space is consumed whole or not at all.
+- Retained layout with identities (K5's containing-block graph, static
+  positions, dirty-root relayout) is what an interactive application
+  host sits on. Servo layout is batch-shaped and upstream Stylo does not
+  touch layout at all, so no form of "stay" provides it.
+
+The cost, stated once so it is never discovered: every bug is ours, the
+coverage climb is ours, and nobody upstreams fixes to us. The
+Livery/Stylo differential above is the instrument that keeps that cost
+visible while the oracle lasts.

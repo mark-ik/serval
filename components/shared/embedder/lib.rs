@@ -32,7 +32,7 @@ use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use paint_types::ExternalScrollId;
 use paint_types::units::{
-    DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, DeviceRect,
+    CSSPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, DeviceRect,
     DeviceVector2D, LayoutPoint, LayoutRect, LayoutSize, LayoutVector2D,
 };
 use pixels::SharedRasterImage;
@@ -45,8 +45,6 @@ use servo_base::id::{PipelineId, WebViewId};
 use servo_geometry::{DeviceIndependentIntRect, DeviceIndependentIntSize};
 use servo_url::ServoUrl;
 use strum::{EnumMessage, IntoStaticStr};
-use style::queries::values::PrefersColorScheme;
-use stylo_traits::CSSPixel;
 use url::Url;
 use uuid::Uuid;
 
@@ -85,12 +83,6 @@ impl From<LayoutPoint> for WebViewPoint {
     }
 }
 
-impl From<Point2D<f32, CSSPixel>> for WebViewPoint {
-    fn from(point: Point2D<f32, CSSPixel>) -> Self {
-        Self::Page(point)
-    }
-}
-
 /// A rectangle in a `WebView`, either expressed in device pixels or page pixels.
 /// Page pixels are CSS pixels, which take into account device pixel scale,
 /// page zoom, and pinch zoom.
@@ -124,12 +116,6 @@ impl From<LayoutRect> for WebViewRect {
     }
 }
 
-impl From<Box2D<f32, CSSPixel>> for WebViewRect {
-    fn from(rect: Box2D<f32, CSSPixel>) -> Self {
-        Self::Page(rect)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
 pub enum WebViewVector {
     Device(DeviceVector2D),
@@ -154,12 +140,6 @@ impl From<DeviceVector2D> for WebViewVector {
 impl From<LayoutVector2D> for WebViewVector {
     fn from(vector: LayoutVector2D) -> Self {
         Self::Page(Vector2D::new(vector.x, vector.y))
-    }
-}
-
-impl From<Vector2D<f32, CSSPixel>> for WebViewVector {
-    fn from(vector: Vector2D<f32, CSSPixel>) -> Self {
-        Self::Page(vector)
     }
 }
 
@@ -729,15 +709,6 @@ pub enum Theme {
     Dark,
 }
 
-impl From<Theme> for PrefersColorScheme {
-    fn from(value: Theme) -> Self {
-        match value {
-            Theme::Light => PrefersColorScheme::Light,
-            Theme::Dark => PrefersColorScheme::Dark,
-        }
-    }
-}
-
 // The type of MediaSession action.
 /// <https://w3c.github.io/mediasession/#enumdef-mediasessionaction>
 #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
@@ -868,12 +839,6 @@ malloc_size_of_is_0!(UntrustedNodeAddress);
 
 #[expect(unsafe_code)]
 unsafe impl Send for UntrustedNodeAddress {}
-
-impl From<stylo_traits::dom::OpaqueNode> for UntrustedNodeAddress {
-    fn from(o: stylo_traits::dom::OpaqueNode) -> Self {
-        UntrustedNodeAddress(o.0 as *const c_void)
-    }
-}
 
 impl Serialize for UntrustedNodeAddress {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {

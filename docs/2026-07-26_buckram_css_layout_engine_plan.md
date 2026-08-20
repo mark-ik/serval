@@ -1,15 +1,15 @@
 # Buckram: a CSS layout engine over reusable algorithms
 
 **Date:** 2026-07-26
-**Status:** in execution, corrected 2026-08-08. K0 through K3 are accepted.
-K4a through K4e have accepted capability receipts, and K4f's collapsed-track
-slice has landed. K4f's separated table paint remains open. The compatibility
-bridge remains for named table deferrals. K4g1 is accepted; K4g2 is the next
-K4 implementation gate, with K4g3 interoperability research recorded ahead
-of implementation. K4 closes only after the K4f remainder, K4g, and K4h
-delete the remaining bridge and flattening seams. The
-[K4 completion lane](2026-08-08_buckram_k4_completion_lane.md) schedules the
-stranded K4d-K4f work and the serial path to that receipt.
+**Status:** in execution, corrected 2026-08-15. K0 through K4 are accepted.
+K4 closed at `610df0981a8` when K4h deleted the table compatibility bridge.
+K5 is active on `buckram-k5-positioning`, which integrated current `main` at
+`27c2c87828f`. K5a is complete and K5c is accepted; K5b is partial, while
+K5d through K5h retain open work in their execution plans. K5h already has
+real selected-root replacement and fresh-final equivalence receipts, but its
+remaining private flex/grid static-position provider still blocks closure.
+The [K6 execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md)
+is prepared and remains blocked on accepted K5h closure on `main`.
 **Decision:** Buckram owns CSS box generation, formatting contexts, intrinsic
 sizing, and fragments. Taffy is an algorithm library for flex and grid, with
 block layout retained only as a migration aid.
@@ -1528,12 +1528,10 @@ auto sizing, captions, separate and collapsed borders, and positioned table
 parts. A Taffy grid call may solve track constraints after Buckram has run the
 CSS table algorithm. Grid auto-sizing is not the table algorithm.
 
-K4a through K4e have accepted capability receipts. K4f's collapsed-track
-slice has landed; its separated table paint remains open. Supported tables use
-Buckram's table model, inline and block sizing, fragments, and wrapper/caption
-behavior. Named deferrals retain the compatibility bridge. K4g1 is accepted;
-contextual-color C1 is the entry dependency for K4g2, the next K4 gate. K4g3
-interoperability research is recorded ahead, not accepted implementation.
+K4 is accepted and closed at `610df0981a8`. Buckram owns table fixup, fixed and
+automatic sizing, row and column structure, captions, separated and collapsed
+borders, fragments, wrapper geometry, and positioned table parts. K4h deleted
+the compatibility bridge rather than carrying named table deferrals into K5.
 
 **Receipt:** carry forward the old B3a-c family ledger; remove the
 positioned-row flattening guard and the partial `table-layout` marker only
@@ -1541,10 +1539,10 @@ when their named limitations are closed.
 
 ### K5. Positioning and persistent layout state
 
-K5 starts implementation only after K4h has exposed table wrappers, grids,
-cells, rows, and captions through their correct containing fragments. Research
-and execution planning may proceed while K4 runs, but K5 must not invent a
-second table-positioning seam.
+K5 began after K4h exposed table wrappers, grids, cells, rows, and captions
+through their correct containing fragments. It consumes that seam and must not
+invent a second table-positioning path. The active branch integrated current
+`main` at `27c2c87828f`; that integration is not a K5 closure receipt.
 
 [CSS Positioned Layout Level 3](https://www.w3.org/TR/css-position-3/) is the
 primary positioning authority. CSS 2.1 remains evidence for the cases it
@@ -1588,6 +1586,12 @@ starts.
   rules to box-level relationships.
 - Retain separate absolute and fixed chains and the initial containing block.
 - Represent every implemented containing-block-establishing trigger explicitly.
+- **Receipt (2026-08-10):** Buckram now resolves the normal-flow, absolute,
+  and fixed chains during box-tree materialization. Livery lowers non-static
+  `position`, `transform`, and implemented layout/paint containment triggers;
+  the table root transfers its trigger to the existing wrapper. This is a
+  structural receipt only: K5a does not place a positioned box. See
+  `2026-08-10_buckram_k5a_containing_blocks_execution_plan.md`.
   An unimplemented trigger remains a named capability gap rather than being
   treated as an ordinary positioned ancestor.
 - Carry physical and logical inset values, margins, sizing constraints,
@@ -1697,6 +1701,11 @@ K6 extends K5's persistent state across fragmentainers. K5's incremental
 receipt covers unfragmented continuous media only. Inline boxes split across
 line boxes already prove one-to-many fragment identity, but they do not prove
 break-and-resume layout through columns or pages.
+
+The serial implementation and verification gates are fixed in the
+[K6 fragmentation execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md).
+No K6 engine or property work begins before accepted K5h closure lands on
+`main`.
 
 Execute K6 in this order:
 

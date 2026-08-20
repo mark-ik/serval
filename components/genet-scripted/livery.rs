@@ -18,8 +18,8 @@ use genet_document_resources::{
 };
 use genet_livery::{
     CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryLayout,
-    LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextSystem,
-    ViewportSizes, canonicalize_specified_value, content_box_size,
+    LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextRange,
+    TextSelection, TextSystem, ViewportSizes, canonicalize_specified_value, content_box_size,
     emit_paint_list_with_text_system_scrolled_with_images, hit_test, layout,
     layout_with_text_system, resolve_container_query_styles,
     resolve_container_query_styles_with_images, resolve_styles,
@@ -29,7 +29,7 @@ use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{
     AttributeView, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName, QuirksMode,
 };
-use paint_list_api::DeviceIntSize;
+use paint_list_api::{ColorF, DeviceIntSize, LayoutPoint, LayoutRect, LayoutSize};
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, Runtime,
@@ -52,8 +52,17 @@ struct LiveryState {
     image_sources: HashMap<String, Vec<u8>>,
     font_sources: HashMap<String, Vec<u8>>,
     scroll: (f32, f32),
+    selection_anchor: Option<(NodeId, usize)>,
+    selection_range: Option<TextRange<NodeId>>,
     live_sheets: Option<LiveStylesheetSource>,
 }
+
+const SELECTION_COLOR: ColorF = ColorF {
+    r: 0.40,
+    g: 0.60,
+    b: 0.95,
+    a: 0.40,
+};
 
 /// Geometry retained beside a live runtime-owned DOM. It is deliberately not a
 /// second DOM or a `LiveryDocument`: the runtime remains the mutable owner.
@@ -215,6 +224,8 @@ impl LiveryCssom {
             image_sources: HashMap::new(),
             font_sources: HashMap::new(),
             scroll: (0.0, 0.0),
+            selection_anchor: None,
+            selection_range: None,
             live_sheets: None,
         }));
         Self::install_state(runtime, state)
@@ -310,6 +321,8 @@ impl LiveryCssom {
             image_sources: HashMap::new(),
             font_sources: HashMap::new(),
             scroll: (0.0, 0.0),
+            selection_anchor: None,
+            selection_range: None,
             live_sheets: Some(LiveStylesheetSource {
                 document_url,
                 fetcher,
@@ -509,7 +522,20 @@ impl LiveryCssom {
             fragments,
             content_extent,
         });
-        let displayed = frame.translated(-state.scroll.0, -state.scroll.1);
+        let mut displayed = frame.translated(-state.scroll.0, -state.scroll.1);
+        if let Some(selection) = live_text_selection(&state) {
+            for rect in selection.rects {
+                if rect.width > 0.0 && rect.height > 0.0 {
+                    displayed.push_overlay_rect(
+                        LayoutRect::from_origin_and_size(
+                            LayoutPoint::new(rect.x, rect.y),
+                            LayoutSize::new(rect.width, rect.height),
+                        ),
+                        SELECTION_COLOR,
+                    );
+                }
+            }
+        }
         drop(state);
 
         let mut drained = Vec::new();
@@ -593,6 +619,99 @@ impl LiveryCssom {
         true
     }
 
+    /// The node's retained outer fragment in viewport coordinates.
+    pub fn fragment_rect(&self, id: NodeId) -> Option<[f32; 4]> {
+        let state = self.state.borrow();
+        let fragment = state.frame.as_ref()?.fragments.get(id)?;
+        Some([
+            fragment.x - state.scroll.0,
+            fragment.y - state.scroll.1,
+            fragment.width,
+            fragment.height,
+        ])
+    }
+
+    /// Begin a primary-pointer selection against the live shaped frame.
+    pub fn begin_text_selection(&self, x: f32, y: f32) -> bool {
+        let mut state = self.state.borrow_mut();
+        state.selection_range = None;
+        state.selection_anchor = state.frame.as_ref().and_then(|frame| {
+            frame
+                .fragments
+                .text_position_at_point(x + state.scroll.0, y + state.scroll.1)
+        });
+        state.selection_anchor.is_some()
+    }
+
+    /// Extend the current primary-pointer selection.
+    pub fn extend_text_selection(&self, x: f32, y: f32) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(anchor) = state.selection_anchor else {
+            return false;
+        };
+        let Some(focus) = state.frame.as_ref().and_then(|frame| {
+            frame
+                .fragments
+                .text_position_at_point(x + state.scroll.0, y + state.scroll.1)
+        }) else {
+            return false;
+        };
+        let next = TextRange {
+            anchor_node: anchor.0,
+            anchor_offset: anchor.1,
+            focus_node: focus.0,
+            focus_offset: focus.1,
+        };
+        if state.selection_range == Some(next) {
+            return false;
+        }
+        state.selection_range = Some(next);
+        true
+    }
+
+    /// Finish a pointer selection. A collapsed gesture remains an ordinary
+    /// click and therefore clears the pending range.
+    pub fn finish_text_selection(&self, x: f32, y: f32) -> bool {
+        self.extend_text_selection(x, y);
+        let mut state = self.state.borrow_mut();
+        state.selection_anchor = None;
+        if live_text_selection(&state).is_some() {
+            true
+        } else {
+            state.selection_range = None;
+            false
+        }
+    }
+
+    /// Recompute live selection text and viewport geometry from the retained
+    /// source range.
+    pub fn text_selection(&self) -> Option<TextSelection<NodeId>> {
+        live_text_selection(&self.state.borrow())
+    }
+
+    /// Resolve the first shaped occurrence of `text` to pointer endpoints.
+    pub fn text_target(&self, text: &str) -> Option<([f32; 2], [f32; 2])> {
+        let state = self.state.borrow();
+        let frame = state.frame.as_ref()?;
+        let range = frame.fragments.text_range_for_text(text)?;
+        let anchor = frame
+            .fragments
+            .caret_rect(range.anchor_node, range.anchor_offset)?;
+        let focus = frame
+            .fragments
+            .caret_rect(range.focus_node, range.focus_offset)?;
+        Some((
+            [
+                anchor.x - state.scroll.0,
+                anchor.y - state.scroll.1 + anchor.height * 0.5,
+            ],
+            [
+                focus.x - state.scroll.0,
+                focus.y - state.scroll.1 + focus.height * 0.5,
+            ],
+        ))
+    }
+
     /// Dispatch a click at the Livery hit-tested live node. The runtime owns
     /// event propagation; Livery supplies the geometry and the in-page anchor
     /// default after a listener has had a chance to prevent it.
@@ -636,6 +755,19 @@ impl LiveryCssom {
         }
         true
     }
+}
+
+fn live_text_selection(state: &LiveryState) -> Option<TextSelection<NodeId>> {
+    let mut selection = state
+        .frame
+        .as_ref()?
+        .fragments
+        .text_selection(state.selection_range?)?;
+    for rect in &mut selection.rects {
+        rect.x -= state.scroll.0;
+        rect.y -= state.scroll.1;
+    }
+    Some(selection)
 }
 
 fn document_content_extent<D: LayoutDom>(dom: &D, fragments: &LiveryLayout<D::NodeId>) -> (f32, f32)

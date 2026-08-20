@@ -9,7 +9,34 @@
 
 use genet_documents::{LocalFetcher, SmolwebDocument, SmolwebTheme};
 use genet_layout::ScrollKey;
+use inker::SessionScrollKey;
 use netrender::Scene;
+
+use crate::static_viewer::ViewerScrollKey;
+
+fn viewer_scroll_key(key: ViewerScrollKey) -> Option<SessionScrollKey> {
+    Some(match key {
+        ViewerScrollKey::Up => SessionScrollKey::LineUp,
+        ViewerScrollKey::Down => SessionScrollKey::LineDown,
+        ViewerScrollKey::PageUp => SessionScrollKey::PageUp,
+        ViewerScrollKey::PageDown => SessionScrollKey::PageDown,
+        ViewerScrollKey::Home => SessionScrollKey::Home,
+        ViewerScrollKey::End => SessionScrollKey::End,
+        ViewerScrollKey::Left | ViewerScrollKey::Right => return None,
+    })
+}
+
+fn incumbent_scroll_key(key: ScrollKey) -> Option<SessionScrollKey> {
+    Some(match key {
+        ScrollKey::Up => SessionScrollKey::LineUp,
+        ScrollKey::Down => SessionScrollKey::LineDown,
+        ScrollKey::PageUp => SessionScrollKey::PageUp,
+        ScrollKey::PageDown => SessionScrollKey::PageDown,
+        ScrollKey::Home => SessionScrollKey::Home,
+        ScrollKey::End => SessionScrollKey::End,
+        ScrollKey::Left | ScrollKey::Right => return None,
+    })
+}
 
 /// The smolweb document as windowed [`ViewerContent`](crate::static_viewer::windowed::ViewerContent),
 /// so it plugs into the shared winit shell like the static document. v1 is read-only:
@@ -26,8 +53,8 @@ impl crate::static_viewer::windowed::ViewerContent for SmolwebDocument {
     fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
         SmolwebDocument::scroll_at(self, x, y, dx, dy)
     }
-    fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
-        SmolwebDocument::scroll_for_key(self, key)
+    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
+        viewer_scroll_key(key).is_some_and(|key| SmolwebDocument::scroll_for_key(self, key))
     }
     fn click_at(&mut self, _x: f32, _y: f32) -> bool {
         // The bare viewer has no history; navigation is the chrome browser's job
@@ -52,7 +79,7 @@ impl crate::chrome_viewer::windowed::BrowsableContent for SmolwebDocument {
         SmolwebDocument::scroll_at(self, x, y, dx, dy)
     }
     fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
-        SmolwebDocument::scroll_for_key(self, key)
+        incumbent_scroll_key(key).is_some_and(|key| SmolwebDocument::scroll_for_key(self, key))
     }
     fn click_at(
         &mut self,

@@ -11,26 +11,47 @@
 
 pub mod a11y;
 pub mod inspect;
+#[cfg(feature = "incumbent")]
+pub mod render;
+#[cfg(feature = "livery")]
+#[path = "livery_render.rs"]
 pub mod render;
 
+#[cfg(all(feature = "incumbent", feature = "livery"))]
+compile_error!("genet-render engine features are exclusive; select livery or incumbent");
+
+#[cfg(not(any(feature = "incumbent", feature = "livery")))]
+compile_error!("genet-render requires either the livery or incumbent feature");
+
 pub use a11y::accesskit_tree;
-pub use genet_layout::{VisualAffinity, VisualCaret, VisualMovement, VisualSelection};
+#[cfg(feature = "incumbent")]
+pub use genet_layout::{
+    ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection,
+};
 pub use inspect::{ContentReport, OutlineEntry, content_report};
 pub use render::{
-    ExternalTextureDraw, RenderedFrame, TextCursor, caret_byte_at, caret_position_at,
-    caret_screen_rect, caret_screen_rect_for_position, fragments_from_scripted_dom, hit_test_node,
-    paint_list_from_scripted_dom, paint_list_from_session, scene_from_layout_dom,
+    ExternalTextureDraw, LaidOutDocument, RenderedFrame, TextCursor, caret_byte_at,
+    caret_position_at, caret_screen_rect, caret_screen_rect_for_position,
+    fragments_from_scripted_dom, hit_test_node, paint_list_from_scripted_dom,
+    paint_list_from_session, range_rects_from_scripted_dom, scene_from_layout_dom,
     scene_from_scripted_dom, scene_from_session, scene_from_session_dom,
     scene_from_session_dom_with_scrollbars, soft_wrap_caret_byte,
     translated_frame_from_session_dom,
 };
+#[cfg(feature = "livery")]
+pub use render::{
+    ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection, translate_frame,
+};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "livery"))]
 mod tests {
     use genet_scripted_dom::ScriptedDom;
     use layout_dom_api::{LayoutDom, LayoutDomMut, QualName};
 
-    use crate::{fragments_from_scripted_dom, hit_test_node, scene_from_scripted_dom};
+    use crate::{
+        TextCursor, VisualAffinity, fragments_from_scripted_dom, hit_test_node,
+        scene_from_scripted_dom, scene_from_session,
+    };
 
     const SHEET: &[&str] = &["div { display: block; }"];
 
@@ -61,7 +82,8 @@ mod tests {
         let root = dom.document();
         dom.set_inner_html(root, html);
         let scene =
-            scene_from_scripted_dom(&dom, BLOCK_SHEET, width, height, None, &Default::default());
+            scene_from_scripted_dom(&dom, BLOCK_SHEET, width, height, None, &Default::default())
+                .expect("Livery render");
         format!("{:?}", scene.ops)
     }
 
@@ -96,10 +118,12 @@ mod tests {
 
         for expected in 0..=3u32 {
             dom.set_text(text, &expected.to_string());
-            let fragments = fragments_from_scripted_dom(&dom, SHEET, 800, 600);
+            let fragments =
+                fragments_from_scripted_dom(&dom, SHEET, 800, 600).expect("Livery layout");
             assert!(fragments.rect_of(counter).is_some());
 
-            let scene = scene_from_scripted_dom(&dom, SHEET, 800, 600, None, &Default::default());
+            let scene = scene_from_scripted_dom(&dom, SHEET, 800, 600, None, &Default::default())
+                .expect("Livery render");
             assert_eq!(scene.viewport_width, 800);
             assert_eq!(scene.viewport_height, 600);
             assert!(!scene.ops.is_empty());
@@ -124,5 +148,30 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn retained_livery_session_translates_and_appends_focus_overlay() {
+        let (dom, counter) = counter_dom(0);
+        let mut session = genet_livery::LiveryDocument::new(
+            dom,
+            genet_livery::StyleSet::cambium(SHEET),
+            genet_livery::Device::screen(320.0, 200.0),
+        );
+        let plain = scene_from_session(&mut session, None, 320, 200).expect("plain frame");
+        let focused = scene_from_session(
+            &mut session,
+            Some(TextCursor {
+                node: counter,
+                caret: 0,
+                affinity: VisualAffinity::Downstream,
+                selection: None,
+                editable: false,
+            }),
+            320,
+            200,
+        )
+        .expect("focused frame");
+        assert!(focused.ops.len() >= plain.ops.len() + 4);
     }
 }

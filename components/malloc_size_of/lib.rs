@@ -56,8 +56,6 @@ use std::sync::{Arc, OnceLock};
 
 use resvg::usvg::fontdb::Source;
 use resvg::usvg::{self, tiny_skia_path};
-use style::properties::ComputedValues;
-use style::values::generics::length::GenericLengthPercentageOrAuto;
 pub use stylo_malloc_size_of::MallocSizeOfOps;
 
 /// Trait for measuring the "deep" heap usage of a data structure. This is the
@@ -1110,12 +1108,6 @@ impl<T> MallocSizeOf for std::sync::mpsc::Sender<T> {
     }
 }
 
-impl MallocSizeOf for servo_arc::Arc<ComputedValues> {
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        self.conditional_size_of(ops)
-    }
-}
-
 impl MallocSizeOf for http::HeaderMap {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         // The headermap in http is more complicated than a simple hashmap
@@ -1167,14 +1159,6 @@ malloc_size_of_is_0!(std::sync::atomic::AtomicU32);
 malloc_size_of_is_0!(std::time::Duration);
 malloc_size_of_is_0!(std::time::Instant);
 malloc_size_of_is_0!(std::time::SystemTime);
-malloc_size_of_is_0!(style::data::ElementDataWrapper);
-malloc_size_of_is_0!(style::font_face::SourceList);
-malloc_size_of_is_0!(style::properties::ComputedValues);
-malloc_size_of_is_0!(style::properties::declaration_block::PropertyDeclarationBlock);
-malloc_size_of_is_0!(style::queries::values::PrefersColorScheme);
-malloc_size_of_is_0!(style::stylesheets::Stylesheet);
-malloc_size_of_is_0!(style::stylesheets::FontFaceRule);
-malloc_size_of_is_0!(style::values::specified::source_size_list::SourceSizeList);
 malloc_size_of_is_0!(taffy::Layout);
 malloc_size_of_is_0!(time::Duration);
 malloc_size_of_is_0!(unicode_bidi::Level);
@@ -1209,100 +1193,9 @@ impl<F: tendril::Format> MallocSizeOf for tendril::SendTendril<F> {
     }
 }
 
-macro_rules! malloc_size_of_is_stylo_malloc_size_of(
-    ($($ty:ty),+) => (
-        $(
-            impl MallocSizeOf for $ty {
-                fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-                    <$ty as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
-                }
-            }
-        )+
-    );
-);
-
-impl<S> MallocSizeOf for style::author_styles::GenericAuthorStyles<S>
-where
-    S: style::stylesheets::StylesheetInDocument
-        + std::cmp::PartialEq
-        + stylo_malloc_size_of::MallocSizeOf,
-{
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        <style::author_styles::GenericAuthorStyles<S> as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
-    }
-}
-
-impl<S> MallocSizeOf for style::stylesheet_set::DocumentStylesheetSet<S>
-where
-    S: style::stylesheets::StylesheetInDocument
-        + std::cmp::PartialEq
-        + stylo_malloc_size_of::MallocSizeOf,
-{
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        <style::stylesheet_set::DocumentStylesheetSet<S> as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
-    }
-}
-
-impl<T> MallocSizeOf for style::shared_lock::Locked<T> {
-    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
-        // TODO: fix this implementation when Locked derives MallocSizeOf.
-        0
-        // <style::shared_lock::Locked<T> as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
-    }
-}
-
 impl<T: MallocSizeOf> MallocSizeOf for atomic_refcell::AtomicRefCell<T> {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         self.borrow().size_of(ops)
-    }
-}
-
-malloc_size_of_is_stylo_malloc_size_of!(style::animation::DocumentAnimationSet);
-malloc_size_of_is_stylo_malloc_size_of!(style::attr::AttrIdentifier);
-malloc_size_of_is_stylo_malloc_size_of!(style::attr::AttrValue);
-malloc_size_of_is_stylo_malloc_size_of!(style::color::AbsoluteColor);
-malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_variant_caps::T);
-malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_decoration_style::T);
-malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_rendering::T);
-malloc_size_of_is_stylo_malloc_size_of!(style::dom::OpaqueNode);
-malloc_size_of_is_stylo_malloc_size_of!(style::invalidation::element::restyle_hints::RestyleHint);
-malloc_size_of_is_stylo_malloc_size_of!(style::logical_geometry::WritingMode);
-malloc_size_of_is_stylo_malloc_size_of!(style::media_queries::MediaList);
-malloc_size_of_is_stylo_malloc_size_of!(
-    style::properties::longhands::align_items::computed_value::T
-);
-malloc_size_of_is_stylo_malloc_size_of!(
-    style::properties::longhands::flex_direction::computed_value::T
-);
-malloc_size_of_is_stylo_malloc_size_of!(style::properties::longhands::flex_wrap::computed_value::T);
-malloc_size_of_is_stylo_malloc_size_of!(style::properties::style_structs::Font);
-malloc_size_of_is_stylo_malloc_size_of!(style::selector_parser::PseudoElement);
-malloc_size_of_is_stylo_malloc_size_of!(style::selector_parser::RestyleDamage);
-malloc_size_of_is_stylo_malloc_size_of!(style::selector_parser::Snapshot);
-malloc_size_of_is_stylo_malloc_size_of!(style::shared_lock::SharedRwLock);
-malloc_size_of_is_stylo_malloc_size_of!(style::stylesheets::DocumentStyleSheet);
-malloc_size_of_is_stylo_malloc_size_of!(style::stylist::Stylist);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::BorderStyle);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::ContentDistribution);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontStretch);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontStyle);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontWeight);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::font::SingleFontFamily);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::specified::align::AlignFlags);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::specified::box_::Overflow);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::specified::font::FontSynthesis);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::specified::font::XLang);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::specified::TextDecorationLine);
-malloc_size_of_is_stylo_malloc_size_of!(stylo_dom::ElementState);
-malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_optical_sizing::T);
-malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::font_kerning::T);
-
-impl<T> MallocSizeOf for GenericLengthPercentageOrAuto<T>
-where
-    T: stylo_malloc_size_of::MallocSizeOf,
-{
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        <GenericLengthPercentageOrAuto<T> as stylo_malloc_size_of::MallocSizeOf>::size_of(self, ops)
     }
 }
 

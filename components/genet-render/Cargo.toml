@@ -7,25 +7,31 @@ edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Genet host render-driver: a ScriptedDom / LayoutDom -> netrender::Scene assembly (cascade -> layout -> paint emit -> Scene), plus the host spatial queries (hit-test, fragments, caret / selection rects) and accessibility-tree emission. The thin, GPU-free glue genet-side hosts share, sitting on genet-layout + paint_list_render; scene *production*, separate from presentation (genet-winit-host)."
+description = "Genet host render driver: neutral DOM -> owned Livery/Buckram paint list -> netrender scene, plus host spatial, caret, selection, and accessibility queries; the frozen incumbent route is feature-local."
 
 [lib]
 name = "genet_render"
 path = "src/lib.rs"
 
+[features]
+default = ["livery"]
+livery = ["dep:genet-livery"]
+incumbent = ["dep:genet-layout", "dep:engine_observables_api", "dep:paint", "dep:taffy", "dep:euclid"]
+
 [dependencies]
 # The genet DOM + the engine pipeline this drives.
 genet-scripted-dom = { path = "../genet-scripted-dom" }
-genet-layout = { path = "../genet-layout" }
+genet-livery = { path = "../genet-livery", optional = true }
+genet-layout = { path = "../genet-layout", optional = true }
 layout_dom_api = { workspace = true }
 # Paint-list -> netrender::Scene lowering (aliased `paint`), the Scene type, and
 # the paint/query value types.
-paint = { workspace = true }
+paint = { workspace = true, optional = true }
 paint_list_api = { workspace = true }
 paint_list_render = { workspace = true }
 netrender = { workspace = true }
 # Engine-observable query surface: hit_test (point -> node) behind FragmentQuery.
-engine_observables_api = { workspace = true }
+engine_observables_api = { workspace = true, optional = true }
 # The introspection CONTRACT types (`ContentReport` / `OutlineEntry`) live in the
 # contracts crate so `DocumentSession::inspect` can name them; this crate keeps
 # the LayoutDom -> report builder and re-exports the types for its consumers.
@@ -35,8 +41,8 @@ inker = { path = "../inker" }
 accesskit = { workspace = true }
 # taffy must match genet-layout's experimental pin (layout() takes a taffy::Size
 # viewport); euclid for the viewport size the image planes carry.
-taffy = { version = "=0.12.1", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
-euclid = { workspace = true }
+taffy = { version = "=0.13.0", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"], optional = true }
+euclid = { workspace = true, optional = true }
 
 [dev-dependencies]
 # A parsed HTML document for the content-introspection (`inspect`) tests.

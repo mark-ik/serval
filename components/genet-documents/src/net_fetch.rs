@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! The remote half of [`LocalFetcher`](crate::document::LocalFetcher): http(s)
+//! The remote half of [`LocalFetcher`](crate::LocalFetcher): http(s)
 //! document loading over the netfetcher engine (the `netfetch` feature), and smolweb
 //! (gemini/gopher/nex/finger/spartan/guppy) over the errand transport (the `smolweb`
 //! feature).
@@ -25,7 +25,7 @@ use tokio::runtime::Runtime;
 use genet_host_api::ResourceResponse;
 
 #[cfg(feature = "netfetch")]
-use crate::document::ResourceFetchPolicy;
+use crate::ResourceFetchPolicy;
 
 /// The shared tokio runtime the blocking bridge drives. Built once on first use: a
 /// multithread runtime lets the host policy admit several independent document
@@ -150,7 +150,7 @@ pub(crate) fn default_http_resource_host() -> &'static HttpResourceHost {
 /// Blocking smolweb GET of `url` over the errand transport, returning the response
 /// body on a success status, or `None` on a non-success status (input / redirect /
 /// failure / cert-required) or a transport error. The smolweb branch of
-/// [`LocalFetcher::fetch`](crate::document::LocalFetcher); mirrors `http_get_bytes`,
+/// [`LocalFetcher::fetch`](crate::LocalFetcher); mirrors `http_get_bytes`,
 /// bridging errand's async `fetch` onto the sync `ResourceFetcher` through the shared
 /// runtime. The caller surfaces the `None` as a clean load error rather than painting
 /// a protocol error line as a document, matching the http path's non-2xx handling.
@@ -184,7 +184,7 @@ fn install_tofu() {
 mod tests {
     use genet_host_api::ResourceFetcher;
 
-    use crate::document::{LocalFetcher, ResourceFetchPolicy};
+    use crate::{LocalFetcher, ResourceFetchPolicy};
 
     /// http(s) loading flows through the netfetcher engine end to end: an offline
     /// mock server serves a body, and `LocalFetcher` (with the `netfetch` branch)
@@ -296,7 +296,7 @@ mod tests {
 mod smolweb_tests {
     use genet_host_api::ResourceFetcher;
 
-    use crate::document::LocalFetcher;
+    use crate::LocalFetcher;
 
     /// A smolweb scheme is recognized and routed to the errand transport, and a host
     /// that cannot resolve fails to a clean `None` (a failed load, not a panic or an

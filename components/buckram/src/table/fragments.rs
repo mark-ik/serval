@@ -78,6 +78,15 @@ impl TableFragments {
         self.fragments.is_empty()
     }
 
+    /// Rekey every sourced table fragment after its owning CSS box tree has
+    /// reconciled retained identities. Implicit tracks retain `None` because
+    /// they deliberately have no generated-box owner.
+    pub fn remap_box_ids(&mut self, mut id_of: impl FnMut(BoxId) -> BoxId) {
+        for fragment in &mut self.fragments {
+            fragment.box_id = fragment.box_id.map(&mut id_of);
+        }
+    }
+
     /// Every fragment with the given role, in tree order.
     pub fn with_role(&self, role: TableFragmentRole) -> impl Iterator<Item = &TableFragment> {
         self.fragments

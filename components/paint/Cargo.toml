@@ -21,21 +21,7 @@ webgpu = ["dep:webgpu"]
 webxr = ["dep:webxr", "dep:webxr-api"]
 
 [dev-dependencies]
-base64 = { workspace = true }
 euclid = { workspace = true }
-html5ever = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-pollster = "0.4"
-serde = { workspace = true, features = ["derive"] }
-genet-layout = { path = "../genet-layout" }
-genet-static-dom = { path = "../genet-static-dom" }
-servo-geometry = { workspace = true }
-stylo_traits = { workspace = true }
-# Matches genet-layout's taffy (its tests pass taffy::Size into
-# genet-layout::layout, so the versions must unify). See
-# docs/2026-05-20_stylo_taffy_adoption_plan.md.
-taffy = { version = "=0.12.1", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
 webgl_wgpu = { workspace = true }
 
 [lints.clippy]
@@ -61,7 +47,6 @@ rustc-hash = { workspace = true }
 servo-base = { workspace = true }
 servo-constellation-traits = { workspace = true }
 servo-geometry = { workspace = true }
-stylo_traits = { workspace = true }
 wgpu = { workspace = true }
 webgpu = { workspace = true, optional = true }
 webxr = { workspace = true, optional = true }

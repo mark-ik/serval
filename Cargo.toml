@@ -259,7 +259,7 @@ finger-protocol = { version = "=0.1.1", default-features = false, features = [
     "client",
 ] }
 inker = { version = "=0.1.0", path = "components/inker" }
-genet-documents = { version = "=0.1.0", path = "components/genet-documents" }
+genet-documents = { version = "=0.1.0", path = "components/genet-documents", default-features = false }
 genet-document-resources = { version = "=0.2.0", path = "components/genet-document-resources" }
 nematic = { version = "=0.1.0", path = "components/nematic" }
 document-canvas = { version = "=0.1.0", path = "components/inker/document-canvas" }
@@ -269,7 +269,7 @@ graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engi
 weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
 genet-host-api = { version = "=0.1.0", path = "components/genet-host-api" }
 genet-render-host = { path = "components/genet-render-host" }
-pelt-desktop = { version = "=0.2.0", path = "ports/pelt/desktop" }
+pelt-desktop = { version = "=0.2.0", path = "ports/pelt/desktop", default-features = false }
 netrender = { git = "https://github.com/merely-made/netrender.git", branch = "main", version = "0.1.0" }
 netrender_device = { git = "https://github.com/merely-made/netrender.git", branch = "main", version = "0.1.0" }
 # (No xilem git deps remain. The Masonry-era `xilem` / `masonry` /

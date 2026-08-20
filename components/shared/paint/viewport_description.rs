@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use euclid::Scale;
+use paint_types::units::CSSPixel;
 use serde::{Deserialize, Serialize};
 use servo_geometry::DeviceIndependentPixel;
-use stylo_traits::CSSPixel;
 
 /// Default viewport constraints
 ///

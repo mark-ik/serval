@@ -9,5 +9,6 @@
 //! fetcher it is implemented for.)
 
 pub use genet_scripted::{
-    ResourceFetcher as ScriptResourceFetcher, ScriptedDocument, ScriptedEngine,
+    LiveryScriptedDocument as ScriptedDocument, ResourceFetcher as ScriptResourceFetcher,
+    ScriptedEngine,
 };

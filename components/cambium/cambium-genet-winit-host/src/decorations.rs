@@ -31,14 +31,16 @@
 //!    honour double-click-to-maximize and the system menu itself, on every
 //!    platform, with no application involvement at all.
 
-use cambium_rootstock::HostWindow;
-use std::cell::RefCell;
-
 use cambium_rootstock::TitlebarInsets;
 use genet_scripted_dom::NodeId;
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 
-use crate::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
+use crate::{AppRegion, WindowCommand, WindowGeometry};
+
+#[cfg(test)]
+use crate::WindowCommands;
+#[cfg(test)]
+use std::cell::RefCell;
 
 /// Detects double-clicks the way the platforms do: two presses close together
 /// in both time and space.
@@ -80,10 +82,7 @@ impl ClickCadence {
 /// Prefers the standard `app-region` longhand and falls back to the custom
 /// property, so the day livery implements the real property this keeps
 /// working and stylesheets written against either spelling are honoured.
-pub(crate) fn app_region_of(
-    layout: &genet_layout::IncrementalLayout<NodeId>,
-    node: NodeId,
-) -> AppRegion {
+pub(crate) fn app_region_of(layout: &cambium_rootstock::OwnedLayout, node: NodeId) -> AppRegion {
     layout
         .computed_value(node, "app-region")
         .or_else(|| layout.computed_custom_property(node, "app-region"))
@@ -126,7 +125,7 @@ where
 pub(crate) fn window_control_rect<D>(
     dom: &D,
     root: NodeId,
-    layout: &genet_layout::IncrementalLayout<NodeId>,
+    layout: &cambium_rootstock::OwnedLayout,
     accessible_label: &str,
 ) -> Option<(f32, f32, f32, f32)>
 where
@@ -453,7 +452,8 @@ pub(crate) fn titlebar_insets(window: &winit::window::Window) -> TitlebarInsets 
         // to the content view's so the values mean what a stylesheet means by
         // "from the top".
         let frame = button.frame();
-        let in_view = view.convertRect_fromView(frame, unsafe { ns_window.contentView() }.as_deref());
+        let in_view =
+            view.convertRect_fromView(frame, unsafe { ns_window.contentView() }.as_deref());
         right = right.max((in_view.origin.x + in_view.size.width) as f32);
         bottom = bottom.max((in_view.origin.y + in_view.size.height) as f32);
     }

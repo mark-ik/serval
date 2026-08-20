@@ -11,6 +11,8 @@ mod box_tree;
 mod flow;
 mod fragment_tree;
 mod intrinsic;
+mod positioning;
+mod sticky;
 mod table;
 mod taffy_adapter;
 
@@ -24,21 +26,26 @@ pub use block::{
 };
 pub use box_tree::{
     AnonymousBoxKind, BoxGeneration, BoxId, BoxOrigin, BoxTreeInput, ContainingBlock,
-    ContainingBlockRule, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
+    ContainingBlockEstablishment, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,
     FloatContextProvenance, FormattingContextKind, InternalTableRole, PositioningScheme,
     PseudoElement, generate_box_tree,
 };
 pub use flow::{
-    Direction, FlowAxes, LogicalAxis, LogicalRect, LogicalSides, LogicalSize, PhysicalRect,
-    PhysicalSide, PhysicalSides, PhysicalSize, WritingMode,
+    Direction, FlowAxes, LogicalAxis, LogicalOffset, LogicalRect, LogicalSides, LogicalSize,
+    PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, WritingMode,
 };
 pub use fragment_tree::{
-    Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId, LayoutResult,
+    Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId,
+    LayoutIdentityMap, LayoutResult, StaticPosition, StaticPositionSource,
 };
 pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,
     IntrinsicSizeQuery, IntrinsicSizes, block_intrinsic_sizes_for_definite_inline,
 };
+pub use positioning::{
+    PositionedBoxGeometry, PositionedBoxInput, ReplacedSize, solve_positioned_box,
+};
+pub use sticky::{StickyAxisInput, solve_sticky_axis};
 pub use table::{
     AffineLengthPercentage, CaptionMinContribution, CellBlockOffsets, CellCollapsedBorderMetrics,
     CellInlineOffsets, CollapsedBorderGeometry, CollapsedBorderGeometryError,

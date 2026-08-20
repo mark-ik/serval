@@ -12,7 +12,7 @@ use livery::{
         BackgroundImage, BackgroundRepeat, BorderCollapse, BorderStyle as CssBorderStyle,
         BoxShadow as CssBoxShadow, ComputedColor, Display, EmptyCells, FontSize, Length,
         LengthPercentage, LengthUnit, Matrix2D, Overflow as CssOverflow, Position, Radius,
-        Visibility, ZIndex,
+        Visibility,
     },
 };
 use paint_list_api::{
@@ -28,7 +28,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     LiveryLayout, StylePlane,
-    layout::{Fragment, TablePaintModel, border_width_px},
+    layout::{
+        Fragment, TablePaintModel, border_width_px, order_modified_children,
+        z_index_stacking_level,
+    },
     text::{TextFrame, TextSystem},
 };
 use buckram::{
@@ -52,6 +55,43 @@ pub struct LiveryPaintList {
 impl LiveryPaintList {
     pub fn new(viewport: DeviceIntSize, generation: u64) -> Self {
         Self::with_image_sources(viewport, generation, &HashMap::new())
+    }
+
+    /// Append a host-owned overlay rectangle after document content.
+    ///
+    /// Focus, caret, selection, and inspection overlays belong to the render
+    /// driver rather than CSS paint emission, but they still travel through the
+    /// same engine-neutral paint-list boundary.
+    pub fn push_overlay_rect(&mut self, rect: LayoutRect, color: ColorF) {
+        self.commands.push(PaintCmd::DrawRect(RectItem {
+            placement: CommonPlacement::new(rect),
+            color,
+        }));
+    }
+
+    /// Splice host-painted commands at a retained document position.
+    ///
+    /// Custom widget interiors are host content rather than CSS paint. Their
+    /// command stream stays local to the leaf and is translated as one stack
+    /// frame so neither the host nor Livery rewrites individual primitives.
+    pub fn push_host_commands_at(&mut self, origin: LayoutPoint, commands: &[PaintCmd]) {
+        if commands.is_empty() {
+            return;
+        }
+        self.commands.push(PaintCmd::PushTransform(TransformSpec {
+            origin,
+            transform: LayoutTransform::identity(),
+            kind: TransformKind::Standard,
+        }));
+        self.commands.extend_from_slice(commands);
+        self.commands.push(PaintCmd::PopTransform);
+    }
+
+    /// Place one renderer-retained host fragment at a document position.
+    pub fn push_host_fragment_at(&mut self, origin: LayoutPoint, id: u64) {
+        self.commands.push(PaintCmd::PlaceRetainedFragment(
+            paint_list_api::RetainedFragmentRef { id, origin },
+        ));
     }
 
     fn with_image_sources(
@@ -1036,6 +1076,164 @@ mod collapsed_border_paint_tests {
     }
 }
 
+#[cfg(test)]
+mod positioned_paint_tests {
+    use super::*;
+    use crate::{Device, InteractionStates, StyleSet, layout, resolve_styles};
+    use genet_static_dom::StaticDocument;
+
+    fn render(html: &str, css: &str) -> LiveryPaintList {
+        let document = StaticDocument::parse(html);
+        let styles = resolve_styles(
+            &document,
+            &StyleSet::cambium(&[css]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let fragments = layout(&document, &styles, 320.0, 240.0).expect("positioned layout");
+        emit_paint_list(
+            &document,
+            &styles,
+            &fragments,
+            DeviceIntSize::new(320, 240),
+            1,
+        )
+    }
+
+    fn first_rect(list: &LiveryPaintList, color: ColorF) -> usize {
+        list.commands()
+            .iter()
+            .position(|command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == color))
+            .expect("the fixture color paints")
+    }
+
+    #[test]
+    fn positioned_numeric_z_indices_wrap_the_normal_paint_phase() {
+        let list = render(
+            "<div id=host><div id=behind></div><div id=normal></div><div id=front></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #host { position: relative; width: 100px; height: 100px; } \
+             #behind, #front { position: absolute; left: 0; top: 0; width: 80px; height: 80px; } \
+             #behind { z-index: -1; background: #f00; } \
+             #normal { width: 80px; height: 80px; background: #00f; } \
+             #front { z-index: 1; background: #0f0; }",
+        );
+        let behind = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let normal = first_rect(&list, ColorF::new(0.0, 0.0, 1.0, 1.0));
+        let front = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            behind < normal && normal < front,
+            "negative positioned content paints before normal flow and positive content after it: {behind}, {normal}, {front}"
+        );
+    }
+
+    #[test]
+    fn static_grid_item_z_indices_wrap_the_normal_paint_phase() {
+        let list = render(
+            "<div id=grid><div id=front></div><div id=normal></div><div id=behind></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #grid { display: grid; width: 80px; height: 80px; \
+                     grid-template-columns: 80px; grid-template-rows: 80px; } \
+             #behind, #normal, #front { grid-area: 1 / 1 / 2 / 2; width: 80px; height: 80px; } \
+             #behind { z-index: -1; background: #f00; } \
+             #normal { background: #00f; } \
+             #front { z-index: 1; background: #0f0; }",
+        );
+        let behind = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let normal = first_rect(&list, ColorF::new(0.0, 0.0, 1.0, 1.0));
+        let front = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            behind < normal && normal < front,
+            "negative static grid items paint before normal items and positive items after them: {behind}, {normal}, {front}"
+        );
+    }
+
+    #[test]
+    fn static_flex_item_z_indices_wrap_the_normal_paint_phase() {
+        let list = render(
+            "<div id=flex><div id=front></div><div id=normal></div><div id=behind></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #flex { display: flex; flex-direction: column; width: 80px; height: 80px; } \
+             #behind, #normal, #front { width: 80px; height: 80px; flex-shrink: 0; margin-bottom: -80px; } \
+             #behind { z-index: -1; background: #f00; } \
+             #normal { background: #00f; } \
+             #front { z-index: 1; background: #0f0; }",
+        );
+        let behind = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let normal = first_rect(&list, ColorF::new(0.0, 0.0, 1.0, 1.0));
+        let front = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            behind < normal && normal < front,
+            "negative static flex items paint before normal items and positive items after them: {behind}, {normal}, {front}"
+        );
+    }
+
+    #[test]
+    fn grid_items_paint_in_order_modified_document_order() {
+        let list = render(
+            "<div id=grid><div id=later></div><div id=earlier></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #grid { display: grid; width: 80px; height: 80px; \
+                     grid-template-columns: 80px; grid-template-rows: 80px; } \
+             #later, #earlier { grid-area: 1 / 1 / 2 / 2; width: 80px; height: 80px; } \
+             #later { order: 1; background: #0f0; } \
+             #earlier { order: -1; background: #f00; }",
+        );
+        let earlier = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let later = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            earlier < later,
+            "grid item order changes normal-phase paint order: {earlier}, {later}"
+        );
+    }
+
+    #[test]
+    fn flex_items_paint_in_order_modified_document_order() {
+        let list = render(
+            "<div id=flex><div id=later></div><div id=earlier></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #flex { display: flex; flex-direction: column; width: 80px; height: 80px; } \
+             #later, #earlier { width: 80px; height: 80px; flex-shrink: 0; margin-bottom: -80px; } \
+             #later { order: 1; background: #0f0; } \
+             #earlier { order: -1; background: #f00; }",
+        );
+        let earlier = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let later = first_rect(&list, ColorF::new(0.0, 1.0, 0.0, 1.0));
+
+        assert!(
+            earlier < later,
+            "flex item order changes normal-phase paint order: {earlier}, {later}"
+        );
+    }
+
+    #[test]
+    fn positioned_stacking_item_keeps_its_overflow_clip() {
+        let list = render(
+            "<div id=clip><div id=overlay></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #clip { position: relative; width: 50px; height: 50px; overflow: hidden; } \
+             #overlay { position: absolute; left: 0; top: 0; width: 100px; height: 100px; \
+                        z-index: 1; background: #f00; }",
+        );
+        let overlay = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let push = list.commands()[..overlay]
+            .iter()
+            .rposition(|command| matches!(command, PaintCmd::PushClip(_)))
+            .expect("the overflow clip encloses the positioned paint");
+        let pop = list.commands()[overlay + 1..]
+            .iter()
+            .position(|command| matches!(command, PaintCmd::PopClip))
+            .map(|index| overlay + index + 1)
+            .expect("the positioned paint closes the overflow clip");
+
+        assert!(push < overlay && overlay < pop);
+    }
+}
+
 /// A blank `<td>` is not inferred from its rectangle. Text, replacement
 /// content, and visible descendant decoration make it non-empty; whitespace
 /// and empty inline wrappers do not.
@@ -1241,10 +1439,11 @@ fn collect_stacking_items<D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    for child in dom.dom_children(parent) {
-        // A numeric positioned node starts a local context. Its descendants
-        // are collected when that context is emitted, keeping it atomic here.
-        if let Some(level) = stacking_level(styles, child) {
+    for child in order_modified_children(dom, styles, parent) {
+        // A numeric positioned or flex/grid item starts a local context. Its
+        // descendants are collected when that context is emitted, keeping it
+        // atomic here.
+        if let Some(level) = stacking_level(dom, styles, child) {
             items.push(StackingItem {
                 id: child,
                 level,
@@ -1413,7 +1612,7 @@ fn emit_normal_children<'a, D>(
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    let child_ids = dom.dom_children(parent).collect::<Vec<_>>();
+    let child_ids = order_modified_children(dom, styles, parent);
 
     let mut inline_group = Vec::new();
     for (index, child) in child_ids.iter().copied().enumerate() {
@@ -1527,14 +1726,13 @@ fn same_fragment(left: &Fragment, right: &Fragment) -> bool {
         && (left.height - right.height).abs() <= 0.5
 }
 
-fn stacking_level<Id>(styles: &StylePlane<Id>, id: Id) -> Option<i32>
+fn stacking_level<D>(dom: &D, styles: &StylePlane<D::NodeId>, id: D::NodeId) -> Option<i32>
 where
-    Id: Copy + Eq + Hash,
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
 {
     let style = styles.get(id)?;
-    if style.position != Position::Static
-        && let ZIndex::Integer(level) = style.z_index
-    {
+    if let Some(level) = z_index_stacking_level(dom, styles, id) {
         return Some(level);
     }
     (style.opacity.value() < 1.0 || establishes_transform_context(style)).then_some(0)

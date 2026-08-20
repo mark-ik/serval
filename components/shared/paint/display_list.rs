@@ -22,7 +22,6 @@ use servo_base::Epoch;
 use servo_base::id::ScrollTreeNodeId;
 use servo_base::print_tree::PrintTree;
 use servo_geometry::FastLayoutTransform;
-use style::values::specified::Overflow;
 
 /// A scroll type, describing whether what kind of action originated this scroll request.
 /// This is a bitflag as it is also used to track what kinds of [`ScrollType`]s scroll
@@ -37,17 +36,6 @@ bitflags! {
         const InputEvents = 1 << 0;
         /// This node can be scrolled by script events or script originated this scroll.
         const Script = 1 << 1;
-    }
-}
-
-/// Convert [Overflow] to [ScrollType].
-impl From<Overflow> for ScrollType {
-    fn from(overflow: Overflow) -> Self {
-        match overflow {
-            Overflow::Hidden => ScrollType::Script,
-            Overflow::Scroll | Overflow::Auto => ScrollType::Script | ScrollType::InputEvents,
-            Overflow::Visible | Overflow::Clip => ScrollType::empty(),
-        }
     }
 }
 

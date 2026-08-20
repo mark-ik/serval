@@ -48,7 +48,7 @@ pub use self::flexbox::compute_flexbox_layout;
 pub use self::grid::compute_grid_layout;
 
 #[cfg(feature = "float_layout")]
-pub use self::float::{ContentSlot, FloatContext, FloatIntrinsicWidthCalculator, InlineFloatBand};
+pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator, InlineFloatBand};
 
 use crate::geometry::{Line, Point, Size};
 use crate::style::{AvailableSpace, CoreStyle, Overflow};
@@ -155,6 +155,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         &Layout {
             order: 0,
             location,
+            static_location: location,
             size: output.size,
             #[cfg(feature = "content_size")]
             content_size: output.content_size,
@@ -293,7 +294,10 @@ pub fn compute_hidden_layout(tree: &mut (impl LayoutPartialTree + CacheTree), no
 #[cfg(feature = "detailed_layout_info")]
 pub mod detailed_info {
     #[cfg(feature = "grid")]
-    pub use super::grid::{DetailedGridInfo, DetailedGridItemsInfo, DetailedGridTracksInfo};
+    pub use super::grid::{
+        DetailedGridInfo, DetailedGridItemsInfo, DetailedGridPositionedItemInfo,
+        DetailedGridTracksInfo,
+    };
 }
 
 #[cfg(test)]

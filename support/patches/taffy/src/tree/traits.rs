@@ -129,7 +129,7 @@
 use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Line, Size};
+use crate::geometry::{AbsoluteAxis, Line, Rect, Size};
 use crate::style::{AvailableSpace, CoreStyle};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
@@ -272,6 +272,23 @@ pub trait LayoutGridContainer: LayoutPartialTree {
 
     /// Get the child's styles
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_>;
+
+    /// Select the alignment container used to calculate an absolutely
+    /// positioned grid child's static location.
+    ///
+    /// The default keeps Taffy's established grid-area behavior. Embedders
+    /// that model the CSS Positioned Layout containing-block chain can select
+    /// the content box when this grid is only the static-position parent.
+    #[inline(always)]
+    fn grid_child_static_position_area(
+        &self,
+        _container_node_id: NodeId,
+        _child_node_id: NodeId,
+        grid_area: Rect<f32>,
+        _content_box: Rect<f32>,
+    ) -> Rect<f32> {
+        grid_area
+    }
 
     /// Set the node's detailed grid information
     ///

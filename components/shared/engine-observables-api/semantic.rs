@@ -14,7 +14,6 @@
 //! force one fake tree model across lanes — use common-minimum +
 //! engine-specific extensions instead.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{Lang, SourceNodeId, SourceRange};
@@ -62,7 +61,7 @@ pub trait SemanticQuery {
 }
 
 /// One heading and its level.
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct HeadingInfo {
     pub source_node: SourceNodeId,
     /// 1..=6 for HTML, lane-specific for others (Markdown allows
@@ -72,7 +71,7 @@ pub struct HeadingInfo {
 }
 
 /// One outbound link.
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct LinkInfo {
     pub source_node: SourceNodeId,
     pub href: String,
@@ -81,7 +80,7 @@ pub struct LinkInfo {
 }
 
 /// One named anchor (target of `#fragment` navigation).
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AnchorInfo {
     pub source_node: SourceNodeId,
     pub name: String,
@@ -90,7 +89,7 @@ pub struct AnchorInfo {
 /// Generic semantic role consumers can ask about, independent of any
 /// specific markup language. Map onto each lane's native vocabulary.
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub enum SemanticRole {
     Main,

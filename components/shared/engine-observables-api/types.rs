@@ -6,7 +6,6 @@
 //! traits. Kept minimal — promote types here only when more than one
 //! trait module needs them.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 /// Opaque per-engine node identity. Lanes choose how to mint these;
@@ -15,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// The wire shape is `u64` so consumers can serialize hits + selection
 /// ranges across IPC without needing a generic NodeId parameter.
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub struct SourceNodeId(pub u64);
 
@@ -24,7 +23,7 @@ pub struct SourceNodeId(pub u64);
 /// `rects_for_selection`. Byte offsets, not chars or grapheme
 /// clusters, because that's what source/edit machinery needs.
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub struct SourceRange {
     pub start: usize,
@@ -47,7 +46,7 @@ impl SourceRange {
 
 /// Viewport-space point (CSS pixels, post-transform). Lane impls
 /// translate from their device/layout coordinate space when needed.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -62,7 +61,7 @@ impl Point {
 /// Viewport-space rectangle (CSS pixels). Origin-and-size shape; we
 /// avoid pulling in `euclid` here because consumers may want to use a
 /// different geometry crate.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Rect {
     pub origin: Point,
     pub width: f32,
@@ -89,7 +88,7 @@ impl Rect {
 /// BCP 47 language tag (e.g., "en", "en-US", "zh-Hant"). Owned String
 /// because language tags don't have a single shared registry crate we
 /// want to force; consumers can `Lang::from(s.to_string())` cheaply.
-#[derive(Clone, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Lang(pub String);
 
 impl Lang {

@@ -7,9 +7,9 @@
 use std::{hash::Hash, ops::Deref};
 
 use buckram::{
-    BoxGeneration, BoxOrigin, BoxTreeInput, CssBoxTree, Direction, DisplayInside, DisplayOutside,
-    DisplayRole, FloatSide, FlowAxes, InternalTableRole, PositioningScheme, WritingMode,
-    generate_box_tree,
+    BoxGeneration, BoxOrigin, BoxTreeInput, ContainingBlockEstablishment, CssBoxTree, Direction,
+    DisplayInside, DisplayOutside, DisplayRole, FloatSide, FlowAxes, InternalTableRole,
+    PositioningScheme, WritingMode, generate_box_tree,
 };
 use layout_dom_api::{LayoutDom, NodeKind};
 use livery::{
@@ -76,7 +76,10 @@ where
                             is_replaced_element(dom, node),
                             children,
                         )
-                        .with_float(float_side(computed.float)),
+                        .with_float(float_side(computed.float))
+                        .with_containing_block_establishment(containing_block_establishment(
+                            &computed,
+                        )),
                     );
                 },
                 NodeKind::Text => {
@@ -170,6 +173,21 @@ fn positioning_scheme(position: ComputedPosition) -> PositioningScheme {
     }
 }
 
+/// The currently implemented CSS triggers that establish descendant
+/// containing blocks. Unsupported triggers are absent from the computed
+/// model, so they cannot silently look like an ordinary positioned ancestor.
+fn containing_block_establishment(computed: &ComputedValues) -> ContainingBlockEstablishment {
+    let transformed = !matches!(computed.transform, livery::values::Transform::None);
+    let fixed = transformed || computed.contain.has_layout() || computed.contain.has_paint();
+    if fixed {
+        ContainingBlockEstablishment::fixed_and_absolute()
+    } else if computed.position != ComputedPosition::Static {
+        ContainingBlockEstablishment::positioned()
+    } else {
+        ContainingBlockEstablishment::NONE
+    }
+}
+
 fn float_side(float: ComputedFloat) -> FloatSide {
     match float {
         ComputedFloat::None => FloatSide::None,
@@ -207,6 +225,7 @@ where
 mod tests {
     use super::*;
     use crate::{Device, InteractionStates, StyleSet, resolve_styles};
+    use buckram::ContainingBlock;
     use genet_static_dom::StaticDocument;
     use layout_dom_api::{LocalName, Namespace};
 
@@ -420,5 +439,75 @@ mod tests {
             let box_id = generated.principal_box(node).expect(needle);
             assert_eq!(generated[box_id].display.internal_table, Some(role));
         }
+    }
+
+    #[test]
+    fn computed_transform_captures_absolute_and_fixed_descendants_in_buckram() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=cb><div id=absolute></div><div id=fixed></div></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#cb { transform: translateX(0px); } #absolute { position: absolute; } #fixed { position: fixed; }",
+            ]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let generated = GeneratedBoxTree::from_dom(&dom, &styles);
+        let cb = generated
+            .principal_box(find(&dom, dom.document(), "cb").expect("containing block"))
+            .expect("containing block box");
+        let absolute = generated
+            .principal_box(find(&dom, dom.document(), "absolute").expect("absolute"))
+            .expect("absolute box");
+        let fixed = generated
+            .principal_box(find(&dom, dom.document(), "fixed").expect("fixed"))
+            .expect("fixed box");
+
+        assert_eq!(
+            generated[cb].containing_block_establishment,
+            ContainingBlockEstablishment::fixed_and_absolute()
+        );
+        assert_eq!(
+            generated[absolute].containing_block,
+            ContainingBlock::Box(cb)
+        );
+        assert_eq!(generated[fixed].containing_block, ContainingBlock::Box(cb));
+    }
+
+    #[test]
+    fn computed_paint_containment_captures_absolute_and_fixed_descendants_in_buckram() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=cb><div id=absolute></div><div id=fixed></div></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#cb { contain: paint; } #absolute { position: absolute; } #fixed { position: fixed; }",
+            ]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let generated = GeneratedBoxTree::from_dom(&dom, &styles);
+        let cb = generated
+            .principal_box(find(&dom, dom.document(), "cb").expect("containing block"))
+            .expect("containing block box");
+        let absolute = generated
+            .principal_box(find(&dom, dom.document(), "absolute").expect("absolute"))
+            .expect("absolute box");
+        let fixed = generated
+            .principal_box(find(&dom, dom.document(), "fixed").expect("fixed"))
+            .expect("fixed box");
+
+        assert_eq!(
+            generated[cb].containing_block_establishment,
+            ContainingBlockEstablishment::fixed_and_absolute()
+        );
+        assert_eq!(
+            generated[absolute].containing_block,
+            ContainingBlock::Box(cb)
+        );
+        assert_eq!(generated[fixed].containing_block, ContainingBlock::Box(cb));
     }
 }

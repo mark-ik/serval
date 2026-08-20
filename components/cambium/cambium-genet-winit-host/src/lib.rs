@@ -3,9 +3,9 @@
 //! Every Cambium desktop application so far has hand-assembled the same
 //! machinery: a winit `ApplicationHandler` owning one window, a genet
 //! [`SurfaceHost`] presenting a `netrender` scene, a retained
-//! [`IncrementalLayout`] over the runner's `ScriptedDom`, logical-coordinate
+//! owned Livery/Buckram layout over the runner's `ScriptedDom`, logical-coordinate
 //! hit testing, pointer/keyboard/IME/wheel routing into a
-//! [`GenetAppRunner`], overlay-scrollbar fade policy, and the
+//! [`cambium::GenetAppRunner`], overlay-scrollbar fade policy, and the
 //! [`A11yHost`] install-before-show lifecycle. This crate is that machinery,
 //! extracted once, from the woodshed-genet donor.
 //!
@@ -21,24 +21,20 @@
 //! run(options, |window, commands, wake| Init { state, logic, sheet }, hooks)
 //! ```
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use cambium::{GenetAppRunner, TextInput};
-use cambium_rootstock::Accessibility;
-use cambium_winit::ScrollbarFade;
 use cambium_winit_a11y::A11yHost;
-use genet_layout::{IncrementalLayout, ScrollTarget};
-use genet_scripted_dom::{NodeId, ScriptedDom};
 use genet_winit_host::SurfaceHost;
-use netrender::NetrenderOptions;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
+
+#[cfg(test)]
+use genet_scripted_dom::ScriptedDom;
+#[cfg(test)]
+use std::{cell::RefCell, rc::Rc};
 
 mod decorations;
 mod harness;

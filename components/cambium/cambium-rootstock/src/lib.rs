@@ -26,11 +26,13 @@
 
 // The types an event source implements the seams against, re-exported so a
 // source names this crate rather than four.
-pub use genet_layout::IncrementalLayout;
 pub use genet_scripted_dom::{NodeId, ScriptedDom};
 pub use sprigging::LeafRegistry;
 
-use genet_layout::VisualMovement;
+use genet_render::VisualMovement;
+
+mod owned_layout;
+pub use owned_layout::{OwnedLayout, ScrollTarget};
 
 /// The host's clock.
 ///
@@ -234,7 +236,7 @@ pub trait Accessibility {
     fn sync(
         &mut self,
         dom: &ScriptedDom,
-        layout: &IncrementalLayout<NodeId>,
+        layout: &OwnedLayout,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
     ) -> Vec<A11yRequest>;

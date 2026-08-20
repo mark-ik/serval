@@ -77,3 +77,78 @@ fn probe_positioned_grid_items() {
         );
     }
 }
+
+#[test]
+fn static_grid_parent_uses_content_static_rectangle_unless_it_is_the_containing_block() {
+    let html = r#"<html><body>
+      <div id="outer">
+        <div id="static-grid"><div id="from-static"></div></div>
+        <div id="relative-grid"><div id="from-relative"></div></div>
+      </div>
+    </body></html>"#;
+    let css = r#"
+      html, body, div { margin: 0; }
+      #outer { position: relative; width: 1000px; height: 1500px; }
+      #static-grid, #relative-grid {
+        display: grid;
+        width: 100px;
+        height: 500px;
+        padding: 13px;
+        padding-top: 74px;
+        padding-bottom: 42px;
+        border: 23px solid black;
+        border-bottom-width: 45px;
+        align-items: center;
+      }
+      #relative-grid { position: relative; }
+      #static-grid > div, #relative-grid > div {
+        position: absolute;
+        width: 50px;
+        height: 100px;
+      }
+    "#;
+    let document = StaticDocument::parse(html);
+    let styles = resolve_styles(
+        &document,
+        &StyleSet::cambium(&[css]),
+        &Device::screen(1200.0, 1800.0),
+        &InteractionStates::default(),
+    );
+    let fragments = layout(&document, &styles, 1200.0, 1800.0).expect("layout");
+
+    fn find(
+        dom: &StaticDocument,
+        node: <StaticDocument as LayoutDom>::NodeId,
+        needle: &str,
+    ) -> Option<<StaticDocument as LayoutDom>::NodeId> {
+        if dom.kind(node) == NodeKind::Element
+            && dom.attribute(node, &Namespace::from(""), &LocalName::from("id")) == Some(needle)
+        {
+            return Some(node);
+        }
+        dom.dom_children(node)
+            .find_map(|child| find(dom, child, needle))
+    }
+    let rect = |id| {
+        fragments
+            .get(find(&document, document.document(), id).expect(id))
+            .map(|fragment| fragment.physical_rect())
+            .expect("fragment")
+    };
+
+    let static_grid = rect("static-grid");
+    let from_static = rect("from-static");
+    let relative_grid = rect("relative-grid");
+    let from_relative = rect("from-relative");
+
+    assert_eq!(
+        from_static.y - static_grid.y,
+        297.0,
+        "a grid that is only the static-position parent aligns in its content box"
+    );
+    assert_eq!(
+        from_relative.y - relative_grid.y,
+        281.0,
+        "a grid selected by K5a keeps its padding-edge grid area"
+    );
+}

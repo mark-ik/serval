@@ -1305,6 +1305,8 @@ keyword_value! {
         Auto => "auto",
         Start => "start",
         End => "end",
+        SelfStart => "self-start",
+        SelfEnd => "self-end",
         FlexStart => "flex-start",
         FlexEnd => "flex-end",
         Center => "center",
@@ -1607,7 +1609,6 @@ impl FontSize {
         }
     }
 }
-
 impl FromStr for FontSize {
     type Err = ParseError;
 
@@ -1898,7 +1899,6 @@ impl AspectRatio {
         matches!(self, Self::Auto | Self::AutoRatio { .. })
     }
 }
-
 impl FromStr for AspectRatio {
     type Err = ParseError;
 

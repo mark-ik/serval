@@ -639,7 +639,7 @@ impl TextSystem {
         line_constraints: Option<&FloatLineConstraints>,
     ) -> Vec<ShapedItem<Id>>
     where
-        Id: Copy,
+        Id: Copy + Eq,
     {
         self.shape_count = self.shape_count.saturating_add(1);
         let mut builder =
@@ -653,6 +653,9 @@ impl TextSystem {
             push_span(&mut builder, &span.style, span.range.clone(), source_index);
         }
         for (index, inline_box) in inline_boxes.iter().enumerate() {
+            if inline_box.marker {
+                continue;
+            }
             builder.push_inline_box(InlineBox {
                 id: u64::try_from(index).unwrap_or(u64::MAX),
                 kind: InlineBoxKind::InFlow,
@@ -702,11 +705,14 @@ impl TextSystem {
                 .chain(
                     inline_boxes
                         .iter()
+                        .filter(|inline_box| !inline_box.marker)
                         .map(|inline_box| inline_box.line_box_height)
                         .filter(|height| *height > 0.0),
                 )
                 .reduce(f32::max);
-            let has_in_flow_atom = inline_boxes.iter().any(|inline_box| !inline_box.edge);
+            let has_in_flow_atom = inline_boxes
+                .iter()
+                .any(|inline_box| !inline_box.edge && !inline_box.marker);
             let line_box_height = if has_in_flow_atom {
                 source_metrics
                     .line_height
@@ -874,11 +880,25 @@ impl TextSystem {
                             }
                             cluster_x += advance;
                         }
+                        let source = span.and_then(|span| span.source);
+                        let trailing_content_end = source.and_then(|source| {
+                            let source_end = span
+                                .and_then(|span| text.get(span.range.clone()))
+                                .map(|text| text.trim_end_matches(is_css_whitespace).len())?;
+                            clusters
+                                .iter()
+                                .filter(|cluster| {
+                                    cluster.source == source && cluster.range.start < source_end
+                                })
+                                .map(|cluster| cluster.fragment.x + cluster.fragment.width)
+                                .max_by(|left, right| left.total_cmp(right))
+                        });
                         let [red, green, blue, alpha] = brush.color;
                         let paint_height = metrics.line_height.max(content_height);
                         result.push(ShapedItem::Text(ShapedRun {
-                            source: span.and_then(|span| span.source),
+                            source,
                             owners: span.map_or_else(Vec::new, |span| span.owners.clone()),
+                            trailing_content_end,
                             // Keep the font-content metrics separate from the
                             // explicit line box.  Zero-height struts use this
                             // center to place replaced atoms without turning
@@ -999,6 +1019,7 @@ impl TextSystem {
                 }
             }
         }
+        append_positioned_inline_start_markers(&mut result, inline_boxes);
         result
     }
 
@@ -1335,6 +1356,120 @@ where
         }
     }
 
+    /// Replace text data produced by one retained formatting subtree without
+    /// disturbing shaped commands, clusters, and text order outside it. The
+    /// caller supplies DOM text order because a selected root may gain its
+    /// first text source, which has no old frame position to reuse.
+    pub(crate) fn replace_subtree_from(
+        &mut self,
+        fresh: &Self,
+        replaced: &HashSet<Id>,
+        dom_text_order: &[Id],
+    ) {
+        let mut merged = Self::default();
+        merged.append_prepared_from(self, |source| !replaced.contains(&source));
+        merged.append_prepared_from(fresh, |source| replaced.contains(&source));
+
+        merged.copy_geometry_from(self, |source| !replaced.contains(&source));
+        merged.copy_geometry_from(fresh, |source| replaced.contains(&source));
+        merged.rebuild_used_fonts();
+
+        merged.copy_text_from(self, |source| !replaced.contains(&source), 0);
+        let fresh_group_base = merged.next_text_group;
+        merged.copy_text_from(fresh, |source| replaced.contains(&source), fresh_group_base);
+        merged.next_text_group = fresh_group_base.saturating_add(fresh.next_text_group);
+        merged.text_order = dom_text_order
+            .iter()
+            .copied()
+            .filter(|source| merged.text_values.contains_key(source))
+            .collect();
+
+        *self = merged;
+    }
+
+    fn rebuild_used_fonts(&mut self) {
+        self.used_fonts.clear();
+        for command in self.prepared_groups.iter().flatten() {
+            if let PaintCmd::DrawText(run) = &command.command {
+                self.used_fonts.insert(run.font_instance);
+            }
+        }
+    }
+
+    fn append_prepared_from(
+        &mut self,
+        source_frame: &Self,
+        mut includes: impl FnMut(Id) -> bool,
+    ) {
+        for (old_group, commands) in source_frame.prepared_groups.iter().enumerate() {
+            let sources = source_frame
+                .source_groups
+                .iter()
+                .filter_map(|(source, group)| (*group == old_group && includes(*source)).then_some(*source))
+                .collect::<Vec<_>>();
+            if sources.is_empty() {
+                continue;
+            }
+            let group = self.prepared_groups.len();
+            self.prepared_groups.push(commands.clone());
+            for source in sources {
+                self.source_groups.insert(source, group);
+                self.prepared_sources.insert(source);
+            }
+        }
+    }
+
+    fn copy_geometry_from(
+        &mut self,
+        source_frame: &Self,
+        mut includes: impl FnMut(Id) -> bool,
+    ) {
+        for (source, fragments) in &source_frame.inline_fragments {
+            if includes(*source) {
+                self.inline_fragments.insert(*source, fragments.clone());
+            }
+        }
+        for (source, lines) in &source_frame.inline_line_keys {
+            if includes(*source) {
+                self.inline_line_keys.insert(*source, lines.clone());
+            }
+        }
+        #[cfg(test)]
+        for (source, baselines) in &source_frame.inline_baselines {
+            if includes(*source) {
+                self.inline_baselines.insert(*source, baselines.clone());
+            }
+        }
+        self.text_clusters.extend(
+            source_frame
+                .text_clusters
+                .iter()
+                .filter(|cluster| includes(cluster.source))
+                .cloned(),
+        );
+    }
+
+    fn copy_text_from(
+        &mut self,
+        source_frame: &Self,
+        mut includes: impl FnMut(Id) -> bool,
+        group_offset: usize,
+    ) {
+        for (source, value) in &source_frame.text_values {
+            if includes(*source) {
+                self.text_values.insert(*source, value.clone());
+                let group = source_frame.text_groups.get(source).copied().unwrap_or_default();
+                self.text_groups
+                    .insert(*source, group.saturating_add(group_offset));
+            }
+        }
+        self.next_text_group = self.next_text_group.max(
+            source_frame
+                .next_text_group
+                .saturating_add(group_offset),
+        );
+    }
+
     pub(crate) fn mark_decoration_painted(&mut self, source: Id) -> bool {
         self.painted_decorations.insert(source)
     }
@@ -1347,6 +1482,11 @@ where
         self.inline_line_keys
             .get(&source)
             .and_then(|lines| lines.first().copied())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn text_order(&self) -> &[Id] {
+        &self.text_order
     }
 
     /// The first shaped line baseline for an inline source, in document
@@ -1697,6 +1837,7 @@ struct InlineAtom<Id> {
     margin_top: f32,
     edge: bool,
     paint: bool,
+    marker: bool,
     vertical_align: VerticalAlign,
     font_size: f32,
     line_height: f32,
@@ -1718,6 +1859,7 @@ enum ShapedItem<Id> {
 struct ShapedRun<Id> {
     source: Option<Id>,
     owners: Vec<Id>,
+    trailing_content_end: Option<f32>,
     line_baseline: f32,
     line_block_min: f32,
     line_block_max: f32,
@@ -1729,6 +1871,82 @@ struct ShapedRun<Id> {
     color: ColorF,
     glyphs: Vec<GlyphInstance>,
     clusters: Vec<ShapedCluster<Id>>,
+}
+
+/// A positioned inline whose first in-flow content wraps to the next line
+/// still owns an empty first fragment at the preceding line's content end.
+/// Keep this as retained geometry after line breaking instead of an in-flow
+/// Parley atom: an atom would make a preceding collapsible space significant
+/// and shift the CSS fragment start.
+fn append_positioned_inline_start_markers<Id>(
+    items: &mut Vec<ShapedItem<Id>>,
+    inline_boxes: &[InlineAtom<Id>],
+) where
+    Id: Copy + Eq,
+{
+    for marker in inline_boxes.iter().filter(|inline_box| inline_box.marker) {
+        let Some((first_index, first_line)) = items.iter().enumerate().find_map(|(index, item)| match item {
+            ShapedItem::Text(run) if run.owners.contains(&marker.source) => {
+                Some((index, run.line_y))
+            },
+            ShapedItem::InlineBox {
+                source,
+                owners,
+                line_y,
+                ..
+            } if *source == marker.source || owners.contains(&marker.source) => Some((index, *line_y)),
+            ShapedItem::Text(_) | ShapedItem::InlineBox { .. } => None,
+        }) else {
+            continue;
+        };
+        let Some(previous_line) = items
+            .iter()
+            .map(shaped_item_line_y)
+            .filter(|line_y| *line_y < first_line - 0.5)
+            .max_by(|left, right| left.total_cmp(right))
+        else {
+            continue;
+        };
+        let Some(content_end) = items
+            .iter()
+            .filter(|item| (shaped_item_line_y(item) - previous_line).abs() <= 0.5)
+            .map(shaped_item_inline_end)
+            .max_by(|left, right| left.total_cmp(right))
+        else {
+            continue;
+        };
+        items.insert(first_index, ShapedItem::InlineBox {
+            source: marker.source,
+            owners: marker.owners.clone(),
+            fragment: Fragment {
+                x: content_end,
+                y: previous_line,
+                ..Fragment::default()
+            },
+            line_fragment: Fragment {
+                x: content_end,
+                y: previous_line,
+                ..Fragment::default()
+            },
+            edge: false,
+            paint: true,
+            line_y: previous_line,
+        });
+    }
+}
+
+fn shaped_item_line_y<Id>(item: &ShapedItem<Id>) -> f32 {
+    match item {
+        ShapedItem::Text(run) => run.line_y,
+        ShapedItem::InlineBox { line_y, .. } => *line_y,
+    }
+}
+
+fn shaped_item_inline_end<Id>(item: &ShapedItem<Id>) -> f32 {
+    match item {
+        ShapedItem::Text(run) => run.trailing_content_end.unwrap_or(run.line_fragment.x),
+        ShapedItem::InlineBox { line_fragment, .. } => line_fragment.x + line_fragment.width,
+    }
 }
 
 #[derive(Clone)]
@@ -1827,6 +2045,16 @@ where
                 });
             },
             BoxOrigin::Element(node) => {
+                if matches!(
+                    css_box.positioning,
+                    buckram::PositioningScheme::Absolute | buckram::PositioningScheme::Fixed
+                ) {
+                    // The enclosing inline run supplies this box's static
+                    // source, but an out-of-flow subtree never contributes
+                    // text, line width, or line height to that run. Livery's
+                    // layout bridge formats the root separately for K5d.
+                    return;
+                }
                 let Some(style) = self.styles.get(node).cloned() else {
                     return;
                 };
@@ -1848,6 +2076,7 @@ where
                 let ancestor_owners = self.owners.clone();
                 let text_start = self.text.len();
                 self.push_edge(box_id, &style, &ancestor_owners, true);
+                self.push_positioned_start_marker(box_id, &style, &ancestor_owners);
                 let content_start = self.inline_boxes.len();
                 self.owners.push(box_id);
                 for child in css_box.children() {
@@ -1917,6 +2146,7 @@ where
             margin_top,
             edge: false,
             paint: true,
+            marker: false,
             vertical_align: style.vertical_align,
             font_size,
             line_height: super::layout::line_height_px(&style.line_height, font_size),
@@ -1946,6 +2176,7 @@ where
                     margin_top: 0.0,
                     edge: true,
                     paint,
+                    marker: false,
                     vertical_align: style.vertical_align,
                     font_size: em,
                     line_height: super::layout::line_height_px(&style.line_height, em),
@@ -1959,6 +2190,45 @@ where
         if !start {
             push(margin, false);
         }
+    }
+
+    /// Keep the first content edge of a positioned inline even when its first
+    /// visible content wraps to a following line. This zero-width atom does
+    /// not paint or consume line width; it gives the retained fragment tree
+    /// the empty first box fragment CSS Positioned Layout uses for the
+    /// containing block of an absolute descendant.
+    fn push_positioned_start_marker(
+        &mut self,
+        source: BoxId,
+        style: &ComputedValues,
+        owners: &[BoxId],
+    ) {
+        if !matches!(
+            self.boxes[source].positioning,
+            buckram::PositioningScheme::Relative | buckram::PositioningScheme::Sticky
+        ) {
+            return;
+        }
+        let font_size = super::paint::used_font_size(style);
+        let line_height = super::layout::line_height_px(&style.line_height, font_size);
+        self.inline_boxes.push(InlineAtom {
+            source,
+            owners: owners.to_vec(),
+            index: self.text.len(),
+            fragment: Fragment::default(),
+            line_width: 0.0,
+            line_box_height: line_height,
+            baseline: line_height,
+            exported_baseline: false,
+            margin_left: 0.0,
+            margin_top: 0.0,
+            edge: false,
+            paint: true,
+            marker: true,
+            vertical_align: style.vertical_align,
+            font_size,
+            line_height,
+        });
     }
 
     fn push_empty_line_box(&mut self, source: BoxId, style: &ComputedValues, owners: &[BoxId]) {
@@ -1987,6 +2257,7 @@ where
             margin_top: 0.0,
             edge: false,
             paint: false,
+            marker: false,
             vertical_align: style.vertical_align,
             font_size,
             line_height: height,
@@ -2009,6 +2280,7 @@ where
             margin_top: 0.0,
             edge: false,
             paint: false,
+            marker: false,
             vertical_align: style.vertical_align,
             font_size,
             line_height: super::layout::line_height_px(&style.line_height, font_size),
@@ -2085,6 +2357,7 @@ where
                             margin_top,
                             edge: false,
                             paint: true,
+                            marker: false,
                             vertical_align: style.vertical_align,
                             font_size,
                             line_height: super::layout::line_height_px(
@@ -2113,6 +2386,7 @@ where
                             margin_top,
                             edge: false,
                             paint: true,
+                            marker: false,
                             vertical_align: style.vertical_align,
                             font_size: super::paint::used_font_size(&style),
                             line_height: super::layout::line_height_px(
@@ -2126,6 +2400,7 @@ where
                 let ancestor_owners = self.owners.clone();
                 let text_start = self.text.len();
                 self.push_edge(id, &style, &ancestor_owners, true);
+                self.push_positioned_start_marker(id, &style, &ancestor_owners);
                 let content_start = self.inline_boxes.len();
                 self.owners.push(id);
                 for child in self.dom.dom_children(id) {
@@ -2180,6 +2455,7 @@ where
                     margin_top: 0.0,
                     edge: true,
                     paint,
+                    marker: false,
                     vertical_align: style.vertical_align,
                     font_size: em,
                     line_height: super::layout::line_height_px(&style.line_height, em),
@@ -2193,6 +2469,37 @@ where
         if !start {
             push(margin, false);
         }
+    }
+
+    fn push_positioned_start_marker(
+        &mut self,
+        source: D::NodeId,
+        style: &ComputedValues,
+        owners: &[D::NodeId],
+    ) {
+        if !matches!(style.position, Position::Relative | Position::Sticky) {
+            return;
+        }
+        let font_size = super::paint::used_font_size(style);
+        let line_height = super::layout::line_height_px(&style.line_height, font_size);
+        self.inline_boxes.push(InlineAtom {
+            source,
+            owners: owners.to_vec(),
+            index: self.text.len(),
+            fragment: Fragment::default(),
+            line_width: 0.0,
+            line_box_height: line_height,
+            baseline: line_height,
+            exported_baseline: false,
+            margin_left: 0.0,
+            margin_top: 0.0,
+            edge: false,
+            paint: true,
+            marker: true,
+            vertical_align: style.vertical_align,
+            font_size,
+            line_height,
+        });
     }
 
     fn push_empty_line_box(
@@ -2226,6 +2533,7 @@ where
             margin_top: 0.0,
             edge: false,
             paint: false,
+            marker: false,
             vertical_align: style.vertical_align,
             font_size,
             line_height: height,
@@ -2248,6 +2556,7 @@ where
             margin_top: 0.0,
             edge: false,
             paint: false,
+            marker: false,
             vertical_align: style.vertical_align,
             font_size,
             line_height: super::layout::line_height_px(&style.line_height, font_size),

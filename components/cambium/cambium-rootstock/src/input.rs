@@ -9,14 +9,13 @@
 //! to `focus_traverse`, and why click-to-caret and wheel scrolling are gated on
 //! [`default_prevented`](cambium::GenetAppRunner::default_prevented).
 
-use crate::HostWindow;
 use cambium::{
     CaretPosition, CaretSelection, PointerClick, PointerEvent, PointerPhase, TextCommand,
     WheelEvent,
 };
 use cambium_winit::wheel_axes;
-use genet_layout::{ScrollOffsets, VisualAffinity, VisualCaret, VisualSelection};
-use genet_scripted_dom::{NodeId, ScriptedDom};
+use genet_render::{VisualAffinity, VisualCaret, VisualSelection};
+use genet_scripted_dom::NodeId;
 
 use crate::meristem_bounds::RootView;
 use crate::{Host, Key, KeyPress, NamedKey};
@@ -121,11 +120,11 @@ where
         let layout = self.s.layout.as_ref()?;
         let dom = runner.dom();
         let dom_ref = dom.borrow();
-        layout.hit_test(&*dom_ref, x, y, &ScrollOffsets::default())
+        layout.hit_test(&*dom_ref, x, y)
     }
 
     /// The retained layout, for callers that read it without re-hit-testing.
-    pub fn layout(&self) -> Option<&genet_layout::IncrementalLayout<NodeId>> {
+    pub fn layout(&self) -> Option<&crate::OwnedLayout> {
         self.s.layout.as_ref()
     }
 
@@ -334,7 +333,8 @@ where
         if slot.node != base_node {
             return;
         }
-        let Some(moved) = layout.selection_visual_move::<ScriptedDom>(
+        let Some(moved) = layout.selection_visual_move(
+            &*runner.dom().borrow(),
             slot.node,
             to_visual_selection(base_selection),
             movement,

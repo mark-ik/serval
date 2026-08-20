@@ -11,13 +11,10 @@
 //! registry consumer. A host that wants both takes both crates.
 //!
 //! Every Cambium app emits a semantic, ARIA-attributed DOM laid out by
-//! genet-layout, and paints its custom visuals with Sprigging leaves. This
+//! Livery/Buckram, and paints its custom visuals with Sprigging leaves. This
 //! module turns that into a live accessibility tree for the OS screen reader,
 //! so no app has to hand-roll the wiring:
 //!
-//! - [`SpriggingA11y`] lets the layout walk ask each `<custom-leaf>` for its own
-//!   semantics ([`sprigging::Leaf::accessibility`]) — the mirror of the paint
-//!   registry, for meaning rather than pixels.
 //! - [`A11yHost`] owns the platform adapter and the per-frame lifecycle: project
 //!   the retained layout into an AccessKit tree (leaf semantics included),
 //!   install it the first frame and update it after, and drain a screen reader's
@@ -31,11 +28,10 @@
 
 use std::collections::HashMap;
 
-use accesskit::{Action, NodeId as A11yNodeId, Tree, TreeId, TreeUpdate};
-use genet_layout::{IncrementalLayout, LeafA11ySource, project};
+use accesskit::{Action, NodeId as A11yNodeId, TreeUpdate};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use genet_winit_host::{AccessKitBridge, BridgeStatus};
-use layout_dom_api::LayoutDom as _;
+use layout_dom_api::{LayoutDom as _, LocalName, Namespace, NodeKind};
 use sprigging::LeafRegistry;
 use winit::window::Window;
 
@@ -50,25 +46,11 @@ impl Accessibility for A11yHost {
     fn sync(
         &mut self,
         dom: &ScriptedDom,
-        layout: &IncrementalLayout<NodeId>,
+        layout: &cambium_rootstock::OwnedLayout,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
     ) -> Vec<A11yRequest> {
         self.sync_inner(dom, layout, leaves, focus)
-    }
-}
-
-/// Bridges genet-layout's a11y walk to a Sprigging leaf registry: when the walk
-/// reaches a `<custom-leaf>`, the registered leaf fills its own AccessKit node
-/// (a knob announces as a slider, a fretboard as a graphic). Mirrors the paint
-/// registry's role, for semantics.
-pub struct SpriggingA11y<'a>(pub &'a mut LeafRegistry<u64>);
-
-impl LeafA11ySource for SpriggingA11y<'_> {
-    fn describe_leaf(&mut self, key: u64, node: &mut accesskit::Node) {
-        if let Some(leaf) = self.0.get_mut(&key) {
-            leaf.accessibility(node);
-        }
     }
 }
 
@@ -125,7 +107,7 @@ impl A11yHost {
     fn sync_inner(
         &mut self,
         dom: &ScriptedDom,
-        layout: &IncrementalLayout<NodeId>,
+        layout: &cambium_rootstock::OwnedLayout,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
     ) -> Vec<A11yRequest> {
@@ -204,43 +186,56 @@ impl A11yHost {
 /// catch is one nobody catches.
 pub fn project_tree(
     dom: &ScriptedDom,
-    layout: &IncrementalLayout<NodeId>,
+    layout: &cambium_rootstock::OwnedLayout,
     leaves: &mut LeafRegistry<u64>,
     focus: Option<u64>,
 ) -> (TreeUpdate, HashMap<A11yNodeId, NodeId>) {
     let root = dom.document();
     let id_of = |d: &ScriptedDom, n: NodeId| A11yNodeId(d.opaque_id(n));
-    let skip = |_: &ScriptedDom, _: NodeId| false;
-    let projection = {
-        let mut source = SpriggingA11y(leaves);
-        project(
-            dom,
-            layout.fragments(),
-            root,
-            &id_of,
-            &skip,
-            &mut source,
-            true,
-        )
-    };
-
-    let mut nodes = Vec::with_capacity(projection.nodes.len());
-    let mut action_map = HashMap::with_capacity(projection.nodes.len());
-    for p in projection.nodes {
-        action_map.insert(p.id, p.dom);
-        nodes.push((p.id, p.node));
-    }
-    // A stale focus id would point the reader at nothing, so it only stands
-    // when the node is really in this frame's tree.
-    let focus = focus
-        .map(A11yNodeId)
-        .filter(|id| action_map.contains_key(id))
-        .unwrap_or(projection.root);
-    let tree = TreeUpdate {
-        nodes,
-        tree: Some(Tree::new(projection.root)),
-        tree_id: TreeId::ROOT,
-        focus,
-    };
+    let focused = focus.and_then(|opaque| find_opaque(dom, root, opaque));
+    let mut tree = genet_render::accesskit_tree(dom, layout.fragments(), focused);
+    let mut action_map = HashMap::new();
+    walk(dom, root, &mut |node| {
+        let id = id_of(dom, node);
+        action_map.insert(id, node);
+        if let Some(key) = custom_leaf_key(dom, node)
+            && let Some(leaf) = leaves.get_mut(&key)
+            && let Some((_, access)) = tree
+                .nodes
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == id)
+        {
+            leaf.accessibility(access);
+        }
+    });
     (tree, action_map)
+}
+
+fn walk(dom: &ScriptedDom, node: NodeId, visit: &mut impl FnMut(NodeId)) {
+    visit(node);
+    for child in dom.dom_children(node) {
+        walk(dom, child, visit);
+    }
+}
+
+fn find_opaque(dom: &ScriptedDom, node: NodeId, opaque: u64) -> Option<NodeId> {
+    if dom.opaque_id(node) == opaque {
+        return Some(node);
+    }
+    dom.dom_children(node)
+        .find_map(|child| find_opaque(dom, child, opaque))
+}
+
+fn custom_leaf_key(dom: &ScriptedDom, node: NodeId) -> Option<u64> {
+    if dom.kind(node) != NodeKind::Element
+        || !matches!(
+            dom.element_name(node)?.local.as_ref(),
+            "custom-leaf" | "chisel-leaf"
+        )
+    {
+        return None;
+    }
+    dom.attribute(node, &Namespace::default(), &LocalName::from("key"))?
+        .parse()
+        .ok()
 }

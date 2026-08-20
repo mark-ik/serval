@@ -9,7 +9,6 @@
 //! lane handle and queries this trait on input — Hekate is *not* on
 //! the per-event hot path.
 
-use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{Point, SourceNodeId, SourceRange};
@@ -50,7 +49,7 @@ pub trait InteractionQuery {
 /// `:hover` / `:active` match the target *and its ancestors* (you hover a
 /// button by hovering its label), `:focus` matches only the focused element,
 /// and `:focus-within` matches the focused element and its ancestors.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct InteractionState {
     /// The node the pointer is currently over (the deepest one), or `None`.
     /// Drives `:hover` on it and every ancestor.
@@ -66,7 +65,7 @@ pub struct InteractionState {
 }
 
 /// One active selection range.
-#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Selection {
     /// Anchor of the selection (where the user first pressed).
     pub anchor: SourceNodeId,
@@ -79,7 +78,7 @@ pub struct Selection {
 }
 
 /// One affordance the user can act on at a given point.
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Affordance {
     pub kind: AffordanceKind,
     /// Source node that publishes this affordance. The host uses
@@ -91,7 +90,7 @@ pub struct Affordance {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
 )]
 pub enum AffordanceKind {
     /// Hyperlink — left-click navigates, hover shows URL.

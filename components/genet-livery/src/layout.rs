@@ -8,13 +8,14 @@ use std::{
 use buckram::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmNodeId, AlgorithmSize, AlgorithmTree,
     Baselines, BlockBoxSizing, BlockDimensions, BlockPosition as BuckramBlockPosition,
-    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry, CssBox,
-    DisplayInside, DisplayOutside, FloatContextProvenance, FloatLineConstraints, FloatSide,
-    FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment,
-    FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache,
-    IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
-    OverconstrainedInlineAlignment, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize,
-    PositioningScheme, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
+    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry,
+    ContainingBlock, CssBox, DisplayInside, DisplayOutside, FloatContextProvenance,
+    FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind,
+    Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole,
+    IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult,
+    LogicalAxis, LogicalRect, OverconstrainedInlineAlignment, PhysicalOffset, PhysicalRect,
+    PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
+    StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
     TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
     TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
     resolve_collapsed_border_geometry,
@@ -59,8 +60,9 @@ use crate::{
         commit_table_block, table_block_inputs, verify_table_block,
     },
     table_shadow::{
-        LIVE_ROOT_FONT_SIZE, PendingTable, TablePositioningGap, TablePositioningGapRecord,
-        TableShadowLedger, buckram_table_columns, verify_assigned_columns,
+        DetachedTablePart, LIVE_ROOT_FONT_SIZE, PendingTable, TablePositioningGap,
+        TablePositioningGapRecord, TableShadowLedger, buckram_table_columns,
+        verify_assigned_columns,
     },
     table_sizing::collapsed_table_borders,
     table_wrapper::{grid_style, wrapper_style},
@@ -69,6 +71,55 @@ use crate::{
 
 /// Physical geometry used at the DOM compatibility edge and by inline atoms.
 pub(crate) type Fragment = PhysicalRect;
+
+/// The static physical rectangle and content-scroll offset of one sticky
+/// scrollport. The offset is added in layout space before ordinary scroll
+/// painting translates its descendants back toward the viewport.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StickyScrollport {
+    pub rect: PhysicalRect,
+    pub offset: PhysicalOffset,
+}
+
+fn supports_retained_sticky_table_part(role: InternalTableRole) -> bool {
+    matches!(
+        role,
+        InternalTableRole::Wrapper
+            | InternalTableRole::Caption
+            | InternalTableRole::RowGroup
+            | InternalTableRole::HeaderGroup
+            | InternalTableRole::FooterGroup
+            | InternalTableRole::Row
+            | InternalTableRole::Cell
+    )
+}
+
+/// Table parts whose absolute/fixed fragments and static-position sources are
+/// emitted outside K4d track sizing. Row groups, rows, and cells arrive from
+/// the post-track zero-anchor formatter rather than from the table grid.
+fn supports_shared_positioned_table_part(role: InternalTableRole) -> bool {
+    matches!(
+        role,
+        InternalTableRole::Wrapper
+            | InternalTableRole::Caption
+            | InternalTableRole::RowGroup
+            | InternalTableRole::HeaderGroup
+            | InternalTableRole::FooterGroup
+            | InternalTableRole::Row
+            | InternalTableRole::Cell
+    )
+}
+
+fn uses_zero_track_static_anchor(role: InternalTableRole) -> bool {
+    matches!(
+        role,
+        InternalTableRole::RowGroup
+            | InternalTableRole::HeaderGroup
+            | InternalTableRole::FooterGroup
+            | InternalTableRole::Row
+            | InternalTableRole::Cell
+    )
+}
 
 #[derive(Clone, Debug)]
 struct AtomicSubtree {
@@ -127,6 +178,15 @@ pub struct LiveryLayout<Id> {
     table_shadow: TableShadowLedger,
 }
 
+/// The outcome of attempting one bounded retained-root formatting pass.
+/// `PromoteParent` is deliberately distinct from an unsupported root: only a
+/// changed outer size can make the caller widen the retained replacement.
+pub(crate) enum RetainedRootFormatting<Id> {
+    Formatted(Box<LiveryLayout<Id>>),
+    PromoteParent,
+    Unsupported,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BlockAlgorithmCounts {
     pub buckram: usize,
@@ -165,12 +225,557 @@ where
         self.buckram.fragments()
     }
 
+    /// Retain stable Buckram identities across a freshly recomputed layout.
+    /// Geometry, text shaping, and paint inputs remain from the new pass.
+    pub(crate) fn reconcile_identifiers(&mut self, previous: &Self) {
+        let identities = self.buckram.reconcile_identifiers(&previous.buckram);
+        self.table_paint.remap_box_ids(&identities);
+        self.table_shadow
+            .remap_box_ids(|box_id| identities.box_id(box_id));
+    }
+
+    /// Every DOM source attached to the selected generated-box subtree. The
+    /// retained text frame needs this old set as well as the final DOM set so
+    /// a removed text node cannot retain a prepared run or selection cluster.
+    pub(crate) fn generated_subtree_nodes(&self, node: Id) -> HashSet<Id> {
+        fn visit<Id>(boxes: &buckram::CssBoxTree<Id>, box_id: BoxId, nodes: &mut HashSet<Id>)
+        where
+            Id: Copy + Eq + Hash,
+        {
+            if let Some(node) = boxes.origin_node(box_id) {
+                nodes.insert(node);
+            }
+            for child in boxes[box_id].children() {
+                visit(boxes, *child, nodes);
+            }
+        }
+
+        let mut nodes = HashSet::new();
+        if let Some(root) = self.buckram.boxes().principal_box(node) {
+            visit(self.buckram.boxes(), root, &mut nodes);
+        }
+        nodes
+    }
+
+    /// Publish one freshly formatted, reconciled flex or grid root into this
+    /// retained layout. Its root box must retain identity, but descendants
+    /// may gain or retire boxes; the fresh box tree replaces node ownership
+    /// only after the fragment splice has accepted that compatible root.
+    ///
+    /// The fragment splice preserves the selected root identity but gives its
+    /// descendants fresh identities. Fresh text and table planes accompany it
+    /// as one publication unit, so paint cannot read a stale side model.
+    pub(crate) fn replace_reconciled_formatting_subtree_from(
+        &mut self,
+        fresh: &Self,
+        node: Id,
+    ) -> bool {
+        let Some(root_box) = self
+            .buckram
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .find(|box_id| {
+                matches!(
+                    self.buckram.boxes()[*box_id].formatting_context,
+                    Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+                )
+            })
+        else {
+            return false;
+        };
+        let Some(fresh_root_box) = fresh
+            .buckram
+            .boxes()
+            .boxes_for_node(node)
+            .iter()
+            .copied()
+            .find(|box_id| *box_id == root_box)
+        else {
+            return false;
+        };
+        let root = match self.buckram.fragments().fragment_ids_for_box(root_box) {
+            [root] => *root,
+            _ => return false,
+        };
+        let fresh_root = match fresh
+            .buckram
+            .fragments()
+            .fragment_ids_for_box(fresh_root_box)
+        {
+            [root] => *root,
+            _ => return false,
+        };
+        if self
+            .buckram
+            .fragments_mut()
+            .replace_subtree(root, fresh.buckram.fragments(), fresh_root)
+            .is_none()
+        {
+            return false;
+        }
+        self.buckram.replace_box_tree(fresh.buckram.boxes().clone());
+        self.text_frame = fresh.text_frame.clone();
+        self.block_algorithms = fresh.block_algorithms;
+        self.table_paint = fresh.table_paint.clone();
+        self.table_shadow = fresh.table_shadow.clone();
+        true
+    }
+
+    /// Publish a local formatting result. Unlike the complete publication
+    /// route, `fresh` contains one selected subtree only, so table planes
+    /// outside that subtree stay authoritative while its text frame replaces
+    /// only the selected DOM sources.
+    pub(crate) fn replace_reconciled_local_formatting_subtree_from(
+        &mut self,
+        fresh: &Self,
+        node: Id,
+        replaced_nodes: &HashSet<Id>,
+        dom_text_order: &[Id],
+    ) -> bool {
+        let Some(root_box) = retained_root_box(self.buckram.boxes(), node) else {
+            return false;
+        };
+        let Some(fresh_root_box) = retained_root_box(fresh.buckram.boxes(), node) else {
+            return false;
+        };
+        if fresh_root_box != root_box {
+            return false;
+        }
+        let table_root = self.buckram.boxes()[root_box].display.internal_table
+            == Some(InternalTableRole::Wrapper);
+        if table_root
+            && (self.table_paint.tables.is_empty()
+                || fresh.table_paint.tables.is_empty()
+                || !self
+                    .table_paint
+                    .tables
+                    .keys()
+                    .any(|grid| box_is_descendant_of(self.buckram.boxes(), *grid, root_box))
+                || !fresh
+                    .table_paint
+                    .tables
+                    .keys()
+                    .all(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box))
+                || !fresh
+                    .table_paint
+                    .tables
+                    .keys()
+                    .any(|grid| box_is_descendant_of(fresh.buckram.boxes(), *grid, fresh_root_box))
+                || !self.table_shadow.can_replace_subtree(
+                    &fresh.table_shadow,
+                    self.buckram.boxes(),
+                    fresh.buckram.boxes(),
+                    root_box,
+                    fresh_root_box,
+                ))
+        {
+            return false;
+        }
+        let root = match self.buckram.fragments().fragment_ids_for_box(root_box) {
+            [root] => *root,
+            _ => return false,
+        };
+        let fresh_root = match fresh
+            .buckram
+            .fragments()
+            .fragment_ids_for_box(fresh_root_box)
+        {
+            [root] => *root,
+            _ => return false,
+        };
+        if self.text_frame.is_none() || fresh.text_frame.is_none() {
+            return false;
+        }
+        if self
+            .buckram
+            .fragments_mut()
+            .replace_subtree(root, fresh.buckram.fragments(), fresh_root)
+            .is_none()
+        {
+            return false;
+        }
+        if table_root {
+            self.table_paint.replace_subtree_from(
+                &fresh.table_paint,
+                self.buckram.boxes(),
+                fresh.buckram.boxes(),
+                root_box,
+                fresh_root_box,
+            );
+            self.table_shadow.replace_subtree_from(
+                &fresh.table_shadow,
+                self.buckram.boxes(),
+                fresh.buckram.boxes(),
+                root_box,
+                fresh_root_box,
+            );
+        }
+        self.buckram.replace_box_tree(fresh.buckram.boxes().clone());
+        self.text_frame
+            .as_mut()
+            .expect("a checked retained text frame is present")
+            .replace_subtree_from(
+                fresh
+                    .text_frame
+                    .as_ref()
+                    .expect("a checked fresh text frame is present"),
+                replaced_nodes,
+                dom_text_order,
+            );
+        true
+    }
+
+    /// Publish a disjoint K5h damage set as one retained-layout update. A
+    /// failed root leaves `self` untouched, so callers can safely fall back
+    /// to the complete fresh result without exposing a partial publication.
+    pub(crate) fn replace_reconciled_formatting_subtrees_from(
+        &mut self,
+        fresh: &Self,
+        roots: &[Id],
+    ) -> bool {
+        if roots.is_empty() {
+            return false;
+        }
+        let mut replacement = self.clone();
+        for root in roots {
+            if !replacement.replace_reconciled_formatting_subtree_from(fresh, *root) {
+                return false;
+            }
+        }
+        *self = replacement;
+        true
+    }
+
+    /// Apply retained scroll-dependent sticky constraints to this otherwise
+    /// normal-flow layout snapshot. Callers clone the static layout first, so
+    /// scroll changes never accumulate into the next frame's base geometry.
+    pub(crate) fn apply_sticky_positioning(
+        &mut self,
+        styles: &StylePlane<Id>,
+        viewport_width: f32,
+        viewport_height: f32,
+        mut scrollport_for: impl FnMut(Id) -> Option<StickyScrollport>,
+    ) {
+        let placements = self
+            .buckram
+            .boxes()
+            .iter()
+            .filter_map(|(box_id, css_box)| {
+                if css_box.positioning != PositioningScheme::Sticky
+                    || css_box
+                        .display
+                        .internal_table
+                        .is_some_and(|role| !supports_retained_sticky_table_part(role))
+                {
+                    return None;
+                }
+                let node = css_box.origin.node()?;
+                let scrollport = scrollport_for(node)?;
+                let root = self
+                    .buckram
+                    .fragments()
+                    .fragment_ids_for_box(box_id)
+                    .iter()
+                    .copied()
+                    .find(|fragment_id| {
+                        self.buckram
+                            .fragments()
+                            .get(*fragment_id)
+                            .and_then(TreeFragment::parent)
+                            .and_then(|parent| self.buckram.fragments().get(parent))
+                            .is_none_or(|parent| parent.box_id() != box_id)
+                    })?;
+                let current = self.buckram.fragments().get(root)?.physical_rect();
+                // A table-internal box's generated parent can be a row or
+                // row group that is only as tall as that part. It would clamp
+                // a sticky translation to zero. Its sticky containing block
+                // is the table wrapper: the nearest block-level table
+                // ancestor that owns the table's full scrollable extent.
+                let table_wrapper = if css_box.display.internal_table.is_some_and(|role| {
+                    role != InternalTableRole::Wrapper && supports_retained_sticky_table_part(role)
+                }) {
+                    let mut ancestor = css_box.parent();
+                    loop {
+                        let candidate = ancestor?;
+                        if self.buckram.boxes()[candidate].display.internal_table
+                            == Some(InternalTableRole::Wrapper)
+                        {
+                            break Some(candidate);
+                        }
+                        ancestor = self.buckram.boxes()[candidate].parent();
+                    }
+                } else {
+                    None
+                };
+                let containing = match table_wrapper
+                    .map(ContainingBlock::Box)
+                    .unwrap_or(css_box.containing_block)
+                {
+                    ContainingBlock::Initial => PhysicalRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: viewport_width,
+                        height: viewport_height,
+                    },
+                    ContainingBlock::Box(containing) => self
+                        .buckram
+                        .fragments()
+                        .fragment_ids_for_box(containing)
+                        .first()
+                        .and_then(|fragment_id| self.buckram.fragments().get(*fragment_id))
+                        .map(TreeFragment::physical_rect)?,
+                };
+                let computed = styles.get(node)?;
+                let computed = if css_box.display.internal_table == Some(InternalTableRole::Wrapper)
+                {
+                    wrapper_style(computed)
+                } else {
+                    computed.clone()
+                };
+                let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+                let style =
+                    to_block_style(self.buckram.boxes(), styles, box_id, &computed, font_size);
+                let percentage_basis = style
+                    .containing_flow
+                    .logical_size(PhysicalSize {
+                        width: scrollport.rect.width,
+                        height: scrollport.rect.height,
+                    })
+                    .inline;
+                Some((
+                    root,
+                    current,
+                    containing,
+                    scrollport,
+                    style.inset.left.resolve(percentage_basis),
+                    style.inset.right.resolve(percentage_basis),
+                    style.inset.top.resolve(percentage_basis),
+                    style.inset.bottom.resolve(percentage_basis),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        for (root, current, containing, scrollport, left, right, top, bottom) in placements {
+            let x = buckram::solve_sticky_axis(buckram::StickyAxisInput {
+                normal_start: current.x,
+                box_size: current.width,
+                scrollport_start: scrollport.rect.x,
+                scrollport_size: scrollport.rect.width,
+                scroll_offset: scrollport.offset.x,
+                containing_start: containing.x,
+                containing_size: containing.width,
+                start_inset: left,
+                end_inset: right,
+            });
+            let y = buckram::solve_sticky_axis(buckram::StickyAxisInput {
+                normal_start: current.y,
+                box_size: current.height,
+                scrollport_start: scrollport.rect.y,
+                scrollport_size: scrollport.rect.height,
+                scroll_offset: scrollport.offset.y,
+                containing_start: containing.y,
+                containing_size: containing.height,
+                start_inset: top,
+                end_inset: bottom,
+            });
+            self.buckram
+                .fragments_mut()
+                .translate_subtree(root, PhysicalOffset { x, y });
+        }
+    }
+
+    /// Reposition one retained absolute or fixed fragment subtree when its
+    /// computed insets are the only style change and Buckram proves its used
+    /// border-box size is unchanged. General dirty-root formatting still
+    /// rebuilds; this bounded K5h route owns only the final K5d translation.
+    pub(crate) fn reposition_stable_positioned_subtree<D>(
+        &mut self,
+        dom: &D,
+        styles: &StylePlane<D::NodeId>,
+        image_sources: &ImageSources,
+        node: D::NodeId,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool
+    where
+        D: LayoutDom<NodeId = Id>,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        let Some(placement) = self.positioned_placement_for_node(
+            dom,
+            styles,
+            image_sources,
+            node,
+            viewport_width,
+            viewport_height,
+        ) else {
+            return false;
+        };
+        let target = placement.target_rect();
+        if (target.width - placement.current.width).abs() > 0.001
+            || (target.height - placement.current.height).abs() > 0.001
+        {
+            return false;
+        }
+        let offset = PhysicalOffset {
+            x: placement.containing_rect.x + target.x - placement.current.x,
+            y: placement.containing_rect.y + target.y - placement.current.y,
+        };
+        if offset.x == 0.0 && offset.y == 0.0 {
+            return false;
+        }
+        let fragments = self.buckram.fragments_mut();
+        fragments.translate_subtree(placement.root, offset);
+        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        true
+    }
+
+    /// Resize and reposition one retained absolute or fixed leaf after its
+    /// declared width or height changed. The leaf-only precondition prevents
+    /// a stale child containing block: any subtree with descendants continues
+    /// through the ordinary full-layout path.
+    pub(crate) fn resize_positioned_leaf<D>(
+        &mut self,
+        dom: &D,
+        styles: &StylePlane<D::NodeId>,
+        image_sources: &ImageSources,
+        node: D::NodeId,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool
+    where
+        D: LayoutDom<NodeId = Id>,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        let Some(placement) = self.positioned_placement_for_node(
+            dom,
+            styles,
+            image_sources,
+            node,
+            viewport_width,
+            viewport_height,
+        ) else {
+            return false;
+        };
+        let target = placement.target_rect();
+        let offset = PhysicalOffset {
+            x: placement.containing_rect.x + target.x - placement.current.x,
+            y: placement.containing_rect.y + target.y - placement.current.y,
+        };
+        let fragments = self.buckram.fragments_mut();
+        if !fragments.resize_leaf(
+            placement.root,
+            PhysicalSize {
+                width: target.width,
+                height: target.height,
+            },
+        ) {
+            return false;
+        }
+        fragments.translate_subtree(placement.root, offset);
+        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        true
+    }
+
+    fn positioned_placement_for_node<D>(
+        &self,
+        dom: &D,
+        styles: &StylePlane<D::NodeId>,
+        image_sources: &ImageSources,
+        node: D::NodeId,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Option<PositionedPlacement>
+    where
+        D: LayoutDom<NodeId = Id>,
+        D::NodeId: Copy + Eq + Hash,
+    {
+        let intrinsic_sizes = HashMap::new();
+        let mut placements = positioned_placements(
+            self.buckram.fragments(),
+            self.buckram.boxes(),
+            styles,
+            dom,
+            image_sources,
+            &intrinsic_sizes,
+            viewport_width,
+            viewport_height,
+        )
+        .into_iter()
+        .filter(|placement| self.buckram.boxes()[placement.box_id].origin.node() == Some(node));
+        let placement = placements.next()?;
+        (placements.next().is_none()
+            && self.buckram.boxes()[placement.box_id]
+                .display
+                .internal_table
+                .is_none()
+            && self
+                .buckram
+                .fragments()
+                .fragment_ids_for_box(placement.box_id)
+                .len()
+                == 1)
+            .then_some(placement)
+    }
+
     pub fn fragments_for_node(&self, node: Id) -> impl Iterator<Item = &TreeFragment> {
         self.buckram.fragments_for_node(node)
     }
 
     pub fn get(&self, node: Id) -> Option<&TreeFragment> {
         self.buckram.get(node)
+    }
+
+    /// Compatibility name for callers that only need a node's outermost
+    /// retained fragment.
+    pub fn rect_of(&self, node: Id) -> Option<&TreeFragment> {
+        self.get(node)
+    }
+
+    /// A retained caret rectangle in document coordinates.
+    pub fn caret_rect(&self, node: Id, byte: usize) -> Option<crate::TextRect> {
+        self.text_frame()?
+            .caret_rect(node, byte, |_, fragment| crate::TextRect {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    }
+
+    /// The shaped source position nearest a document point.
+    pub fn text_position_at_point(&self, x: f32, y: f32) -> Option<(Id, usize)> {
+        self.text_frame()?
+            .text_position_at_point(x, y, |_, fragment| crate::TextRect {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    }
+
+    /// Retained geometry and text for a directed source range.
+    pub fn text_selection(
+        &self,
+        range: crate::TextRange<Id>,
+    ) -> Option<crate::TextSelection<Id>> {
+        self.text_frame()?
+            .text_selection(range, |_, fragment| crate::TextRect {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    }
+
+    /// Resolve the first shaped occurrence of `text` to its source range.
+    ///
+    /// Retained hosts use this to turn find results into ordinary pointer
+    /// selection gestures without reaching into Livery's text-frame storage.
+    pub fn text_range_for_text(&self, text: &str) -> Option<crate::TextRange<Id>> {
+        self.text_frame()?.find_text_range(text)
     }
 
     /// The node's principal box's fragment: a table element's grid box, which
@@ -254,6 +859,12 @@ impl fmt::Display for LayoutError {
     }
 }
 
+impl LayoutError {
+    pub(crate) fn retained_state(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 impl Error for LayoutError {}
 
 #[derive(Clone, Debug)]
@@ -261,6 +872,27 @@ struct TextMeasure {
     min_width: f32,
     max_width: f32,
     height: f32,
+}
+
+fn measure_text_algorithm_node(
+    known: AlgorithmSize<Option<f32>>,
+    available: AlgorithmSize<AlgorithmAvailableSpace>,
+    context: Option<&mut TextMeasure>,
+) -> AlgorithmSize<f32> {
+    let Some(context) = context else {
+        return AlgorithmSize::new(0.0, 0.0);
+    };
+    let available_width = match available.width {
+        AlgorithmAvailableSpace::Definite(width) => width,
+        AlgorithmAvailableSpace::MinContent => context.min_width,
+        AlgorithmAvailableSpace::MaxContent => context.max_width,
+    };
+    AlgorithmSize::new(
+        known
+            .width
+            .unwrap_or(context.max_width.min(available_width.max(0.0))),
+        known.height.unwrap_or(context.height),
+    )
 }
 
 struct BuildState<'a, D: LayoutDom> {
@@ -374,6 +1006,101 @@ where
             context.remember(width, constraints, layout)
         })
     })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the measured inline context needs its formatter, DOM, style, box, and atomic inputs"
+)]
+fn measure_inline_algorithm_node<D>(
+    text: &mut TextSystem,
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    boxes: &GeneratedBoxTree<D::NodeId>,
+    atomic: &AtomicLayoutPlane,
+    intrinsic_sizes: &mut IntrinsicSizeCache,
+    known: AlgorithmSize<Option<f32>>,
+    available: AlgorithmSize<AlgorithmAvailableSpace>,
+    context: Option<&mut InlineMeasure>,
+    line_constraints: Option<&FloatLineConstraints>,
+) -> AlgorithmSize<f32>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(context) = context else {
+        return AlgorithmSize::new(0.0, 0.0);
+    };
+    let (query_width, definite_cap, intrinsic_kind) = match available.width {
+        AlgorithmAvailableSpace::Definite(width) => (width, Some(width), None),
+        // A nearly-zero line asks Parley to break at every legal
+        // opportunity while retaining each unbreakable item's width.
+        AlgorithmAvailableSpace::MinContent => (0.01, None, Some(IntrinsicSizeKind::MinContent)),
+        // An infinite line suppresses wrapping and yields max-content.
+        AlgorithmAvailableSpace::MaxContent => {
+            (f32::INFINITY, None, Some(IntrinsicSizeKind::MaxContent))
+        },
+    };
+    let intrinsic_width = intrinsic_kind.and_then(|kind| {
+        let owner = context.owner?;
+        let query = IntrinsicSizeQuery::new(owner, LogicalAxis::Inline, kind);
+        intrinsic_sizes.get(query).or_else(|| {
+            let min_content = measure_inline_context(
+                text,
+                dom,
+                styles,
+                boxes,
+                atomic,
+                context,
+                InlineMeasureGeometry {
+                    width: 0.01,
+                    line_constraints: None,
+                },
+            )
+            .0;
+            let max_content = measure_inline_context(
+                text,
+                dom,
+                styles,
+                boxes,
+                atomic,
+                context,
+                InlineMeasureGeometry {
+                    width: f32::INFINITY,
+                    line_constraints: None,
+                },
+            )
+            .0;
+            let sizes = IntrinsicSizes::new(min_content, max_content)?;
+            let result = sizes.get(kind);
+            intrinsic_sizes.insert(owner, LogicalAxis::Inline, sizes);
+            Some(result)
+        })
+    });
+    let requested_width = known.width.or(intrinsic_width).unwrap_or(query_width);
+    let (measured_width, measured_height) = measure_inline_context(
+        text,
+        dom,
+        styles,
+        boxes,
+        atomic,
+        context,
+        InlineMeasureGeometry {
+            width: requested_width,
+            line_constraints: intrinsic_kind
+                .is_none()
+                .then_some(line_constraints)
+                .flatten(),
+        },
+    );
+    AlgorithmSize::new(
+        known.width.unwrap_or_else(|| {
+            intrinsic_width.unwrap_or_else(|| {
+                definite_cap.map_or(measured_width, |cap| measured_width.min(cap.max(0.0)))
+            })
+        }),
+        known.height.unwrap_or(measured_height),
+    )
 }
 
 /// Compare one table's Buckram result against its painted fragments, in both
@@ -519,6 +1246,34 @@ fn populate_inline_baselines(tree: &mut AlgorithmTree<Style, InlineMeasure, Vec<
     tree.propagate_declared_baselines();
 }
 
+/// Ask the formatter for the admitted intrinsic pair of each positioned
+/// root. The map is keyed by Buckram box identity, never a backend node or a
+/// completed normal-flow rectangle.
+fn positioned_intrinsic_sizes<Context, Source>(
+    tree: &mut AlgorithmTree<Style, Context, Source>,
+    candidates: &[(BoxId, AlgorithmNodeId)],
+    mut measure: impl FnMut(
+        AlgorithmSize<Option<f32>>,
+        AlgorithmSize<AlgorithmAvailableSpace>,
+        AlgorithmNodeId,
+        Option<&mut Context>,
+        Option<&FloatLineConstraints>,
+    ) -> AlgorithmSize<f32>,
+) -> HashMap<BoxId, IntrinsicSizes> {
+    candidates
+        .iter()
+        .filter_map(|(box_id, node)| {
+            tree.positioned_intrinsic_inline_sizes(
+                *node,
+                |known, available, node, context, lines| {
+                    measure(known, available, node, context, lines)
+                },
+            )
+            .map(|sizes| (*box_id, sizes))
+        })
+        .collect()
+}
+
 struct InlineBuildState<'a, D: LayoutDom> {
     dom: &'a D,
     styles: &'a StylePlane<D::NodeId>,
@@ -528,9 +1283,14 @@ struct InlineBuildState<'a, D: LayoutDom> {
     image_sources: &'a ImageSources,
     table_shadow: TableShadowLedger,
     pending_tables: Vec<PendingTable<D::NodeId>>,
-    /// The grid and cell nodes for the table `build_children` just processed,
-    /// consumed by `build_box` when it creates the table's algorithm node.
-    pending_table_handoff: Option<(TableGrid, Vec<Option<AlgorithmNodeId>>)>,
+    /// The grid, in-flow cell nodes, and detached table-part nodes for the
+    /// table `build_children` just processed, consumed by `build_box` when it
+    /// creates the table's algorithm node.
+    pending_table_handoff: Option<(
+        TableGrid,
+        Vec<Option<AlgorithmNodeId>>,
+        Vec<DetachedTablePart>,
+    )>,
 }
 
 type ResolvedLayout<Id> = (StylePlane<Id>, LiveryLayout<Id>);
@@ -650,6 +1410,392 @@ where
         image_sources,
     )?;
     Ok((styles, fragments))
+}
+
+/// Reformat exactly one retained block, flex, or grid root against its
+/// existing parent content box. This is intentionally narrower than complete
+/// layout:
+/// tables, inline atoms, floats, and positioned descendants retain the
+/// full-document path until their side planes have an equivalent replacement
+/// primitive. Its local text frame is shaped with the document's retained
+/// text system, then merged into the outside frame at publication.
+pub(crate) fn layout_retained_formatting_root<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    previous_styles: &StylePlane<D::NodeId>,
+    previous: &LiveryLayout<D::NodeId>,
+    node: D::NodeId,
+    text: &mut TextSystem,
+    image_sources: &ImageSources,
+) -> Result<RetainedRootFormatting<D::NodeId>, LayoutError>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if styles.get(node) != previous_styles.get(node) {
+        return Ok(RetainedRootFormatting::Unsupported);
+    }
+
+    let boxes = GeneratedBoxTree::from_dom(dom, styles);
+    let Some(root_box) = retained_root_box(&boxes, node) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let table_root = boxes[root_box].display.internal_table == Some(InternalTableRole::Wrapper);
+    if !(table_root && supports_retained_table_root_formatting(&boxes, root_box)
+        || !table_root && supports_retained_root_formatting(&boxes, root_box))
+        || !retained_ancestor_styles_unchanged(&boxes, styles, previous_styles, root_box)
+    {
+        return Ok(RetainedRootFormatting::Unsupported);
+    }
+
+    let Some(previous_root_box) = retained_root_box(previous.boxes(), node) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let [previous_root] = previous.fragments().fragment_ids_for_box(previous_root_box) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let Some(previous_root_fragment) = previous.fragments().get(*previous_root) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let Some(parent_box) = previous.boxes()[previous_root_box].parent() else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let Some(parent_node) = previous.boxes().origin_node(parent_box) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let Some(parent_style) = previous_styles.get(parent_node) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let Some(parent_fragment) = previous_root_fragment
+        .parent()
+        .and_then(|parent| previous.fragments().get(parent))
+    else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let containing_size = content_box_size(parent_style, parent_fragment);
+    if !containing_size.0.is_finite()
+        || !containing_size.1.is_finite()
+        || containing_size.0 < 0.0
+        || containing_size.1 < 0.0
+    {
+        return Ok(RetainedRootFormatting::Unsupported);
+    }
+
+    let atomic = AtomicLayoutPlane::default();
+    let mut intrinsic_sizes = IntrinsicSizeCache::default();
+    let mut state = InlineBuildState {
+        dom,
+        styles,
+        boxes: &boxes,
+        atomic: &atomic,
+        tree: AlgorithmTree::new(),
+        image_sources,
+        table_shadow: TableShadowLedger::default(),
+        pending_tables: Vec::new(),
+        pending_table_handoff: None,
+    };
+    let parent_font_size = inherited_font_size(&boxes, styles, root_box);
+    let Some(formatted_root) = state.build_box(
+        root_box,
+        None,
+        parent_font_size,
+        (Some(containing_size.0), Some(containing_size.1)),
+    )?
+    else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let formatter_root = state.tree.new_with_children_and_block_style(
+        AlgorithmKind::Block,
+        BlockStyle {
+            size: BlockDimensions::new(
+                BlockSizeValue::Length(FlowLength::px(containing_size.0)),
+                BlockSizeValue::Length(FlowLength::px(containing_size.1)),
+            ),
+            ..BlockStyle::default()
+        },
+        Style {
+            display: Display::Block,
+            size: Size {
+                width: Dimension::length(containing_size.0),
+                height: Dimension::length(containing_size.1),
+            },
+            ..Style::default()
+        },
+        &[formatted_root],
+        Vec::new(),
+    );
+    state.apply_buckram_table_layout(text);
+    state.tree.compute_layout_with_measure(
+        formatter_root,
+        AlgorithmSize::new(
+            AlgorithmAvailableSpace::Definite(containing_size.0),
+            AlgorithmAvailableSpace::Definite(containing_size.1),
+        ),
+        |known, available, _, context, line_constraints| {
+            measure_inline_algorithm_node(
+                text,
+                dom,
+                styles,
+                &boxes,
+                &atomic,
+                &mut intrinsic_sizes,
+                known,
+                available,
+                context,
+                line_constraints,
+            )
+        },
+    );
+    populate_inline_baselines(&mut state.tree);
+    let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
+    let mut fragments = FragmentTree::default();
+    let mut text_frame = TextFrame::default();
+    let mut output = FragmentOutput {
+        fragments: &mut fragments,
+    };
+    let table_paint = state.table_paint_plane();
+    let tables = table_paint.fragments();
+    collect_inline_fragments(
+        &state.tree,
+        &boxes,
+        formatter_root,
+        FragmentCursor {
+            origin: Point { x: 0.0, y: 0.0 },
+            containing: Fragment {
+                x: 0.0,
+                y: 0.0,
+                width: containing_size.0,
+                height: containing_size.1,
+            },
+            parent: None,
+        },
+        &tables,
+        &mut output,
+        &mut text_frame,
+        styles,
+    )?;
+    state.verify_table_layout(|box_id| {
+        fragments
+            .fragments_for_box(box_id)
+            .next()
+            .map(|fragment| Fragment {
+                x: fragment.x,
+                y: fragment.y,
+                width: fragment.width,
+                height: fragment.height,
+            })
+    });
+    let table_shadow = std::mem::take(&mut state.table_shadow);
+    let [local_root] = fragments.fragment_ids_for_box(root_box) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let Some(local_root_fragment) = fragments.get(*local_root) else {
+        return Ok(RetainedRootFormatting::Unsupported);
+    };
+    let local_rect = local_root_fragment.physical_rect();
+    let retained_rect = previous_root_fragment.physical_rect();
+    if !same_retained_root_size(local_rect, retained_rect) {
+        return Ok(RetainedRootFormatting::PromoteParent);
+    }
+    fragments.translate_subtree(
+        *local_root,
+        PhysicalOffset {
+            x: retained_rect.x - local_rect.x,
+            y: retained_rect.y - local_rect.y,
+        },
+    );
+    drop(state);
+
+    Ok(RetainedRootFormatting::Formatted(Box::new(
+        LiveryLayout::new(
+            LayoutResult::new(boxes.into_tree(), fragments),
+            Some(text_frame),
+            BlockAlgorithmCounts {
+                buckram: buckram_blocks,
+                taffy: taffy_blocks,
+            },
+            table_paint,
+            table_shadow,
+        ),
+    )))
+}
+
+fn supports_retained_root_formatting<Id>(boxes: &GeneratedBoxTree<Id>, root: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId) -> bool
+    where
+        Id: Copy + Eq + Hash,
+    {
+        let css_box = &boxes[box_id];
+        if !matches!(
+            css_box.origin,
+            BoxOrigin::Element(_) | BoxOrigin::Text(_) | BoxOrigin::Anonymous { .. }
+        ) {
+            return false;
+        }
+        if css_box.positioning != PositioningScheme::Static {
+            return false;
+        }
+        if css_box.float != FloatSide::None {
+            return false;
+        }
+        if css_box.display.outside == Some(DisplayOutside::Inline)
+            && !matches!(css_box.origin, BoxOrigin::Text(_))
+        {
+            return false;
+        }
+        if css_box.display.internal_table.is_some() {
+            return false;
+        }
+        css_box
+            .children()
+            .iter()
+            .copied()
+            .all(|child| visit(boxes, child))
+    }
+
+    visit(boxes, root)
+}
+
+fn retained_root_box<Id>(boxes: &buckram::CssBoxTree<Id>, node: Id) -> Option<BoxId>
+where
+    Id: Copy + Eq + Hash,
+{
+    let principal = boxes.principal_box(node)?;
+    if boxes[principal].display.internal_table == Some(InternalTableRole::Grid) {
+        let wrapper = boxes[principal].parent()?;
+        (boxes[wrapper].display.internal_table == Some(InternalTableRole::Wrapper))
+            .then_some(wrapper)
+    } else if matches!(
+        boxes[principal].formatting_context,
+        Some(
+            FormattingContextKind::Block
+                | FormattingContextKind::Flex
+                | FormattingContextKind::Grid
+        )
+    ) {
+        Some(principal)
+    } else {
+        None
+    }
+}
+
+/// A table row, group, or cell mutation is owned by the element whose grid is
+/// wrapped into the formatting root. The damaged part cannot be spliced on its
+/// own because the table paint plane and wrapper width belong to that owner.
+pub(crate) fn retained_table_owner<Id>(boxes: &buckram::CssBoxTree<Id>, node: Id) -> Option<Id>
+where
+    Id: Copy + Eq + Hash,
+{
+    for source in boxes.boxes_for_node(node) {
+        let mut current = Some(*source);
+        while let Some(box_id) = current {
+            if boxes[box_id].display.internal_table == Some(InternalTableRole::Grid)
+                && let BoxOrigin::Element(owner) = boxes[box_id].origin
+            {
+                return Some(owner);
+            }
+            current = boxes[box_id].parent();
+        }
+    }
+    None
+}
+
+fn box_is_descendant_of<Id>(boxes: &buckram::CssBoxTree<Id>, box_id: BoxId, root: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut current = Some(box_id);
+    while let Some(box_id) = current {
+        if box_id == root {
+            return true;
+        }
+        current = boxes[box_id].parent();
+    }
+    false
+}
+
+fn supports_retained_table_root_formatting<Id>(boxes: &GeneratedBoxTree<Id>, root: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId, root: BoxId) -> bool
+    where
+        Id: Copy + Eq + Hash,
+    {
+        let css_box = &boxes[box_id];
+        if !matches!(
+            css_box.origin,
+            BoxOrigin::Element(_) | BoxOrigin::Text(_) | BoxOrigin::Anonymous { .. }
+        ) || css_box.positioning != PositioningScheme::Static
+            || css_box.float != FloatSide::None
+            || (css_box.display.outside == Some(DisplayOutside::Inline)
+                && !matches!(css_box.origin, BoxOrigin::Text(_)))
+        {
+            return false;
+        }
+        if box_id != root && css_box.display.internal_table == Some(InternalTableRole::Wrapper) {
+            return false;
+        }
+        css_box
+            .children()
+            .iter()
+            .copied()
+            .all(|child| visit(boxes, child, root))
+    }
+
+    boxes[root].display.internal_table == Some(InternalTableRole::Wrapper)
+        && visit(boxes, root, root)
+}
+
+fn retained_ancestor_styles_unchanged<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    previous_styles: &StylePlane<Id>,
+    root: BoxId,
+) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut current = boxes[root].parent();
+    while let Some(box_id) = current {
+        if let Some(node) = boxes.origin_node(box_id)
+            && styles.get(node) != previous_styles.get(node)
+        {
+            return false;
+        }
+        current = boxes[box_id].parent();
+    }
+    true
+}
+
+fn inherited_font_size<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    box_id: BoxId,
+) -> f32
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut ancestors = Vec::new();
+    let mut current = boxes[box_id].parent();
+    while let Some(parent) = current {
+        ancestors.push(parent);
+        current = boxes[parent].parent();
+    }
+    ancestors.reverse();
+    ancestors.into_iter().fold(16.0, |font_size, ancestor| {
+        boxes
+            .origin_node(ancestor)
+            .and_then(|node| styles.get(node))
+            .map_or(font_size, |style| font_size_px(&style.font_size, font_size))
+    })
+}
+
+fn same_retained_root_size(left: PhysicalRect, right: PhysicalRect) -> bool {
+    (left.width - right.width).abs() <= 0.01 && (left.height - right.height).abs() <= 0.01
 }
 
 /// Resolve deferred container-relative units from the nearest eligible
@@ -1011,22 +2157,7 @@ where
             AlgorithmAvailableSpace::Definite(viewport_width),
             AlgorithmAvailableSpace::Definite(viewport_height),
         ),
-        |known, available, _, context, _| {
-            let Some(context) = context else {
-                return AlgorithmSize::new(0.0, 0.0);
-            };
-            let available_width = match available.width {
-                AlgorithmAvailableSpace::Definite(width) => width,
-                AlgorithmAvailableSpace::MinContent => context.min_width,
-                AlgorithmAvailableSpace::MaxContent => context.max_width,
-            };
-            AlgorithmSize::new(
-                known
-                    .width
-                    .unwrap_or(context.max_width.min(available_width.max(0.0))),
-                known.height.unwrap_or(context.height),
-            )
-        },
+        |known, available, _, context, _| measure_text_algorithm_node(known, available, context),
     );
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
     let table_paint = state.table_paint_plane();
@@ -1052,6 +2183,72 @@ where
         &tables,
         &mut output,
     )?;
+    state.collect_out_of_flow_table_parts(&mut fragments, &tables)?;
+    let positioned = state
+        .tree
+        .node_ids()
+        .filter_map(|node| state.tree.source(node).map(|box_id| (box_id, node)))
+        .filter(|(box_id, _)| {
+            matches!(
+                boxes[*box_id].positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            ) && boxes[*box_id].display.internal_table.is_none()
+        })
+        .collect::<Vec<_>>();
+    let positioned_intrinsics = positioned_intrinsic_sizes(
+        &mut state.tree,
+        &positioned,
+        |known, available, _, context, _| measure_text_algorithm_node(known, available, context),
+    );
+    let placements = positioned_placements(
+        &fragments,
+        &boxes,
+        styles,
+        dom,
+        image_sources,
+        &positioned_intrinsics,
+        viewport_width,
+        viewport_height,
+    );
+    if apply_admitted_positioned_inline_sizes(
+        &mut state.tree,
+        &positioned,
+        &placements,
+        &positioned_intrinsics,
+    ) {
+        state.tree.compute_layout_with_measure(
+            root,
+            AlgorithmSize::new(
+                AlgorithmAvailableSpace::Definite(viewport_width),
+                AlgorithmAvailableSpace::Definite(viewport_height),
+            ),
+            |known, available, _, context, _| {
+                measure_text_algorithm_node(known, available, context)
+            },
+        );
+        fragments = FragmentTree::default();
+        let mut output = FragmentOutput {
+            fragments: &mut fragments,
+        };
+        collect_fragments(
+            &state.tree,
+            &boxes,
+            root,
+            FragmentCursor {
+                origin: Point { x: 0.0, y: 0.0 },
+                containing: Fragment {
+                    x: 0.0,
+                    y: 0.0,
+                    width: viewport_width,
+                    height: viewport_height,
+                },
+                parent: None,
+            },
+            &tables,
+            &mut output,
+        )?;
+        state.collect_out_of_flow_table_parts(&mut fragments, &tables)?;
+    }
     state.verify_table_layout(|box_id| {
         fragments
             .fragments_for_box(box_id)
@@ -1065,6 +2262,17 @@ where
     });
     let table_shadow = std::mem::take(&mut state.table_shadow);
     drop(state);
+    apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
+    apply_absolute_and_fixed_positioning(
+        &mut fragments,
+        &boxes,
+        styles,
+        dom,
+        image_sources,
+        &positioned_intrinsics,
+        viewport_width,
+        viewport_height,
+    );
     Ok(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         None,
@@ -1369,7 +2577,7 @@ fn merge_atomic_subtrees<Id>(
                 y: grid_fragment.y,
             };
             let mut output = FragmentOutput { fragments };
-            commit_table_structure(emitted, origin, grid_id, &mut output);
+            commit_table_structure(emitted, origin, grid_id, boxes, &mut output);
         }
 
         // The second pass fills in ordinary descendants. Grid and cell boxes
@@ -1413,7 +2621,16 @@ fn append_atomic_fragment<Id>(
         .parent()
         .and_then(|parent_box| fragments.fragment_ids_for_box(parent_box).last().copied())
         .or(Some(root_id));
-    fragments.push(
+    let mut output = FragmentOutput { fragments };
+    record_static_position(
+        boxes,
+        box_id,
+        parent,
+        LogicalRect::from_horizontal_physical(local),
+        None,
+        &mut output,
+    );
+    output.fragments.push(
         TreeFragment::from_horizontal_physical(box_id, rect)
             .with_baselines(Baselines::synthesized_from_block_end(rect.height)),
         parent,
@@ -1490,80 +2707,17 @@ where
             AlgorithmAvailableSpace::Definite(viewport_height),
         ),
         |known, available, _, context, line_constraints| {
-            let Some(context) = context else {
-                return AlgorithmSize::new(0.0, 0.0);
-            };
-            let (query_width, definite_cap, intrinsic_kind) = match available.width {
-                AlgorithmAvailableSpace::Definite(width) => (width, Some(width), None),
-                // A nearly-zero line asks Parley to break at every legal
-                // opportunity while retaining each unbreakable item's width.
-                AlgorithmAvailableSpace::MinContent => {
-                    (0.01, None, Some(IntrinsicSizeKind::MinContent))
-                },
-                // An infinite line suppresses wrapping and yields max-content.
-                AlgorithmAvailableSpace::MaxContent => {
-                    (f32::INFINITY, None, Some(IntrinsicSizeKind::MaxContent))
-                },
-            };
-            let intrinsic_width = intrinsic_kind.and_then(|kind| {
-                let owner = context.owner?;
-                let query = IntrinsicSizeQuery::new(owner, LogicalAxis::Inline, kind);
-                intrinsic_sizes.get(query).or_else(|| {
-                    let min_content = measure_inline_context(
-                        text,
-                        dom,
-                        styles,
-                        &boxes,
-                        atomic,
-                        context,
-                        InlineMeasureGeometry {
-                            width: 0.01,
-                            line_constraints: None,
-                        },
-                    )
-                    .0;
-                    let max_content = measure_inline_context(
-                        text,
-                        dom,
-                        styles,
-                        &boxes,
-                        atomic,
-                        context,
-                        InlineMeasureGeometry {
-                            width: f32::INFINITY,
-                            line_constraints: None,
-                        },
-                    )
-                    .0;
-                    let sizes = IntrinsicSizes::new(min_content, max_content)?;
-                    let result = sizes.get(kind);
-                    intrinsic_sizes.insert(owner, LogicalAxis::Inline, sizes);
-                    Some(result)
-                })
-            });
-            let requested_width = known.width.or(intrinsic_width).unwrap_or(query_width);
-            let (measured_width, measured_height) = measure_inline_context(
+            measure_inline_algorithm_node(
                 text,
                 dom,
                 styles,
                 &boxes,
                 atomic,
+                &mut intrinsic_sizes,
+                known,
+                available,
                 context,
-                InlineMeasureGeometry {
-                    width: requested_width,
-                    line_constraints: intrinsic_kind
-                        .is_none()
-                        .then_some(line_constraints)
-                        .flatten(),
-                },
-            );
-            AlgorithmSize::new(
-                known.width.unwrap_or_else(|| {
-                    intrinsic_width.unwrap_or_else(|| {
-                        definite_cap.map_or(measured_width, |cap| measured_width.min(cap.max(0.0)))
-                    })
-                }),
-                known.height.unwrap_or(measured_height),
+                line_constraints,
             )
         },
     );
@@ -1595,6 +2749,125 @@ where
         &mut text_frame,
         styles,
     )?;
+    state.collect_out_of_flow_table_parts(
+        text,
+        &mut fragments,
+        &tables,
+        &mut text_frame,
+        &mut intrinsic_sizes,
+    )?;
+    let positioned = state
+        .tree
+        .node_ids()
+        .filter_map(|node| match state.tree.source(node).as_slice() {
+            [box_id] => Some((*box_id, node)),
+            _ => None,
+        })
+        .filter(|(box_id, _)| {
+            matches!(
+                boxes[*box_id].positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            ) && boxes[*box_id].display.internal_table.is_none()
+        })
+        .collect::<Vec<_>>();
+    let positioned_intrinsics = {
+        let InlineBuildState {
+            tree,
+            dom,
+            styles,
+            boxes,
+            atomic,
+            ..
+        } = &mut state;
+        positioned_intrinsic_sizes(
+            tree,
+            &positioned,
+            |known, available, _, context, line_constraints| {
+                measure_inline_algorithm_node(
+                    text,
+                    *dom,
+                    *styles,
+                    *boxes,
+                    atomic,
+                    &mut intrinsic_sizes,
+                    known,
+                    available,
+                    context,
+                    line_constraints,
+                )
+            },
+        )
+    };
+    let placements = positioned_placements(
+        &fragments,
+        &boxes,
+        styles,
+        dom,
+        image_sources,
+        &positioned_intrinsics,
+        viewport_width,
+        viewport_height,
+    );
+    if apply_admitted_positioned_inline_sizes(
+        &mut state.tree,
+        &positioned,
+        &placements,
+        &positioned_intrinsics,
+    ) {
+        state.tree.compute_layout_with_measure(
+            root,
+            AlgorithmSize::new(
+                AlgorithmAvailableSpace::Definite(viewport_width),
+                AlgorithmAvailableSpace::Definite(viewport_height),
+            ),
+            |known, available, _, context, line_constraints| {
+                measure_inline_algorithm_node(
+                    text,
+                    dom,
+                    styles,
+                    &boxes,
+                    atomic,
+                    &mut intrinsic_sizes,
+                    known,
+                    available,
+                    context,
+                    line_constraints,
+                )
+            },
+        );
+        populate_inline_baselines(&mut state.tree);
+        fragments = FragmentTree::default();
+        text_frame = TextFrame::default();
+        let mut output = FragmentOutput {
+            fragments: &mut fragments,
+        };
+        collect_inline_fragments(
+            &state.tree,
+            &boxes,
+            root,
+            FragmentCursor {
+                origin: Point { x: 0.0, y: 0.0 },
+                containing: Fragment {
+                    x: 0.0,
+                    y: 0.0,
+                    width: viewport_width,
+                    height: viewport_height,
+                },
+                parent: None,
+            },
+            &tables,
+            &mut output,
+            &mut text_frame,
+            styles,
+        )?;
+        state.collect_out_of_flow_table_parts(
+            text,
+            &mut fragments,
+            &tables,
+            &mut text_frame,
+            &mut intrinsic_sizes,
+        )?;
+    }
     state.verify_table_layout(|box_id| {
         fragments
             .fragments_for_box(box_id)
@@ -1613,6 +2886,17 @@ where
     drop(state);
     merge_atomic_subtrees(atomic, &boxes, &mut fragments);
     table_paint.merge(atomic.table_paint.clone());
+    apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
+    apply_absolute_and_fixed_positioning(
+        &mut fragments,
+        &boxes,
+        styles,
+        dom,
+        image_sources,
+        &positioned_intrinsics,
+        viewport_width,
+        viewport_height,
+    );
     Ok(LiveryLayout::new(
         LayoutResult::new(boxes.into_tree(), fragments),
         Some(text_frame),
@@ -1692,7 +2976,14 @@ where
                     &children,
                     vec![box_id],
                 );
-                if let Some((grid, cell_nodes)) = table_handoff {
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
+                if let Some((grid, cell_nodes, out_of_flow_parts)) = table_handoff {
                     self.pending_tables.push(PendingTable {
                         table: box_id,
                         node: dom_node,
@@ -1703,6 +2994,7 @@ where
                         collapsed_borders: None,
                         collapsed_border_metrics: None,
                         cell_nodes,
+                        out_of_flow_parts,
                         font_size,
                         containing_width: containing_size.0,
                         containing_height: containing_size.1,
@@ -1762,6 +3054,12 @@ where
                         };
                         if self.boxes[child].display.internal_table
                             == Some(InternalTableRole::Caption)
+                            && matches!(
+                                self.boxes[child].positioning,
+                                PositioningScheme::Static
+                                    | PositioningScheme::Relative
+                                    | PositioningScheme::Sticky
+                            )
                         {
                             let caption = self
                                 .boxes
@@ -1803,6 +3101,13 @@ where
                         &children,
                         vec![box_id],
                     );
+                    enable_flex_grid_static_position_provider(
+                        &mut self.tree,
+                        self.styles,
+                        self.boxes,
+                        box_id,
+                        node,
+                    );
                     if let Some(pending) = self
                         .pending_tables
                         .iter_mut()
@@ -1824,6 +3129,13 @@ where
                     anonymous_taffy_style(&self.boxes[box_id]),
                     &children,
                     vec![box_id],
+                );
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
                 );
                 if supports_nested_float_state(&self.boxes[box_id], block_style, kind) {
                     self.tree.enable_nested_float_state(node);
@@ -1964,64 +3276,66 @@ where
     /// recomputes.
     fn apply_buckram_table_layout(&mut self, text: &mut TextSystem) {
         let mut pendings = std::mem::take(&mut self.pending_tables);
+        let mut aggregate = std::mem::take(&mut self.table_shadow);
         for pending in &mut pendings {
-            let Some(computed) = self.styles.get(pending.node).cloned() else {
-                continue;
-            };
-            pending.collapsed_border_metrics = None;
-            pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
-                match collapsed_table_borders(
+            self.table_shadow = TableShadowLedger::default();
+            if let Some(computed) = self.styles.get(pending.node).cloned() {
+                pending.collapsed_border_metrics = None;
+                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse
+                {
+                    match collapsed_table_borders(
+                        self.boxes,
+                        self.styles,
+                        &pending.grid,
+                        pending.table,
+                        &computed,
+                        pending.font_size,
+                    ) {
+                        Ok(borders) => {
+                            pending.collapsed_border_metrics = Some(borders.metrics);
+                            self.table_shadow.collapsed_metrics += 1;
+                            Some(borders.winners)
+                        },
+                        Err(error) => {
+                            self.table_shadow.skip(
+                                pending.table,
+                                crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
+                            );
+                            None
+                        },
+                    }
+                } else {
+                    None
+                };
+                let intrinsics = pending
+                    .cell_nodes
+                    .clone()
+                    .into_iter()
+                    .map(|cell_node| {
+                        cell_node.and_then(|node| self.measure_cell_intrinsics(text, node))
+                    })
+                    .collect::<Vec<_>>();
+                let caption_min = self.measure_caption_min(text, &pending.captions.clone());
+                let columns = buckram_table_columns(
                     self.boxes,
                     self.styles,
                     &pending.grid,
                     pending.table,
                     &computed,
+                    pending.collapsed_border_metrics.as_ref(),
                     pending.font_size,
-                ) {
-                    Ok(borders) => {
-                        pending.collapsed_border_metrics = Some(borders.metrics);
-                        self.table_shadow.collapsed_metrics += 1;
-                        Some(borders.winners)
-                    },
-                    Err(error) => {
-                        self.table_shadow.skip(
-                            pending.table,
-                            crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
-                        );
-                        None
-                    },
-                }
-            } else {
-                None
-            };
-            let intrinsics = pending
-                .cell_nodes
-                .clone()
-                .into_iter()
-                .map(|cell_node| {
-                    cell_node.and_then(|node| self.measure_cell_intrinsics(text, node))
-                })
-                .collect::<Vec<_>>();
-            let caption_min = self.measure_caption_min(text, &pending.captions.clone());
-            let columns = buckram_table_columns(
-                self.dom,
-                self.boxes,
-                self.styles,
-                &pending.grid,
-                pending.table,
-                pending.node,
-                &computed,
-                pending.collapsed_border_metrics.as_ref(),
-                pending.font_size,
-                pending.containing_width,
-                caption_min,
-                &intrinsics,
-                &mut self.table_shadow,
-            );
-            pending.assigned = columns;
-            self.size_wrapper_from_grid(pending);
+                    pending.containing_width,
+                    caption_min,
+                    &intrinsics,
+                    &mut self.table_shadow,
+                );
+                pending.assigned = columns;
+                self.size_wrapper_from_grid(pending);
+            }
+            self.apply_buckram_table_rows(text, std::slice::from_mut(pending));
+            aggregate.record_table(pending.table, std::mem::take(&mut self.table_shadow));
         }
-        self.apply_buckram_table_rows(text, &mut pendings);
+        self.table_shadow = aggregate;
         self.pending_tables = pendings;
     }
 
@@ -2160,8 +3474,88 @@ where
     fn verify_table_layout(&mut self, live_rect_of: impl Fn(BoxId) -> Option<Fragment>) {
         let pendings = std::mem::take(&mut self.pending_tables);
         for pending in pendings {
-            verify_one_table(&pending, &live_rect_of, &mut self.table_shadow);
+            let mut ledger = self.table_shadow.take_table(pending.table);
+            verify_one_table(&pending, &live_rect_of, &mut ledger);
+            self.table_shadow.record_table(pending.table, ledger);
         }
+    }
+
+    /// Format each detached table part only after K4d has emitted its
+    /// in-flow structural parent. The parent fragment is the zero-track
+    /// static-position source; the local root itself never joins the table
+    /// algorithm tree or changes a row/column measurement.
+    fn collect_out_of_flow_table_parts(
+        &mut self,
+        text: &mut TextSystem,
+        fragments: &mut FragmentTree,
+        tables: &TableFragmentPlane,
+        text_frame: &mut TextFrame<D::NodeId>,
+        intrinsic_sizes: &mut IntrinsicSizeCache,
+    ) -> Result<(), LayoutError> {
+        let Self {
+            dom,
+            styles,
+            boxes,
+            atomic,
+            tree,
+            pending_tables,
+            ..
+        } = self;
+        let parts = pending_tables
+            .iter()
+            .flat_map(|table| table.out_of_flow_parts.iter().copied())
+            .collect::<Vec<_>>();
+        for part in parts {
+            let Some(parent_box) = boxes[part.box_id].parent() else {
+                continue;
+            };
+            let Some(parent) = fragments.fragment_ids_for_box(parent_box).last().copied() else {
+                continue;
+            };
+            let Some(containing) = fragments.get(parent).map(TreeFragment::physical_rect) else {
+                continue;
+            };
+            tree.compute_layout_with_measure(
+                part.node,
+                AlgorithmSize::new(
+                    AlgorithmAvailableSpace::Definite(containing.width),
+                    AlgorithmAvailableSpace::Definite(containing.height),
+                ),
+                |known, available, _, context, line_constraints| {
+                    measure_inline_algorithm_node(
+                        text,
+                        *dom,
+                        *styles,
+                        *boxes,
+                        atomic,
+                        intrinsic_sizes,
+                        known,
+                        available,
+                        context,
+                        line_constraints,
+                    )
+                },
+            );
+            let mut output = FragmentOutput { fragments };
+            collect_inline_fragments(
+                tree,
+                *boxes,
+                part.node,
+                FragmentCursor {
+                    origin: Point {
+                        x: containing.x,
+                        y: containing.y,
+                    },
+                    containing,
+                    parent: Some(parent),
+                },
+                tables,
+                &mut output,
+                text_frame,
+                *styles,
+            )?;
+        }
+        Ok(())
     }
 
     fn build_children(
@@ -2193,10 +3587,22 @@ where
                 };
                 children.push(node);
             }
+            let mut out_of_flow_parts = Vec::with_capacity(table.out_of_flow_parts.len());
+            for part in &table.out_of_flow_parts {
+                let Some(node) =
+                    self.build_box(*part, Some(parent_style), parent_font_size, containing_size)?
+                else {
+                    continue;
+                };
+                out_of_flow_parts.push(DetachedTablePart {
+                    box_id: *part,
+                    node,
+                });
+            }
             // K4c5b: hand the grid to build_box, which creates the table's
             // algorithm node and notes the table for Buckram column
             // assignment before the main layout pass.
-            self.pending_table_handoff = Some((table, cell_nodes));
+            self.pending_table_handoff = Some((table, cell_nodes, out_of_flow_parts));
             return Ok(children);
         }
         self.build_flow_children(
@@ -2231,6 +3637,12 @@ where
                     parent_style,
                     parent_font_size,
                 )?);
+                self.build_positioned_inline_descendants(
+                    &mut children,
+                    &inline_group,
+                    parent_style,
+                    containing_size,
+                )?;
             }
             inline_group.clear();
             if let Some(node) =
@@ -2246,8 +3658,39 @@ where
                 parent_style,
                 parent_font_size,
             )?);
+            self.build_positioned_inline_descendants(
+                &mut children,
+                &inline_group,
+                parent_style,
+                containing_size,
+            )?;
         }
         Ok(children)
+    }
+
+    /// Inline formatting omits absolute and fixed descendants entirely. They
+    /// remain structural descendants in the fragment tree, but their local
+    /// block formatting root must sit beside the inline measure leaf so K5d
+    /// can query its intrinsic size and reformat it at the resolved width.
+    fn build_positioned_inline_descendants(
+        &mut self,
+        children: &mut Vec<AlgorithmNodeId>,
+        roots: &[BoxId],
+        parent_style: &ComputedValues,
+        containing_size: (Option<f32>, Option<f32>),
+    ) -> Result<(), LayoutError> {
+        for positioned in positioned_roots_in_inline_group(self.boxes, roots) {
+            let parent_font_size = inherited_font_size(self.boxes, self.styles, positioned);
+            if let Some(node) = self.build_box(
+                positioned,
+                Some(parent_style),
+                parent_font_size,
+                containing_size,
+            )? {
+                children.push(node);
+            }
+        }
+        Ok(())
     }
 
     /// Whether a pending inline run generates no box at all.
@@ -2402,62 +3845,64 @@ where
     /// only scribble on scratch layout state that the main pass recomputes.
     fn apply_buckram_table_layout(&mut self) {
         let mut pendings = std::mem::take(&mut self.pending_tables);
+        let mut aggregate = std::mem::take(&mut self.table_shadow);
         for pending in &mut pendings {
-            let Some(computed) = self.styles.get(pending.node).cloned() else {
-                continue;
-            };
-            pending.collapsed_border_metrics = None;
-            pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse {
-                match collapsed_table_borders(
+            self.table_shadow = TableShadowLedger::default();
+            if let Some(computed) = self.styles.get(pending.node).cloned() {
+                pending.collapsed_border_metrics = None;
+                pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse
+                {
+                    match collapsed_table_borders(
+                        self.boxes,
+                        self.styles,
+                        &pending.grid,
+                        pending.table,
+                        &computed,
+                        pending.font_size,
+                    ) {
+                        Ok(borders) => {
+                            pending.collapsed_border_metrics = Some(borders.metrics);
+                            self.table_shadow.collapsed_metrics += 1;
+                            Some(borders.winners)
+                        },
+                        Err(error) => {
+                            self.table_shadow.skip(
+                                pending.table,
+                                crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
+                            );
+                            None
+                        },
+                    }
+                } else {
+                    None
+                };
+                let intrinsics = pending
+                    .cell_nodes
+                    .clone()
+                    .into_iter()
+                    .map(|cell_node| cell_node.and_then(|node| self.measure_cell_intrinsics(node)))
+                    .collect::<Vec<_>>();
+                let caption_min = self.measure_caption_min(&pending.captions.clone());
+                let columns = buckram_table_columns(
                     self.boxes,
                     self.styles,
                     &pending.grid,
                     pending.table,
                     &computed,
+                    pending.collapsed_border_metrics.as_ref(),
                     pending.font_size,
-                ) {
-                    Ok(borders) => {
-                        pending.collapsed_border_metrics = Some(borders.metrics);
-                        self.table_shadow.collapsed_metrics += 1;
-                        Some(borders.winners)
-                    },
-                    Err(error) => {
-                        self.table_shadow.skip(
-                            pending.table,
-                            crate::table_shadow::TableShadowSkip::CollapsedBorder(error),
-                        );
-                        None
-                    },
-                }
-            } else {
-                None
-            };
-            let intrinsics = pending
-                .cell_nodes
-                .clone()
-                .into_iter()
-                .map(|cell_node| cell_node.and_then(|node| self.measure_cell_intrinsics(node)))
-                .collect::<Vec<_>>();
-            let caption_min = self.measure_caption_min(&pending.captions.clone());
-            let columns = buckram_table_columns(
-                self.dom,
-                self.boxes,
-                self.styles,
-                &pending.grid,
-                pending.table,
-                pending.node,
-                &computed,
-                pending.collapsed_border_metrics.as_ref(),
-                pending.font_size,
-                pending.containing_width,
-                caption_min,
-                &intrinsics,
-                &mut self.table_shadow,
-            );
-            pending.assigned = columns;
-            self.size_wrapper_from_grid(pending);
+                    pending.containing_width,
+                    caption_min,
+                    &intrinsics,
+                    &mut self.table_shadow,
+                );
+                pending.assigned = columns;
+                self.size_wrapper_from_grid(pending);
+            }
+            self.apply_buckram_table_rows(std::slice::from_mut(pending));
+            aggregate.record_table(pending.table, std::mem::take(&mut self.table_shadow));
         }
-        self.apply_buckram_table_rows(&mut pendings);
+        self.table_shadow = aggregate;
         self.pending_tables = pendings;
     }
 
@@ -2591,8 +4036,64 @@ where
     fn verify_table_layout(&mut self, live_rect_of: impl Fn(BoxId) -> Option<Fragment>) {
         let pendings = std::mem::take(&mut self.pending_tables);
         for pending in pendings {
-            verify_one_table(&pending, &live_rect_of, &mut self.table_shadow);
+            let mut ledger = self.table_shadow.take_table(pending.table);
+            verify_one_table(&pending, &live_rect_of, &mut ledger);
+            self.table_shadow.record_table(pending.table, ledger);
         }
+    }
+
+    /// Format each detached table part only after K4d has emitted its
+    /// in-flow structural parent. The parent fragment is the zero-track
+    /// static-position source; the local root itself never joins the table
+    /// algorithm tree or changes a row/column measurement.
+    fn collect_out_of_flow_table_parts(
+        &mut self,
+        fragments: &mut FragmentTree,
+        tables: &TableFragmentPlane,
+    ) -> Result<(), LayoutError> {
+        let parts = self
+            .pending_tables
+            .iter()
+            .flat_map(|table| table.out_of_flow_parts.iter().copied())
+            .collect::<Vec<_>>();
+        for part in parts {
+            let Some(parent_box) = self.boxes[part.box_id].parent() else {
+                continue;
+            };
+            let Some(parent) = fragments.fragment_ids_for_box(parent_box).last().copied() else {
+                continue;
+            };
+            let Some(containing) = fragments.get(parent).map(TreeFragment::physical_rect) else {
+                continue;
+            };
+            self.tree.compute_layout_with_measure(
+                part.node,
+                AlgorithmSize::new(
+                    AlgorithmAvailableSpace::Definite(containing.width),
+                    AlgorithmAvailableSpace::Definite(containing.height),
+                ),
+                |known, available, _, context, _| {
+                    measure_text_algorithm_node(known, available, context)
+                },
+            );
+            let mut output = FragmentOutput { fragments };
+            collect_fragments(
+                &self.tree,
+                self.boxes,
+                part.node,
+                FragmentCursor {
+                    origin: Point {
+                        x: containing.x,
+                        y: containing.y,
+                    },
+                    containing,
+                    parent: Some(parent),
+                },
+                tables,
+                &mut output,
+            )?;
+        }
+        Ok(())
     }
 
     fn build_box(
@@ -2635,6 +4136,7 @@ where
                 ))
                 .then(|| build_table_grid(self.boxes, self.dom, box_id));
                 let mut table_cell_nodes = Vec::new();
+                let mut table_out_of_flow_parts = Vec::new();
                 let children = if let Some(table) = table.as_ref() {
                     let mut children = Vec::with_capacity(table.cells.len());
                     for cell in &table.cells {
@@ -2649,6 +4151,21 @@ where
                             continue;
                         };
                         children.push(taffy_node);
+                    }
+                    for part in &table.out_of_flow_parts {
+                        let Some(node) = self.build_box(
+                            *part,
+                            Some(&computed),
+                            font_size,
+                            child_containing_size,
+                        )?
+                        else {
+                            continue;
+                        };
+                        table_out_of_flow_parts.push(DetachedTablePart {
+                            box_id: *part,
+                            node,
+                        });
                     }
                     children
                 } else {
@@ -2698,6 +4215,13 @@ where
                     &children,
                     Some(box_id),
                 );
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
                 // K4c5b: Buckram owns this table's columns. They are computed
                 // before the main layout pass, once the whole tree exists and
                 // intrinsic queries can run, and pinned as explicit tracks.
@@ -2712,6 +4236,7 @@ where
                         collapsed_borders: None,
                         collapsed_border_metrics: None,
                         cell_nodes: std::mem::take(&mut table_cell_nodes),
+                        out_of_flow_parts: std::mem::take(&mut table_out_of_flow_parts),
                         font_size,
                         containing_width: containing_size.0,
                         containing_height: containing_size.1,
@@ -2814,6 +4339,12 @@ where
                         };
                         if self.boxes[child].display.internal_table
                             == Some(InternalTableRole::Caption)
+                            && matches!(
+                                self.boxes[child].positioning,
+                                PositioningScheme::Static
+                                    | PositioningScheme::Relative
+                                    | PositioningScheme::Sticky
+                            )
                         {
                             let caption = self
                                 .boxes
@@ -2855,6 +4386,13 @@ where
                         &children,
                         Some(box_id),
                     );
+                    enable_flex_grid_static_position_provider(
+                        &mut self.tree,
+                        self.styles,
+                        self.boxes,
+                        box_id,
+                        node,
+                    );
                     if let Some(pending) = self
                         .pending_tables
                         .iter_mut()
@@ -2883,6 +4421,13 @@ where
                     &children,
                     Some(box_id),
                 );
+                enable_flex_grid_static_position_provider(
+                    &mut self.tree,
+                    self.styles,
+                    self.boxes,
+                    box_id,
+                    node,
+                );
                 if supports_nested_float_state(&self.boxes[box_id], block_style, kind) {
                     self.tree.enable_nested_float_state(node);
                 }
@@ -2894,6 +4439,639 @@ where
 
 struct FragmentOutput<'a> {
     fragments: &'a mut FragmentTree,
+}
+
+/// Publish a static-position rectangle at the formatting boundary that
+/// produced it. The selected absolute or fixed containing block comes from
+/// Buckram's K5a box graph; the backend never chooses it here.
+fn record_static_position<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    box_id: BoxId,
+    source_fragment: Option<FragmentId>,
+    logical_rect: LogicalRect,
+    containing_block_area: Option<PhysicalRect>,
+    output: &mut FragmentOutput<'_>,
+) where
+    Id: Copy + Eq + Hash,
+{
+    if !matches!(
+        boxes[box_id].positioning,
+        PositioningScheme::Absolute | PositioningScheme::Fixed
+    ) {
+        return;
+    }
+    let containing_block_area = containing_block_area.and_then(|area| {
+        let source = source_fragment?;
+        let fragment = output.fragments.get(source)?;
+        let rect = fragment.physical_rect();
+        Some(fragment.flow().logical_rect(
+            area,
+            PhysicalSize {
+                width: rect.width,
+                height: rect.height,
+            },
+        ))
+    });
+    output.fragments.record_static_position(StaticPosition {
+        box_id,
+        source: source_fragment.map_or(
+            StaticPositionSource::InitialContainingBlock,
+            StaticPositionSource::Fragment,
+        ),
+        containing_block: boxes[box_id].containing_block,
+        logical_rect: if boxes[box_id]
+            .display
+            .internal_table
+            .is_some_and(uses_zero_track_static_anchor)
+        {
+            LogicalRect::default()
+        } else {
+            logical_rect
+        },
+        containing_block_area,
+    });
+}
+
+/// Apply relative positioning only after every normal-flow fragment exists.
+///
+/// Taffy receives auto insets for `position: relative`; it determines the
+/// unshifted flow rectangle, while Buckram resolves the retained CSS inputs
+/// and moves the emitted fragment subtree. Internal table parts keep the K4h
+/// table traversal for now, because it owns their structural fragment draft
+/// and cell-content offset together. The table wrapper itself is ordinary
+/// flow geometry and uses this route.
+fn apply_relative_positioning<Id>(
+    fragments: &mut FragmentTree,
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    initial_containing_inline_size: f32,
+) where
+    Id: Copy + Eq + Hash,
+{
+    let placements = boxes
+        .iter()
+        .filter_map(|(box_id, css_box)| {
+            if css_box.positioning != PositioningScheme::Relative
+                || matches!(
+                    css_box.display.internal_table,
+                    Some(role) if role != InternalTableRole::Wrapper
+                )
+            {
+                return None;
+            }
+            let node = css_box.origin.node()?;
+            let computed = styles.get(node)?;
+            let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+            let style = to_block_style(boxes, styles, box_id, computed, font_size);
+            let roots = fragments
+                .fragment_ids_for_box(box_id)
+                .iter()
+                .copied()
+                .filter(|fragment_id| {
+                    fragments
+                        .get(*fragment_id)
+                        .and_then(TreeFragment::parent)
+                        .and_then(|parent| fragments.get(parent))
+                        .is_none_or(|parent| parent.box_id() != box_id)
+                })
+                .collect::<Vec<_>>();
+            (!roots.is_empty()).then_some((box_id, style, roots))
+        })
+        .collect::<Vec<_>>();
+
+    for (_box_id, style, roots) in placements {
+        for root in roots {
+            let containing_inline_size = fragments
+                .get(root)
+                .and_then(TreeFragment::containing_fragment)
+                .and_then(|containing| fragments.get(containing))
+                .map_or(initial_containing_inline_size, |fragment| {
+                    style
+                        .containing_flow
+                        .logical_size(PhysicalSize {
+                            width: fragment.width,
+                            height: fragment.height,
+                        })
+                        .inline
+                });
+            let logical = style.relative_offset(containing_inline_size);
+            let physical: PhysicalOffset = style.containing_flow.physical_offset(logical);
+            fragments.translate_subtree(root, physical);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PositionedPlacement {
+    box_id: BoxId,
+    root: FragmentId,
+    containing_fragment: Option<FragmentId>,
+    current: PhysicalRect,
+    containing_rect: PhysicalRect,
+    containing_flow: FlowAxes,
+    containing_size: buckram::LogicalSize,
+    style: BlockStyle,
+    geometry: buckram::PositionedBoxGeometry,
+}
+
+impl PositionedPlacement {
+    fn target_rect(self) -> PhysicalRect {
+        self.containing_flow.physical_rect(
+            self.geometry.logical_rect,
+            PhysicalSize {
+                width: self.containing_rect.width,
+                height: self.containing_rect.height,
+            },
+        )
+    }
+
+    /// Convert Buckram's border-box answer back into the formatter's CSS
+    /// inline-size input. This is only admitted for same-flow roots whose
+    /// intrinsic query was accepted above.
+    fn formatter_inline_size(self) -> Option<f32> {
+        if self.style.flow != self.style.containing_flow {
+            return None;
+        }
+        let inline_size = if self.style.flow.is_horizontal() {
+            self.style.size.width
+        } else {
+            self.style.size.height
+        };
+        if !matches!(
+            inline_size,
+            BlockSizeValue::Auto
+                | BlockSizeValue::MinContent
+                | BlockSizeValue::MaxContent
+                | BlockSizeValue::FitContent(_)
+        ) {
+            return None;
+        }
+        let padding_border = self
+            .style
+            .logical_padding_border(self.containing_size.inline);
+        let border_box = self.geometry.logical_rect.inline_size;
+        Some(match self.style.box_sizing {
+            BlockBoxSizing::ContentBox => {
+                (border_box - padding_border.inline_start - padding_border.inline_end).max(0.0)
+            },
+            BlockBoxSizing::BorderBox => border_box,
+        })
+    }
+}
+
+/// Resolve absolute and fixed used geometry from K5a/K5b inputs after a
+/// formatting pass has supplied static rectangles and admitted intrinsic
+/// contributions. The returned record keeps positioning separate from the
+/// later fragment translation and possible constrained reformat.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the positioning boundary needs fragment, box, style, replaced-source, intrinsic, and viewport inputs"
+)]
+fn positioned_placements<D>(
+    fragments: &FragmentTree,
+    boxes: &buckram::CssBoxTree<D::NodeId>,
+    styles: &StylePlane<D::NodeId>,
+    dom: &D,
+    image_sources: &ImageSources,
+    intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Vec<PositionedPlacement>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let candidates = boxes
+        .iter()
+        .filter_map(|(box_id, css_box)| {
+            if !matches!(
+                css_box.positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            ) || matches!(
+                css_box.display.internal_table,
+                Some(role) if !supports_shared_positioned_table_part(role)
+            ) {
+                return None;
+            }
+            let node = css_box.origin.node()?;
+            styles.get(node)?;
+            let root = fragments.fragment_ids_for_box(box_id).first().copied()?;
+            let static_position = *fragments.static_position_for_box(box_id)?;
+            Some((box_id, node, root, static_position))
+        })
+        .collect::<Vec<_>>();
+
+    candidates
+        .into_iter()
+        .filter_map(|(box_id, node, root, static_position)| {
+            let current = fragments.get(root).map(TreeFragment::physical_rect)?;
+            let (containing_fragment, containing_rect, containing_flow) =
+                match static_position.containing_block {
+                    ContainingBlock::Initial => (
+                        None,
+                        Fragment {
+                            x: 0.0,
+                            y: 0.0,
+                            width: viewport_width,
+                            height: viewport_height,
+                        },
+                        FlowAxes::HORIZONTAL_LTR,
+                    ),
+                    ContainingBlock::Box(containing_box) => {
+                        let fragment_id = fragments
+                            .fragment_ids_for_box(containing_box)
+                            .first()
+                            .copied()?;
+                        let border_rect = fragments
+                            .get(fragment_id)
+                            .map(TreeFragment::physical_rect)?;
+                        let rect = match (
+                            static_position.source,
+                            static_position.containing_block_area,
+                        ) {
+                            (StaticPositionSource::Fragment(source), Some(area))
+                                if source == fragment_id =>
+                            {
+                                let area = boxes[containing_box].flow.physical_rect(
+                                    area,
+                                    PhysicalSize {
+                                        width: border_rect.width,
+                                        height: border_rect.height,
+                                    },
+                                );
+                                PhysicalRect {
+                                    x: border_rect.x + area.x,
+                                    y: border_rect.y + area.y,
+                                    width: area.width,
+                                    height: area.height,
+                                }
+                            },
+                            _ => positioned_containing_block_rect(
+                                border_rect,
+                                containing_box,
+                                fragments,
+                                boxes,
+                                styles,
+                            ),
+                        };
+                        (Some(fragment_id), rect, boxes[containing_box].flow)
+                    },
+                };
+            let (source_origin, source_size) = match static_position.source {
+                StaticPositionSource::InitialContainingBlock => (
+                    (0.0, 0.0),
+                    PhysicalSize {
+                        width: viewport_width,
+                        height: viewport_height,
+                    },
+                ),
+                StaticPositionSource::Fragment(source) => fragments
+                    .get(source)
+                    .map(TreeFragment::physical_rect)
+                    .map_or(
+                        (
+                            (0.0, 0.0),
+                            PhysicalSize {
+                                width: viewport_width,
+                                height: viewport_height,
+                            },
+                        ),
+                        |rect| {
+                            (
+                                (rect.x, rect.y),
+                                PhysicalSize {
+                                    width: rect.width,
+                                    height: rect.height,
+                                },
+                            )
+                        },
+                    ),
+            };
+            let static_in_source = boxes[box_id]
+                .flow
+                .physical_rect(static_position.logical_rect, source_size);
+            let static_in_containing = PhysicalRect {
+                x: source_origin.0 + static_in_source.x - containing_rect.x,
+                y: source_origin.1 + static_in_source.y - containing_rect.y,
+                width: static_in_source.width,
+                height: static_in_source.height,
+            };
+            let computed = styles
+                .get(node)
+                .expect("a generated positioned box keeps its computed style");
+            let computed =
+                if boxes[box_id].display.internal_table == Some(InternalTableRole::Wrapper) {
+                    wrapper_style(computed)
+                } else {
+                    computed.clone()
+                };
+            let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+            let style = to_block_style(boxes, styles, box_id, &computed, font_size);
+            let replaced = positioned_replaced_input(dom, node, image_sources, &style);
+            let containing_size = containing_flow.logical_size(PhysicalSize {
+                width: containing_rect.width,
+                height: containing_rect.height,
+            });
+            let static_rect = containing_flow.logical_rect(
+                static_in_containing,
+                PhysicalSize {
+                    width: containing_rect.width,
+                    height: containing_rect.height,
+                },
+            );
+            let geometry = buckram::solve_positioned_box(
+                style,
+                buckram::PositionedBoxInput {
+                    containing_size,
+                    static_rect,
+                    measured_size: containing_flow.logical_size(PhysicalSize {
+                        width: current.width,
+                        height: current.height,
+                    }),
+                    intrinsic_inline: intrinsic_sizes.get(&box_id).copied(),
+                    replaced,
+                },
+            );
+            Some(PositionedPlacement {
+                box_id,
+                root,
+                containing_fragment,
+                current,
+                containing_rect,
+                containing_flow,
+                containing_size,
+                style,
+                geometry,
+            })
+        })
+        .collect()
+}
+
+/// Resolve the ordinary absolute/fixed containing-block rectangle from an
+/// established ancestor fragment. CSS Positioned Layout defines a non-inline
+/// ancestor's containing block at its padding edge. An inline ancestor instead
+/// combines the logical start content edges of its first fragment with the
+/// logical end content edges of its last fragment.
+fn positioned_containing_block_rect<Id>(
+    border_rect: PhysicalRect,
+    containing_box: BoxId,
+    fragments: &FragmentTree,
+    boxes: &buckram::CssBoxTree<Id>,
+    styles: &StylePlane<Id>,
+) -> PhysicalRect
+where
+    Id: Copy + Eq + Hash,
+{
+    let css_box = &boxes[containing_box];
+    let Some(computed) = css_box.origin.node().and_then(|node| styles.get(node)) else {
+        return border_rect;
+    };
+    let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+    if css_box.display.outside == Some(DisplayOutside::Inline)
+        && css_box.display.inside == Some(DisplayInside::Flow)
+        && css_box.display.internal_table.is_none()
+    {
+        return positioned_inline_containing_block_rect(
+            containing_box,
+            fragments,
+            boxes,
+            css_box.flow,
+            computed,
+            font_size,
+        )
+        .unwrap_or(border_rect);
+    }
+    let border = PhysicalSides {
+        top: border_width_px(
+            computed.border_top_style,
+            computed.border_top_width,
+            font_size,
+        ),
+        right: border_width_px(
+            computed.border_right_style,
+            computed.border_right_width,
+            font_size,
+        ),
+        bottom: border_width_px(
+            computed.border_bottom_style,
+            computed.border_bottom_width,
+            font_size,
+        ),
+        left: border_width_px(
+            computed.border_left_style,
+            computed.border_left_width,
+            font_size,
+        ),
+    };
+    PhysicalRect {
+        x: border_rect.x + border.left,
+        y: border_rect.y + border.top,
+        width: (border_rect.width - border.left - border.right).max(0.0),
+        height: (border_rect.height - border.top - border.bottom).max(0.0),
+    }
+}
+
+/// CSS Positioned Layout's special containing-block rule for an inline
+/// positioned ancestor. The fragment tree retains the in-order line fragments
+/// emitted by the inline formatter, including generated continuation boxes
+/// around an in-flow block. The CSS rectangle starts at the first fragment's
+/// logical content starts and ends at the last fragment's logical content ends,
+/// so it can span intervening lines without treating their union as a normal
+/// block border box.
+fn positioned_inline_containing_block_rect<Id>(
+    containing_box: BoxId,
+    fragments: &FragmentTree,
+    boxes: &buckram::CssBoxTree<Id>,
+    flow: FlowAxes,
+    computed: &ComputedValues,
+    font_size: f32,
+) -> Option<PhysicalRect>
+where
+    Id: Copy + Eq + Hash,
+{
+    // One DOM inline can lower to several generated boxes when it is split by
+    // an in-flow block. K5a names the continuation that structurally owns the
+    // positioned descendant, but CSS Position defines one containing block
+    // from every fragment of the original inline element.
+    let fragment_ids = boxes[containing_box]
+        .origin
+        .node()
+        .map(|node| {
+            boxes
+                .boxes_for_node(node)
+                .iter()
+                .copied()
+                .filter(|box_id| {
+                    let candidate = &boxes[*box_id];
+                    candidate.display.outside == Some(DisplayOutside::Inline)
+                        && candidate.display.inside == Some(DisplayInside::Flow)
+                        && candidate.display.internal_table.is_none()
+                        && candidate.flow == flow
+                })
+                .flat_map(|box_id| fragments.fragment_ids_for_box(box_id).iter().copied())
+                .collect::<Vec<_>>()
+        })
+        .filter(|fragment_ids| !fragment_ids.is_empty())
+        .unwrap_or_else(|| fragments.fragment_ids_for_box(containing_box).to_vec());
+    let first = fragments.get(*fragment_ids.first()?)?;
+    let last = fragments.get(*fragment_ids.last()?)?;
+    let first = first.physical_rect();
+    let last = last.physical_rect();
+
+    // Inline padding percentages use the inline formatting context's resolved
+    // width, which is also the basis supplied to the retained text formatter.
+    // The structural containing fragment is that formatting-context fragment.
+    let percentage_basis = fragments
+        .get(*fragment_ids.first()?)
+        .and_then(TreeFragment::containing_fragment)
+        .and_then(|parent| fragments.get(parent))
+        .map_or(first.width, |parent| parent.physical_rect().width);
+    let decoration = PhysicalSides {
+        top: length_percentage_px(computed.padding_top.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_top_style,
+                computed.border_top_width,
+                font_size,
+            ),
+        right: length_percentage_px(computed.padding_right.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_right_style,
+                computed.border_right_width,
+                font_size,
+            ),
+        bottom: length_percentage_px(computed.padding_bottom.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_bottom_style,
+                computed.border_bottom_width,
+                font_size,
+            ),
+        left: length_percentage_px(computed.padding_left.0, font_size, percentage_basis)
+            + border_width_px(
+                computed.border_left_style,
+                computed.border_left_width,
+                font_size,
+            ),
+    };
+    let content_rect = |rect: PhysicalRect| PhysicalRect {
+        x: rect.x + decoration.left,
+        y: rect.y + decoration.top,
+        width: (rect.width - decoration.left - decoration.right).max(0.0),
+        height: (rect.height - decoration.top - decoration.bottom).max(0.0),
+    };
+    let first = content_rect(first);
+    let last = content_rect(last);
+    let edge = |side: PhysicalSide| {
+        let fragment = if side == flow.inline_start() || side == flow.block_start() {
+            first
+        } else {
+            last
+        };
+        match side {
+            PhysicalSide::Top => fragment.y,
+            PhysicalSide::Right => fragment.x + fragment.width,
+            PhysicalSide::Bottom => fragment.y + fragment.height,
+            PhysicalSide::Left => fragment.x,
+        }
+    };
+    let left = edge(PhysicalSide::Left);
+    let right = edge(PhysicalSide::Right);
+    let top = edge(PhysicalSide::Top);
+    let bottom = edge(PhysicalSide::Bottom);
+    Some(PhysicalRect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    })
+}
+
+/// Reformat an admitted auto-sized positioned root at Buckram's resolved
+/// inline size. Other positioned subtrees retain the formatter fallback
+/// until their own K5d sizing route is implemented.
+fn apply_admitted_positioned_inline_sizes<Context, Source>(
+    tree: &mut AlgorithmTree<Style, Context, Source>,
+    candidates: &[(BoxId, AlgorithmNodeId)],
+    placements: &[PositionedPlacement],
+    intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
+) -> bool {
+    let mut changed = false;
+    for (box_id, node) in candidates {
+        if !intrinsic_sizes.contains_key(box_id) {
+            continue;
+        }
+        let Some(placement) = placements
+            .iter()
+            .find(|placement| placement.box_id == *box_id)
+        else {
+            continue;
+        };
+        let Some(size) = placement.formatter_inline_size() else {
+            continue;
+        };
+        if placement.style.flow.is_horizontal() {
+            tree.style_mut(*node).size.width = Dimension::length(size);
+        } else {
+            tree.style_mut(*node).size.height = Dimension::length(size);
+        }
+        tree.set_positioned_inline_size(*node, size);
+        changed = true;
+    }
+    if changed {
+        tree.clear_layout_cache();
+    }
+    changed
+}
+
+/// Apply final absolute and fixed offsets from Buckram's resolved used
+/// geometry. The formatter supplies content fragments only; this bridge never
+/// lets it select the CSS containing block or final inset origin.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the final positioning bridge receives the same explicit CSS and replaced-source inputs as placement"
+)]
+fn apply_absolute_and_fixed_positioning<D>(
+    fragments: &mut FragmentTree,
+    boxes: &GeneratedBoxTree<D::NodeId>,
+    styles: &StylePlane<D::NodeId>,
+    dom: &D,
+    image_sources: &ImageSources,
+    intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
+    viewport_width: f32,
+    viewport_height: f32,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    for placement in positioned_placements(
+        fragments,
+        boxes,
+        styles,
+        dom,
+        image_sources,
+        intrinsic_sizes,
+        viewport_width,
+        viewport_height,
+    ) {
+        let target = placement.target_rect();
+        // The formatter owns positioned subtrees, but a fragment with no
+        // descendants has no child containing block to invalidate. Publish
+        // Buckram's used border box directly for that leaf.
+        fragments.resize_leaf(
+            placement.root,
+            PhysicalSize {
+                width: target.width,
+                height: target.height,
+            },
+        );
+        fragments.translate_subtree(
+            placement.root,
+            PhysicalOffset {
+                x: placement.containing_rect.x + target.x - placement.current.x,
+                y: placement.containing_rect.y + target.y - placement.current.y,
+            },
+        );
+        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+    }
 }
 
 fn fragment_baselines<Id, Context, Source>(
@@ -2966,6 +5144,39 @@ where
         )
 }
 
+/// Return each outermost absolute or fixed descendant of an inline run.
+///
+/// The run itself remains with the inline formatter, which supplies the line
+/// fragment used as the positioned root's static-position source. The root
+/// must be built separately, because out-of-flow contents neither occupy that
+/// line nor inherit its measured width.
+fn positioned_roots_in_inline_group<Id>(boxes: &GeneratedBoxTree<Id>, roots: &[BoxId]) -> Vec<BoxId>
+where
+    Id: Copy + Eq + Hash,
+{
+    fn visit<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId, positioned: &mut Vec<BoxId>)
+    where
+        Id: Copy + Eq + Hash,
+    {
+        for child in boxes[box_id].children() {
+            if matches!(
+                boxes[*child].positioning,
+                PositioningScheme::Absolute | PositioningScheme::Fixed
+            ) {
+                positioned.push(*child);
+                continue;
+            }
+            visit(boxes, *child, positioned);
+        }
+    }
+
+    let mut positioned = Vec::new();
+    for root in roots {
+        visit(boxes, *root, &mut positioned);
+    }
+    positioned
+}
+
 fn anonymous_block_style<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId) -> BlockStyle
 where
     Id: Copy + Eq + Hash,
@@ -2978,7 +5189,7 @@ where
 }
 
 fn to_block_style<Id>(
-    boxes: &GeneratedBoxTree<Id>,
+    boxes: &buckram::CssBoxTree<Id>,
     styles: &StylePlane<Id>,
     box_id: BoxId,
     computed: &ComputedValues,
@@ -3047,6 +5258,12 @@ where
             right: block_margin(computed.margin_right, font_size),
             bottom: block_margin(computed.margin_bottom, font_size),
             left: block_margin(computed.margin_left, font_size),
+        },
+        inset: PhysicalSides {
+            top: block_inset(computed.top, font_size),
+            right: block_inset(computed.right, font_size),
+            bottom: block_inset(computed.bottom, font_size),
+            left: block_inset(computed.left, font_size),
         },
         padding: PhysicalSides {
             top: flow_length(computed.padding_top.0, font_size),
@@ -3133,6 +5350,13 @@ fn block_margin(value: Margin, em: f32) -> FlowLengthAuto {
     match value {
         Margin::Auto => FlowLengthAuto::Auto,
         Margin::Value(value) => FlowLengthAuto::Value(flow_length(value, em)),
+    }
+}
+
+fn block_inset(value: Inset, em: f32) -> FlowLengthAuto {
+    match value {
+        Inset::Auto => FlowLengthAuto::Auto,
+        Inset::Value(value) => FlowLengthAuto::Value(flow_length(value, em)),
     }
 }
 
@@ -3512,6 +5736,22 @@ impl TablePaintModel {
     fn clips_cell(&self, box_id: BoxId) -> bool {
         self.clipped_cells.contains(&box_id)
     }
+
+    fn remap_box_ids(&mut self, identities: &buckram::LayoutIdentityMap) {
+        self.fragments
+            .remap_box_ids(|box_id| identities.box_id(box_id));
+        if let Some(geometry) = &mut self.collapsed_geometry {
+            geometry.table = identities.box_id(geometry.table);
+            for segment in &mut geometry.segments {
+                segment.table = identities.box_id(segment.table);
+                segment.winner = identities.box_id(segment.winner);
+            }
+        }
+        self.clipped_cells = std::mem::take(&mut self.clipped_cells)
+            .into_iter()
+            .map(|box_id| identities.box_id(box_id))
+            .collect();
+    }
 }
 
 /// The paint-side index of every table that completed Buckram's block phase.
@@ -3542,6 +5782,40 @@ impl TablePaintPlane {
 
     fn merge(&mut self, other: Self) {
         self.tables.extend(other.tables);
+    }
+
+    /// Replace only the table paint models rooted in one reconciled fragment
+    /// subtree. Their BoxIds already agree with the fresh layout; unrelated
+    /// table models keep their existing structural fragments and paint order.
+    fn replace_subtree_from<Id>(
+        &mut self,
+        fresh: &Self,
+        boxes: &buckram::CssBoxTree<Id>,
+        fresh_boxes: &buckram::CssBoxTree<Id>,
+        root: BoxId,
+        fresh_root: BoxId,
+    ) where
+        Id: Copy + Eq + Hash,
+    {
+        self.tables
+            .retain(|grid, _| !box_is_descendant_of(boxes, *grid, root));
+        self.tables.extend(
+            fresh
+                .tables
+                .iter()
+                .filter(|(grid, _)| box_is_descendant_of(fresh_boxes, **grid, fresh_root))
+                .map(|(grid, table)| (*grid, table.clone())),
+        );
+    }
+
+    fn remap_box_ids(&mut self, identities: &buckram::LayoutIdentityMap) {
+        self.tables = std::mem::take(&mut self.tables)
+            .into_iter()
+            .map(|(grid, mut table)| {
+                table.remap_box_ids(identities);
+                (identities.box_id(grid), table)
+            })
+            .collect();
     }
 }
 
@@ -3607,8 +5881,21 @@ fn apply_relative_table_part_offsets<Id>(
             continue;
         };
         let gap = match computed.position {
+            // CSS Tables transfers root positioning to the wrapper. K5d
+            // resolves that wrapper through the shared positioned-fragment
+            // path, so the grid itself must not retain a duplicate table gap.
+            CssPosition::Absolute | CssPosition::Fixed if part == table => None,
             CssPosition::Absolute => Some(TablePositioningGap::Absolute),
             CssPosition::Fixed => Some(TablePositioningGap::Fixed),
+            CssPosition::Sticky
+                if part == table
+                    || boxes[part]
+                        .display
+                        .internal_table
+                        .is_some_and(supports_retained_sticky_table_part) =>
+            {
+                None
+            },
             CssPosition::Sticky => Some(TablePositioningGap::Sticky),
             CssPosition::Static | CssPosition::Relative => None,
         };
@@ -3715,12 +6002,15 @@ where
 ///
 /// Rectangles are logical and the live path is horizontal LTR throughout, so
 /// inline maps to x and block to y.
-fn commit_table_structure(
+fn commit_table_structure<Id>(
     emitted: &TableFragments,
     grid_origin: Point<f32>,
     grid_fragment: FragmentId,
+    boxes: &GeneratedBoxTree<Id>,
     output: &mut FragmentOutput<'_>,
-) {
+) where
+    Id: Copy + Eq + Hash,
+{
     let mut ids: Vec<Option<FragmentId>> = vec![None; emitted.fragments().len()];
     for (index, fragment) in emitted.fragments().iter().enumerate() {
         // The walk already pushed the grid's own fragment; record it so
@@ -3753,6 +6043,7 @@ fn commit_table_structure(
             width: fragment.rect.inline_size,
             height: fragment.rect.block_size,
         };
+        record_static_position(boxes, box_id, Some(parent), fragment.rect, None, output);
         ids[index] = Some(output.fragments.push(
             TreeFragment::from_horizontal_physical(box_id, rect),
             Some(parent),
@@ -3773,6 +6064,7 @@ where
     Id: Copy + Eq + Hash,
 {
     let computed = tree.layout(node);
+    let static_computed = tree.static_layout(node);
     let origin = Point {
         x: cursor.origin.x + computed.x,
         y: cursor.origin.y + computed.y,
@@ -3805,6 +6097,18 @@ where
                     });
                     let parent = structural_parent.or(cursor.parent);
                     let flow = boxes[box_id].flow;
+                    let static_rect = flow.logical_rect(
+                        PhysicalRect {
+                            x: static_computed.x,
+                            y: static_computed.y,
+                            width: static_computed.width,
+                            height: static_computed.height,
+                        },
+                        PhysicalSize {
+                            width: cursor.containing.width,
+                            height: cursor.containing.height,
+                        },
+                    );
                     let fragment = if flow.is_horizontal() {
                         TreeFragment::from_horizontal_physical(box_id, rect)
                     } else {
@@ -3822,6 +6126,14 @@ where
                         );
                         TreeFragment::from_physical_with_logical(box_id, rect, logical_rect, flow)
                     };
+                    record_static_position(
+                        boxes,
+                        box_id,
+                        parent,
+                        static_rect,
+                        tree.grid_positioned_area(node),
+                        output,
+                    );
                     let id = output.fragments.push(
                         fragment
                             .with_baselines(fragment_baselines(tree, boxes, node, box_id, rect)),
@@ -3830,7 +6142,7 @@ where
                     );
                     child_parent = Some(id);
                     if let Some(emitted) = tables.get(&box_id) {
-                        commit_table_structure(emitted, origin, id, output);
+                        commit_table_structure(emitted, origin, id, boxes, output);
                     }
                 }
                 legacy_origin_node(boxes, box_id)
@@ -3874,6 +6186,7 @@ where
     Id: Copy + Eq + Hash,
 {
     let computed = tree.layout(node);
+    let static_computed = tree.static_layout(node);
     let origin = Point {
         x: cursor.origin.x + computed.x,
         y: cursor.origin.y + computed.y,
@@ -3941,6 +6254,15 @@ where
                         width: line_fragment.width,
                         height: line_fragment.height,
                     };
+                    let flow = boxes[box_id].flow;
+                    let static_rect = flow.logical_rect(
+                        relative_line,
+                        PhysicalSize {
+                            width: cursor.containing.width,
+                            height: cursor.containing.height,
+                        },
+                    );
+                    record_static_position(boxes, box_id, parent, static_rect, None, output);
                     let fragment_id = output.fragments.push(
                         fragment_for_box(
                             boxes,
@@ -3962,6 +6284,27 @@ where
                     child_parent.get_or_insert(fragment_id);
                 }
             } else {
+                let flow = boxes[box_id].flow;
+                let static_rect = flow.logical_rect(
+                    Fragment {
+                        x: static_computed.x,
+                        y: static_computed.y,
+                        width: static_computed.width,
+                        height: static_computed.height,
+                    },
+                    PhysicalSize {
+                        width: cursor.containing.width,
+                        height: cursor.containing.height,
+                    },
+                );
+                record_static_position(
+                    boxes,
+                    box_id,
+                    parent,
+                    static_rect,
+                    tree.grid_positioned_area(node),
+                    output,
+                );
                 let fragment_id = output.fragments.push(
                     fragment_for_box(boxes, box_id, rect, relative_rect, cursor.containing)
                         .with_baselines(fragment_baselines(tree, boxes, node, box_id, rect)),
@@ -3969,7 +6312,7 @@ where
                     parent,
                 );
                 if let Some(emitted) = tables.get(&box_id) {
-                    commit_table_structure(emitted, origin, fragment_id, output);
+                    commit_table_structure(emitted, origin, fragment_id, boxes, output);
                 }
                 child_parent.get_or_insert(fragment_id);
             }
@@ -4157,10 +6500,55 @@ where
     hit_test_with_scroll(dom, styles, fragments, &HashMap::new(), x, y)
 }
 
+/// Return a numeric stacking level only where CSS lets `z-index` establish a
+/// context: positioned boxes and direct flex/grid items. A static ordinary
+/// block keeps normal paint order even when it carries a numeric declaration.
+pub(crate) fn z_index_stacking_level<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    id: D::NodeId,
+) -> Option<i32>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let style = styles.get(id)?;
+    let livery::values::ZIndex::Integer(level) = style.z_index else {
+        return None;
+    };
+    let is_flex_or_grid_item = dom
+        .parent(id)
+        .and_then(|parent| styles.get(parent))
+        .is_some_and(|parent| matches!(parent.display, CssDisplay::Flex | CssDisplay::Grid));
+    (style.position != CssPosition::Static || is_flex_or_grid_item).then_some(level)
+}
+
+/// Return direct DOM children in CSS paint order for the admitted item
+/// containers. Flex and grid order by their computed `order` value while the
+/// stable sort preserves document order for equal values and anonymous text.
+pub(crate) fn order_modified_children<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    parent: D::NodeId,
+) -> Vec<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let mut children = dom.dom_children(parent).collect::<Vec<_>>();
+    let is_flex_or_grid = styles
+        .get(parent)
+        .is_some_and(|style| matches!(style.display, CssDisplay::Flex | CssDisplay::Grid));
+    if is_flex_or_grid {
+        children.sort_by_key(|child| styles.get(*child).map_or(0, |style| style.order.value()));
+    }
+    children
+}
+
 /// Hit-test a retained fragment plane after applying per-element scroll
 /// offsets to descendants. The ordinary [`hit_test`] path keeps the map empty;
 /// retained sessions use this variant for wheel-scrolled containers.
-pub(crate) fn hit_test_with_scroll<D>(
+pub fn hit_test_with_scroll<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     fragments: &LiveryLayout<D::NodeId>,
@@ -4246,12 +6634,7 @@ fn collect_hit_candidates<D>(
         && state.y >= fragment.y
         && state.y <= fragment.y + fragment.height
     {
-        let level = match style.z_index {
-            livery::values::ZIndex::Integer(level) => level,
-            // A z-index still deferred at hit-test time never got an element
-            // context; treat it as auto rather than guessing a stacking level.
-            livery::values::ZIndex::Auto | livery::values::ZIndex::Deferred(_) => 0,
-        };
+        let level = z_index_stacking_level(state.dom, state.styles, id).unwrap_or_default();
         state.candidates.push(HitCandidate {
             id,
             level,
@@ -4276,7 +6659,7 @@ fn collect_hit_candidates<D>(
     if let Some(clip) = pushed_clip.as_ref() {
         state.clips.push(*clip);
     }
-    let children = state.dom.dom_children(id).collect::<Vec<_>>();
+    let children = order_modified_children(state.dom, state.styles, id);
     let next_scroll = state
         .scroll_offsets
         .get(&id)
@@ -4357,6 +6740,30 @@ fn apply_replaced_intrinsic_size<D>(
         },
         _ => {},
     }
+}
+
+/// Pass natural replaced dimensions across the browser-facing K5d edge.
+/// Attribute-derived dimensions already live in the computed style through
+/// presentational hints, so this path does not reread DOM width or height.
+fn positioned_replaced_input<D>(
+    dom: &D,
+    id: D::NodeId,
+    image_sources: &ImageSources,
+    style: &BlockStyle,
+) -> Option<buckram::ReplacedSize>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !style.replaced {
+        return None;
+    }
+    let intrinsic_size = replaced_intrinsic_size(dom, id, image_sources).map(|(width, height)| {
+        style
+            .containing_flow
+            .logical_size(PhysicalSize { width, height })
+    });
+    Some(buckram::ReplacedSize { intrinsic_size })
 }
 
 fn replaced_intrinsic_size<D>(
@@ -4497,20 +6904,14 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             x: overflow(computed.overflow_x),
             y: overflow(computed.overflow_y),
         },
-        position: match computed.position {
-            CssPosition::Absolute | CssPosition::Fixed => Position::Absolute,
-            _ => Position::Relative,
-        },
-        inset: if matches!(computed.position, CssPosition::Static) {
-            Rect::auto()
-        } else {
-            Rect {
-                left: inset(computed.left, font_size),
-                right: inset(computed.right, font_size),
-                top: inset(computed.top, font_size),
-                bottom: inset(computed.bottom, font_size),
-            }
-        },
+        // Buckram owns every CSS positioning category. The scratch formatter
+        // starts in flow; only Buckram's explicit flex/grid static-position
+        // provider changes its private backend role after attachment.
+        position: Position::Relative,
+        // Sticky geometry is a retained Buckram scroll constraint. The
+        // scratch formatter receives no inset so it produces only the normal
+        // flow rectangle, rather than selecting a sticky offset itself.
+        inset: Rect::auto(),
         size: Size {
             width: dimension(computed.width, font_size),
             height: dimension(computed.height, font_size),
@@ -4614,6 +7015,195 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
     }
 }
 
+/// The K5b flex/grid provider is selected only after the direct child is
+/// attached to the scratch parent. Livery supplies generated CSS ownership;
+/// Buckram owns the narrow renderer-role transition and retains the static
+/// rectangle it yields for the later K5d equation.
+fn enable_flex_grid_static_position_provider<Id, Context, Source>(
+    tree: &mut AlgorithmTree<Style, Context, Source>,
+    styles: &StylePlane<Id>,
+    boxes: &GeneratedBoxTree<Id>,
+    container: BoxId,
+    container_node: AlgorithmNodeId,
+) where
+    Id: Copy + Eq + Hash,
+    Source: DirectBoxSource,
+{
+    let inside = boxes[container].display.inside;
+    if !matches!(inside, Some(DisplayInside::Flex | DisplayInside::Grid)) {
+        return;
+    }
+    let grid_flow = (inside == Some(DisplayInside::Grid)).then_some(boxes[container].flow);
+    let children = tree.children(container_node).to_vec();
+    for child in children {
+        if matches!(
+            tree.block_style(child).position,
+            BuckramBlockPosition::Absolute | BuckramBlockPosition::Fixed
+        ) {
+            if let Some(container_flow) = grid_flow {
+                let subject_alignment = tree.source(child).direct_box().and_then(|box_id| {
+                    let css_box = &boxes[box_id];
+                    css_box.origin.node().and_then(|node| {
+                        styles.get(node).map(|computed| {
+                            (css_box.flow, computed.align_self, computed.justify_self)
+                        })
+                    })
+                });
+                let style = tree.style_mut(child);
+                if !container_flow.is_horizontal() {
+                    map_vertical_grid_static_alignment(style, container_flow);
+                }
+                if let Some((subject_flow, align_self, justify_self)) = subject_alignment {
+                    map_grid_static_self_alignment(
+                        style,
+                        container_flow,
+                        subject_flow,
+                        align_self,
+                        justify_self,
+                    );
+                }
+            }
+            tree.enable_flex_grid_static_position_provider(child);
+        }
+    }
+}
+
+/// The source forms used by the block and inline scratch trees. Only a direct
+/// generated box has an unambiguous subject writing mode for CSS `self-*`.
+trait DirectBoxSource {
+    fn direct_box(&self) -> Option<BoxId>;
+}
+
+impl DirectBoxSource for Option<BoxId> {
+    fn direct_box(&self) -> Option<BoxId> {
+        *self
+    }
+}
+
+impl DirectBoxSource for Vec<BoxId> {
+    fn direct_box(&self) -> Option<BoxId> {
+        match self.as_slice() {
+            [box_id] => Some(*box_id),
+            _ => None,
+        }
+    }
+}
+
+/// Taffy's grid static-position hook has physical horizontal/vertical axes.
+/// A vertical CSS grid therefore has to trade its block-axis self-alignment
+/// onto Taffy's horizontal self-alignment before it supplies the K5b rectangle.
+/// This is deliberately limited to direct out-of-flow grid children. The
+/// `self-*` repair below supplies the distinct subject-writing-mode rule.
+/// Normal vertical grid layout remains its own formatting work.
+fn map_vertical_grid_static_alignment(style: &mut Style, flow: FlowAxes) {
+    let align_self = style.align_self.take();
+    let justify_self = style.justify_self.take();
+    style.align_self = if flow.inline_start() == PhysicalSide::Bottom {
+        reverse_self_alignment(justify_self)
+    } else {
+        justify_self
+    };
+    style.justify_self = if flow.block_start() == PhysicalSide::Right {
+        reverse_self_alignment(align_self)
+    } else {
+        align_self
+    };
+}
+
+/// CSS Align gives `self-start` and `self-end` the subject's start and end
+/// sides, while `start` and `end` use the containing block's writing mode.
+/// Taffy's static-position hook has only physical axes, so repair the two
+/// explicit `self-*` values after the ordinary vertical-grid axis mapping.
+fn map_grid_static_self_alignment(
+    style: &mut Style,
+    container_flow: FlowAxes,
+    subject_flow: FlowAxes,
+    align_self: CssAlignment,
+    justify_self: CssAlignment,
+) {
+    if let Some(alignment) =
+        self_alignment_for_axis(align_self, subject_flow, container_flow.block_start())
+    {
+        set_physical_self_alignment(style, container_flow.block_start(), alignment);
+    }
+    if let Some(alignment) =
+        self_alignment_for_axis(justify_self, subject_flow, container_flow.inline_start())
+    {
+        set_physical_self_alignment(style, container_flow.inline_start(), alignment);
+    }
+}
+
+fn self_alignment_for_axis(
+    alignment: CssAlignment,
+    subject_flow: FlowAxes,
+    axis_side: PhysicalSide,
+) -> Option<AlignItems> {
+    let subject_side = match alignment {
+        CssAlignment::SelfStart => subject_side_on_axis(subject_flow, axis_side, true),
+        CssAlignment::SelfEnd => subject_side_on_axis(subject_flow, axis_side, false),
+        _ => return None,
+    };
+    Some(align_items(match subject_side {
+        PhysicalSide::Top | PhysicalSide::Left => CssAlignment::Start,
+        PhysicalSide::Right | PhysicalSide::Bottom => CssAlignment::End,
+    }))
+}
+
+fn subject_side_on_axis(
+    subject_flow: FlowAxes,
+    axis_side: PhysicalSide,
+    start: bool,
+) -> PhysicalSide {
+    let inline_start = subject_flow.inline_start();
+    if same_physical_axis(inline_start, axis_side) {
+        return if start {
+            inline_start
+        } else {
+            subject_flow.inline_end()
+        };
+    }
+    debug_assert!(same_physical_axis(subject_flow.block_start(), axis_side));
+    if start {
+        subject_flow.block_start()
+    } else {
+        subject_flow.block_end()
+    }
+}
+
+fn same_physical_axis(first: PhysicalSide, second: PhysicalSide) -> bool {
+    matches!(first, PhysicalSide::Left | PhysicalSide::Right)
+        == matches!(second, PhysicalSide::Left | PhysicalSide::Right)
+}
+
+fn set_physical_self_alignment(style: &mut Style, axis_side: PhysicalSide, alignment: AlignItems) {
+    match axis_side {
+        PhysicalSide::Left | PhysicalSide::Right => style.justify_self = Some(alignment),
+        PhysicalSide::Top | PhysicalSide::Bottom => style.align_self = Some(alignment),
+    }
+}
+
+fn reverse_self_alignment(alignment: Option<AlignItems>) -> Option<AlignItems> {
+    alignment.map(|mut alignment| {
+        alignment.keyword = match alignment.keyword {
+            AlignItemsKeyword::Start => AlignItemsKeyword::End,
+            AlignItemsKeyword::End => AlignItemsKeyword::Start,
+            AlignItemsKeyword::FlexStart => AlignItemsKeyword::FlexEnd,
+            AlignItemsKeyword::FlexEnd => AlignItemsKeyword::FlexStart,
+            // Reversing an axis swaps its self-relative ends too. These reach
+            // here only when the subject's own flow has not already resolved
+            // them to a physical side; taffy resolves the pair against an
+            // Ltr/Rtl `direction` alone, so the flow-aware resolution above
+            // stays responsible for vertical writing modes.
+            AlignItemsKeyword::SelfStart => AlignItemsKeyword::SelfEnd,
+            AlignItemsKeyword::SelfEnd => AlignItemsKeyword::SelfStart,
+            AlignItemsKeyword::Center
+            | AlignItemsKeyword::Baseline
+            | AlignItemsKeyword::Stretch => alignment.keyword,
+        };
+        alignment
+    })
+}
+
 fn grid_auto_flow(value: CssGridAutoFlow) -> GridAutoFlow {
     match value {
         CssGridAutoFlow::Row => GridAutoFlow::Row,
@@ -4682,6 +7272,10 @@ fn align_items(value: CssAlignment) -> AlignItems {
         keyword: match value {
             CssAlignment::Start => AlignItemsKeyword::Start,
             CssAlignment::End => AlignItemsKeyword::End,
+            // Taffy has no subject-writing-mode self edge. The narrow direct
+            // positioned-grid provider repairs it from the generated box.
+            CssAlignment::SelfStart => AlignItemsKeyword::Start,
+            CssAlignment::SelfEnd => AlignItemsKeyword::End,
             CssAlignment::FlexStart => AlignItemsKeyword::FlexStart,
             CssAlignment::FlexEnd => AlignItemsKeyword::FlexEnd,
             CssAlignment::Center => AlignItemsKeyword::Center,
@@ -4785,13 +7379,6 @@ fn resolved_explicit_size(size: CssSize, em: f32, basis: Option<f32>) -> Option<
         basis.map(|basis| absolute_length_percentage(value, em, 16.0, basis))
     } else {
         Some(absolute_length_percentage(value, em, 16.0, 0.0))
-    }
-}
-
-fn inset(value: Inset, em: f32) -> LengthPercentageAuto {
-    match value {
-        Inset::Auto => LengthPercentageAuto::auto(),
-        Inset::Value(value) => length_percentage_auto(value, em),
     }
 }
 
@@ -4986,6 +7573,1462 @@ mod tests {
     }
 
     #[test]
+    fn absolute_static_position_keeps_its_formatting_source_and_k5a_containing_block() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=source><div id=positioned>item</div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#containing { position: relative; width: 200px; } #source { width: 120px; } \
+                 #positioned { position: absolute; left: 36px; top: 11px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let by_id = |id| node_by_id(&dom, dom.document(), id).expect("node");
+        let source = layout
+            .boxes()
+            .principal_box(by_id("source"))
+            .expect("source box");
+        let containing = layout
+            .boxes()
+            .principal_box(by_id("containing"))
+            .expect("containing box");
+        let positioned = layout
+            .boxes()
+            .principal_box(by_id("positioned"))
+            .expect("positioned box");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("static-position record");
+
+        assert_eq!(
+            static_position.source,
+            StaticPositionSource::Fragment(source_fragment),
+            "the record must keep the source formatting fragment",
+        );
+        assert_eq!(
+            static_position.containing_block,
+            buckram::ContainingBlock::Box(containing),
+            "the absolute containing block comes from the K5a graph, not the source parent",
+        );
+        assert_eq!(
+            (
+                static_position.logical_rect.inline_start,
+                static_position.logical_rect.block_start
+            ),
+            (0.0, 0.0),
+            "the K5b record is the pre-inset static position, not the final absolute location",
+        );
+        let containing_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(containing)
+            .first()
+            .copied()
+            .expect("containing fragment");
+        let containing_fragment_rect = layout
+            .fragments()
+            .get(containing_fragment)
+            .map(TreeFragment::physical_rect)
+            .expect("containing fragment geometry");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (
+                containing_fragment_rect.x + 36.0,
+                containing_fragment_rect.y + 11.0
+            ),
+            "K5d resolves final insets after K5b records the static rectangle",
+        );
+        assert_eq!(
+            positioned_fragment.containing_fragment(),
+            Some(containing_fragment),
+            "the final fragment attaches to K5a's selected containing fragment",
+        );
+    }
+
+    #[test]
+    fn absolute_auto_inline_size_fills_between_definite_insets_from_buckram_inputs() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=positioned>unconstrained content</div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(fragment.width, 170.0);
+        assert_eq!(fragment.x, 10.0);
+    }
+
+    #[test]
+    fn absolute_nonleaf_reformats_at_buckrams_resolved_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=positioned><div id=child></div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; height: 100px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; top: 7px; } \
+                 #child { width: 40px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect_for = |id| {
+            let box_id = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box");
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+        let positioned = rect_for("positioned");
+        let child = rect_for("child");
+
+        assert_eq!(
+            positioned,
+            PhysicalRect {
+                x: 10.0,
+                y: 7.0,
+                width: 170.0,
+                height: 20.0,
+            },
+            "the non-leaf root reformats at Buckram's final used width",
+        );
+        assert_eq!(
+            child,
+            PhysicalRect {
+                x: 10.0,
+                y: 7.0,
+                width: 40.0,
+                height: 20.0,
+            },
+            "the descendant belongs to the reformatted positioned root",
+        );
+    }
+
+    #[test]
+    fn vertical_absolute_nonleaf_reformats_at_buckrams_resolved_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=containing><div id=positioned><div id=child></div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; writing-mode: vertical-rl; width: 100px; height: 200px; } \
+                 #positioned { position: absolute; writing-mode: vertical-rl; left: 7px; top: 10px; bottom: 20px; } \
+                 #child { width: 40px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect_for = |id| {
+            let box_id = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box");
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+        let positioned = rect_for("positioned");
+        let child = rect_for("child");
+
+        assert_eq!(
+            positioned,
+            PhysicalRect {
+                x: 7.0,
+                y: 10.0,
+                width: 40.0,
+                height: 170.0,
+            },
+            "the vertical non-leaf root reformats at Buckram's final used inline size",
+        );
+        assert_eq!(
+            child,
+            PhysicalRect {
+                x: 7.0,
+                y: 10.0,
+                width: 40.0,
+                height: 20.0,
+            },
+            "the descendant belongs to the reformatted vertical positioned root",
+        );
+    }
+
+    #[test]
+    fn absolute_empty_leaf_uses_buckrams_resolved_border_box() {
+        let dom = StaticDocument::parse("<div id=containing><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; height: 100px; } \
+                 #positioned { position: absolute; left: 10px; right: 20px; top: 7px; height: 30px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            fragment.physical_rect(),
+            PhysicalRect {
+                x: 10.0,
+                y: 7.0,
+                width: 170.0,
+                height: 30.0,
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_leaf_percentage_block_size_uses_the_initial_containing_block() {
+        let dom = StaticDocument::parse("<div id=fixed></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #fixed { position: fixed; left: 50px; top: 50px; width: 50%; height: 50%; border: 10px solid; }"]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 800.0, 600.0).expect("layout");
+        let fixed = layout
+            .get(node_by_id(&dom, dom.document(), "fixed").expect("fixed node"))
+            .expect("fixed fragment")
+            .physical_rect();
+
+        assert_eq!(
+            fixed,
+            PhysicalRect {
+                x: 50.0,
+                y: 50.0,
+                width: 420.0,
+                height: 320.0,
+            }
+        );
+    }
+
+    #[test]
+    fn ordinary_block_flow_keeps_an_absolute_subtree_out_of_its_cursor() {
+        let dom = StaticDocument::parse(
+            "<div id=host><div id=before></div><div id=positioned><div id=inside></div></div><div id=after></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { position: relative; width: 200px; } \
+                 #before { height: 20px; } \
+                 #positioned { position: absolute; left: 25px; width: 80px; } \
+                 #inside { height: 30px; } \
+                 #after { height: 10px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect = |id| {
+            layout
+                .get(node_by_id(&dom, dom.document(), id).expect("node"))
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+        let host = rect("host");
+        let positioned = rect("positioned");
+        let after = rect("after");
+        let algorithms = layout.block_algorithm_counts();
+
+        assert_eq!(
+            host.height, 30.0,
+            "the absolute child does not size its block parent"
+        );
+        assert_eq!((after.x - host.x, after.y - host.y), (0.0, 20.0));
+        assert_eq!(
+            (
+                positioned.x - host.x,
+                positioned.y - host.y,
+                positioned.width,
+                positioned.height
+            ),
+            (25.0, 20.0, 80.0, 30.0),
+        );
+        assert_eq!(
+            algorithms.taffy, 0,
+            "an ordinary block parent and its positioned block subtree stay on Buckram's cursor",
+        );
+    }
+
+    #[test]
+    fn relative_position_moves_its_fragment_subtree_without_reflowing_siblings() {
+        let dom = StaticDocument::parse(
+            "<div id=relative><div id=child>child</div></div><div id=following>following</div>",
+        );
+        let static_styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#relative { width: 120px; } #child { width: 40px; } #following { width: 80px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let relative_styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#relative { position: relative; left: 21px; top: 13px; width: 120px; } \
+                 #child { width: 40px; } #following { width: 80px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let static_layout = layout(&dom, &static_styles, 320.0, 240.0).expect("static layout");
+        let relative_layout =
+            layout(&dom, &relative_styles, 320.0, 240.0).expect("relative layout");
+        let box_for = |layout: &LiveryLayout<_>, id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect("node"))
+                .expect("principal box")
+        };
+        let rect_for = |layout: &LiveryLayout<_>, id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_for(layout, id))
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+
+        let static_relative = rect_for(&static_layout, "relative");
+        let static_child = rect_for(&static_layout, "child");
+        let static_following = rect_for(&static_layout, "following");
+        let positioned_relative = rect_for(&relative_layout, "relative");
+        let positioned_child = rect_for(&relative_layout, "child");
+        let positioned_following = rect_for(&relative_layout, "following");
+
+        assert_eq!(
+            (positioned_relative.x, positioned_relative.y),
+            (static_relative.x + 21.0, static_relative.y + 13.0),
+        );
+        assert_eq!(
+            (positioned_child.x, positioned_child.y),
+            (static_child.x + 21.0, static_child.y + 13.0),
+            "the containing-block subtree moves with the relative box",
+        );
+        assert_eq!(
+            positioned_following, static_following,
+            "relative positioning does not change following normal-flow geometry",
+        );
+    }
+
+    #[test]
+    fn inline_origin_absolute_position_uses_the_line_fragment_as_its_static_source() {
+        let dom = StaticDocument::parse(
+            "<div id=container>before <span id=source>source <span id=positioned>item</span></span> after</div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#container { position: relative; width: 160px; } #source { display: inline; } \
+                 #positioned { position: absolute; left: 34px; top: 8px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let source = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "source").expect("source"))
+            .expect("source box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source line fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("static position");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+        let container = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "container").expect("container"))
+            .expect("container box");
+        let container_fragment = layout
+            .fragments()
+            .fragments_for_box(container)
+            .next()
+            .expect("container fragment");
+
+        assert_eq!(
+            static_position.source,
+            StaticPositionSource::Fragment(source_fragment),
+            "an inline-origin positioned child uses its line fragment, not a leaf fallback",
+        );
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (container_fragment.x + 34.0, container_fragment.y + 8.0),
+            "the shared K5d route resolves the inline-origin child's final insets",
+        );
+    }
+
+    #[test]
+    fn inline_origin_absolute_auto_width_refits_to_the_k5d_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=container>before <span id=source>source <span id=positioned>one two three four five six seven eight</span></span> after</div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #container { position: relative; width: 160px; } #source { display: inline; } \
+                 #positioned { position: absolute; left: 34px; right: 0; top: 8px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let container = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "container").expect("container"))
+            .expect("container box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let source = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "source").expect("source"))
+            .expect("source box");
+        let container_fragment = layout
+            .fragments()
+            .fragments_for_box(container)
+            .next()
+            .expect("container fragment");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source line fragment");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .expect("static position")
+                .source,
+            StaticPositionSource::Fragment(source_fragment),
+            "the separate formatting root retains its enclosing inline line as the static source",
+        );
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (container_fragment.x + 34.0, container_fragment.y + 8.0),
+        );
+        assert_eq!(positioned_fragment.width, 126.0);
+        assert!(
+            positioned_fragment.height > 20.0,
+            "the text reflows at Buckram's 126px used inline size: {positioned_fragment:?}",
+        );
+    }
+
+    #[test]
+    fn inline_origin_fixed_auto_width_refits_to_the_k5d_inline_size() {
+        let dom = StaticDocument::parse(
+            "<div id=container>before <span id=source>source <span id=positioned>one two three four five six seven eight</span></span> after</div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #container { width: 160px; } #source { display: inline; } \
+                 #positioned { position: fixed; left: 34px; right: 160px; top: 8px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let source = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "source").expect("source"))
+            .expect("source box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let source_fragment = layout
+            .fragments()
+            .fragment_ids_for_box(source)
+            .first()
+            .copied()
+            .expect("source line fragment");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .expect("static position")
+                .source,
+            StaticPositionSource::Fragment(source_fragment),
+        );
+        assert_eq!((positioned_fragment.x, positioned_fragment.y), (34.0, 8.0));
+        assert_eq!(positioned_fragment.width, 126.0);
+        assert!(
+            positioned_fragment.height > 20.0,
+            "the fixed text reflows at Buckram's 126px used inline size: {positioned_fragment:?}",
+        );
+    }
+
+    #[test]
+    fn absolute_flex_and_grid_children_keep_their_native_static_rectangles() {
+        let dom = StaticDocument::parse(
+            "<div id=flex><div id=flex-positioned>flex</div></div>\
+             <div id=grid><div id=grid-positioned>grid</div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #flex { position: relative; display: flex; width: 200px; height: 100px; \
+                         justify-content: center; align-items: end; } \
+                 #grid { position: relative; display: grid; width: 200px; height: 100px; } \
+                 #flex-positioned, #grid-positioned { position: absolute; left: 18px; top: 9px; \
+                                                       width: 30px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let rect_for = |box_id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+
+        let flex = box_for("flex");
+        let flex_positioned = box_for("flex-positioned");
+        let grid = box_for("grid");
+        let grid_positioned = box_for("grid-positioned");
+        let flex_static = layout
+            .fragments()
+            .static_position_for_box(flex_positioned)
+            .expect("flex static rectangle");
+        let grid_static = layout
+            .fragments()
+            .static_position_for_box(grid_positioned)
+            .expect("grid static rectangle");
+
+        assert_eq!(
+            (
+                flex_static.logical_rect.inline_start,
+                flex_static.logical_rect.block_start
+            ),
+            (85.0, 80.0),
+            "the flex formatter owns alignment, while Buckram keeps its pre-inset result"
+        );
+        assert_eq!(
+            (
+                grid_static.logical_rect.inline_start,
+                grid_static.logical_rect.block_start
+            ),
+            (0.0, 0.0),
+            "the grid formatter contributes its grid-area static rectangle"
+        );
+        assert_eq!(
+            grid_static.containing_block_area,
+            Some(LogicalRect {
+                inline_start: 0.0,
+                block_start: 0.0,
+                inline_size: 200.0,
+                block_size: 100.0,
+            }),
+            "the direct grid child retains its finalized containing area separately from its static rectangle"
+        );
+
+        let flex_rect = rect_for(flex);
+        let flex_positioned_rect = rect_for(flex_positioned);
+        let grid_rect = rect_for(grid);
+        let grid_positioned_rect = rect_for(grid_positioned);
+        assert_eq!(
+            (flex_positioned_rect.x, flex_positioned_rect.y),
+            (flex_rect.x + 18.0, flex_rect.y + 9.0),
+        );
+        assert_eq!(
+            (grid_positioned_rect.x, grid_positioned_rect.y),
+            (grid_rect.x + 18.0, grid_rect.y + 9.0),
+        );
+    }
+
+    #[test]
+    fn absolute_grid_self_end_uses_the_grid_content_end() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #grid { display: grid; width: 100px; height: 100px; border: 1px solid; } \
+                 #positioned { position: absolute; width: 50px; height: 50px; align-self: self-end; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        assert_eq!(
+            styles
+                .get(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+                .map(|style| (style.position, style.align_self)),
+            Some((CssPosition::Absolute, CssAlignment::SelfEnd)),
+            "the style value must survive parsing before layout maps it to the formatter",
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let grid = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+            .expect("grid box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+            .expect("positioned box");
+        let grid_rect = layout
+            .fragments()
+            .fragments_for_box(grid)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("grid fragment");
+        let positioned_rect = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("positioned fragment");
+        assert_eq!(
+            (positioned_rect.x, positioned_rect.y),
+            (grid_rect.x + 1.0, grid_rect.y + 51.0),
+            "a same-flow self-end positioned grid item uses the grid content end",
+        );
+        assert!(
+            layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .is_some(),
+            "the grid static-position route retains its K5b record",
+        );
+    }
+
+    #[test]
+    fn absolute_grid_static_position_uses_content_edges_not_placed_area() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #grid { position: relative; display: grid; width: 100px; height: 100px; \
+                         grid-template-columns: 20px 80px; grid-template-rows: 30px 70px; } \
+                 #positioned { position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                               width: 20px; height: 10px; align-self: self-end; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let grid = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+            .expect("grid box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+            .expect("positioned box");
+        let grid_rect = layout
+            .fragments()
+            .fragments_for_box(grid)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("grid fragment");
+        let positioned_rect = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("positioned fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("grid static position");
+
+        assert_eq!(
+            (
+                static_position.logical_rect.inline_start,
+                static_position.logical_rect.block_start,
+            ),
+            (0.0, 90.0),
+            "the static rectangle is the aligned grid content rectangle, not the placed area"
+        );
+        assert_eq!(
+            static_position.containing_block_area,
+            Some(LogicalRect {
+                inline_start: 20.0,
+                block_start: 30.0,
+                inline_size: 80.0,
+                block_size: 70.0,
+            }),
+            "the placed grid area remains the containing block for positioned insets"
+        );
+        assert_eq!(
+            (positioned_rect.x, positioned_rect.y),
+            (grid_rect.x, grid_rect.y + 90.0),
+        );
+    }
+
+    #[test]
+    fn vertical_grid_static_alignment_uses_the_content_block_end() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        for (writing_mode, expected_x) in [("vertical-rl", 0.0), ("vertical-lr", 80.0)] {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[&format!(
+                    "html, body, div {{ margin: 0; padding: 0; }} \
+                         #grid {{ position: relative; display: grid; writing-mode: {writing_mode}; \
+                                 width: 100px; height: 80px; \
+                                 grid-template-columns: 20px 60px; grid-template-rows: 30px 70px; }} \
+                         #positioned {{ position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                                       width: 20px; height: 10px; align-self: end; }}"
+                )]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+
+            let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+            let grid = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+                .expect("grid box");
+            let positioned = layout
+                .boxes()
+                .principal_box(
+                    node_by_id(&dom, dom.document(), "positioned").expect("positioned node"),
+                )
+                .expect("positioned box");
+            let grid_rect = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("grid fragment");
+            let positioned_rect = layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment");
+
+            assert_eq!(
+                (positioned_rect.x, positioned_rect.y),
+                (grid_rect.x + expected_x, grid_rect.y),
+                "{writing_mode} block-end alignment uses the grid content's physical end edge"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_static_self_alignment_uses_the_subject_writing_mode() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        let scenarios = [
+            (
+                "vertical grid, horizontal subject self-start",
+                "writing-mode: vertical-rl;",
+                "writing-mode: horizontal-tb; align-self: self-start;",
+                (0.0, 0.0),
+            ),
+            (
+                "vertical grid, horizontal subject self-end",
+                "writing-mode: vertical-rl;",
+                "writing-mode: horizontal-tb; align-self: self-end;",
+                (80.0, 0.0),
+            ),
+            (
+                "horizontal grid, vertical rtl subject self-start",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; direction: rtl; align-self: self-start;",
+                (0.0, 70.0),
+            ),
+            (
+                "horizontal grid, vertical rtl subject self-end",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; direction: rtl; align-self: self-end;",
+                (0.0, 0.0),
+            ),
+            (
+                "horizontal grid, vertical rl subject justify self-start",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; justify-self: self-start;",
+                (80.0, 0.0),
+            ),
+            (
+                "horizontal grid, vertical rl subject justify self-end",
+                "writing-mode: horizontal-tb;",
+                "writing-mode: vertical-rl; justify-self: self-end;",
+                (0.0, 0.0),
+            ),
+            (
+                "vertical grid, vertical rtl subject justify self-start",
+                "writing-mode: vertical-rl;",
+                "writing-mode: vertical-rl; direction: rtl; justify-self: self-start;",
+                (0.0, 70.0),
+            ),
+            (
+                "vertical grid, vertical rtl subject justify self-end",
+                "writing-mode: vertical-rl;",
+                "writing-mode: vertical-rl; direction: rtl; justify-self: self-end;",
+                (0.0, 0.0),
+            ),
+        ];
+
+        for (description, grid_writing_mode, subject_writing_mode, expected) in scenarios {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[&format!(
+                    "html, body, div {{ margin: 0; padding: 0; }} \
+                     #grid {{ position: relative; display: grid; {grid_writing_mode} \
+                             width: 100px; height: 80px; }} \
+                     #positioned {{ position: absolute; {subject_writing_mode} \
+                                   width: 20px; height: 10px; }}"
+                )]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+            let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+            let grid = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+                .expect("grid box");
+            let positioned = layout
+                .boxes()
+                .principal_box(
+                    node_by_id(&dom, dom.document(), "positioned").expect("positioned node"),
+                )
+                .expect("positioned box");
+            let grid_rect = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("grid fragment");
+            let positioned_rect = layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment");
+
+            assert_eq!(
+                (
+                    positioned_rect.x - grid_rect.x,
+                    positioned_rect.y - grid_rect.y
+                ),
+                expected,
+                "{description} aligns to the subject's corresponding start or end side",
+            );
+        }
+    }
+
+    #[test]
+    fn positioned_grid_area_transforms_from_flow_relative_tracks_to_physical_insets() {
+        let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
+        for (writing_mode, direction, expected) in [
+            ("vertical-rl", "ltr", (10.0, 25.0)),
+            ("vertical-lr", "ltr", (40.0, 25.0)),
+            ("vertical-rl", "rtl", (10.0, 5.0)),
+            ("vertical-lr", "rtl", (40.0, 5.0)),
+        ] {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[&format!(
+                    "html, body, div {{ margin: 0; padding: 0; }} \
+                     #grid {{ position: relative; display: grid; writing-mode: {writing_mode}; \
+                             direction: {direction}; width: 100px; height: 80px; \
+                             grid-template-columns: 20px 60px; grid-template-rows: 30px 70px; }} \
+                     #positioned {{ position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                                   left: 10px; right: 20px; top: 5px; bottom: 15px; \
+                                   width: 40px; height: 40px; }}"
+                )]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+            let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+            let grid = layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+                .expect("grid box");
+            let positioned = layout
+                .boxes()
+                .principal_box(
+                    node_by_id(&dom, dom.document(), "positioned").expect("positioned node"),
+                )
+                .expect("positioned box");
+            let grid_rect = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("grid fragment");
+            let positioned_rect = layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment");
+            let static_position = layout
+                .fragments()
+                .static_position_for_box(positioned)
+                .expect("grid static position");
+
+            assert_eq!(
+                static_position.containing_block_area,
+                Some(LogicalRect {
+                    inline_start: 20.0,
+                    block_start: 30.0,
+                    inline_size: 60.0,
+                    block_size: 70.0,
+                }),
+                "{writing_mode} {direction}: the finalized area is stored in the grid's logical coordinates",
+            );
+            assert_eq!(
+                (
+                    positioned_rect.x - grid_rect.x,
+                    positioned_rect.y - grid_rect.y,
+                    positioned_rect.width,
+                    positioned_rect.height,
+                ),
+                (expected.0, expected.1, 40.0, 40.0),
+                "{writing_mode} {direction}: physical insets resolve inside the transformed grid area",
+            );
+        }
+    }
+
+    #[test]
+    fn positioned_child_uses_the_positioned_ancestor_padding_box() {
+        let dom = StaticDocument::parse("<div id=containing><div id=positioned></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 100px; height: 100px; \
+                               border-style: solid; border-top-width: 5px; \
+                               border-right-width: 10px; border-bottom-width: 15px; \
+                               border-left-width: 20px; } \
+                 #positioned { position: absolute; width: 100%; height: 100%; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let rect_for = |box_id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_id)
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("fragment")
+        };
+
+        let containing = rect_for(box_for("containing"));
+        let positioned = rect_for(box_for("positioned"));
+        assert_eq!((containing.width, containing.height), (130.0, 120.0));
+        assert_eq!(
+            (
+                positioned.x,
+                positioned.y,
+                positioned.width,
+                positioned.height
+            ),
+            (20.0, 5.0, 100.0, 100.0),
+            "percentage sizes and auto insets resolve against the padding box"
+        );
+    }
+
+    #[test]
+    fn positioned_child_of_a_split_inline_uses_first_and_last_content_edges() {
+        let dom = StaticDocument::parse(
+            "<div id=host><span id=containing>one two three four five six <span id=start></span><span id=end></span></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { width: 70px; font-size: 10px; line-height: 10px; } \
+                 #containing { display: inline; position: relative; padding: 3px 7px 11px 13px; border: 2px solid; } \
+                 #start, #end { position: absolute; width: 1px; height: 1px; } \
+                 #start { top: 0; left: 0; } #end { right: 0; bottom: 0; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let containing_fragments = layout
+            .fragments()
+            .fragments_for_box(box_for("containing"))
+            .map(TreeFragment::physical_rect)
+            .collect::<Vec<_>>();
+        let positioned = |id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_for(id))
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment")
+        };
+        assert!(
+            containing_fragments.len() >= 2,
+            "the positioned inline must fragment across multiple lines: {containing_fragments:?}"
+        );
+        let first = containing_fragments.first().expect("first fragment");
+        let last = containing_fragments.last().expect("last fragment");
+        assert_eq!(
+            positioned("start"),
+            PhysicalRect {
+                x: first.x + 15.0,
+                y: first.y + 5.0,
+                width: 1.0,
+                height: 1.0,
+            }
+        );
+        assert_eq!(
+            positioned("end"),
+            PhysicalRect {
+                x: last.x + last.width - 10.0,
+                y: last.y + last.height - 14.0,
+                width: 1.0,
+                height: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn positioned_child_of_inline_split_by_a_block_uses_all_continuations() {
+        let dom = StaticDocument::parse(
+            "<div id=container><div id=before></div>B<span id=containing><div id=split></div>AA<span id=positioned></span></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #container { font-size: 20px; line-height: 20px; width: 100px; height: 100px; } \
+                 #before { height: 60px; } #split { height: 0; } \
+                 #containing { display: inline; position: relative; } \
+                 #positioned { position: absolute; left: 0; top: -60px; width: 100px; height: 100px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let first_containing_fragment = layout
+            .fragments()
+            .fragments_for_box(box_for("containing"))
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("first containing fragment");
+        let positioned = box_for("positioned");
+        assert_eq!(
+            layout
+                .boxes()
+                .boxes_for_node(node_by_id(&dom, dom.document(), "containing").expect("containing"))
+                .len(),
+            2,
+            "the in-flow block produces a generated inline continuation"
+        );
+        assert_eq!(
+            layout
+                .fragments()
+                .fragments_for_box(positioned)
+                .next()
+                .map(TreeFragment::physical_rect),
+            Some(PhysicalRect {
+                x: first_containing_fragment.x,
+                y: first_containing_fragment.y - 60.0,
+                width: 100.0,
+                height: 100.0,
+            }),
+            "the -60px top inset resolves from the first continuation, not the child-owning continuation"
+        );
+    }
+
+    #[test]
+    fn absolute_siblings_in_one_inline_keep_an_empty_first_fragment() {
+        let dom = StaticDocument::parse(
+            "<div id=container><span id=prefix>BBBBBB</span> <span id=containing><div id=first></div>AA A AA AAAA<div id=second></div></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #container { font-size: 20px; line-height: 20px; width: 100px; height: 100px; } \
+                 #containing { display: inline; position: relative; } \
+                 #first, #second { position: absolute; top: 0; width: 50px; height: 100px; } \
+                 #first { left: -30px; } #second { left: -80px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let box_for = |id| {
+            layout
+                .boxes()
+                .principal_box(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("principal box")
+        };
+        let rect_for = |id| {
+            layout
+                .fragments()
+                .fragments_for_box(box_for(id))
+                .next()
+                .map(TreeFragment::physical_rect)
+                .expect("positioned fragment")
+        };
+        let prefix = layout
+            .fragments()
+            .fragments_for_box(box_for("prefix"))
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("prefix fragment");
+        let containing_fragments = layout
+            .fragments()
+            .fragments_for_box(box_for("containing"))
+            .map(TreeFragment::physical_rect)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rect_for("first"),
+            PhysicalRect {
+                x: prefix.x + prefix.width - 30.0,
+                y: prefix.y,
+                width: 50.0,
+                height: 100.0,
+            },
+            "prefix={prefix:?}, containing={containing_fragments:?}"
+        );
+        assert_eq!(
+            rect_for("second"),
+            PhysicalRect {
+                x: prefix.x + prefix.width - 80.0,
+                y: prefix.y,
+                width: 50.0,
+                height: 100.0,
+            }
+        );
+    }
+
+    #[test]
+    fn positioned_hit_test_respects_stacking_level_and_ancestor_clip() {
+        let dom = StaticDocument::parse(
+            "<div id=host><div id=behind></div><div id=normal></div><div id=front></div></div>\
+             <div id=clip><div id=overlay></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { position: relative; width: 100px; height: 100px; } \
+                 #behind, #front { position: absolute; left: 0; top: 0; width: 80px; height: 80px; } \
+                 #behind { z-index: -1; } #normal { width: 80px; height: 80px; } \
+                 #front { z-index: 1; } \
+                 #clip { position: relative; width: 50px; height: 50px; overflow: hidden; } \
+                 #overlay { position: absolute; left: 0; top: 0; width: 100px; height: 100px; z-index: 1; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let node = |id| node_by_id(&dom, dom.document(), id).expect(id);
+
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node("front"))
+        );
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 110.0),
+            Some(node("overlay"))
+        );
+        assert_ne!(
+            hit_test(&dom, &styles, &layout, 75.0, 110.0),
+            Some(node("overlay"))
+        );
+    }
+
+    #[test]
+    fn static_block_z_index_keeps_normal_hit_order() {
+        let dom =
+            StaticDocument::parse("<div id=host><div id=front></div><div id=normal></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #host { width: 80px; height: 80px; } \
+                 #front { width: 80px; height: 80px; margin-bottom: -80px; z-index: 1; } \
+                 #normal { width: 80px; height: 80px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node_by_id(&dom, dom.document(), "normal").expect("normal node")),
+            "a static block's numeric z-index does not outrank later normal content",
+        );
+    }
+
+    #[test]
+    fn grid_item_order_changes_the_topmost_hit_target() {
+        let dom =
+            StaticDocument::parse("<div id=grid><div id=later></div><div id=earlier></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #grid { display: grid; width: 80px; height: 80px; \
+                         grid-template-columns: 80px; grid-template-rows: 80px; } \
+                 #later, #earlier { grid-area: 1 / 1 / 2 / 2; width: 80px; height: 80px; } \
+                 #later { order: 1; } #earlier { order: -1; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node_by_id(&dom, dom.document(), "later").expect("later node")),
+            "the item painted last in order-modified order receives the hit",
+        );
+    }
+
+    #[test]
+    fn fixed_position_uses_a_transform_fixed_containing_block() {
+        let dom = StaticDocument::parse("<div id=trigger><div id=fixed>item</div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#trigger { transform: translateX(0px); margin-left: 40px; margin-top: 20px; \
+                 width: 120px; height: 60px; } \
+                 #fixed { position: fixed; left: 17px; top: 9px; width: 30px; height: 10px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let trigger = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "trigger").expect("trigger"))
+            .expect("trigger box");
+        let fixed = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "fixed").expect("fixed"))
+            .expect("fixed box");
+        let trigger_fragment = layout
+            .fragments()
+            .fragments_for_box(trigger)
+            .next()
+            .expect("trigger fragment");
+        let fixed_fragment = layout
+            .fragments()
+            .fragments_for_box(fixed)
+            .next()
+            .expect("fixed fragment");
+
+        assert_eq!(
+            (fixed_fragment.x, fixed_fragment.y),
+            (trigger_fragment.x + 17.0, trigger_fragment.y + 9.0),
+        );
+        assert_eq!(
+            fixed_fragment.containing_fragment(),
+            layout
+                .fragments()
+                .fragment_ids_for_box(trigger)
+                .first()
+                .copied(),
+        );
+    }
+
+    #[test]
+    fn absolute_position_converts_between_vertical_static_and_containing_flows() {
+        let dom = StaticDocument::parse("<div id=container><div id=positioned>item</div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#container { position: relative; writing-mode: vertical-rl; \
+                 width: 120px; height: 100px; } \
+                 #positioned { position: absolute; left: 13px; top: 8px; \
+                 width: 20px; height: 30px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let container = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "container").expect("container"))
+            .expect("container box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned"))
+            .expect("positioned box");
+        let container_fragment = layout
+            .fragments()
+            .fragments_for_box(container)
+            .next()
+            .expect("container fragment");
+        let positioned_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .expect("positioned fragment");
+
+        assert_eq!(
+            (positioned_fragment.x, positioned_fragment.y),
+            (container_fragment.x + 13.0, container_fragment.y + 8.0),
+            "physical insets retain their sides while K5d changes coordinate systems",
+        );
+        assert_eq!(
+            positioned_fragment.containing_fragment(),
+            layout
+                .fragments()
+                .fragment_ids_for_box(container)
+                .first()
+                .copied(),
+        );
+    }
+
+    #[test]
     fn relative_table_parts_move_their_retained_fragment_subtree() {
         let dom = StaticDocument::parse(
             "<table id=table><tbody id=group><tr id=row><td id=cell>one</td></tr></tbody></table>",
@@ -5055,13 +9098,13 @@ mod tests {
     }
 
     #[test]
-    fn absolute_table_geometry_is_a_named_k5_gap_without_backend_dispatch() {
+    fn absolute_table_root_uses_shared_k5d_wrapper_geometry() {
         let dom =
             StaticDocument::parse("<table id=table><tbody><tr><td>one</td></tr></tbody></table>");
         let styles = resolve_styles(
             &dom,
             &StyleSet::cambium(&[
-                "table { display: table; position: absolute; border-spacing: 0; } \
+                "table { display: table; position: absolute; left: 31px; top: 14px; border-spacing: 0; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 40px; height: 20px; }",
             ]),
@@ -5072,20 +9115,300 @@ mod tests {
         let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
         let table = node_by_id(&dom, dom.document(), "table").expect("table");
         let table_box = layout.boxes().principal_box(table).expect("table grid");
+        let positioned_wrapper = layout
+            .boxes()
+            .boxes_for_node(table)
+            .iter()
+            .copied()
+            .find(|box_id| layout.boxes()[*box_id].positioning == PositioningScheme::Absolute)
+            .expect("the table wrapper carries the table root's positioning");
+        let wrapper_fragment = layout
+            .fragments()
+            .fragments_for_box(positioned_wrapper)
+            .next()
+            .expect("positioned wrapper fragment");
+        assert_eq!((wrapper_fragment.x, wrapper_fragment.y), (31.0, 14.0));
         let ledger = layout.table_shadow_ledger();
         assert!(
-            ledger
+            !ledger
                 .positioning_gaps
                 .contains(&crate::table_shadow::TablePositioningGapRecord {
                     table: table_box,
                     part: table_box,
                     gap: crate::table_shadow::TablePositioningGap::Absolute,
                 }),
-            "absolute table positioning must remain a named K5 gap: {ledger:?}"
+            "the shared wrapper route replaces the root-only table positioning gap: {ledger:?}"
         );
         assert_eq!(
             ledger.block.laid_out, 1,
             "the table stays on Buckram: {ledger:?}"
+        );
+    }
+
+    #[test]
+    fn absolute_table_caption_uses_shared_k5d_wrapper_geometry() {
+        let dom = StaticDocument::parse(
+            "<table id=table><caption id=caption>caption</caption><tbody><tr><td>cell</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   caption { display: table-caption; position: absolute; left: 31px; top: 14px; width: 240px; height: 20px; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }"#,
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let caption = node_by_id(&dom, dom.document(), "caption").expect("caption");
+        let table_grid = layout.boxes().principal_box(table).expect("table grid");
+        let wrapper = layout.boxes()[table_grid].parent().expect("table wrapper");
+        let caption_box = layout.boxes().principal_box(caption).expect("caption box");
+        assert_eq!(
+            layout.boxes()[caption_box].positioning,
+            PositioningScheme::Absolute,
+        );
+        let wrapper_fragment = layout
+            .fragments()
+            .fragments_for_box(wrapper)
+            .next()
+            .expect("wrapper fragment");
+        let grid_fragment = layout
+            .fragments()
+            .fragments_for_box(table_grid)
+            .next()
+            .expect("grid fragment");
+        let caption_fragment = layout
+            .fragments()
+            .fragments_for_box(caption_box)
+            .next()
+            .expect("caption fragment");
+        let caption_static = layout
+            .fragments()
+            .static_position_for_box(caption_box)
+            .expect("caption static-position record");
+
+        assert_eq!(
+            (caption_fragment.x, caption_fragment.y),
+            (wrapper_fragment.x + 31.0, wrapper_fragment.y + 14.0),
+            "the caption uses the wrapper containing block rather than table tracks",
+        );
+        assert_eq!(
+            wrapper_fragment.width, grid_fragment.width,
+            "the out-of-flow caption must not widen the table wrapper",
+        );
+        // The cell's 80px content width plus its initial 1px inline borders;
+        // the 240px out-of-flow caption does not participate in this width.
+        assert_eq!(grid_fragment.width, 82.0);
+        assert_eq!(caption_fragment.width, 240.0);
+        assert_eq!(
+            caption_static.containing_block,
+            ContainingBlock::Box(wrapper)
+        );
+        assert_eq!(
+            caption_fragment.containing_fragment(),
+            layout
+                .fragments()
+                .fragment_ids_for_box(wrapper)
+                .first()
+                .copied(),
+        );
+        assert_eq!(layout.table_shadow_ledger().block.laid_out, 1);
+    }
+
+    #[test]
+    fn fixed_table_caption_uses_shared_k5d_initial_geometry() {
+        let dom = StaticDocument::parse(
+            "<table id=table><caption id=caption>caption</caption><tbody><tr><td>cell</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   caption { display: table-caption; position: fixed; left: 31px; top: 14px; width: 240px; height: 20px; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }"#,
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let table = node_by_id(&dom, dom.document(), "table").expect("table");
+        let caption = node_by_id(&dom, dom.document(), "caption").expect("caption");
+        let table_grid = layout.boxes().principal_box(table).expect("table grid");
+        let wrapper = layout.boxes()[table_grid].parent().expect("table wrapper");
+        let caption_box = layout.boxes().principal_box(caption).expect("caption box");
+        let wrapper_fragment = layout
+            .fragments()
+            .fragments_for_box(wrapper)
+            .next()
+            .expect("wrapper fragment");
+        let grid_fragment = layout
+            .fragments()
+            .fragments_for_box(table_grid)
+            .next()
+            .expect("grid fragment");
+        let caption_fragment = layout
+            .fragments()
+            .fragments_for_box(caption_box)
+            .next()
+            .expect("caption fragment");
+        let caption_static = layout
+            .fragments()
+            .static_position_for_box(caption_box)
+            .expect("caption static-position record");
+
+        assert_eq!(
+            layout.boxes()[caption_box].positioning,
+            PositioningScheme::Fixed,
+        );
+        assert_eq!((caption_fragment.x, caption_fragment.y), (31.0, 14.0));
+        assert_eq!(
+            wrapper_fragment.width, grid_fragment.width,
+            "the out-of-flow caption must not widen the table wrapper",
+        );
+        // The cell's 80px content width plus its initial 1px inline borders;
+        // the 240px out-of-flow caption does not participate in this width.
+        assert_eq!(grid_fragment.width, 82.0);
+        assert_eq!(caption_static.containing_block, ContainingBlock::Initial);
+        assert_eq!(caption_fragment.containing_fragment(), None);
+        assert_eq!(layout.table_shadow_ledger().block.laid_out, 1);
+    }
+
+    #[test]
+    fn absolute_table_track_parts_use_zero_track_static_anchors() {
+        let dom = StaticDocument::parse(
+            "<table id=cell-table><tbody><tr><td>flow</td><td id=cell>cell</td></tr></tbody></table>\
+             <table id=row-table><tbody><tr><td>flow</td></tr><tr id=row><td>row</td></tr></tbody></table>\
+             <table id=group-table><tbody><tr><td>flow</td></tr></tbody><tbody id=group><tr><td>group</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }
+                   #cell, #row, #group { position: absolute; left: 31px; top: 14px; width: 240px; height: 20px; }"#,
+            ]),
+            &Device::screen(640.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 640.0, 240.0).expect("layout");
+        for (table_id, part_id) in [
+            ("cell-table", "cell"),
+            ("row-table", "row"),
+            ("group-table", "group"),
+        ] {
+            let table = node_by_id(&dom, dom.document(), table_id).expect("table");
+            let part = node_by_id(&dom, dom.document(), part_id).expect("detached table part");
+            let grid = layout.boxes().principal_box(table).expect("table grid");
+            let wrapper = layout.boxes()[grid].parent().expect("table wrapper");
+            let part_box = layout.boxes().principal_box(part).expect("part box");
+            let wrapper_fragment = layout
+                .fragments()
+                .fragments_for_box(wrapper)
+                .next()
+                .expect("wrapper fragment");
+            let grid_fragment = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .expect("grid fragment");
+            let part_fragment = layout
+                .fragments()
+                .fragments_for_box(part_box)
+                .next()
+                .expect("detached part fragment");
+            let static_position = layout
+                .fragments()
+                .static_position_for_box(part_box)
+                .expect("zero-track static position");
+
+            assert_eq!(
+                (part_fragment.x, part_fragment.y),
+                (wrapper_fragment.x + 31.0, wrapper_fragment.y + 14.0),
+                "{part_id} resolves through the wrapper containing block",
+            );
+            assert_eq!(
+                grid_fragment.width, 82.0,
+                "{part_id} does not widen the grid"
+            );
+            assert_eq!(static_position.logical_rect, LogicalRect::default());
+        }
+        assert!(
+            layout.table_shadow_ledger().positioning_gaps.is_empty(),
+            "post-track parts must not retain a K5 positioning gap: {:?}",
+            layout.table_shadow_ledger(),
+        );
+    }
+
+    #[test]
+    fn fixed_table_track_parts_use_zero_track_static_anchors() {
+        let dom = StaticDocument::parse(
+            "<table id=cell-table><tbody><tr><td>flow</td><td id=cell>cell</td></tr></tbody></table>\
+             <table id=row-table><tbody><tr><td>flow</td></tr><tr id=row><td>row</td></tr></tbody></table>\
+             <table id=group-table><tbody><tr><td>flow</td></tr></tbody><tbody id=group><tr><td>group</td></tr></tbody></table>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                r#"table { display: table; position: relative; border-spacing: 0; }
+                   tbody { display: table-row-group; } tr { display: table-row; }
+                   td { display: table-cell; width: 80px; height: 20px; }
+                   #cell, #row, #group { position: fixed; left: 31px; top: 14px; width: 240px; height: 20px; }"#,
+            ]),
+            &Device::screen(640.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 640.0, 240.0).expect("layout");
+        for (table_id, part_id) in [
+            ("cell-table", "cell"),
+            ("row-table", "row"),
+            ("group-table", "group"),
+        ] {
+            let table = node_by_id(&dom, dom.document(), table_id).expect("table");
+            let part = node_by_id(&dom, dom.document(), part_id).expect("detached table part");
+            let grid = layout.boxes().principal_box(table).expect("table grid");
+            let part_box = layout.boxes().principal_box(part).expect("part box");
+            let grid_fragment = layout
+                .fragments()
+                .fragments_for_box(grid)
+                .next()
+                .expect("grid fragment");
+            let part_fragment = layout
+                .fragments()
+                .fragments_for_box(part_box)
+                .next()
+                .expect("detached part fragment");
+            let static_position = layout
+                .fragments()
+                .static_position_for_box(part_box)
+                .expect("zero-track static position");
+
+            assert_eq!(
+                (part_fragment.x, part_fragment.y),
+                (31.0, 14.0),
+                "{part_id} resolves against the initial containing block",
+            );
+            assert_eq!(
+                grid_fragment.width, 82.0,
+                "{part_id} does not widen the grid"
+            );
+            assert_eq!(static_position.logical_rect, LogicalRect::default());
+            assert_eq!(static_position.containing_block, ContainingBlock::Initial);
+            assert_eq!(part_fragment.containing_fragment(), None);
+        }
+        assert!(
+            layout.table_shadow_ledger().positioning_gaps.is_empty(),
+            "post-track parts must not retain a K5 positioning gap: {:?}",
+            layout.table_shadow_ledger(),
         );
     }
 
@@ -7300,6 +11623,55 @@ mod tests {
 
         let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
         assert_eq!((canvas.width, canvas.height), (100.0, 100.0));
+    }
+
+    #[test]
+    fn positioned_replaced_leaf_keeps_its_hint_size_between_definite_insets() {
+        fn find_by_name(
+            dom: &StaticDocument,
+            node: <StaticDocument as LayoutDom>::NodeId,
+            name: &str,
+        ) -> Option<<StaticDocument as LayoutDom>::NodeId> {
+            if dom
+                .element_name(node)
+                .is_some_and(|element| element.local.as_ref() == name)
+            {
+                return Some(node);
+            }
+            dom.dom_children(node)
+                .find_map(|child| find_by_name(dom, child, name))
+        }
+
+        let dom = StaticDocument::parse(
+            "<html><body><div><canvas width=\"80\" height=\"40\"></canvas></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body { margin: 0; } div { position: relative; width: 200px; } \
+                 canvas { position: absolute; left: 10px; right: 20px; top: 5px; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+
+        let canvas = find_by_name(&dom, dom.document(), "canvas").expect("canvas");
+        let canvas = layout.get(canvas).expect("canvas fragment").physical_rect();
+        assert_eq!(
+            (canvas.x, canvas.y, canvas.width, canvas.height),
+            (10.0, 5.0, 80.0, 40.0)
+        );
     }
 
     #[test]

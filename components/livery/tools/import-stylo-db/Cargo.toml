@@ -5,14 +5,15 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
-# Maintainer-side harvest tool (H0 of the stylo-harvest plan): reads the
-# stylo fork's property database TOMLs and rewrites the generated
+# Maintainer-side harvest tool (H0 of the stylo-harvest plan): reads an
+# upstream Servo Stylo property database and rewrites the generated
 # unimplemented-property section of livery's properties.toml, plus the
 # PROPERTY_SPACE.md census. Standalone workspace on the netrender_smoke
-# pattern; never part of the genet build graph. Re-run after each fork
-# realignment:
+# pattern; never part of the genet build graph. The checkout is an explicit
+# input and need not be Genet's frozen oracle. Re-run when refreshing the
+# catalog from upstream:
 #
-#   cargo run -- --stylo-properties <stylo>/style/properties --source-rev <sha>
+#   cargo run -- --stylo-properties <stylo>/style/properties --source-label servo/stylo --source-rev <sha>
 
 [workspace]
 

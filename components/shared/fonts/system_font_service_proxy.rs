@@ -22,6 +22,7 @@ use crate::{FontDescriptor, FontIdentifier, FontTemplate, FontTemplateRef};
 pub enum SystemFontServiceMessage {
     GetFontTemplates(
         Option<FontDescriptor>,
+        #[ignore_malloc_size_of = "Stylo owns font-family memory accounting"]
         SingleFontFamily,
         GenericSender<Vec<FontTemplate>>,
     ),
@@ -56,6 +57,7 @@ impl SystemFontServiceProxySender {
 #[derive(Debug, Eq, Hash, MallocSizeOf, PartialEq)]
 struct FontTemplateCacheKey {
     font_descriptor: Option<FontDescriptor>,
+    #[ignore_malloc_size_of = "Stylo owns font-family memory accounting"]
     family_descriptor: SingleFontFamily,
 }
 

@@ -7,11 +7,11 @@
 use std::{marker::PhantomData, slice};
 
 use taffy::{
-    BlockContext, Cache, CacheTree, Layout, LayoutBlockContainer, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, RoundTree, RunMode,
-    SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
-    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
-    compute_leaf_layout, compute_root_layout, round_layout,
+    BlockContext, Cache, CacheTree, DetailedGridInfo, Layout, LayoutBlockContainer,
+    LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree,
+    NodeId, RoundTree, RunMode, SizingMode, Style, TraversePartialTree, TraverseTree,
+    compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
+    compute_hidden_layout, compute_leaf_layout, compute_root_layout, round_layout,
 };
 
 use crate::block::FloatContextState;
@@ -19,8 +19,8 @@ use crate::{
     Baselines, BlockBoxSizing, BlockContainingBlock, BlockDeferral, BlockFormattingContext,
     BlockMarginState, BlockSizeValue, BlockStyle, ClearSide, CollapsedMargin, FloatLineConstraints,
     FloatSide, FlowAxes, FlowLength, FlowLengthAuto, IntrinsicSizeKind, IntrinsicSizes,
-    LogicalRect, LogicalSides, LogicalSize, PhysicalSides, PhysicalSize, solve_float_inline_size,
-    solve_in_flow_inline_size, solve_shrink_to_fit_inline_size,
+    LogicalRect, LogicalSides, LogicalSize, PhysicalRect, PhysicalSides, PhysicalSize,
+    solve_float_inline_size, solve_in_flow_inline_size, solve_shrink_to_fit_inline_size,
 };
 
 /// Formatting role selected by Buckram before entering a backend algorithm.
@@ -98,10 +98,15 @@ pub struct AlgorithmLayout {
 mod sealed {
     pub trait AlgorithmStyle {
         fn as_taffy_style(&self) -> &taffy::Style;
+        fn as_taffy_style_mut(&mut self) -> &mut taffy::Style;
     }
 
     impl AlgorithmStyle for taffy::Style {
         fn as_taffy_style(&self) -> &taffy::Style {
+            self
+        }
+
+        fn as_taffy_style_mut(&mut self) -> &mut taffy::Style {
             self
         }
     }
@@ -137,6 +142,7 @@ struct AlgorithmNode<S, Context, Source> {
     cache: Cache,
     unrounded_layout: Layout,
     final_layout: Layout,
+    grid_info: Option<DetailedGridInfo>,
     baselines: Baselines,
 }
 
@@ -243,6 +249,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
+            grid_info: None,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -301,6 +308,68 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
 
     pub fn style_mut(&mut self, id: AlgorithmNodeId) -> &mut S {
         &mut self.nodes[id.index()].style
+    }
+
+    /// Admit this direct flex/grid child to the renderer's static-position
+    /// provider. Buckram selects the narrow participation boundary and keeps
+    /// the resulting rectangle as the K5b formatter output; callers never
+    /// lower a CSS positioning role into the backend style themselves.
+    ///
+    /// The provider is deliberately unavailable outside a flex or grid
+    /// parent. Ordinary block, inline, and table-internal out-of-flow routes
+    /// have separate Buckram formatting boundaries.
+    pub fn enable_flex_grid_static_position_provider(&mut self, id: AlgorithmNodeId)
+    where
+        S: AlgorithmStyle,
+    {
+        let parent = self.nodes[id.index()]
+            .parent
+            .expect("a flex/grid static-position provider requires an attached direct child");
+        assert!(
+            matches!(
+                self.nodes[parent.index()].kind,
+                AlgorithmKind::Flex | AlgorithmKind::Grid
+            ),
+            "the static-position provider belongs only to a flex or grid parent"
+        );
+        assert!(
+            matches!(
+                self.nodes[id.index()].block_style.position,
+                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+            ),
+            "the static-position provider requires an absolute or fixed child"
+        );
+        sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[id.index()].style).position =
+            taffy::Position::Absolute;
+    }
+
+    /// Supply the resolved CSS inline size to a detached absolute/fixed
+    /// formatting root before its second formatting pass. The positioned
+    /// solver owns the value; this scratch-tree setter merely gives the local
+    /// formatter the same constraint without asking Taffy to select a
+    /// containing block or out-of-flow participation.
+    pub fn set_positioned_inline_size(&mut self, id: AlgorithmNodeId, size: f32) {
+        assert!(
+            size.is_finite() && size >= 0.0,
+            "a positioned formatting inline size must be finite and non-negative"
+        );
+        let style = &mut self.nodes[id.index()].block_style;
+        let size = BlockSizeValue::Length(FlowLength::px(size));
+        if style.flow.is_horizontal() {
+            style.size.width = size;
+        } else {
+            style.size.height = size;
+        }
+    }
+
+    /// Clear formatter state after a standards-owned used size changes a
+    /// detached formatting root. The next tree walk must visit that root and
+    /// its ancestors rather than reuse the pre-positioning layout cache.
+    pub fn clear_layout_cache(&mut self) {
+        for node in &mut self.nodes {
+            node.cache.clear();
+            node.intrinsic_inline_sizes = None;
+        }
     }
 
     /// Admit this direct measured leaf to Buckram's float-aware line lane.
@@ -407,14 +476,81 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         self.nodes[id.index()].intrinsic_shrink_to_fit_enabled
     }
 
+    /// Query admitted min-content and max-content widths for an out-of-flow
+    /// formatting root.
+    ///
+    /// The caller remains responsible for selecting the containing block and
+    /// resolving the positioned inset equation. This temporarily removes the
+    /// position deferral only for the intrinsic query, so a completed
+    /// normal-flow rectangle never becomes the browser-facing auto width.
+    pub fn positioned_intrinsic_inline_sizes<Measure>(
+        &mut self,
+        id: AlgorithmNodeId,
+        measure: Measure,
+    ) -> Option<IntrinsicSizes>
+    where
+        S: AlgorithmStyle,
+        Measure: FnMut(
+            AlgorithmSize<Option<f32>>,
+            AlgorithmSize<AlgorithmAvailableSpace>,
+            AlgorithmNodeId,
+            Option<&mut Context>,
+            Option<&FloatLineConstraints>,
+        ) -> AlgorithmSize<f32>,
+    {
+        if !matches!(
+            self.nodes[id.index()].kind,
+            AlgorithmKind::Block | AlgorithmKind::Leaf
+        ) || !matches!(
+            self.nodes[id.index()].block_style.position,
+            crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+        ) {
+            return None;
+        }
+
+        let original_style = self.nodes[id.index()].block_style;
+        self.nodes[id.index()].block_style.position = crate::BlockPosition::Static;
+        if !self.intrinsic_inline_subtree_is_admitted(id, true) {
+            self.nodes[id.index()].block_style = original_style;
+            return None;
+        }
+
+        let mut run = AlgorithmRun {
+            tree: self,
+            measure,
+            line_constraints: None,
+            nested_float_state: None,
+            resolved_shrink_to_fit: None,
+            marker: PhantomData,
+        };
+        let result = run.measure_intrinsic_inline_subtree(id).ok();
+        run.tree.nodes[id.index()].block_style = original_style;
+        result
+    }
+
     fn intrinsic_inline_subtree_is_admitted(&self, id: AlgorithmNodeId, is_root: bool) -> bool {
         let node = &self.nodes[id.index()];
         if !intrinsic_inline_style_is_admitted(node.block_style, is_root) {
             return false;
         }
+        // The generic leaf measurement callback and the flex/grid intrinsic
+        // query are still physical-width routes. Same-flow vertical block
+        // trees without measured leaves have complete logical inline inputs,
+        // so admit that narrower route without treating text or algorithms as
+        // vertically intrinsic-capable.
+        if !node.block_style.flow.is_horizontal()
+            && (matches!(node.kind, AlgorithmKind::Flex | AlgorithmKind::Grid)
+                || (matches!(node.kind, AlgorithmKind::Leaf) && node.context.is_some()))
+        {
+            return false;
+        }
         match node.kind {
             AlgorithmKind::Hidden => true,
-            AlgorithmKind::Leaf => node.context.is_some(),
+            // A context-free leaf represents an empty formatting root. Its
+            // min-content and max-content contributions are both zero, so it
+            // is safe to admit without asking a formatter callback to infer a
+            // normal-flow fallback rectangle.
+            AlgorithmKind::Leaf => true,
             AlgorithmKind::Block | AlgorithmKind::Flex | AlgorithmKind::Grid => node
                 .children
                 .iter()
@@ -441,6 +577,52 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             width: layout.size.width,
             height: layout.size.height,
         }
+    }
+
+    /// The formatting coordinate assigned before CSS positioning applies
+    /// insets. This carries a formatter output into Buckram's K5 positioning
+    /// pass; it does not expose backend node identity or parent selection.
+    pub fn static_layout(&self, id: AlgorithmNodeId) -> AlgorithmLayout {
+        let layout = self.nodes[id.index()].final_layout;
+        AlgorithmLayout {
+            x: layout.static_location.x,
+            y: layout.static_location.y,
+            width: layout.size.width,
+            height: layout.size.height,
+        }
+    }
+
+    /// The grid area Taffy finalized for this direct absolutely positioned
+    /// child before it applied the child's insets and self-alignment. Taffy
+    /// reports its grid-column and grid-row axes as horizontal X/Y; project
+    /// those track coordinates through the container flow before exposing the
+    /// physical rectangle that the K5 route consumes.
+    pub fn grid_positioned_area(&self, id: AlgorithmNodeId) -> Option<PhysicalRect> {
+        let parent = self.nodes[id.index()].parent?;
+        if self.nodes[parent.index()].kind != AlgorithmKind::Grid {
+            return None;
+        }
+        let area = self.nodes[parent.index()]
+            .grid_info
+            .as_ref()?
+            .positioned_items
+            .iter()
+            .find(|item| item.node == id.into_taffy())?
+            .grid_area;
+        let track_area = LogicalRect::from_horizontal_physical(PhysicalRect {
+            x: area.left,
+            y: area.top,
+            width: (area.right - area.left).max(0.0),
+            height: (area.bottom - area.top).max(0.0),
+        });
+        let container = &self.nodes[parent.index()];
+        Some(container.block_style.flow.physical_rect(
+            track_area,
+            PhysicalSize {
+                width: container.final_layout.size.width,
+                height: container.final_layout.size.height,
+            },
+        ))
     }
 
     /// The rectangle an algorithm wrote, before the backend's rounding pass.
@@ -821,6 +1003,7 @@ struct PendingBlockChildLayout {
     border: PhysicalSides<f32>,
     margin: PhysicalSides<f32>,
     logical_rect: LogicalRect,
+    static_position: bool,
 }
 
 impl<S, Context, Source, Measure> AlgorithmRun<'_, S, Context, Source, Measure>
@@ -879,6 +1062,12 @@ where
         for child in self.tree.nodes[node.index()].children.iter().copied() {
             let child_node = &self.tree.nodes[child.index()];
             let child_style = child_node.block_style;
+            if child_style.is_out_of_flow() {
+                // The parent preserves this child's static rectangle and
+                // formats it locally below. It does not participate in the
+                // normal-flow cursor or make the whole parent fall back.
+                continue;
+            }
             if let Some(deferral) = child_style.deferral() {
                 let admitted_shrink_to_fit = child_node.intrinsic_shrink_to_fit_enabled
                     && matches!(
@@ -1139,6 +1328,23 @@ where
         output
     }
 
+    /// Format one out-of-flow child in its own local coordinate space. The
+    /// caller owns its participation and static position, so its root may use
+    /// Buckram's ordinary block algorithm after temporarily removing only the
+    /// root's position deferral.
+    fn compute_out_of_flow_block_child(
+        &mut self,
+        child: AlgorithmNodeId,
+        input: BlockChildInput,
+    ) -> LayoutOutput {
+        let original_position = self.tree.nodes[child.index()].block_style.position;
+        self.tree.nodes[child.index()].block_style.position = crate::BlockPosition::Static;
+        self.clear_subtree_cache(child);
+        let output = self.compute_block_child(child, input, None, None);
+        self.tree.nodes[child.index()].block_style.position = original_position;
+        output
+    }
+
     fn measure_inline_intrinsic(
         &mut self,
         node: AlgorithmNodeId,
@@ -1173,6 +1379,9 @@ where
             // K4d6 supplies table intrinsics from the accepted K4c query
             // contract; nothing constructs the tag before then.
             AlgorithmKind::Hidden | AlgorithmKind::Table => {
+                IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
+            },
+            AlgorithmKind::Leaf if self.tree.nodes[node.index()].context.is_none() => {
                 IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
             },
             AlgorithmKind::Leaf => {
@@ -1565,6 +1774,54 @@ where
                     content_block.map_or(own_available.height, AlgorithmAvailableSpace::Definite),
                 ),
             };
+            if child_style.is_out_of_flow() {
+                let child_output = self.compute_out_of_flow_block_child(
+                    child,
+                    BlockChildInput {
+                        border_box_inline_size: None,
+                        ..default_child_input
+                    },
+                );
+                let child_size = PhysicalSize {
+                    width: child_output.size.width,
+                    height: child_output.size.height,
+                };
+                let child_margin_state = self.child_margin_state(
+                    child,
+                    child_style,
+                    child_size,
+                    content_inline,
+                    child_containing_block_size,
+                )?;
+                let static_logical_rect = LogicalRect {
+                    inline_start: inline.margin_start,
+                    block_start: formatting_context
+                        .hypothetical_in_flow_block_start(child_style, child_margin_state),
+                    inline_size: style.flow.logical_size(child_size).inline,
+                    block_size: style.flow.logical_size(child_size).block,
+                };
+                let child_padding = child_style.resolved_padding(content_inline);
+                let child_border = child_style.border;
+                let logical_margin = LogicalSides {
+                    inline_start: inline.margin_start,
+                    inline_end: inline.margin_end,
+                    block_start: 0.0,
+                    block_end: 0.0,
+                };
+                placed_children.push(PendingBlockChildLayout {
+                    child,
+                    order: order
+                        .try_into()
+                        .expect("block child order exceeded u32::MAX"),
+                    output: child_output,
+                    padding: child_padding,
+                    border: child_border,
+                    margin: style.flow.physical_sides(logical_margin),
+                    logical_rect: static_logical_rect,
+                    static_position: true,
+                });
+                continue;
+            }
             let mut child_output = if avoids_floats {
                 let mut measured_block_size = 0.0;
                 let attempts = formatting_context.float_exclusion_count() * 2 + 3;
@@ -1746,6 +2003,7 @@ where
                 border: child_border,
                 margin: child_margin,
                 logical_rect: placement.logical_rect,
+                static_position: false,
             });
         }
 
@@ -1812,6 +2070,9 @@ where
                 x: padding_border.left + rect.x,
                 y: padding_border.top + rect.y,
             };
+            if child.static_position {
+                child_layout.static_location = child_layout.location;
+            }
             child_layout.size = child.output.size;
             child_layout.scrollbar_size = taffy::Size::ZERO;
             child_layout.padding = to_taffy_rect(child.padding);
@@ -1925,7 +2186,6 @@ where
 
 fn intrinsic_inline_style_is_admitted(style: BlockStyle, is_root: bool) -> bool {
     if style.flow != style.containing_flow
-        || !style.flow.is_horizontal()
         || style.position != crate::BlockPosition::Static
         || style.replaced
         || style.aspect_ratio.is_some()
@@ -2249,6 +2509,26 @@ where
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
         self.style(child_node_id)
     }
+
+    fn grid_child_static_position_area(
+        &self,
+        _container_node_id: NodeId,
+        child_node_id: NodeId,
+        _grid_area: taffy::geometry::Rect<f32>,
+        content_box: taffy::geometry::Rect<f32>,
+    ) -> taffy::geometry::Rect<f32> {
+        let _ = child_node_id;
+        // CSS Grid §9.2 treats the direct absolute child as the sole grid item
+        // in an area formed by the grid container's content edges. Its
+        // grid-placement area still belongs to the positioned containing-block
+        // calculation, which is retained separately in `grid_positioned_area`.
+        content_box
+    }
+
+    fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
+        self.tree.nodes[AlgorithmNodeId::from_taffy(node_id).index()].grid_info =
+            Some(detailed_grid_info);
+    }
 }
 
 impl<S, Context, Source, Measure> RoundTree for AlgorithmRun<'_, S, Context, Source, Measure>
@@ -2266,7 +2546,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use taffy::prelude::{Dimension, Display, Style, fr, length};
+    use taffy::{
+        geometry::Rect,
+        prelude::{Dimension, Display, Position, Style, fr, length, line},
+        style::{AlignItems, JustifyContent},
+    };
 
     use super::*;
 
@@ -2332,6 +2616,396 @@ mod tests {
                 height: 20.0,
                 ..AlgorithmLayout::default()
             }
+        );
+    }
+
+    #[test]
+    fn buckram_block_parent_keeps_absolute_child_at_its_static_position() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                inset: Rect {
+                    left: length(40.0_f32),
+                    top: length(12.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Block,
+            Style {
+                display: Display::Block,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.layout(positioned).x, 0.0);
+        assert_eq!(tree.layout(positioned).y, 0.0);
+        assert_eq!(tree.static_layout(positioned).x, 0.0);
+        assert_eq!(tree.static_layout(positioned).y, 0.0);
+    }
+
+    #[test]
+    fn positioned_empty_leaf_has_zero_intrinsic_inline_contributions() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+
+        assert_eq!(
+            tree.positioned_intrinsic_inline_sizes(positioned, zero_measure),
+            IntrinsicSizes::new(0.0, 0.0),
+        );
+    }
+
+    #[test]
+    fn vertical_positioned_block_intrinsic_and_inline_size_follow_height() {
+        use crate::{Direction, WritingMode};
+
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let child = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: vertical,
+                size: crate::BlockDimensions::new(
+                    BlockSizeValue::Auto,
+                    BlockSizeValue::Length(FlowLength::px(20.0)),
+                ),
+                ..BlockStyle::default()
+            },
+            Style::default(),
+            &[],
+            2,
+        );
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: vertical,
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style::default(),
+            &[child],
+            1,
+        );
+
+        assert_eq!(
+            tree.positioned_intrinsic_inline_sizes(positioned, zero_measure),
+            IntrinsicSizes::new(20.0, 20.0),
+        );
+
+        tree.set_positioned_inline_size(positioned, 170.0);
+        assert_eq!(
+            tree.block_style(positioned).size.height,
+            BlockSizeValue::Length(FlowLength::px(170.0)),
+        );
+    }
+
+    #[test]
+    fn grid_static_layout_uses_content_box_before_insets() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                inset: Rect {
+                    left: length(18.0_f32),
+                    top: length(9.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                grid_row: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                grid_template_columns: vec![length(80.0_f32), length(120.0_f32)],
+                grid_template_rows: vec![length(40.0_f32), length(60.0_f32)],
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!(tree.layout(positioned).x, 98.0);
+        assert_eq!(tree.layout(positioned).y, 49.0);
+        assert_eq!(tree.static_layout(positioned).x, 0.0);
+        assert_eq!(tree.static_layout(positioned).y, 0.0);
+        assert_eq!(
+            tree.grid_positioned_area(positioned),
+            Some(PhysicalRect {
+                x: 80.0,
+                y: 40.0,
+                width: 120.0,
+                height: 60.0,
+            }),
+            "the grid area remains available to the positioned containing-block route"
+        );
+    }
+
+    #[test]
+    fn grid_positioned_area_keeps_the_final_explicit_track_rectangle() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                position: Position::Absolute,
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                grid_row: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(500.0),
+                    height: Dimension::length(250.0),
+                },
+                grid_template_columns: vec![length(200.0_f32), length(300.0_f32)],
+                grid_template_rows: vec![length(150.0_f32), length(100.0_f32)],
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+
+        tree.compute_layout_with_measure(root, available(500.0, 250.0), zero_measure);
+
+        assert_eq!(
+            tree.grid_positioned_area(positioned),
+            Some(PhysicalRect {
+                x: 200.0,
+                y: 150.0,
+                width: 300.0,
+                height: 100.0,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_positioned_area_projects_track_axes_through_container_flow() {
+        use crate::{Direction, WritingMode};
+
+        for (flow, expected) in [
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+                PhysicalRect {
+                    x: 0.0,
+                    y: 20.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Ltr),
+                PhysicalRect {
+                    x: 30.0,
+                    y: 20.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Rtl),
+                PhysicalRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Rtl),
+                PhysicalRect {
+                    x: 30.0,
+                    y: 0.0,
+                    width: 70.0,
+                    height: 60.0,
+                },
+            ),
+        ] {
+            let mut tree = AlgorithmTree::<Style, (), u8>::new();
+            let positioned = tree.new_with_children_and_block_style(
+                AlgorithmKind::Leaf,
+                BlockStyle {
+                    position: crate::BlockPosition::Absolute,
+                    ..BlockStyle::default()
+                },
+                Style {
+                    position: Position::Absolute,
+                    grid_column: taffy::Line {
+                        start: line(2),
+                        end: line(3),
+                    },
+                    grid_row: taffy::Line {
+                        start: line(2),
+                        end: line(3),
+                    },
+                    ..Style::default()
+                },
+                &[],
+                1,
+            );
+            let root = tree.new_with_children_and_block_style(
+                AlgorithmKind::Grid,
+                BlockStyle {
+                    flow,
+                    containing_flow: flow,
+                    establishes_bfc: true,
+                    ..BlockStyle::default()
+                },
+                Style {
+                    display: Display::Grid,
+                    size: taffy::Size {
+                        width: Dimension::length(100.0),
+                        height: Dimension::length(80.0),
+                    },
+                    grid_template_columns: vec![length(20.0_f32), length(60.0_f32)],
+                    grid_template_rows: vec![length(30.0_f32), length(70.0_f32)],
+                    ..Style::default()
+                },
+                &[positioned],
+                0,
+            );
+            tree.enable_flex_grid_static_position_provider(positioned);
+            tree.compute_layout_with_measure(root, available(100.0, 80.0), zero_measure);
+
+            assert_eq!(
+                tree.grid_positioned_area(positioned),
+                Some(expected),
+                "{flow:?}: track coordinates project through the grid flow"
+            );
+        }
+    }
+
+    #[test]
+    fn flex_static_layout_keeps_alignment_when_insets_place_the_item() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                inset: Rect {
+                    left: length(18.0_f32),
+                    top: length(9.0_f32),
+                    ..Rect::auto()
+                },
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Flex,
+            Style {
+                display: Display::Flex,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                justify_content: Some(JustifyContent::CENTER),
+                align_items: Some(AlignItems::END),
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        assert_eq!(
+            (tree.layout(positioned).x, tree.layout(positioned).y),
+            (18.0, 9.0)
+        );
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
+            (85.0, 80.0)
         );
     }
 

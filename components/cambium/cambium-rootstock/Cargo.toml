@@ -6,9 +6,9 @@ edition.workspace = true
 rust-version = "1.92"
 license = "MPL-2.0"
 repository = "https://github.com/merely-made/genet"
-# Same posture as cambium-genet-winit-host, which this is being carved out of:
-# it rides genet-layout, which inherits genet's publish = false. Consumers take
-# it from genet.git by branch.
+# Same posture as cambium-genet-winit-host, which this was carved out of: it
+# rides genet-livery and genet-render, which inherit genet's publish = false.
+# Consumers take it from genet.git by branch.
 publish = false
 
 [dependencies]
@@ -16,10 +16,10 @@ publish = false
 # runner. Named here so the conversion lives on this side of the seam rather
 # than in each event-source adapter.
 cambium = { version = "0.3.3", path = "../cambium" }
-# Retained layout is core host machinery, not an event-source concern, so its
-# vocabulary belongs on this side of the seam. Named now for `VisualMovement`
-# rather than growing a parallel caret enum that would drift from it.
-genet-layout = { path = "../../genet-layout" }
+# Retained Livery/Buckram layout and its visual caret vocabulary are core host
+# machinery, not an event-source concern.
+genet-livery = { path = "../../genet-livery" }
+genet-render = { path = "../../genet-render" }
 # The DOM the host lays out and routes against, and the leaf registry a
 # custom-paint leaf describes itself through. Both are host machinery, not
 # event-source concerns.

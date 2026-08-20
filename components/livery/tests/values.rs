@@ -188,6 +188,7 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<TransitionProperty>("color, opacity, background-color");
     assert_round_trip::<TransitionProperty>("opacity, border-left-color, border-right-color");
     assert_round_trip::<Alignment>("space-between");
+    assert_round_trip::<Alignment>("self-end");
     assert_round_trip::<FlexDirection>("column");
     assert_round_trip::<FlexFactor>("1.5");
     assert_round_trip::<FlexWrap>("wrap");
@@ -244,7 +245,6 @@ fn html_auto_aspect_ratio_retains_degenerate_operands_without_using_them() {
     assert_eq!(ratio.preferred_ratio(), None);
     assert!(ratio.uses_natural_ratio());
 }
-
 #[test]
 fn table_properties_parse_serialize_and_inherit() {
     let mut parent = ComputedValues::default();

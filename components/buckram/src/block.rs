@@ -5,8 +5,8 @@
 //! algorithm.
 
 use crate::{
-    FlowAxes, IntrinsicSizes, LogicalRect, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize,
-    WritingMode,
+    FlowAxes, IntrinsicSizes, LogicalOffset, LogicalRect, PhysicalRect, PhysicalSide,
+    PhysicalSides, PhysicalSize, WritingMode,
 };
 
 /// A linear used-value expression: an absolute component plus a percentage
@@ -160,6 +160,8 @@ pub struct BlockStyle {
     pub min_size: BlockDimensions<BlockSizeValue>,
     pub max_size: BlockDimensions<BlockSizeValue>,
     pub margin: PhysicalSides<FlowLengthAuto>,
+    /// Physical inset inputs retained until the relevant positioning phase.
+    pub inset: PhysicalSides<FlowLengthAuto>,
     pub padding: PhysicalSides<FlowLength>,
     pub border: PhysicalSides<f32>,
     pub box_sizing: BlockBoxSizing,
@@ -189,6 +191,7 @@ impl Default for BlockStyle {
             min_size: BlockDimensions::new(BlockSizeValue::Auto, BlockSizeValue::Auto),
             max_size: BlockDimensions::new(BlockSizeValue::None, BlockSizeValue::None),
             margin: PhysicalSides::splat(FlowLengthAuto::ZERO),
+            inset: PhysicalSides::splat(FlowLengthAuto::Auto),
             padding: PhysicalSides::splat(FlowLength::ZERO),
             border: PhysicalSides::splat(0.0),
             box_sizing: BlockBoxSizing::ContentBox,
@@ -216,9 +219,23 @@ impl BlockStyle {
         }
     }
 
+    /// Whether this box is excluded from its parent's normal-flow cursor.
+    /// Its contents still need a local formatting pass, but the parent must
+    /// retain the static-position rectangle rather than make a backend
+    /// `Position` value decide participation.
+    pub fn is_out_of_flow(self) -> bool {
+        matches!(
+            self.position,
+            BlockPosition::Absolute | BlockPosition::Fixed
+        )
+    }
+
     /// Name the first feature that requires a later owned algorithm.
     pub fn deferral(self) -> Option<BlockDeferral> {
-        if self.position != BlockPosition::Static {
+        if matches!(
+            self.position,
+            BlockPosition::Absolute | BlockPosition::Fixed | BlockPosition::Sticky
+        ) {
             return Some(BlockDeferral::Positioning);
         }
         if self.shrink_to_fit {
@@ -270,6 +287,31 @@ impl BlockStyle {
             self.margin
                 .map(|value| value.resolve(containing_inline_size)),
         )
+    }
+
+    /// Resolve relative positioning after normal-flow placement.
+    ///
+    /// The static flow rectangle remains unchanged; a specified start inset
+    /// wins over the opposing end inset, whose sign is reversed. Percentages
+    /// stay tied to the containing block's inline basis until this point.
+    pub fn relative_offset(self, containing_inline_size: f32) -> LogicalOffset {
+        if self.position != BlockPosition::Relative {
+            return LogicalOffset::default();
+        }
+        let inset = self.containing_flow.logical_sides(
+            self.inset
+                .map(|value| value.resolve(containing_inline_size)),
+        );
+        LogicalOffset {
+            inline: inset
+                .inline_start
+                .or_else(|| inset.inline_end.map(|value| -value))
+                .unwrap_or(0.0),
+            block: inset
+                .block_start
+                .or_else(|| inset.block_end.map(|value| -value))
+                .unwrap_or(0.0),
+        }
     }
 
     pub fn logical_padding_border(self, containing_inline_size: f32) -> crate::LogicalSides<f32> {
@@ -2307,5 +2349,36 @@ mod tests {
 
         assert_eq!(trailing_empty.used_block_size(), 60.0);
         assert!(!trailing_empty.active_margin_may_collapse_with_parent_end());
+    }
+
+    #[test]
+    fn relative_offsets_follow_logical_start_sides() {
+        let mut horizontal = BlockStyle {
+            position: BlockPosition::Relative,
+            ..BlockStyle::default()
+        };
+        horizontal.inset.left = FlowLengthAuto::Value(FlowLength::px(12.0));
+        horizontal.inset.bottom = FlowLengthAuto::Value(FlowLength::px(7.0));
+        assert_eq!(
+            horizontal.relative_offset(200.0),
+            LogicalOffset {
+                inline: 12.0,
+                block: -7.0,
+            }
+        );
+
+        let mut vertical = horizontal;
+        vertical.containing_flow =
+            FlowAxes::new(crate::WritingMode::VerticalRl, crate::Direction::Ltr);
+        vertical.inset = PhysicalSides::splat(FlowLengthAuto::Auto);
+        vertical.inset.top = FlowLengthAuto::Value(FlowLength::px(9.0));
+        vertical.inset.right = FlowLengthAuto::Value(FlowLength::px(5.0));
+        assert_eq!(
+            vertical.relative_offset(200.0),
+            LogicalOffset {
+                inline: 9.0,
+                block: 5.0,
+            }
+        );
     }
 }

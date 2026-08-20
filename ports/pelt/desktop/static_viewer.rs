@@ -4,8 +4,8 @@
 
 //! The on-screen static document viewer (`pelt --engine static <url>`).
 //!
-//! A thin winit shell over a [`LoadedDocument`](crate::document::LoadedDocument)
-//! presented through the shared [`SurfaceHost`](genet_winit_host::SurfaceHost):
+//! A thin winit shell over an engine-owned document session, presented through
+//! the shared [`SurfaceHost`](genet_winit_host::SurfaceHost):
 //! the second instance of the orrery-host pattern (a window-agnostic content lib
 //! plus a thin shell that maps winit events onto the content's semantic input and
 //! rasterizes + composites its scene per frame). The document is the content;
@@ -61,13 +61,41 @@ pub struct StaticViewerOutcome {
     pub size: (u32, u32),
 }
 
+/// Presentation-level keyboard scroll actions. Engine adapters translate this
+/// vocabulary at their boundary; the window shell does not own a layout engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ViewerScrollKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+#[cfg(feature = "incumbent")]
+pub(crate) fn incumbent_scroll_key(key: ViewerScrollKey) -> genet_layout::ScrollKey {
+    match key {
+        ViewerScrollKey::Up => genet_layout::ScrollKey::Up,
+        ViewerScrollKey::Down => genet_layout::ScrollKey::Down,
+        ViewerScrollKey::Left => genet_layout::ScrollKey::Left,
+        ViewerScrollKey::Right => genet_layout::ScrollKey::Right,
+        ViewerScrollKey::PageUp => genet_layout::ScrollKey::PageUp,
+        ViewerScrollKey::PageDown => genet_layout::ScrollKey::PageDown,
+        ViewerScrollKey::Home => genet_layout::ScrollKey::Home,
+        ViewerScrollKey::End => genet_layout::ScrollKey::End,
+    }
+}
+
 /// Turn a document title into the stable native-window title, falling back to
 /// the loaded URL's host.
 ///
 /// Gemini, gopher, finger and nex carry no title element, so without the
 /// fallback every capsule opens a window called plain "Pelt" -- indistinguishable
 /// in the taskbar from every other one.
-#[cfg(feature = "viewer")]
+#[cfg(feature = "present")]
 pub(crate) fn pelt_window_title(document_title: Option<&str>, url: Option<&str>) -> String {
     let named = document_title
         .map(str::trim)
@@ -82,7 +110,7 @@ pub(crate) fn pelt_window_title(document_title: Option<&str>, url: Option<&str>)
 /// Pelt's native window treatment, shared by all three headed profiles. The icon is
 /// intentionally generated here: it is a real taskbar/title-bar icon without adding a
 /// platform-specific asset pipeline to the reference host.
-#[cfg(feature = "viewer")]
+#[cfg(feature = "present")]
 pub(crate) fn pelt_window_attributes(
     title: impl Into<String>,
     width: u32,
@@ -156,7 +184,7 @@ mod dpi_tests {
     }
 }
 
-#[cfg(all(test, feature = "viewer"))]
+#[cfg(all(test, feature = "present"))]
 mod title_tests {
     use super::pelt_window_title;
 
@@ -401,9 +429,8 @@ pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     }
 }
 
-/// Run the opt-in Livery engine through its inker registry entry. The
-/// incumbent static viewer deliberately continues using its existing direct
-/// `LoadedDocument` route until its frozen receipts are re-blessed.
+/// Run the default Livery engine through its inker registry entry. The
+/// incumbent compatibility viewer keeps its direct `LoadedDocument` route.
 #[cfg(feature = "livery")]
 pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
     use genet_documents::LiverySessionEngine;
@@ -421,7 +448,7 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     let (width, height) = config.size.unwrap_or((800, 600));
     let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
     registry.register(Box::new(LiverySessionEngine::new(
-        crate::document::LocalFetcher,
+        genet_documents::LocalFetcher,
     )));
     let request = SessionSpawnRequest::new(&config.url).with_viewport(width, height);
     let session = registry
@@ -430,17 +457,13 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     run_headed_with(config, LiveryViewerContent { session })
 }
 
-/// Without the `viewer` feature there is no render / present stack, so a headed run
-/// cannot proceed. (The light contracts + smoke build excludes it.)
-#[cfg(not(feature = "viewer"))]
+/// The static compatibility route names the incumbent engine explicitly.
+#[cfg(not(feature = "incumbent"))]
 fn run_headed(_config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
-    Err(
-        "the static viewer needs the `viewer` feature (pelt's default build enables it)"
-            .to_string(),
-    )
+    Err("the static viewer needs the `incumbent` feature".to_string())
 }
 
-#[cfg(feature = "viewer")]
+#[cfg(feature = "incumbent")]
 fn run_headed(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
     // Load the document before opening a window, so a bad URL fails fast (and the
     // caller reports the error) rather than flashing an empty window.
@@ -471,15 +494,15 @@ impl windowed::ViewerContent for LiveryViewerContent {
         self.session.scroll_at(x, y, dx, dy)
     }
 
-    fn scroll_for_key(&mut self, key: genet_layout::ScrollKey) -> bool {
+    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
         let key = match key {
-            genet_layout::ScrollKey::Up => inker::SessionScrollKey::LineUp,
-            genet_layout::ScrollKey::Down => inker::SessionScrollKey::LineDown,
-            genet_layout::ScrollKey::PageUp => inker::SessionScrollKey::PageUp,
-            genet_layout::ScrollKey::PageDown => inker::SessionScrollKey::PageDown,
-            genet_layout::ScrollKey::Home => inker::SessionScrollKey::Home,
-            genet_layout::ScrollKey::End => inker::SessionScrollKey::End,
-            genet_layout::ScrollKey::Left | genet_layout::ScrollKey::Right => return false,
+            ViewerScrollKey::Up => inker::SessionScrollKey::LineUp,
+            ViewerScrollKey::Down => inker::SessionScrollKey::LineDown,
+            ViewerScrollKey::PageUp => inker::SessionScrollKey::PageUp,
+            ViewerScrollKey::PageDown => inker::SessionScrollKey::PageDown,
+            ViewerScrollKey::Home => inker::SessionScrollKey::Home,
+            ViewerScrollKey::End => inker::SessionScrollKey::End,
+            ViewerScrollKey::Left | ViewerScrollKey::Right => return false,
         };
         self.session.scroll_for_key(key)
     }
@@ -494,7 +517,7 @@ impl windowed::ViewerContent for LiveryViewerContent {
 /// scripted viewer ([`crate::scripted`]) are the two callers — same shell, different
 /// document. Kept generic (not a trait object) so each content type monomorphizes and
 /// the scripted profile can pick its JS engine at the call site.
-#[cfg(feature = "viewer")]
+#[cfg(feature = "present")]
 pub(crate) fn run_headed_with<C: windowed::ViewerContent + 'static>(
     config: StaticViewerConfig,
     content: C,
@@ -510,12 +533,11 @@ pub(crate) fn run_headed_with<C: windowed::ViewerContent + 'static>(
     Ok(app.outcome())
 }
 
-#[cfg(feature = "viewer")]
+#[cfg(feature = "present")]
 pub(crate) mod windowed {
     use std::sync::Arc;
     use std::time::Instant;
 
-    use genet_layout::ScrollKey;
     use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
     use netrender::external_texture::ExternalTexturePlacement;
     use netrender::{ColorLoad, NetrenderOptions, Scene};
@@ -525,7 +547,8 @@ pub(crate) mod windowed {
     use winit::keyboard::{Key, NamedKey};
     use winit::window::{Window, WindowId};
 
-    use super::{StaticViewerConfig, StaticViewerOutcome};
+    use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
+    #[cfg(feature = "incumbent")]
     use crate::document::LoadedDocument;
 
     /// A document the viewer can present: render at a size, scroll, click, and (for
@@ -553,7 +576,7 @@ pub(crate) mod windowed {
             self.scroll_by(dx, dy)
         }
         /// Apply a keyboard scroll default; return whether the offset moved.
-        fn scroll_for_key(&mut self, key: ScrollKey) -> bool;
+        fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool;
         /// Handle a left click at a scene point; return whether the document scrolled.
         fn click_at(&mut self, x: f32, y: f32) -> bool;
         /// Advance time-based work (script timers + GC) to `now_ms`; return whether
@@ -564,6 +587,7 @@ pub(crate) mod windowed {
         }
     }
 
+    #[cfg(feature = "incumbent")]
     impl ViewerContent for LoadedDocument {
         fn title(&self) -> Option<String> {
             LoadedDocument::inspect(self).title
@@ -578,7 +602,8 @@ pub(crate) mod windowed {
         fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
             LoadedDocument::scroll_at(self, x, y, dx, dy)
         }
-        fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
+        fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
+            let key = super::incumbent_scroll_key(key);
             LoadedDocument::scroll_for_key(self, key)
         }
         fn click_at(&mut self, x: f32, y: f32) -> bool {
@@ -592,25 +617,25 @@ pub(crate) mod windowed {
         }
     }
 
-    /// Map a winit key (with the shift state) to a [`ScrollKey`] default action, or
+    /// Map a winit key (with the shift state) to a [`ViewerScrollKey`] default action, or
     /// `None` for keys that do not scroll. `Space` / `Shift+Space` are
     /// `PageDown` / `PageUp` (scope doc rule 5's key list). Pelt-inline for now; this
     /// lifts to `genet-winit-host` when meerkat shares the decode.
-    fn scroll_key_from_winit(key: &Key, shift: bool) -> Option<ScrollKey> {
+    fn scroll_key_from_winit(key: &Key, shift: bool) -> Option<ViewerScrollKey> {
         Some(match key {
-            Key::Named(NamedKey::ArrowUp) => ScrollKey::Up,
-            Key::Named(NamedKey::ArrowDown) => ScrollKey::Down,
-            Key::Named(NamedKey::ArrowLeft) => ScrollKey::Left,
-            Key::Named(NamedKey::ArrowRight) => ScrollKey::Right,
-            Key::Named(NamedKey::PageUp) => ScrollKey::PageUp,
-            Key::Named(NamedKey::PageDown) => ScrollKey::PageDown,
-            Key::Named(NamedKey::Home) => ScrollKey::Home,
-            Key::Named(NamedKey::End) => ScrollKey::End,
+            Key::Named(NamedKey::ArrowUp) => ViewerScrollKey::Up,
+            Key::Named(NamedKey::ArrowDown) => ViewerScrollKey::Down,
+            Key::Named(NamedKey::ArrowLeft) => ViewerScrollKey::Left,
+            Key::Named(NamedKey::ArrowRight) => ViewerScrollKey::Right,
+            Key::Named(NamedKey::PageUp) => ViewerScrollKey::PageUp,
+            Key::Named(NamedKey::PageDown) => ViewerScrollKey::PageDown,
+            Key::Named(NamedKey::Home) => ViewerScrollKey::Home,
+            Key::Named(NamedKey::End) => ViewerScrollKey::End,
             Key::Named(NamedKey::Space) => {
                 if shift {
-                    ScrollKey::PageUp
+                    ViewerScrollKey::PageUp
                 } else {
-                    ScrollKey::PageDown
+                    ViewerScrollKey::PageDown
                 }
             },
             _ => return None,

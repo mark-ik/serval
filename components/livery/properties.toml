@@ -181,6 +181,12 @@ grammar = "<length-percentage>{1,2}"
 seed_values = ["0", "px", "percentage"]
 source = "css_box_alignment_3"
 
+[shorthands.overflow]
+longhands = ["overflow-x", "overflow-y"]
+grammar = "<overflow>{1,2}"
+seed_values = ["visible", "hidden", "clip auto"]
+source = "css_overflow_3"
+
 [shorthands.grid_row]
 longhands = ["grid-row-start", "grid-row-end"]
 grammar = "<grid-line> [ / <grid-line> ]?"
@@ -791,7 +797,7 @@ name = "align-items"
 value_type = "alignment"
 inherited = false
 initial = "stretch"
-grammar = "start | end | flex-start | flex-end | center | baseline | stretch"
+grammar = "start | end | self-start | self-end | flex-start | flex-end | center | baseline | stretch"
 seed_values = ["stretch", "center", "baseline"]
 animation = "discrete"
 source = "css_box_alignment_3"
@@ -801,8 +807,8 @@ name = "align-self"
 value_type = "alignment"
 inherited = false
 initial = "auto"
-grammar = "auto | start | end | flex-start | flex-end | center | baseline | stretch"
-seed_values = ["auto", "center", "stretch"]
+grammar = "auto | start | end | self-start | self-end | flex-start | flex-end | center | baseline | stretch"
+seed_values = ["auto", "center", "self-end", "stretch"]
 animation = "discrete"
 source = "css_box_alignment_3"
 
@@ -811,7 +817,7 @@ name = "justify-items"
 value_type = "alignment"
 inherited = false
 initial = "stretch"
-grammar = "start | end | flex-start | flex-end | center | baseline | stretch"
+grammar = "start | end | self-start | self-end | flex-start | flex-end | center | baseline | stretch"
 seed_values = ["stretch", "center", "start"]
 animation = "discrete"
 source = "css_box_alignment_3"
@@ -821,7 +827,7 @@ name = "justify-self"
 value_type = "alignment"
 inherited = false
 initial = "auto"
-grammar = "auto | start | end | flex-start | flex-end | center | baseline | stretch"
+grammar = "auto | start | end | self-start | self-end | flex-start | flex-end | center | baseline | stretch"
 seed_values = ["auto", "center", "stretch"]
 animation = "discrete"
 source = "css_box_alignment_3"
@@ -2739,11 +2745,6 @@ spec = "https://drafts.csswg.org/css-masks-4/#the-mask-position"
 name = "outline"
 sub_properties = ["outline-color", "outline-style", "outline-width"]
 spec = "https://drafts.csswg.org/css-ui/#propdef-outline"
-
-[[unimplemented_shorthand]]
-name = "overflow"
-sub_properties = ["overflow-x", "overflow-y"]
-spec = "https://drafts.csswg.org/css-overflow/#propdef-overflow"
 
 [[unimplemented_shorthand]]
 name = "padding-block"

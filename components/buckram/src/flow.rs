@@ -195,6 +195,71 @@ impl FlowAxes {
             height: size.height,
         }
     }
+
+    /// Convert a logical translation in this flow into a physical translation.
+    ///
+    /// Unlike a rectangle conversion, an offset has no size or containing
+    /// block. The sign comes entirely from the physical sides that serve as
+    /// this flow's logical starts.
+    pub const fn physical_offset(self, logical: LogicalOffset) -> PhysicalOffset {
+        let inline = match self.inline_start() {
+            PhysicalSide::Top => PhysicalOffset {
+                x: 0.0,
+                y: logical.inline,
+            },
+            PhysicalSide::Right => PhysicalOffset {
+                x: -logical.inline,
+                y: 0.0,
+            },
+            PhysicalSide::Bottom => PhysicalOffset {
+                x: 0.0,
+                y: -logical.inline,
+            },
+            PhysicalSide::Left => PhysicalOffset {
+                x: logical.inline,
+                y: 0.0,
+            },
+        };
+        let block = match self.block_start() {
+            PhysicalSide::Top => PhysicalOffset {
+                x: 0.0,
+                y: logical.block,
+            },
+            PhysicalSide::Right => PhysicalOffset {
+                x: -logical.block,
+                y: 0.0,
+            },
+            PhysicalSide::Bottom => PhysicalOffset {
+                x: 0.0,
+                y: -logical.block,
+            },
+            PhysicalSide::Left => PhysicalOffset {
+                x: logical.block,
+                y: 0.0,
+            },
+        };
+        PhysicalOffset {
+            x: inline.x + block.x,
+            y: inline.y + block.y,
+        }
+    }
+
+    /// Express a physical translation in this flow's logical axes.
+    pub const fn logical_offset(self, physical: PhysicalOffset) -> LogicalOffset {
+        let inline = match self.inline_start() {
+            PhysicalSide::Top => physical.y,
+            PhysicalSide::Right => -physical.x,
+            PhysicalSide::Bottom => -physical.y,
+            PhysicalSide::Left => physical.x,
+        };
+        let block = match self.block_start() {
+            PhysicalSide::Top => physical.y,
+            PhysicalSide::Right => -physical.x,
+            PhysicalSide::Bottom => -physical.y,
+            PhysicalSide::Left => physical.x,
+        };
+        LogicalOffset { inline, block }
+    }
 }
 
 const fn opposite(side: PhysicalSide) -> PhysicalSide {
@@ -210,6 +275,13 @@ const fn opposite(side: PhysicalSide) -> PhysicalSide {
 pub struct PhysicalSize {
     pub width: f32,
     pub height: f32,
+}
+
+/// A physical translation applied to fragment geometry at an integration edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PhysicalOffset {
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -300,6 +372,13 @@ impl FlowAxes {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LogicalSize {
+    pub inline: f32,
+    pub block: f32,
+}
+
+/// A translation in the inline and block directions of one flow.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LogicalOffset {
     pub inline: f32,
     pub block: f32,
 }
@@ -421,5 +500,25 @@ mod tests {
                 block_size: 70.0,
             }
         );
+    }
+
+    #[test]
+    fn logical_offsets_round_trip_through_every_supported_flow() {
+        let logical = LogicalOffset {
+            inline: 12.0,
+            block: -7.0,
+        };
+        for writing_mode in [
+            WritingMode::HorizontalTb,
+            WritingMode::VerticalRl,
+            WritingMode::VerticalLr,
+            WritingMode::SidewaysRl,
+            WritingMode::SidewaysLr,
+        ] {
+            for direction in [Direction::Ltr, Direction::Rtl] {
+                let axes = FlowAxes::new(writing_mode, direction);
+                assert_eq!(axes.logical_offset(axes.physical_offset(logical)), logical);
+            }
+        }
     }
 }

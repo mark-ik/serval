@@ -97,6 +97,16 @@ impl TableBlockLedger {
         self.skipped.extend(other.skipped);
     }
 
+    pub(crate) fn remap_box_ids(&mut self, mut id_of: impl FnMut(BoxId) -> BoxId) {
+        for divergence in &mut self.divergences {
+            divergence.table = id_of(divergence.table);
+            divergence.cell = id_of(divergence.cell);
+        }
+        for (table, _) in &mut self.skipped {
+            *table = id_of(*table);
+        }
+    }
+
     fn skip(&mut self, table: BoxId, reason: TableBlockSkip) {
         self.skipped.push((table, reason));
     }
