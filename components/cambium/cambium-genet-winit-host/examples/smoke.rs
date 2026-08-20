@@ -183,10 +183,17 @@ fn root(state: &Smoke) -> Child {
     let frame = el("div", children).attr("class", "frame");
     let frame = if state.app_frame_inset > 0 {
         let inset = state.app_frame_inset;
-        frame.attr(
+        let framed = frame.attr(
             "style",
-            format!("margin:{inset}px; box-shadow:0 4px 12px rgba(0,0,0,0.55); border-radius:7px;"),
-        )
+            format!(
+                "margin:{inset}px; height:calc(100% - {}px); box-shadow:0 4px 12px rgba(0,0,0,0.55); border-radius:7px;",
+                inset * 2
+            ),
+        );
+        // A root element's background propagates to the canvas. Keep the
+        // product frame one level down so the outer margin retains the alpha
+        // that the native window and `_GTK_FRAME_EXTENTS` describe.
+        return Box::new(el("div", framed).attr("style", "height:100%;"));
     } else {
         frame
     };

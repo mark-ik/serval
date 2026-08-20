@@ -7,7 +7,7 @@ assert snap app_frame_inset == 16
 # Hold this exact headed window open while the native probe reads its X11
 # property and compositor-facing geometry.
 await-release
-wait
+wait 6000
 
 click role:button clicked
 settle 1
