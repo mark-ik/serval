@@ -18,6 +18,8 @@
 //! straight to the captured target).
 
 use core::marker::PhantomData;
+use std::cell::Cell;
+use std::rc::Rc;
 
 use genet_scripted_dom::NodeId;
 use meristem::{MessageCtx, MessageResult, Mut, View, ViewId, ViewMarker, ViewPathTracker};
@@ -61,6 +63,7 @@ pub struct PointerEvent {
     ///
     /// [`default_prevented`]: crate::GenetAppRunner::default_prevented
     pub prop: Propagation,
+    rebuild_deferred: Rc<Cell<bool>>,
 }
 
 impl PointerEvent {
@@ -72,7 +75,22 @@ impl PointerEvent {
             local,
             size,
             prop: Propagation::new(),
+            rebuild_deferred: Rc::new(Cell::new(false)),
         }
+    }
+
+    /// Defer the retained view rebuild for this captured pointer pass.
+    ///
+    /// This is for a high-frequency paint projection whose handler updates the
+    /// model read by a custom leaf. Pointer capture remains on the original DOM
+    /// target; a later event, normally `Up`, must run an ordinary rebuild so
+    /// hit targets and accessibility geometry settle at the committed result.
+    pub fn defer_rebuild(&self) {
+        self.rebuild_deferred.set(true);
+    }
+
+    pub(crate) fn rebuild_is_deferred(&self) -> bool {
+        self.rebuild_deferred.get()
     }
 }
 

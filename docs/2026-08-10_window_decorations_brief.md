@@ -368,6 +368,37 @@ requires the complementary post-configure decoration results.
 
 - **W3c X11 shadow.** `_GTK_FRAME_EXTENTS` is still absent and wants its own
   headed X11 shadow receipt. It is independent of Wayland frame negotiation.
+
+  **The instrument exists; it is not a login session** (checked 2026-08-17 on
+  the Fedora ThinkPad). There is no X11 session to log into any more —
+  `/usr/share/xsessions/` is empty, because Fedora 44 ships GNOME 50 and GNOME
+  removed its X11 session. Installing another desktop to get one is a large
+  change for one receipt. It is also unnecessary: XWayland is already running
+  rootless under mutter on `:0`, the X11 client libraries are present, and
+  mutter advertises the property under test —
+
+  ```
+  xprop -root _NET_SUPPORTED | tr ',' '
+' | grep _GTK_FRAME_EXTENTS
+  ```
+
+  returns it. So the receipt runs the app as an ordinary X11 client
+  (`WINIT_UNIX_BACKEND=x11`) against a real reparenting window manager that
+  implements the extension, with no session change and nothing installed. Note
+  `XAUTHORITY` over ssh: mutter's cookie is
+  `/run/user/1000/.mutter-Xwaylandauth.*`, not `~/.Xauthority`.
+
+  **Label it XWayland, not bare X11.** The protocol exchange is genuine, but
+  the compositor underneath is still mutter-on-Wayland, so anything specific to
+  a different WM (xfwm4, openbox) or to a non-compositing X server is *not*
+  covered by it. Claiming otherwise would be the receipt lying about its own
+  scope.
+
+  **Not WSL.** WSLg is a Weston-based compositor running XWayland in RAIL mode,
+  where each window is composited into the Windows desktop and no ordinary
+  reparenting WM negotiates frame extents. A receipt taken there would be
+  measuring WSLg's bridge rather than X11 — the exact class of receipt this
+  lane exists to prevent.
 - **W4 Snap Layouts.** Gate re-checked 2026-08-17 rather than assumed:
   [winit#3884](https://github.com/rust-windowing/winit/issues/3884) is **still
   open**, labelled `DS - win32` / `S - enhancement`, unassigned, with no linked

@@ -840,7 +840,9 @@ where
         // drag behavior on it), mirroring dispatch_click / dispatch_key — not the
         // stale value left by an earlier click/key.
         self.last_default_prevented = event.prop.default_prevented();
-        self.rebuild(logic, state);
+        if !event.rebuild_is_deferred() {
+            self.rebuild(logic, state);
+        }
         actions
     }
 

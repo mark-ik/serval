@@ -182,6 +182,10 @@ pub struct GraphCanvasSwatch<Id, Kind> {
     /// modifiers as the node buttons, so a consumer can emphasize the label of
     /// the node that matters without hand-rolling a parallel label layer.
     pub show_labels: bool,
+    /// Let captured `Move` events update the model used by the custom leaf
+    /// without rebuilding the retained DOM until release. Defaults off because
+    /// the consumer must refresh that leaf independently each presented frame.
+    pub defer_drag_rebuild: bool,
 }
 
 impl<Id, Kind> GraphCanvasSwatch<Id, Kind> {
@@ -207,6 +211,7 @@ impl<Id, Kind> GraphCanvasSwatch<Id, Kind> {
             label: "Related graph".to_string(),
             show_expand: true,
             show_labels: false,
+            defer_drag_rebuild: false,
         }
     }
 
@@ -234,6 +239,14 @@ impl<Id, Kind> GraphCanvasSwatch<Id, Kind> {
     #[must_use]
     pub fn with_node_labels(mut self, on: bool) -> Self {
         self.show_labels = on;
+        self
+    }
+
+    /// Paint live drag positions through the custom leaf and settle native hit
+    /// targets on release instead of rebuilding them for every sampled move.
+    #[must_use]
+    pub fn with_deferred_drag_rebuild(mut self, on: bool) -> Self {
+        self.defer_drag_rebuild = on;
         self
     }
 
@@ -782,6 +795,7 @@ where
     };
     let inset = swatch.node_radius + swatch.edge_width;
     let viewport = swatch.viewport;
+    let defer_drag_rebuild = swatch.defer_drag_rebuild;
     // Visible node labels (opt-in): plain positioned text beside each node,
     // aria-hidden (the button already carries the accessible name) and
     // pointer-transparent (they must not steal the node's clicks).
@@ -936,6 +950,9 @@ where
                     FocusPhase::Lost => focus(state, None),
                 },
             )), move |state: &mut State, event: PointerEvent| {
+                if defer_drag_rebuild && matches!(event.phase, PointerPhase::Move) {
+                    event.defer_rebuild();
+                }
                 let position = graph_position_at(
                     viewport,
                     size,
