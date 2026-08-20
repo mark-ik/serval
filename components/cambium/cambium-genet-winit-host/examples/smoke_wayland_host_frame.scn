@@ -1,0 +1,23 @@
+# W3b Wayland host-frame receipt. The external receipt driver captures the
+# focused window, including compositor/winit chrome, while this scenario waits
+# on HOST_SMOKE_RELEASE_FILE.
+
+log W3b host frame: app content opened without an app title bar
+assert snap window_frame == host
+assert text cambium-genet-winit-host smoke
+capture opened
+
+await-release
+wait 600
+assert snap window_frame == host
+
+click role:button clicked
+settle 1
+assert event clicks 1
+capture busy
+
+resize 560 400
+settle 4
+capture resized
+assert text cambium-genet-winit-host smoke
+log W3b host frame: native frame captured and app remained host-framed

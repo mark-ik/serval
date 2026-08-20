@@ -68,12 +68,34 @@ pub type Runner<State, Logic, V> = GenetAppRunner<State, Logic, V, ()>;
 /// rasterized view is still alive (scenario screenshots).
 pub type CaptureFn = Box<dyn FnOnce(&dyn Surface, &wgpu::TextureView, u32, u32) + 'static>;
 
+/// Which layer draws the window frame.
+///
+/// This is the application-visible boundary. A [`Host`](Self::Host) frame may
+/// be compositor-drawn or supplied by the platform window library; the
+/// application leaves both forms alone. An [`App`](Self::App) frame is part of
+/// the application's own view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowFrame {
+    /// Let the platform host draw and operate the frame.
+    #[default]
+    Host,
+    /// Let the application draw the frame; the host supplies window verbs and
+    /// resize affordances.
+    App,
+}
+
 /// Window and pipeline configuration.
 pub struct HostOptions {
     /// The window title.
     pub title: String,
-    /// `false` for client-side decorations: the application draws its own
-    /// chrome, and the host supplies edge-resize grab margins and cursors.
+    /// The layer responsible for the window frame.
+    pub window_frame: WindowFrame,
+    /// Compatibility input for existing consumers. `false` selects
+    /// [`WindowFrame::App`]; `true` leaves [`window_frame`](Self::window_frame)
+    /// in control.
+    ///
+    /// New consumers should set `window_frame` directly. This field can retire
+    /// after the existing Woodshed consumer moves off the boolean API.
     pub decorations: bool,
     /// Logical size to open at when no environment override is present.
     pub initial_logical_size: (f64, f64),
@@ -100,6 +122,7 @@ impl Default for HostOptions {
     fn default() -> Self {
         Self {
             title: String::new(),
+            window_frame: WindowFrame::Host,
             decorations: true,
             initial_logical_size: (1_100.0, 664.0),
             size_env: None,
@@ -110,6 +133,48 @@ impl Default for HostOptions {
             }),
             spatial_focus: true,
         }
+    }
+}
+
+impl HostOptions {
+    /// Resolve the named policy plus the source-compatible boolean input.
+    pub fn effective_window_frame(&self) -> WindowFrame {
+        if self.decorations {
+            self.window_frame
+        } else {
+            WindowFrame::App
+        }
+    }
+}
+
+#[cfg(test)]
+mod window_frame_tests {
+    use super::{HostOptions, WindowFrame};
+
+    #[test]
+    fn host_frame_is_the_default() {
+        assert_eq!(
+            HostOptions::default().effective_window_frame(),
+            WindowFrame::Host
+        );
+    }
+
+    #[test]
+    fn an_app_frame_is_explicit() {
+        let options = HostOptions {
+            window_frame: WindowFrame::App,
+            ..Default::default()
+        };
+        assert_eq!(options.effective_window_frame(), WindowFrame::App);
+    }
+
+    #[test]
+    fn the_old_false_input_still_selects_an_app_frame() {
+        let options = HostOptions {
+            decorations: false,
+            ..Default::default()
+        };
+        assert_eq!(options.effective_window_frame(), WindowFrame::App);
     }
 }
 

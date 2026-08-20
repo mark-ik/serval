@@ -35,8 +35,8 @@ use cambium::{
 #[cfg(not(target_os = "macos"))]
 use cambium_genet_winit_host::WindowCommands;
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommand, read_frame,
-    run,
+    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommand, WindowFrame,
+    read_frame, run,
 };
 use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
@@ -54,6 +54,10 @@ struct Smoke {
     notches: i32,
     /// Semantic transitions the scenario can assert on.
     events: Vec<String>,
+    /// The same frame policy used to create the native window. The view reads
+    /// it too, which prevents a host frame and an app title bar appearing
+    /// together.
+    window_frame: WindowFrame,
 }
 
 impl Smoke {
@@ -105,77 +109,76 @@ fn title_bar() -> Child {
 
 fn root(state: &Smoke) -> Child {
     let filled = (state.level * 240.0).round() as i32;
-    Box::new(
+    let content: Child = Box::new(
         el(
             "div",
             (
-                title_bar(),
-                el(
-                    "div",
-                    (
-                        el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
-                        focusable(clickable(
-                            el("button", text(format!("clicked {} times", state.clicks)))
-                                .attr("class", "button"),
-                            |s: &mut Smoke, _| {
-                                s.clicks += 1;
-                                let n = s.clicks;
-                                s.note(format!("clicks {n}"));
-                            },
-                        )),
-                        focusable(clickable(
-                            el("button", text("Reset")).attr("class", "button"),
-                            |s: &mut Smoke, _| {
-                                s.clicks = 0;
-                                s.level = 0.0;
-                                s.note("reset".into());
-                            },
-                        )),
-                        // A drag rail: the receipt that Down/Move/Up carry the
-                        // captured element's own coordinates. The handler normalizes
-                        // with nothing but `local` and `size`.
-                        on_pointer(
-                            el(
-                                "div",
-                                el("div", ())
-                                    .attr("class", "rail-fill")
-                                    .attr("style", format!("width:{filled}px;")),
-                            )
-                            .attr("class", "rail")
-                            .attr("role", "slider")
-                            .attr("aria-label", "Level"),
-                            |s: &mut Smoke, e: PointerEvent| {
-                                if e.size.0 > 0.0 && !matches!(e.phase, PointerPhase::Up) {
-                                    let level = (e.local.0 / e.size.0).clamp(0.0, 1.0);
-                                    if (level - s.level).abs() > 0.004 {
-                                        s.level = level;
-                                        let pct = (level * 100.0).round() as i32;
-                                        s.note(format!("level {pct}"));
-                                    }
-                                }
-                            },
-                        ),
-                        // A wheel panel: the receipt that a handler sees the notch
-                        // before the layout scrolls, and can keep it.
-                        on_wheel(
-                            el("div", text(format!("wheel notches: {}", state.notches)))
-                                .attr("class", "panel")
-                                .attr("aria-label", "Wheel panel"),
-                            |s: &mut Smoke, e: WheelEvent| {
-                                s.notches += e.delta.1.signum() as i32;
-                                let n = s.notches;
-                                s.note(format!("notches {n}"));
-                                // Keep the notch: the page behind must not also scroll.
-                                e.prevent_default();
-                            },
-                        ),
-                    ),
-                )
-                .attr("class", "content"),
+                el("div", text("cambium-genet-winit-host smoke")).attr("class", "title"),
+                focusable(clickable(
+                    el("button", text(format!("clicked {} times", state.clicks)))
+                        .attr("class", "button"),
+                    |s: &mut Smoke, _| {
+                        s.clicks += 1;
+                        let n = s.clicks;
+                        s.note(format!("clicks {n}"));
+                    },
+                )),
+                focusable(clickable(
+                    el("button", text("Reset")).attr("class", "button"),
+                    |s: &mut Smoke, _| {
+                        s.clicks = 0;
+                        s.level = 0.0;
+                        s.note("reset".into());
+                    },
+                )),
+                // A drag rail: the receipt that Down/Move/Up carry the
+                // captured element's own coordinates. The handler normalizes
+                // with nothing but `local` and `size`.
+                on_pointer(
+                    el(
+                        "div",
+                        el("div", ())
+                            .attr("class", "rail-fill")
+                            .attr("style", format!("width:{filled}px;")),
+                    )
+                    .attr("class", "rail")
+                    .attr("role", "slider")
+                    .attr("aria-label", "Level"),
+                    |s: &mut Smoke, e: PointerEvent| {
+                        if e.size.0 > 0.0 && !matches!(e.phase, PointerPhase::Up) {
+                            let level = (e.local.0 / e.size.0).clamp(0.0, 1.0);
+                            if (level - s.level).abs() > 0.004 {
+                                s.level = level;
+                                let pct = (level * 100.0).round() as i32;
+                                s.note(format!("level {pct}"));
+                            }
+                        }
+                    },
+                ),
+                // A wheel panel: the receipt that a handler sees the notch
+                // before the layout scrolls, and can keep it.
+                on_wheel(
+                    el("div", text(format!("wheel notches: {}", state.notches)))
+                        .attr("class", "panel")
+                        .attr("aria-label", "Wheel panel"),
+                    |s: &mut Smoke, e: WheelEvent| {
+                        s.notches += e.delta.1.signum() as i32;
+                        let n = s.notches;
+                        s.note(format!("notches {n}"));
+                        // Keep the notch: the page behind must not also scroll.
+                        e.prevent_default();
+                    },
+                ),
             ),
         )
-        .attr("class", "frame"),
-    )
+        .attr("class", "content"),
+    );
+    let mut children = Vec::with_capacity(2);
+    if state.window_frame == WindowFrame::App {
+        children.push(title_bar());
+    }
+    children.push(content);
+    Box::new(el("div", children).attr("class", "frame"))
 }
 
 // The controls keep genet's UA `display: inline-block`, the standards-correct
@@ -257,6 +260,13 @@ impl Automatable for Probe<'_, '_> {
             .with_field("clicks", state.clicks.to_string())
             .with_field("level", ((state.level * 100.0).round() as i32).to_string())
             .with_field("notches", state.notches.to_string())
+            .with_field(
+                "window_frame",
+                match state.window_frame {
+                    WindowFrame::Host => "host",
+                    WindowFrame::App => "app",
+                },
+            )
             .with_field("captures", self.lane.captures.len().to_string())
             .with_field(
                 "maximized",
@@ -502,6 +512,13 @@ thread_local! {
 // --------------------------------------------------------------- wiring
 
 fn main() {
+    let window_frame = match std::env::var("HOST_SMOKE_WINDOW_FRAME") {
+        Ok(value) if value.eq_ignore_ascii_case("host") => WindowFrame::Host,
+        Ok(value) if value.eq_ignore_ascii_case("app") => WindowFrame::App,
+        Ok(value) => panic!("HOST_SMOKE_WINDOW_FRAME must be 'host' or 'app', got {value:?}"),
+        Err(std::env::VarError::NotPresent) => WindowFrame::App,
+        Err(error) => panic!("HOST_SMOKE_WINDOW_FRAME is not valid Unicode: {error}"),
+    };
     let lane = Rc::new(RefCell::new(std::env::var("HOST_SMOKE_SCENARIO").ok().map(
         |path| {
             let text = std::fs::read_to_string(&path)
@@ -563,19 +580,20 @@ fn main() {
         title: "host smoke".into(),
         initial_logical_size: (420.0, 320.0),
         size_env: Some(("HOST_SMOKE_WIDTH".into(), "HOST_SMOKE_HEIGHT".into())),
-        // Client-side decorations: the frame below is ours, so the OS draws
-        // none. The host supplies edge resize and its cursors.
-        decorations: false,
+        // The view reads this same value before deciding whether to include its
+        // title row, so the two frame providers cannot overlap.
+        window_frame,
         ..Default::default()
     };
     run(
         options,
         // The application takes its end of the window-verb seam and keeps it
         // in state; the caption buttons call it from ordinary handlers.
-        |_window, _commands, _wake| Init {
+        move |_window, _commands, _wake| Init {
             state: Smoke {
                 #[cfg(not(target_os = "macos"))]
                 window: _commands.clone(),
+                window_frame,
                 ..Smoke::default()
             },
             logic: root as Logic,

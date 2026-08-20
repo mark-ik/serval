@@ -47,8 +47,8 @@ pub use cambium_rootstock::{
     AppCtx, AppHook, AppRegion, CaptureFn, CloseDisposition, CloseRequest, CloseRequestHook,
     Direction, FocusedTextHook, FocusedTextSlot, Frame, FrameHook, Host, HostHooks, HostOptions,
     HostPointer, HostWake, HostWindow, IdlePolicy, Init, Key, KeyInterceptHook, KeyPress,
-    Modifiers, NamedKey, Runner, Surface, WindowCommand, WindowCommands, WindowGeometry,
-    read_frame,
+    Modifiers, NamedKey, Runner, Surface, WindowCommand, WindowCommands, WindowFrame,
+    WindowGeometry, read_frame,
 };
 pub use harness::{Harness, inert_hooks};
 
@@ -329,7 +329,7 @@ where
     /// CSD only: the resize edge under the cursor, when the window is
     /// floating.
     fn edge_under_cursor(&self) -> Option<winit::window::ResizeDirection> {
-        if self.options.decorations {
+        if self.options.effective_window_frame() == WindowFrame::Host {
             return None;
         }
         let window = self.native_window.as_ref()?;
@@ -349,7 +349,7 @@ where
     /// CSD only: show the matching resize arrow near the border, deduped on
     /// transitions.
     fn update_resize_cursor(&mut self) {
-        if self.options.decorations {
+        if self.options.effective_window_frame() == WindowFrame::Host {
             return;
         }
         let dir = self.edge_under_cursor();
@@ -457,7 +457,7 @@ where
         let (attributes, decorated) = {
             use winit::platform::macos::WindowAttributesExtMacOS;
             let attributes = Window::default_attributes();
-            if self.options.decorations {
+            if self.options.effective_window_frame() == WindowFrame::Host {
                 (attributes, true)
             } else {
                 (
@@ -470,7 +470,10 @@ where
             }
         };
         #[cfg(not(target_os = "macos"))]
-        let (attributes, decorated) = (Window::default_attributes(), self.options.decorations);
+        let (attributes, decorated) = (
+            Window::default_attributes(),
+            self.options.effective_window_frame() == WindowFrame::Host,
+        );
         let window = Arc::new(
             event_loop
                 .create_window(
