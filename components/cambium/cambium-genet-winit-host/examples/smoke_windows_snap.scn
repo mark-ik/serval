@@ -1,0 +1,23 @@
+# Windows W4: the native maximize hit target and the semantic Cambium control
+# must name the same action. `scripts/windows-snap-receipt.ps1` holds this
+# scenario while it probes WM_NCHITTEST and captures the visible Snap flyout.
+
+log W4: opened the Cambium app frame for native Snap Layout inspection
+assert snap window_frame == app
+assert snap maximized == false
+capture opened
+
+await-release
+wait 600
+assert snap maximized == false
+
+click role:button Maximize
+settle 4
+assert snap maximized == true
+capture maximized
+
+click role:button Maximize
+settle 4
+assert snap maximized == false
+capture restored
+log W4: native maximize hit and semantic control agree

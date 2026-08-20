@@ -36,6 +36,7 @@ use std::cell::RefCell;
 
 use cambium_rootstock::TitlebarInsets;
 use genet_scripted_dom::NodeId;
+use layout_dom_api::{LayoutDom, LocalName, Namespace};
 
 use crate::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
 
@@ -88,6 +89,51 @@ pub(crate) fn app_region_of(
         .or_else(|| layout.computed_custom_property(node, "app-region"))
         .map(|v| AppRegion::parse(&v))
         .unwrap_or_default()
+}
+
+/// Locate an accessible window control.
+///
+/// Reuses W2's button semantics and accessible label rather than adding a
+/// second native-only marker. A stylesheet remains free to size, order, or
+/// relocate its frame; the bridge follows the same retained box that paint,
+/// accessibility and pointer routing use.
+fn window_control_node<D>(dom: &D, root: NodeId, accessible_label: &str) -> Option<NodeId>
+where
+    D: LayoutDom<NodeId = NodeId>,
+{
+    fn find<D>(dom: &D, node: NodeId, button: &LocalName, accessible_label: &str) -> Option<NodeId>
+    where
+        D: LayoutDom<NodeId = NodeId>,
+    {
+        let role = dom.attribute(node, &Namespace::from(""), &LocalName::from("role"));
+        let label = dom.attribute(node, &Namespace::from(""), &LocalName::from("aria-label"));
+        let button_element = dom
+            .element_name(node)
+            .is_some_and(|name| &name.local == button);
+        if (button_element || role.is_some_and(|value| value.eq_ignore_ascii_case("button")))
+            && label.is_some_and(|value| value == accessible_label)
+        {
+            return Some(node);
+        }
+        dom.dom_children(node)
+            .find_map(|child| find(dom, child, button, accessible_label))
+    }
+
+    find(dom, root, &LocalName::from("button"), accessible_label)
+}
+
+/// The current painted client rect of the named window control.
+pub(crate) fn window_control_rect<D>(
+    dom: &D,
+    root: NodeId,
+    layout: &genet_layout::IncrementalLayout<NodeId>,
+    accessible_label: &str,
+) -> Option<(f32, f32, f32, f32)>
+where
+    D: LayoutDom<NodeId = NodeId>,
+{
+    let node = window_control_node(dom, root, accessible_label)?;
+    layout.painted_rect(dom, node)
 }
 
 /// The client-side window frame. Inherent on the winit wrapper: every method
@@ -236,6 +282,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use genet_scripted_dom::ScriptedDom;
+    use layout_dom_api::{LayoutDomMut, QualName};
+
+    fn qual(local: &str) -> QualName {
+        QualName::new(None, Namespace::from(""), LocalName::from(local))
+    }
+
+    #[test]
+    fn native_control_lookup_uses_html_button_semantics_and_accessible_name() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let minimize = dom.create_element(qual("button"));
+        dom.set_attribute(minimize, qual("aria-label"), "Minimize");
+        dom.append_child(root, minimize);
+        let maximize = dom.create_element(qual("button"));
+        dom.set_attribute(maximize, qual("aria-label"), "Maximize");
+        dom.append_child(root, maximize);
+
+        assert_eq!(window_control_node(&dom, root, "Maximize"), Some(maximize));
+        assert_eq!(window_control_node(&dom, root, "Agrandir"), None);
+    }
 
     #[test]
     fn unknown_regions_do_not_drag() {

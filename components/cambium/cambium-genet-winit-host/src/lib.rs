@@ -42,6 +42,8 @@ use winit::window::{Window, WindowId};
 
 mod decorations;
 mod harness;
+#[cfg(target_os = "windows")]
+mod windows_snap;
 #[cfg(target_os = "linux")]
 mod x11_frame;
 
@@ -200,6 +202,10 @@ where
     V: RootView<State>,
 {
     pub(crate) core: Host<State, Logic, V>,
+    /// Win32's `WM_NCHITTEST` bridge for the application-drawn maximize
+    /// control. Declared before the window so its subclass is removed first.
+    #[cfg(target_os = "windows")]
+    pub(crate) snap_layout: Option<windows_snap::SnapLayoutBridge>,
     /// The native window, for the management the neutral seam omits. The one
     /// thing a browser tab cannot supply.
     pub(crate) native_window: Option<Arc<Window>>,
@@ -241,6 +247,8 @@ where
     pub(crate) fn new(core: Host<State, Logic, V>) -> Self {
         Self {
             core,
+            #[cfg(target_os = "windows")]
+            snap_layout: None,
             native_window: None,
             resize_hint: None,
             cadence: ClickCadence::new(),
@@ -261,6 +269,48 @@ where
             (self.options.netrender)(),
             self.options.app_frame_is_transparent(),
         )
+    }
+
+    /// Draw one frame, then project any application-owned native hit regions
+    /// from that exact retained layout.
+    fn redraw(&mut self) {
+        self.core.redraw();
+        #[cfg(target_os = "windows")]
+        self.refresh_snap_layout_rect();
+    }
+
+    #[cfg(target_os = "windows")]
+    fn refresh_snap_layout_rect(&mut self) {
+        let logical = (|| {
+            let runner = self.s.runner.as_ref()?;
+            let layout = self.s.layout.as_ref()?;
+            let dom = runner.dom();
+            let dom_ref = dom.borrow();
+            decorations::window_control_rect(
+                &*dom_ref,
+                runner.root(),
+                layout,
+                &self.options.maximize_control_label,
+            )
+        })();
+        let scale = self
+            .native_window
+            .as_ref()
+            .map_or(1.0, |window| window.scale_factor());
+        let Some(bridge) = self.snap_layout.as_ref() else {
+            return;
+        };
+        let Some(changed) = bridge.update(logical, scale) else {
+            return;
+        };
+        if frame_trace() {
+            match changed {
+                Some([left, top, right, bottom]) => eprintln!(
+                    "[cambium-winit] snap-layout hit=HTMAXBUTTON rect=[{left},{top},{right},{bottom}] scale={scale}"
+                ),
+                None => eprintln!("[cambium-winit] snap-layout hit=absent scale={scale}"),
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -525,6 +575,15 @@ where
                 )
                 .expect("create window"),
         );
+        #[cfg(target_os = "windows")]
+        if self.options.effective_window_frame() == WindowFrame::App {
+            match windows_snap::SnapLayoutBridge::attach(&window) {
+                Ok(bridge) => self.snap_layout = Some(bridge),
+                Err(error) => {
+                    eprintln!("[cambium-winit] could not install Snap Layout hit test: {error}")
+                },
+            }
+        }
         #[cfg(target_os = "linux")]
         self.publish_x11_frame_extents(&window);
         if frame_trace() {

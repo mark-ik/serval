@@ -143,6 +143,12 @@ pub struct HostOptions {
     /// transparent margins in that application stylesheet. They are ignored
     /// when the effective [`WindowFrame`] is [`WindowFrame::Host`].
     pub app_frame_insets: AppFrameInsets,
+    /// Accessible label of the application-drawn maximize/restore control.
+    ///
+    /// Windows uses the laid-out button with this label for its native Snap
+    /// Layout hit rectangle. Applications that localize their caption labels
+    /// should set the same localized value here.
+    pub maximize_control_label: String,
     /// Logical size to open at when no environment override is present.
     pub initial_logical_size: (f64, f64),
     /// Environment variable names overriding the logical width and height,
@@ -171,6 +177,7 @@ impl Default for HostOptions {
             window_frame: WindowFrame::Host,
             decorations: true,
             app_frame_insets: AppFrameInsets::NONE,
+            maximize_control_label: "Maximize".into(),
             initial_logical_size: (1_100.0, 664.0),
             size_env: None,
             netrender: Box::new(|| NetrenderOptions {
