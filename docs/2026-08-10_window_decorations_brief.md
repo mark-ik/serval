@@ -1,11 +1,11 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** W0, W1 and W2 landed, plus window-geometry validation from §6. W1
+**Status:** W0 through W3 landed, plus window-geometry validation from §6. W1
 has same-stylesheet headed receipts on Windows, Intel macOS and Apple Silicon
-macOS. W3's Windows maximized-overflow receipt also landed; its Linux halves
-and W4 remain staged with reasons. See §8. Originally a research brief, kept as
-the design record.
+macOS. W3 has Windows maximized-overflow, Wayland frame-policy and XWayland
+client-shadow receipts. W4 remains staged with reasons. See §8. Originally a
+research brief, kept as the design record.
 **Scope:** the window frame itself — title bar, caption buttons, resize
 borders, shadow — for every Cambium desktop app, plus the browser/PWA lane.
 Not in scope: in-app chrome (shellbar, panes, toolbars), which is product UI.
@@ -74,7 +74,7 @@ systems. The honest per-platform picture:
 |---|---|---|---|---|
 | Who draws the frame | app, once undecorated | **OS, always** (traffic lights are not ours to draw) | app on GNOME/Mutter (SSD unsupported); compositor on KDE if asked | app, or WM |
 | Protocol | `WM_NCCALCSIZE` / `WM_NCHITTEST` | `NSWindow` style masks | `xdg-decoration` (optional; GNOME refuses SSD) | `_MOTIF_WM_HINTS` |
-| Shadow when undecorated | DWM keeps it if the frame is extended, loses it if simply removed | OS | compositor | **lost**; needs `_GTK_FRAME_EXTENTS` |
+| Shadow when undecorated | DWM keeps it if the frame is extended, loses it if simply removed | OS | compositor | app draws it in transparent margins; [`_GTK_FRAME_EXTENTS`](https://docs.gtk.org/gdk3/method.Window.set_shadow_width.html) describes those margins to the WM |
 | Snap/tiling affordance | Snap Layouts on hover-maximize, **requires returning `HTMAXBUTTON`** | green button menu (OS) | compositor gesture | WM |
 | Fallback library | — | — | `libdecor` | — |
 
@@ -364,41 +364,39 @@ for Host and
 for App. `scripts/wayland-frame-receipt.ps1` reproduces the paired run and
 requires the complementary post-configure decoration results.
 
+**2026-08-20: W3c XWayland client shadow verified** (genet
+`490007485d9`; geometry introduced in `1cd1765afdc`, host-framed correction in
+`148acab3aaf`, alpha-preserving frame in `a9b7ae81503`, shadow-mask materialization
+in `ccf9317011e`). `_GTK_FRAME_EXTENTS` does not create a shadow. The app draws
+the shadow in transparent client margins, and the property tells the window
+manager where the visible frame begins so maximize and snap use the right
+bounds.
+
+The repeated native probe exposed two false greens. Rounded-corner
+antialiasing had satisfied a loose translucent-pixel check while the shadow
+mask was still being dropped by `cambium-rootstock`; the fixed scenario counts
+only translucent pixels outside the visible frame. A later repeat caught the
+short-lived X11 property connection dropping before server acknowledgement;
+the host now checks the property request before closing it.
+
+The clean Fedora 44 / GNOME 50 XWayland receipt in
+`testing/genet/w3c-x11-shadow-49000748-2026-08-20-02/` returned `RESULT ok` from
+the app and read `_GTK_FRAME_EXTENTS = 16, 16, 16, 16` from that live XID.
+`opened.bmp` contains 15,040 translucent pixels outside the visible frame and
+has SHA-256
+`5f26306bdddd1e906b2a2aa9d2f93d462ed4dc293bb0f1e6c30e4259598b0b69`.
+The effective-frame trace says
+`backend=x11 policy=App decorated=false transparent=true`.
+`scripts/x11-shadow-receipt.ps1` reproduces the paired proof by emptying
+`WAYLAND_DISPLAY` and `WAYLAND_SOCKET`, which makes pinned winit choose the X11
+client path while GNOME remains the headed compositor.
+
+This is deliberately labelled XWayland. It proves the X11 protocol exchange
+against Mutter, not behavior specific to another window manager or a
+non-compositing X server.
+
 **Staged, with reasons rather than intentions:**
 
-- **W3c X11 shadow.** `_GTK_FRAME_EXTENTS` is still absent and wants its own
-  headed X11 shadow receipt. It is independent of Wayland frame negotiation.
-
-  **The instrument exists; it is not a login session** (checked 2026-08-17 on
-  the Fedora ThinkPad). There is no X11 session to log into any more —
-  `/usr/share/xsessions/` is empty, because Fedora 44 ships GNOME 50 and GNOME
-  removed its X11 session. Installing another desktop to get one is a large
-  change for one receipt. It is also unnecessary: XWayland is already running
-  rootless under mutter on `:0`, the X11 client libraries are present, and
-  mutter advertises the property under test —
-
-  ```
-  xprop -root _NET_SUPPORTED | tr ',' '
-' | grep _GTK_FRAME_EXTENTS
-  ```
-
-  returns it. So the receipt runs the app as an ordinary X11 client
-  (`WINIT_UNIX_BACKEND=x11`) against a real reparenting window manager that
-  implements the extension, with no session change and nothing installed. Note
-  `XAUTHORITY` over ssh: mutter's cookie is
-  `/run/user/1000/.mutter-Xwaylandauth.*`, not `~/.Xauthority`.
-
-  **Label it XWayland, not bare X11.** The protocol exchange is genuine, but
-  the compositor underneath is still mutter-on-Wayland, so anything specific to
-  a different WM (xfwm4, openbox) or to a non-compositing X server is *not*
-  covered by it. Claiming otherwise would be the receipt lying about its own
-  scope.
-
-  **Not WSL.** WSLg is a Weston-based compositor running XWayland in RAIL mode,
-  where each window is composited into the Windows desktop and no ordinary
-  reparenting WM negotiates frame extents. A receipt taken there would be
-  measuring WSLg's bridge rather than X11 — the exact class of receipt this
-  lane exists to prevent.
 - **W4 Snap Layouts.** Gate re-checked 2026-08-17 rather than assumed:
   [winit#3884](https://github.com/rust-windowing/winit/issues/3884) is **still
   open**, labelled `DS - win32` / `S - enhancement`, unassigned, with no linked

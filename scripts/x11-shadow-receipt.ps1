@@ -1,13 +1,28 @@
 <#
 .SYNOPSIS
-Run the W3c client-drawn X11 shadow receipt on a remote headed session.
+Run the W3c X11 shadow receipt on a remote screen, with a native probe.
 
 .DESCRIPTION
-Forces the Cambium smoke onto X11/Xwayland, holds that exact window open,
-captures its native X11 properties and client pixels, then releases the app's
-semantic scenario. The proof is deliberately paired: `_GTK_FRAME_EXTENTS`
-describes transparent margins; the app-authored frame capture must contain
-both clear margin pixels and translucent shadow pixels.
+The X11 half of W3. The app runs as an ordinary X11 client and holds one
+headed window open; while it is up, a probe reads that window's own
+`_GTK_FRAME_EXTENTS` and its frame geometry off the X server, then releases the
+window so the scenario finishes. Two independent witnesses to the same window:
+what the app drew, and what the window manager published about it.
+
+**This does not need an X11 login session, and on current Fedora there is not
+one to have** — GNOME 50 removed it, so `/usr/share/xsessions` is empty. It
+needs an X11 *client*, which XWayland already serves under mutter, and mutter
+lists `_GTK_FRAME_EXTENTS` in `_NET_SUPPORTED`.
+
+**So the receipt this writes is an XWayland receipt and says so.** The protocol
+exchange is genuine and the window manager implementing it is real, but
+mutter-on-Wayland is underneath, so nothing here covers a different window
+manager or a non-compositing X server. WSL is not an alternative: WSLg
+composites each window into the Windows desktop with no reparenting manager
+negotiating extents, so a run there would measure the bridge instead.
+
+.PARAMETER Target
+SSH destination of the machine with the graphical session.
 #>
 
 [CmdletBinding()]
@@ -20,191 +35,186 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Step($message) { Write-Host "==> $message" -ForegroundColor Cyan }
-function Note($message) { Write-Host "    $message" -ForegroundColor DarkGray }
-function Sh($value) { "'" + ($value -replace "'", "'\''") + "'" }
-
-function Invoke-Remote($command) {
-    $output = & ssh -o BatchMode=yes -o ConnectTimeout=10 $Target $command 2>&1
-    [pscustomobject]@{ Output = ($output -join "`n").Trim(); Code = $LASTEXITCODE }
-}
-
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $codeRoot = Split-Path (Split-Path $repoRoot -Parent) -Parent
-$stamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
 if (-not $Out) {
+    $stamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
     $Out = Join-Path $codeRoot "testing\genet\w3c-x11-shadow-$stamp"
 }
 $Out = [System.IO.Path]::GetFullPath($Out)
-if (Test-Path -LiteralPath $Out) { throw "output directory already exists: $Out" }
+if (Test-Path -LiteralPath $Out) {
+    throw "output directory already exists: $Out"
+}
 
-$unit = "genet-w3c-$($stamp -replace '[-_]', '')"
-$remoteOut = "/tmp/receipt-genet-w3c-$stamp"
-$remoteReceipt = "$remoteOut/receipt.txt"
-$releaseFile = "$remoteOut/native-inspection-complete"
-$scenario = "$RemotePath/components/cambium/cambium-genet-winit-host/examples/smoke_x11_shadow.scn"
+function Sh($value) { "'" + ($value -replace "'", "'\''") + "'" }
 
-Step "Preflight: $Target"
-$preflightCommand = @"
-set -eu
-cd $(Sh $RemotePath)
-git rev-parse HEAD
-git status --porcelain | wc -l
-systemctl --user show-environment | sed -n 's/^DISPLAY=//p'
-pgrep -a Xwayland | sed -n 's/.* -auth \([^ ]*\).*/\1/p' | head -1
-command -v xprop
-command -v import
-command -v identify
-"@
-$preflight = Invoke-Remote $preflightCommand
-if ($preflight.Code -ne 0) { throw "remote preflight failed: $($preflight.Output)" }
-$lines = $preflight.Output -split "`n"
-if ($lines.Count -lt 7) { throw "remote preflight returned incomplete data: $($preflight.Output)" }
-$remoteCommit = $lines[0].Trim()
-$remoteDirty = [int]$lines[1].Trim()
-$display = $lines[2].Trim()
-$xauthority = $lines[3].Trim()
-if ($remoteDirty -ne 0) { throw "remote checkout has $remoteDirty dirty file(s)" }
-if (-not $display -or -not $xauthority) { throw 'headed X11/Xwayland session is unavailable' }
-Note "commit: $($remoteCommit.Substring(0, 12))"
-Note "display: $display"
+# A fixed path rather than one under the run's own directory: the probe is a
+# separate ssh session and has to name the same file the app is watching,
+# before the run's timestamped directory exists.
+$releaseFile = '/tmp/w3c-x11-release'
+$probeOut = '/tmp/w3c-x11-probe.txt'
 
-$findWindowScript = @'
-for id in $(xprop -root _NET_CLIENT_LIST 2>/dev/null | grep -o '0x[0-9a-fA-F]*'); do
-  if xprop -id "$id" _NET_WM_NAME 2>/dev/null | grep -Fq '"host smoke"'; then
-    printf '%s\n' "$id"
-    exit 0
-  fi
+Write-Host "==> Preparing the X11 probe on $Target" -ForegroundColor Cyan
+$remoteStatus = & ssh -o BatchMode=yes $Target "git -C $(Sh $RemotePath) status --porcelain" 2>&1
+if ($LASTEXITCODE -ne 0) { throw "cannot inspect $RemotePath on $Target" }
+if ($remoteStatus) { throw "remote checkout is dirty:`n$($remoteStatus -join "`n")" }
+& ssh -o BatchMode=yes $Target "rm -f $(Sh $releaseFile) $(Sh $probeOut)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "cannot reach $Target" }
+
+# The probe, as one remote script. It waits for the app's window to exist,
+# reads the two properties that matter off that window, and only then releases
+# the scenario -- so the measurement is taken while the window is genuinely up
+# rather than racing its teardown.
+$probeScript = @'
+set -u
+export DISPLAY=${DISPLAY:-:0}
+export XAUTHORITY=$(ls /run/user/$(id -u)/.mutter-Xwaylandauth.* 2>/dev/null | head -1)
+out=PROBE_OUT
+release=RELEASE_FILE
+: > "$out"
+echo "display=$DISPLAY" >> "$out"
+# The window manager names itself on the window _NET_SUPPORTING_WM_CHECK
+# points at, not on the root -- reading the root just reports "not found" and
+# leaves the receipt unable to say what it was measured against.
+wmcheck=$(xprop -root -notype _NET_SUPPORTING_WM_CHECK 2>/dev/null | sed 's/.*# //' | tr -d ' ')
+if [ -n "$wmcheck" ] && [ "$wmcheck" != "0x0" ]; then
+  echo "wm=$(xprop -id "$wmcheck" -notype _NET_WM_NAME 2>/dev/null | sed 's/.*= //')" >> "$out"
+else
+  echo "wm=UNKNOWN" >> "$out"
+fi
+if xprop -root _NET_SUPPORTED 2>/dev/null | tr ',' '
+' | grep -q _GTK_FRAME_EXTENTS; then
+  echo "wm_supports_gtk_frame_extents=yes" >> "$out"
+else
+  echo "wm_supports_gtk_frame_extents=no" >> "$out"
+fi
+# xprop alone, deliberately: this machine has no xdotool or xwininfo, and a
+# receipt is not worth installing packages onto someone's laptop for. The
+# client list plus a name check finds the window just as well.
+win=""
+for _ in $(seq 1 120); do
+  for id in $(xprop -root -notype _NET_CLIENT_LIST 2>/dev/null | sed 's/.*# //' | tr ',' ' '); do
+    case "$id" in 0x*) ;; *) continue ;; esac
+    if xprop -id "$id" -notype _NET_WM_NAME 2>/dev/null | grep -Fq '"host smoke"'; then
+      win="$id"
+      break
+    fi
+  done
+  [ -n "$win" ] && break
+  sleep 1
 done
-exit 1
-'@
-$findWindow = "DISPLAY=$(Sh $display) XAUTHORITY=$(Sh $xauthority) sh -c $(Sh $findWindowScript)"
-$existing = Invoke-Remote $findWindow
-if ($existing.Code -eq 0) { throw "an existing host smoke X11 window would make identity ambiguous: $($existing.Output)" }
+if [ -z "$win" ]; then
+  echo "window=NOT_FOUND" >> "$out"
+else
+  echo "window=$win" >> "$out"
+  # The native title can become visible just before the host publishes its
+  # client-frame margins. Keep this tied to the same XID while that property
+  # settles instead of racing creation or finding a later window.
+  gtk_extents=""
+  for _ in $(seq 1 50); do
+    gtk_extents=$(xprop -id "$win" -notype _GTK_FRAME_EXTENTS 2>/dev/null | sed 's/.*= //')
+    case "$gtk_extents" in
+      "_GTK_FRAME_EXTENTS:  not found."|"") sleep 0.1 ;;
+      *) break ;;
+    esac
+  done
+  echo "gtk_frame_extents=$gtk_extents" >> "$out"
+  echo "net_frame_extents=$(xprop -id "$win" -notype _NET_FRAME_EXTENTS 2>/dev/null | sed 's/.*= //')" >> "$out"
+fi
+# Release only after the reading is on disk, so a failed probe cannot look
+# like a passing run that simply measured nothing.
+touch "$release"
+'@ -replace 'PROBE_OUT', $probeOut -replace 'RELEASE_FILE', $releaseFile
 
-$profileFlag = if ($CargoProfile -eq 'release') { '--release ' } else { '' }
-$launch = "test ! -e $(Sh $remoteOut) && mkdir -p $(Sh $remoteOut) && " +
-    "systemd-run --user --unit=$(Sh $unit) --collect --working-directory=$(Sh $RemotePath) " +
-    "--setenv=$(Sh 'PATH=/home/markik/.cargo/bin:/usr/local/bin:/usr/bin') " +
-    "--setenv=$(Sh "DISPLAY=$display") --setenv=$(Sh "XAUTHORITY=$xauthority") " +
-    # Pinned winit selects Wayland whenever its endpoint is present. Emptying
-    # both Wayland selectors makes the same binary choose DISPLAY/X11.
-    "--setenv=$(Sh 'WAYLAND_DISPLAY=') --setenv=$(Sh 'WAYLAND_SOCKET=') " +
-    "--setenv=$(Sh 'HOST_SMOKE_WINDOW_FRAME=app') " +
-    "--setenv=$(Sh 'HOST_SMOKE_APP_FRAME_INSET=16') " +
-    "--setenv=$(Sh 'CAMBIUM_HOST_FRAME_TRACE=1') " +
-    "--setenv=$(Sh "HOST_SMOKE_SCENARIO=$scenario") " +
-    "--setenv=$(Sh "HOST_SMOKE_RECEIPT=$remoteReceipt") " +
-    "--setenv=$(Sh "HOST_SMOKE_CAPTURE_DIR=$remoteOut") " +
-    "--setenv=$(Sh "HOST_SMOKE_RELEASE_FILE=$releaseFile") " +
-    "/home/markik/.cargo/bin/cargo run $profileFlag-p cambium-genet-winit-host --example smoke"
+$probeEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($probeScript))
 
-Step 'Launching the forced-X11 app frame'
-$started = Invoke-Remote $launch
-if ($started.Code -ne 0) { throw "could not start transient unit: $($started.Output)" }
-
-$xid = $null
-$deadline = [DateTime]::UtcNow.AddMinutes(5)
-while ([DateTime]::UtcNow -lt $deadline) {
-    $found = Invoke-Remote $findWindow
-    if ($found.Code -eq 0 -and $found.Output -match '^0x[0-9a-fA-F]+$') {
-        $xid = $found.Output.Trim()
-        break
-    }
-    $state = Invoke-Remote "systemctl --user is-active $(Sh "$unit.service") 2>/dev/null || true"
-    if ($state.Output -notin @('active', 'activating')) {
-        $log = Invoke-Remote "journalctl --user -u $(Sh "$unit.service") --no-pager -n 80"
-        throw "app exited before native inspection: $($log.Output)"
-    }
-    Start-Sleep -Seconds 1
-}
-if (-not $xid) { throw 'timed out waiting for the host smoke X11 window' }
-Note "window: $xid"
-
-Step 'Capturing native property geometry and X11 client pixels'
-$inspect = @"
-set -eu
-export DISPLAY=$(Sh $display)
-export XAUTHORITY=$(Sh $xauthority)
-xprop -id $(Sh $xid) _NET_WM_NAME _NET_WM_PID _NET_WM_WINDOW_TYPE _NET_FRAME_EXTENTS _GTK_FRAME_EXTENTS > $(Sh "$remoteOut/x11-window.txt")
-xprop -root _NET_SUPPORTED > $(Sh "$remoteOut/x11-root-supported.txt")
-import -window $(Sh $xid) $(Sh "$remoteOut/native-client.png")
-identify -format 'size=%wx%h channels=%[channels] alpha-min=%[fx:minima.a] alpha-max=%[fx:maxima.a]\n' $(Sh "$remoteOut/native-client.png") > $(Sh "$remoteOut/native-client-image.txt")
-touch $(Sh $releaseFile)
-"@
-$observed = Invoke-Remote $inspect
-if ($observed.Code -ne 0) { throw "native inspection failed: $($observed.Output)" }
-
-$deadline = [DateTime]::UtcNow.AddMinutes(2)
-while ([DateTime]::UtcNow -lt $deadline) {
-    $done = Invoke-Remote "test -f $(Sh $remoteReceipt) && grep -q '^RESULT ' $(Sh $remoteReceipt)"
-    if ($done.Code -eq 0) { break }
-    Start-Sleep -Seconds 1
-}
-$done = Invoke-Remote "test -f $(Sh $remoteReceipt) && grep -q '^RESULT ' $(Sh $remoteReceipt)"
-if ($done.Code -ne 0) { throw 'app did not finish after native inspection released it' }
-
-$journal = Invoke-Remote "journalctl --user -u $(Sh "$unit.service") --no-pager > $(Sh "$remoteOut/run.log")"
-if ($journal.Code -ne 0) { throw "could not retain unit journal: $($journal.Output)" }
-
-Step 'Fetching and validating the receipt'
-New-Item -ItemType Directory -Force -Path $Out | Out-Null
-& scp -q -r "${Target}:$remoteOut" $Out
-if ($LASTEXITCODE -ne 0) { throw 'scp failed' }
-$landed = Join-Path $Out (Split-Path $remoteOut -Leaf)
-Get-ChildItem -Force $landed | Move-Item -Destination $Out -Force
-Remove-Item -LiteralPath $landed -Recurse -Force
-
-$receiptPath = Join-Path $Out 'receipt.txt'
-$nativePath = Join-Path $Out 'x11-window.txt'
-$runLog = Join-Path $Out 'run.log'
-if (-not (Select-String -LiteralPath $receiptPath -Pattern '^RESULT ok$' -Quiet)) {
-    throw 'app-authored receipt did not return RESULT ok'
-}
-if (-not (Select-String -LiteralPath $receiptPath -Pattern 'alpha=0\.\.255 transparent=[1-9][0-9]* translucent=[1-9][0-9]*' -Quiet)) {
-    throw 'app captures did not prove clear margins plus translucent shadow pixels'
-}
-if (-not (Select-String -LiteralPath $nativePath -Pattern '^_GTK_FRAME_EXTENTS\(CARDINAL\) = 16, 16, 16, 16$' -Quiet)) {
-    throw 'native window did not publish the expected _GTK_FRAME_EXTENTS'
-}
-$trace = '[cambium-winit] window-frame backend=x11 policy=App decorated=false transparent=true'
-if (-not (Select-String -LiteralPath $runLog -SimpleMatch $trace -Quiet)) {
-    throw "run did not report the expected effective X11 frame: $trace"
-}
-
-$files = Get-ChildItem -File $Out
-$manifest = [ordered]@{
-    repo = 'genet'
-    package = 'cambium-genet-winit-host'
-    example = 'smoke'
-    scenario = 'components/cambium/cambium-genet-winit-host/examples/smoke_x11_shadow.scn'
-    target = $Target
-    platform = 'linux-x11-xwayland'
-    profile = $CargoProfile
-    remote_path = $RemotePath
-    remote_commit = $remoteCommit
-    remote_dirty = $remoteDirty
-    display = $display
-    x11_window = $xid
-    ran_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-    env = [ordered]@{
+Write-Host "==> Starting the headed X11 run" -ForegroundColor Cyan
+$remoteReceipt = Join-Path $PSScriptRoot 'remote-receipt.ps1'
+$runArgs = @{
+    Target = $Target
+    Repo = 'genet'
+    RemotePath = $RemotePath
+    Package = 'cambium-genet-winit-host'
+    Example = 'smoke'
+    Scenario = 'components/cambium/cambium-genet-winit-host/examples/smoke_x11_shadow.scn'
+    ScenarioEnv = 'HOST_SMOKE_SCENARIO'
+    CaptureEnv = 'HOST_SMOKE_CAPTURE_DIR'
+    ReceiptEnv = 'HOST_SMOKE_RECEIPT'
+    Platform = 'linux'
+    CargoProfile = $CargoProfile
+    Out = $Out
+    ExtraEnv = @{
+        # Pinned winit chooses Wayland whenever either endpoint is present.
+        # Emptying both selectors makes this same binary choose DISPLAY/X11.
         WAYLAND_DISPLAY = ''
         WAYLAND_SOCKET = ''
         HOST_SMOKE_WINDOW_FRAME = 'app'
         HOST_SMOKE_APP_FRAME_INSET = '16'
+        HOST_SMOKE_RELEASE_FILE = $releaseFile
         CAMBIUM_HOST_FRAME_TRACE = '1'
     }
-    artifacts = @($files | ForEach-Object {
-        [ordered]@{
-            name = $_.Name
-            bytes = $_.Length
-            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-        }
-    })
 }
-$manifest | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $Out 'manifest.json')
 
-Write-Host ''
-Get-Content $receiptPath | ForEach-Object { Write-Host "    $_" }
-Write-Host ''
-Write-Host "X11 shadow receipt in $Out" -ForegroundColor Green
+$run = Start-Job -ScriptBlock {
+    param($script, $arguments)
+    & $script @arguments 2>&1
+} -ArgumentList $remoteReceipt, $runArgs
+
+Write-Host "==> Probing the live window from a second session" -ForegroundColor Cyan
+& ssh -o BatchMode=yes $Target "echo $probeEncoded | base64 -d > /tmp/w3c-probe.sh && bash /tmp/w3c-probe.sh" 2>&1 | Out-Null
+
+$runOutput = Receive-Job -Job $run -Wait -AutoRemoveJob
+$runOutput | ForEach-Object { Write-Host $_ }
+
+# Bring the probe's reading home beside the app's own captures, so the receipt
+# directory holds both witnesses rather than one.
+& scp -q "${Target}:$probeOut" (Join-Path $Out 'x11-probe.txt')
+if ($LASTEXITCODE -ne 0) { throw 'could not fetch the probe reading' }
+
+$probe = Get-Content (Join-Path $Out 'x11-probe.txt') -Raw
+Write-Host "==> Probe reading" -ForegroundColor Cyan
+Write-Host $probe
+
+$receipt = Get-Content (Join-Path $Out 'receipt.txt') -Raw -ErrorAction SilentlyContinue
+if (-not $receipt) { throw 'the run wrote no receipt' }
+if ($receipt -notmatch 'RESULT ok') { throw "the scenario failed:`n$receipt" }
+if ($receipt -notmatch 'alpha=0\.\.255 transparent=[1-9][0-9]* translucent=[1-9][0-9]* outer-translucent=[1-9][0-9]*') {
+    throw 'the app capture did not prove clear margins plus an outer translucent shadow'
+}
+if ($probe -match 'window=NOT_FOUND') { throw 'the probe never found the window; nothing was measured' }
+if ($probe -match 'wm=UNKNOWN' -or $probe -match 'wm=$') {
+    throw 'the probe could not name the window manager; the receipt would not say what it measured against'
+}
+if ($probe -notmatch 'wm_supports_gtk_frame_extents=yes') {
+    throw 'the window manager does not advertise _GTK_FRAME_EXTENTS; this machine cannot witness W3c'
+}
+if ($probe -notmatch '(?m)^gtk_frame_extents=16, 16, 16, 16$') {
+    throw "the client did not publish the expected 16px _GTK_FRAME_EXTENTS:`n$probe"
+}
+$runLog = Get-Content (Join-Path $Out 'run.log') -Raw -ErrorAction SilentlyContinue
+$trace = '[cambium-winit] window-frame backend=x11 policy=App decorated=false transparent=true'
+if (-not $runLog.Contains($trace)) {
+    throw "the run did not report the expected effective X11 frame: $trace"
+}
+
+# remote-receipt writes the common provenance first. Complete it with this
+# wrapper's native witness and the logs created after its initial file scan.
+$manifestPath = Join-Path $Out 'manifest.json'
+$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$manifest.platform = 'linux-x11-xwayland'
+$manifest | Add-Member -NotePropertyName x11 -NotePropertyValue ([pscustomobject]@{
+    window = ([regex]::Match($probe, '(?m)^window=(.+)$').Groups[1].Value)
+    gtk_frame_extents = '16, 16, 16, 16'
+    compositor = ([regex]::Match($probe, '(?m)^wm=(.+)$').Groups[1].Value)
+    trace = $trace
+}) -Force
+$manifest.artifacts = @(Get-ChildItem -File $Out | Where-Object Name -ne 'manifest.json' | ForEach-Object {
+    [pscustomobject]@{
+        name = $_.Name
+        bytes = $_.Length
+        sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+    }
+})
+$manifest | ConvertTo-Json -Depth 8 | Set-Content $manifestPath
+
+Write-Host "==> W3c XWayland receipt in $Out" -ForegroundColor Green
