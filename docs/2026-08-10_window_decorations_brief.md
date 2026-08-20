@@ -1,7 +1,7 @@
 # Window decorations: generalizing woodshed's CSD across the stack
 
 **Date:** 2026-08-10
-**Status:** W0 through W4 landed, plus window-geometry validation from §6. W1
+**Status:** W0 through W4 landed, plus window-state persistence from §6. W1
 has same-stylesheet headed receipts on Windows, Intel macOS and Apple Silicon
 macOS. W3 has Windows maximized-overflow, Wayland frame-policy and XWayland
 client-shadow receipts. W4 has a headed Windows Snap Layout receipt and the
@@ -431,10 +431,15 @@ The vendored
 subtests on both Boa and Nova, so its seven expected-failure entries were
 removed.
 
-**Staged, with reasons rather than intentions:**
+**Window-state persistence is landed.** `b64c39f53dc` added application-supplied
+restore geometry, monitor validation, explicit receipt-size precedence, and
+last-floating-rectangle capture to the Winit host. `5ea5ad99d58` repaired the
+production import gate exposed by the clean Woodshed consumer build. Woodshed
+`ee0c852` stores the typed geometry in its muniment settings slot and supplies
+it before native window creation.
 
-- **Window-state persistence** has its host half (`AppCtx::geometry` plus
-  `WindowGeometry::is_reachable_on`, unit-tested against the
-  unplugged-monitor and dragged-off-the-bottom cases). The storing half is
-  an application's, and woodshed's next session can wire it to muniment in
-  a few lines.
+The headed Windows receipt in
+`testing/woodshed/window-state-20260820-093601/` moved and resized a fresh
+Woodshed process to `(202, 158)` at `1078 x 642`, closed through the application
+hook, and observed a second process open at the identical rectangle from the
+same sealed scratch profile.
