@@ -283,8 +283,8 @@ where
 
     /// Emit this frame's paint list — content, then the caret/selection
     /// overlay, then whatever overlay scrollbars are mid-hold or mid-fade — and
-    /// lower it to a netrender scene.
-    fn emit_scene(&self, lw: f32, lh: f32) -> Option<netrender::Scene> {
+    /// lower it to a netrender scene plus the GPU resources that scene names.
+    fn emit_scene(&self, lw: f32, lh: f32) -> Option<paint_list_render::TranslatedDisplayList> {
         let runner = self.s.runner.as_ref()?;
         let layout = self.s.layout.as_ref()?;
         let dom = runner.dom();
@@ -347,7 +347,7 @@ where
             list.fonts(),
             list.images(),
         );
-        Some(translated.scene)
+        Some(translated)
     }
 
     pub fn redraw(&mut self) {
@@ -372,13 +372,28 @@ where
         let anim_active = self.relayout(lw, lh);
         self.sync_leaf_fragments();
         self.sync_ime_area();
-        let Some(scene) = self.emit_scene(lw, lh) else {
+        let Some(translated) = self.emit_scene(lw, lh) else {
             return;
         };
 
         let Some(surface) = self.s.surface.as_ref() else {
             return;
         };
+        // Blurred shadows lower to image ops backed by per-frame GPU masks.
+        // Keeping only `translated.scene` drops those masks and leaves the
+        // image keys unresolved, which makes every blurred CSS box-shadow
+        // disappear in this host even though the paint list is correct.
+        for mask in &translated.box_shadow_masks {
+            surface.renderer().build_box_shadow_mask(
+                mask.key,
+                mask.dim,
+                mask.bounds,
+                mask.corner_radius,
+                mask.blur_radius_px,
+                mask.invert,
+            );
+        }
+        let scene = &translated.scene;
         let clear = if self.options.app_frame_is_transparent() {
             wgpu::Color::TRANSPARENT
         } else {
@@ -387,7 +402,7 @@ where
         let (_tex, view) =
             surface
                 .core()
-                .rasterize_scaled(&scene, pw, ph, ColorLoad::Clear(clear), scale);
+                .rasterize_scaled(scene, pw, ph, ColorLoad::Clear(clear), scale);
         let Some(frame) = surface.acquire() else {
             return;
         };

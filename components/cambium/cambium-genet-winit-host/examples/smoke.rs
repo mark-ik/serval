@@ -237,13 +237,14 @@ struct Lane {
     scenario: Option<Scenario>,
     receipt: Option<std::path::PathBuf>,
     /// Frames captured this run: name, geometry, digest, blankness and alpha.
-    captures: Vec<(String, u32, u32, u64, bool, u8, u8, usize, usize)>,
+    captures: Vec<(String, u32, u32, u64, bool, u8, u8, usize, usize, usize)>,
     /// Optional directory for exact frame artifacts. The textual receipt keeps
     /// compact digests; a headed geometry receipt also needs inspectable pixels.
     capture_dir: Option<std::path::PathBuf>,
     capture_errors: Vec<String>,
     /// A shadow receipt requires both clear margin and blurred shadow pixels.
     require_alpha: bool,
+    frame_inset: u32,
     /// Optional file an external platform probe creates when it has finished
     /// observing this exact window. This keeps a headed receipt bounded without
     /// guessing how many frames native inspection will take.
@@ -441,6 +442,23 @@ impl Lane {
                     .chunks_exact(4)
                     .filter(|pixel| (1..=254).contains(&pixel[3]))
                     .count();
+                let inset = self.frame_inset as usize;
+                let width = frame.width as usize;
+                let height = frame.height as usize;
+                let outer_translucent = frame
+                    .rgba
+                    .chunks_exact(4)
+                    .enumerate()
+                    .filter(|(index, pixel)| {
+                        let x = index % width;
+                        let y = index / width;
+                        (1..=254).contains(&pixel[3])
+                            && (x < inset
+                                || x >= width.saturating_sub(inset)
+                                || y < inset
+                                || y >= height.saturating_sub(inset))
+                    })
+                    .count();
                 self.captures.push((
                     name,
                     frame.width,
@@ -451,6 +469,7 @@ impl Lane {
                     alpha_max,
                     transparent,
                     translucent,
+                    outer_translucent,
                 ));
             },
             // Not yet presented: put it back and try again next frame.
@@ -475,7 +494,7 @@ impl Lane {
             || self
                 .captures
                 .iter()
-                .all(|capture| capture.7 > 0 && capture.8 > 0);
+                .all(|capture| capture.7 > 0 && capture.8 > 0 && capture.9 > 0);
         let frames_ok = blanks == 0
             && distinct.len() > 1
             && sizes.len() > 1
@@ -486,11 +505,21 @@ impl Lane {
         let result = if ok { "RESULT ok" } else { "RESULT fail" };
         let mut body = vec![result.to_string()];
         body.extend(outcome.log.iter().cloned());
-        for (name, w, h, digest, blank, alpha_min, alpha_max, transparent, translucent) in
-            &self.captures
+        for (
+            name,
+            w,
+            h,
+            digest,
+            blank,
+            alpha_min,
+            alpha_max,
+            transparent,
+            translucent,
+            outer_translucent,
+        ) in &self.captures
         {
             body.push(format!(
-                "capture {name} {w}x{h} digest={digest:016x} alpha={alpha_min}..{alpha_max} transparent={transparent} translucent={translucent}{}",
+                "capture {name} {w}x{h} digest={digest:016x} alpha={alpha_min}..{alpha_max} transparent={transparent} translucent={translucent} outer-translucent={outer_translucent}{}",
                 if *blank { " BLANK" } else { "" }
             ));
         }
@@ -510,7 +539,7 @@ impl Lane {
         }
         if !alpha_ok {
             body.push(
-                "FAIL: a frame-shadow capture needs transparent margin pixels and translucent shadow pixels"
+                "FAIL: a frame-shadow capture needs transparent margin pixels and translucent shadow pixels outside the visible frame"
                     .to_string(),
             );
         }
@@ -609,6 +638,7 @@ fn main() {
                 capture_dir: std::env::var("HOST_SMOKE_CAPTURE_DIR").ok().map(Into::into),
                 capture_errors: Vec::new(),
                 require_alpha: app_frame_inset > 0,
+                frame_inset: app_frame_inset,
                 release_file: None,
                 finished: false,
             }
