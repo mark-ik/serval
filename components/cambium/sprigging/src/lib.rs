@@ -109,6 +109,24 @@ impl<'a> PaintCx<'a> {
         self.cmds.push(cmd);
     }
 
+    /// Push a sharp rectangular clip in leaf-local coordinates; pair with
+    /// [`pop_clip`](Self::pop_clip). A leaf's Path-A splice is lowered as its
+    /// own fragment, outside the page's overflow clip stack, so a leaf that
+    /// must not paint past its box clips itself.
+    pub fn push_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.cmds.push(PaintCmd::PushClip(paint_list_api::ClipSpec {
+            kind: paint_list_api::ClipKind::Rect(LayoutRect::new(
+                LayoutPoint::new(x, y),
+                LayoutPoint::new(x + w, y + h),
+            )),
+        }));
+    }
+
+    /// Pop the clip pushed by [`push_clip_rect`](Self::push_clip_rect).
+    pub fn pop_clip(&mut self) {
+        self.cmds.push(PaintCmd::PopClip);
+    }
+
     /// Convenience: fill a local rect with a solid color. Mirrors genet-layout
     /// `paint_emit`'s own `DrawRect` construction so the produced command is
     /// byte-identical to a native background fill.

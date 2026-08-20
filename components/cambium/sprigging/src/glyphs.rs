@@ -202,6 +202,9 @@ impl Leaf for GraphCanvas {
 
     fn paint(&mut self, cx: &mut PaintCx<'_>) {
         let s = cx.size();
+        // A panned or zoomed viewport projects positions outside the box;
+        // this canvas must not paint into its neighbours.
+        cx.push_clip_rect(0.0, 0.0, s.width, s.height);
         // Inset so node circles at 0/1 coordinates stay inside the box.
         let inset = self.node_radius + self.edge_width;
         let place = |n: &GraphGlyphNode| self.viewport.project((n.x, n.y), s, inset);
@@ -264,6 +267,7 @@ impl Leaf for GraphCanvas {
             }
             cx.fill_path(Path::circle(x, y, self.node_radius), n.color);
         }
+        cx.pop_clip();
         self.dirty = false;
     }
 
@@ -564,8 +568,12 @@ mod tests {
         );
         assert_eq!(strokes, 2, "two in-range edges");
         assert_eq!(fills, 3, "three node circles");
-        // Painter order: edges first.
-        assert!(matches!(&cmds[0], PaintCmd::DrawPath(p) if p.stroke.is_some()));
+        // The whole painting is clipped to the leaf's own box: a panned or
+        // zoomed camera must not paint into the neighbours.
+        assert!(matches!(&cmds[0], PaintCmd::PushClip(_)));
+        assert!(matches!(cmds.last(), Some(PaintCmd::PopClip)));
+        // Painter order inside the clip: edges first.
+        assert!(matches!(&cmds[1], PaintCmd::DrawPath(p) if p.stroke.is_some()));
         assert!(!g.paint_dirty());
     }
 

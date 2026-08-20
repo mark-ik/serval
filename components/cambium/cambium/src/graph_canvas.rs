@@ -14,8 +14,8 @@ use sprigging::{ColorF, GraphCanvas, GraphGlyphNode, GraphGlyphRelation, GraphVi
 use crate::component::{ComponentView, component};
 use crate::{
     FocusEvent, FocusPhase, GenetCtx, GenetElement, HoverEvent, HoverPhase, OptionalAction,
-    PointerClick, PointerEvent, PointerPhase, View, custom_leaf, el, focusable, on_click, on_focus,
-    on_hover, on_pointer,
+    PointerClick, PointerEvent, PointerPhase, View, WheelEvent, custom_leaf, el, focusable,
+    on_click, on_focus, on_hover, on_pointer, on_wheel,
 };
 
 /// Structural classes emitted by [`graph_canvas_swatch`]. Hosts own the palette.
@@ -61,11 +61,22 @@ pub const GRAPH_CANVAS_SWATCH_CSS: &str = r#"
     width: 100%;
 }
 .graph-canvas-swatch-label {
+    display: block;
     font-size: 10px;
     line-height: 1;
     white-space: nowrap;
     opacity: 0.85;
     pointer-events: none;
+    z-index: 1;
+}
+.graph-canvas-swatch-labels,
+.graph-canvas-swatch-relation-targets,
+.graph-canvas-swatch-targets {
+    pointer-events: none;
+}
+.graph-canvas-swatch-relation,
+.graph-canvas-swatch-node {
+    pointer-events: auto;
 }
 .graph-canvas-swatch-label.selected {
     font-weight: bold;
@@ -112,6 +123,20 @@ pub struct GraphCanvasNodeDrag<Id> {
     pub id: Id,
     pub phase: PointerPhase,
     pub position: (f32, f32),
+}
+
+/// A leaf-local rectangular region anchored to one projected graph node.
+///
+/// Consumers use this for richer overlays whose contents remain app-owned: a
+/// document preview, inspector, or editable card can occupy the node without
+/// duplicating the canvas viewport math. The rectangle is clamped inside the
+/// current canvas even when the node sits on an edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphCanvasNodeRegion {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// One app-facing edge. Endpoints that are absent from the subgraph are skipped.
@@ -341,6 +366,92 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
             .collect()
     }
 
+    /// Place a rectangular overlay around one node using the canvas's exact
+    /// viewport projection. Oversized requests shrink to the canvas bounds.
+    pub fn projected_node_region(
+        &self,
+        id: &Id,
+        width: f32,
+        height: f32,
+    ) -> Option<GraphCanvasNodeRegion> {
+        let (_, center) = self
+            .projected_positions()
+            .into_iter()
+            .find(|(candidate, _)| *candidate == id)?;
+        let canvas_width = self.width as f32;
+        let canvas_height = self.height as f32;
+        let width = width.max(1.0).min(canvas_width);
+        let height = height.max(1.0).min(canvas_height);
+        Some(GraphCanvasNodeRegion {
+            left: (center.0 - width / 2.0).clamp(0.0, canvas_width - width),
+            top: (center.1 - height / 2.0).clamp(0.0, canvas_height - height),
+            width,
+            height,
+        })
+    }
+
+    /// Put a visible node label across the quieter axis at that node. A
+    /// horizontal lane gets labels above or below it; a vertical lane gets
+    /// labels beside it. This avoids the old failure where every label sat to
+    /// the right and a right-going relation was therefore painted through its
+    /// source label.
+    fn label_placement(&self, index: usize) -> GraphLabelPlacement {
+        let Some(node) = self.graph.nodes.get(index) else {
+            return GraphLabelPlacement::Right;
+        };
+        let mut horizontal = 0.0_f32;
+        let mut vertical = 0.0_f32;
+        let mut add_neighbor = |neighbor: &Id| {
+            let Some(peer) = self.graph.nodes.iter().find(|peer| &peer.id == neighbor) else {
+                return;
+            };
+            horizontal += (peer.position.0 - node.position.0).abs();
+            vertical += (peer.position.1 - node.position.1).abs();
+        };
+        if self.relations.is_empty() {
+            for edge in &self.graph.edges {
+                if edge.from == node.id {
+                    add_neighbor(&edge.to);
+                } else if edge.to == node.id {
+                    add_neighbor(&edge.from);
+                }
+            }
+        } else {
+            for relation in self.relations.iter().filter(|relation| relation.visible) {
+                if relation.from == node.id {
+                    add_neighbor(&relation.to);
+                } else if relation.to == node.id {
+                    add_neighbor(&relation.from);
+                }
+            }
+        }
+
+        let size = Size {
+            width: self.width as f32,
+            height: self.height as f32,
+        };
+        let position =
+            self.viewport
+                .project(node.position, size, self.node_radius + self.edge_width);
+        if horizontal > 0.0 && horizontal >= vertical {
+            if position.1 >= self.height as f32 * 0.28 {
+                GraphLabelPlacement::Above
+            } else {
+                GraphLabelPlacement::Below
+            }
+        } else if vertical > 0.0 {
+            if position.0 <= self.width as f32 * 0.72 {
+                GraphLabelPlacement::Right
+            } else {
+                GraphLabelPlacement::Left
+            }
+        } else if position.0 <= self.width as f32 * 0.72 {
+            GraphLabelPlacement::Right
+        } else {
+            GraphLabelPlacement::Left
+        }
+    }
+
     /// Visible relation cells with their projected polylines. This is shared by
     /// retained paint and native relation targets, so a relation is neither
     /// hittable when hidden nor represented at stale endpoint geometry.
@@ -368,7 +479,7 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
     /// normalized polylines. Parallel cells fan around their shared chord;
     /// authored routes with a real interior are left alone.
     fn relation_routes(&self) -> Vec<(&GraphCanvasRelation<Id>, Vec<(f32, f32)>)> {
-        const FAN_GAP: f32 = 0.075;
+        const FAN_GAP_PX: f32 = 12.0;
         let visible = self
             .relations
             .iter()
@@ -429,15 +540,29 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
                     .iter()
                     .position(|(peer, _, _)| std::ptr::eq(*peer, *relation))
                     .unwrap_or_default() as f32;
-                let offset = (rank - (peers.len() as f32 - 1.0) * 0.5) * FAN_GAP;
-                let dx = b.0 - a.0;
-                let dy = b.1 - a.1;
+                let offset = (rank - (peers.len() as f32 - 1.0) * 0.5) * FAN_GAP_PX;
+                let size = Size {
+                    width: self.width as f32,
+                    height: self.height as f32,
+                };
+                let inset = self.node_radius + self.edge_width;
+                let a_px = self.viewport.project(a, size, inset);
+                let b_px = self.viewport.project(b, size, inset);
+                let dx = b_px.0 - a_px.0;
+                let dy = b_px.1 - a_px.1;
                 let length = (dx * dx + dy * dy).sqrt().max(0.0001);
-                let middle = (
-                    (a.0 + b.0) * 0.5 - dy / length * offset,
-                    (a.1 + b.1) * 0.5 + dx / length * offset,
-                );
-                (*relation, vec![a, middle, b])
+                let normal = (-dy / length * offset, dx / length * offset);
+                let first = (a_px.0 + dx * 0.28 + normal.0, a_px.1 + dy * 0.28 + normal.1);
+                let second = (a_px.0 + dx * 0.72 + normal.0, a_px.1 + dy * 0.72 + normal.1);
+                (
+                    *relation,
+                    vec![
+                        a,
+                        graph_position_at_unclamped(self.viewport, size, inset, first),
+                        graph_position_at_unclamped(self.viewport, size, inset, second),
+                        b,
+                    ],
+                )
             })
             .collect()
     }
@@ -456,6 +581,58 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
             self.node_radius + self.edge_width,
             local,
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphLabelPlacement {
+    Above,
+    Below,
+    Left,
+    Right,
+}
+
+impl GraphLabelPlacement {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Above => "above",
+            Self::Below => "below",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    fn style(self, x: f32, y: f32, clearance: f32, canvas: Size) -> String {
+        const LABEL_WIDTH: f32 = 160.0;
+        const LABEL_HEIGHT: f32 = 14.0;
+        let centred_left =
+            (x - LABEL_WIDTH * 0.5).clamp(0.0, (canvas.width - LABEL_WIDTH).max(0.0));
+        let centred_top =
+            (y - LABEL_HEIGHT * 0.5).clamp(0.0, (canvas.height - LABEL_HEIGHT).max(0.0));
+        match self {
+            Self::Above => format!(
+                "position:absolute;left:{centred_left}px;top:{}px;width:{LABEL_WIDTH}px;text-align:center;overflow:hidden;text-overflow:ellipsis;",
+                (y - clearance - LABEL_HEIGHT).max(0.0)
+            ),
+            Self::Below => format!(
+                "position:absolute;left:{centred_left}px;top:{}px;width:{LABEL_WIDTH}px;text-align:center;overflow:hidden;text-overflow:ellipsis;",
+                (y + clearance).min((canvas.height - LABEL_HEIGHT).max(0.0))
+            ),
+            Self::Left => {
+                let width = (x - clearance).clamp(0.0, LABEL_WIDTH);
+                format!(
+                    "position:absolute;left:{}px;top:{centred_top}px;width:{width}px;text-align:right;overflow:hidden;text-overflow:ellipsis;",
+                    (x - clearance - width).max(0.0)
+                )
+            },
+            Self::Right => {
+                let left = (x + clearance).min(canvas.width);
+                let width = (canvas.width - left).clamp(0.0, LABEL_WIDTH);
+                format!(
+                    "position:absolute;left:{left}px;top:{centred_top}px;width:{width}px;text-align:left;overflow:hidden;text-overflow:ellipsis;"
+                )
+            },
+        }
     }
 }
 
@@ -481,6 +658,31 @@ fn graph_position_at(
     (
         ((x - 0.5 - viewport.pan.0) / zoom + 0.5).clamp(0.0, 1.0),
         ((y - 0.5 - viewport.pan.1) / zoom + 0.5).clamp(0.0, 1.0),
+    )
+}
+
+fn graph_position_at_unclamped(
+    viewport: GraphViewport,
+    size: Size,
+    inset: f32,
+    local: (f32, f32),
+) -> (f32, f32) {
+    let width = (size.width - 2.0 * inset).max(0.0);
+    let height = (size.height - 2.0 * inset).max(0.0);
+    let zoom = viewport.zoom.max(0.01);
+    let x = if width > 0.0 {
+        (local.0 - inset) / width
+    } else {
+        0.5
+    };
+    let y = if height > 0.0 {
+        (local.1 - inset) / height
+    } else {
+        0.5
+    };
+    (
+        (x - 0.5 - viewport.pan.0) / zoom + 0.5,
+        (y - 0.5 - viewport.pan.1) / zoom + 0.5,
     )
 }
 
@@ -538,6 +740,8 @@ where
         |_state: &mut State, _id: String| {},
         |_state: &mut State, _id: Option<String>| {},
         on_expand,
+        |_state: &mut State, _event: PointerEvent| {},
+        |_state: &mut State, _event: WheelEvent| {},
     )
 }
 
@@ -585,6 +789,8 @@ where
         |_state: &mut State, _id: String| {},
         |_state: &mut State, _id: Option<String>| {},
         on_expand,
+        |_state: &mut State, _event: PointerEvent| {},
+        |_state: &mut State, _event: WheelEvent| {},
     )
 }
 
@@ -631,6 +837,8 @@ where
         |_state: &mut State, _id: String| {},
         |_state: &mut State, _id: Option<String>| {},
         on_expand,
+        |_state: &mut State, _event: PointerEvent| {},
+        |_state: &mut State, _event: WheelEvent| {},
     )
 }
 
@@ -685,6 +893,8 @@ where
         on_relation_click,
         on_relation_hover,
         on_expand,
+        |_state: &mut State, _event: PointerEvent| {},
+        |_state: &mut State, _event: WheelEvent| {},
     )
 }
 
@@ -736,6 +946,8 @@ where
         |_state: &mut State, _id: String| {},
         |_state: &mut State, _id: Option<String>| {},
         on_expand,
+        |_state: &mut State, _event: PointerEvent| {},
+        |_state: &mut State, _event: WheelEvent| {},
     )
 }
 
@@ -757,6 +969,10 @@ pub fn graph_canvas_swatch_with_focus_and_drag_and_relations<
     RelationHover,
     Expand,
     ExpandOut,
+    Pan,
+    PanOut,
+    Zoom,
+    ZoomOut,
 >(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_node_click: Click,
@@ -766,6 +982,8 @@ pub fn graph_canvas_swatch_with_focus_and_drag_and_relations<
     on_relation_click: RelationClick,
     on_relation_hover: RelationHover,
     on_expand: Expand,
+    on_background_pointer: Pan,
+    on_wheel_event: Zoom,
 ) -> impl View<State, AppAction, GenetCtx, Element = GenetElement>
 where
     State: 'static,
@@ -786,6 +1004,14 @@ where
     RelationHover: Fn(&mut State, Option<String>) + Clone + 'static,
     ExpandOut: OptionalAction<AppAction>,
     Expand: Fn(&mut State) -> ExpandOut + Clone + 'static,
+    // The background pointer and wheel handlers receive the raw events: pan
+    // anchoring and zoom stepping are caller policy ([`graph_canvas`] turns
+    // them into [`GraphCanvasEvent::Pan`] / [`GraphCanvasEvent::Zoom`]).
+    // Returning `()` keeps a caller that has no viewport events silent.
+    PanOut: OptionalAction<AppAction>,
+    Pan: Fn(&mut State, PointerEvent) -> PanOut + Clone + 'static,
+    ZoomOut: OptionalAction<AppAction>,
+    Zoom: Fn(&mut State, WheelEvent) -> ZoomOut + Clone + 'static,
 {
     let positions = swatch.projected_positions();
     let hit_size = swatch.hit_size.max(1.0);
@@ -805,7 +1031,8 @@ where
             .nodes
             .iter()
             .zip(swatch.projected_positions())
-            .map(|(node, (_, (x, y)))| {
+            .enumerate()
+            .map(|(index, (node, (_, (x, y))))| {
                 // Same state modifiers the node buttons carry. A label layer
                 // that cannot say which node is selected forces a consumer to
                 // keep hand-rolling the whole layer for the sake of one
@@ -821,16 +1048,14 @@ where
                 if swatch.hovered.as_ref() == Some(&node.id) {
                     class.push_str(" hovered");
                 }
+                let placement = swatch.label_placement(index);
                 el::<_, State, AppAction>("span", node.label.clone())
                     .attr("class", class)
                     .attr("aria-hidden", "true")
+                    .attr("data-label-placement", placement.name())
                     .attr(
                         "style",
-                        format!(
-                            "position:absolute;left:{}px;top:{}px;",
-                            x + swatch.node_radius + 4.0,
-                            y - 5.0,
-                        ),
+                        placement.style(x, y, swatch.node_radius + 7.0, size),
                     )
             })
             .collect()
@@ -985,7 +1210,7 @@ where
         Vec::new()
     };
 
-    el(
+    let root = el(
         "div",
         (
             custom_leaf::<State, AppAction>(swatch.leaf_key, swatch.width, swatch.height)
@@ -1023,13 +1248,21 @@ where
     .attr("class", "graph-canvas-swatch")
     .attr("role", "group")
     .attr("aria-label", swatch.label.clone())
+    // `overflow:hidden` crops the native node, label, and relation targets a
+    // panned or zoomed viewport projects outside this box; the swatch is their
+    // `position:relative` containing block, so the clip applies to them. The
+    // painted leaf clips itself (see sprigging's GraphCanvas paint).
     .attr(
         "style",
         format!(
-            "position:relative;display:block;width:{}px;height:{}px;max-width:100%;",
+            "position:relative;display:block;overflow:hidden;width:{}px;height:{}px;max-width:100%;",
             swatch.width, swatch.height
         ),
-    )
+    );
+    // Background drags and wheel notches reach these root handlers only when
+    // no inner target claims the event: a node's own pointer handler is the
+    // innermost element under a node drag, so panning never fights dragging.
+    on_wheel(on_pointer(root, on_background_pointer), on_wheel_event)
 }
 
 /// What a [`graph_canvas`] reports to its parent. Hover, focus, and relation
@@ -1045,12 +1278,24 @@ pub enum GraphCanvasEvent<Id> {
     Drag(GraphCanvasNodeDrag<Id>),
     /// A relation cell was activated.
     RelationActivate(String),
+    /// The canvas background was dragged. `delta` is in viewport pan units —
+    /// the fraction of the canvas the pointer moved on each axis — so a
+    /// consumer applies it to [`GraphViewport::pan`] directly. The component
+    /// does not mutate the viewport itself: the viewport stays consumer-owned
+    /// state, exactly like selection.
+    Pan { delta: (f32, f32) },
+    /// The wheel turned over the canvas. Multiply the consumer's zoom by
+    /// `factor` (greater than one zooms in).
+    Zoom { factor: f32 },
 }
 
 impl<Id> crate::Action for GraphCanvasEvent<Id> {}
 
 /// Component-owned interaction state for [`graph_canvas`].
 struct GraphCanvasLocal<Id> {
+    /// Background-drag anchor for pointer panning: the last pointer position,
+    /// leaf-local device px, while a background drag is held.
+    pan_anchor: Option<(f32, f32)>,
     hovered: Option<Id>,
     focus: Option<Id>,
     hovered_relation: Option<String>,
@@ -1075,20 +1320,22 @@ struct GraphCanvasLocal<Id> {
 /// `cargo llvm-lines`, the swatch costs the same either way (~1.6k lines, 11
 /// instantiations); the boundary moves that instantiation from the app's state
 /// type onto `GraphCanvasLocal<Id>` rather than removing it.
-pub fn graph_canvas<State, A, Id, Kind, F>(
+pub fn graph_canvas<State, A, Output, Id, Kind, F>(
     swatch: &GraphCanvasSwatch<Id, Kind>,
     on_event: F,
-) -> impl View<State, A, GenetCtx, Element = GenetElement> + use<State, A, Id, Kind, F>
+) -> impl View<State, A, GenetCtx, Element = GenetElement> + use<State, A, Output, Id, Kind, F>
 where
     State: 'static,
     A: 'static,
+    Output: OptionalAction<A> + 'static,
     Id: Clone + PartialEq + 'static,
     Kind: Clone + PartialEq + 'static,
-    F: Fn(&mut State, GraphCanvasEvent<Id>) -> A + 'static,
+    F: Fn(&mut State, GraphCanvasEvent<Id>) -> Output + 'static,
 {
     component(
         swatch.clone(),
         |_props: &GraphCanvasSwatch<Id, Kind>| GraphCanvasLocal {
+            pan_anchor: None,
             hovered: None,
             focus: None,
             hovered_relation: None,
@@ -1122,6 +1369,48 @@ where
                     local.hovered_relation = id;
                 },
                 |_: &mut GraphCanvasLocal<Id>| GraphCanvasEvent::Expand,
+                {
+                    let width = (props.width as f32).max(1.0);
+                    let height = (props.height as f32).max(1.0);
+                    move |local: &mut GraphCanvasLocal<Id>, event: PointerEvent| {
+                        match event.phase {
+                            PointerPhase::Down => {
+                                local.pan_anchor = Some(event.local);
+                                None
+                            }
+                            PointerPhase::Move => {
+                                let Some(anchor) = local.pan_anchor else {
+                                    return None;
+                                };
+                                let delta =
+                                    (event.local.0 - anchor.0, event.local.1 - anchor.1);
+                                local.pan_anchor = Some(event.local);
+                                if delta == (0.0, 0.0) {
+                                    return None;
+                                }
+                                Some(GraphCanvasEvent::Pan {
+                                    delta: (delta.0 / width, delta.1 / height),
+                                })
+                            }
+                            PointerPhase::Up => {
+                                local.pan_anchor = None;
+                                None
+                            }
+                        }
+                    }
+                },
+                |_: &mut GraphCanvasLocal<Id>, event: WheelEvent| {
+                    // A notch toward the top zooms in, matching every map
+                    // surface; the host's own scroll default is suppressed so
+                    // the page does not scroll under the zoom.
+                    if event.delta.1 == 0.0 {
+                        return None;
+                    }
+                    event.prevent_default();
+                    Some(GraphCanvasEvent::Zoom {
+                        factor: if event.delta.1 > 0.0 { 1.2 } else { 1.0 / 1.2 },
+                    })
+                },
             )) as ComponentView<GraphCanvasLocal<Id>, GraphCanvasEvent<Id>>
         },
         on_event,
@@ -1190,6 +1479,55 @@ mod tests {
             |state: &mut State, id| state.focused = id,
             |state: &mut State| state.expanded = true,
         ))
+    }
+
+    #[derive(Default)]
+    struct ViewportState {
+        pans: Vec<(f32, f32)>,
+        zooms: Vec<f32>,
+    }
+
+    type ViewportView = Box<dyn AnyView<ViewportState, (), GenetCtx, GenetElement>>;
+
+    fn viewport_view(_state: &ViewportState) -> ViewportView {
+        let swatch = model(None, None);
+        Box::new(graph_canvas(
+            &swatch,
+            |state: &mut ViewportState, event: GraphCanvasEvent<u8>| match event {
+                GraphCanvasEvent::Pan { delta } => state.pans.push(delta),
+                GraphCanvasEvent::Zoom { factor } => state.zooms.push(factor),
+                _ => {}
+            },
+        ))
+    }
+
+    /// The viewport stays consumer state: a background drag reports pan deltas
+    /// in canvas fractions, a wheel notch reports a zoom factor, and neither
+    /// mutates the swatch.
+    #[test]
+    fn background_drag_pans_and_wheel_zooms() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
+            dom.clone(),
+            viewport_view,
+            ViewportState::default(),
+        );
+        let root = runner.root();
+        let canvas = find_attr(&dom.borrow(), root, "class", "graph-canvas-swatch")
+            .expect("canvas root element");
+
+        let size = (240.0, 112.0);
+        runner.dispatch_pointer_down(
+            canvas,
+            PointerEvent::new(PointerPhase::Down, (10.0, 10.0), size),
+        );
+        runner.dispatch_pointer_move(PointerEvent::new(PointerPhase::Move, (34.0, 24.0), size));
+        runner.dispatch_pointer_up(PointerEvent::new(PointerPhase::Up, (34.0, 24.0), size));
+        assert_eq!(runner.state().pans, vec![(24.0 / 240.0, 14.0 / 112.0)]);
+
+        runner.dispatch_wheel(canvas, WheelEvent::new((0.0, 3.0), (5.0, 5.0), size));
+        runner.dispatch_wheel(canvas, WheelEvent::new((0.0, -3.0), (5.0, 5.0), size));
+        assert_eq!(runner.state().zooms, vec![1.2, 1.0 / 1.2]);
     }
 
     fn attr<'a>(dom: &'a ScriptedDom, node: NodeId, name: &str) -> Option<&'a str> {
@@ -1264,7 +1602,7 @@ mod tests {
             hovered: Some(2),
             ..State::default()
         };
-        let mut runner = GenetAppRunner::<_, _, _, ()>::new(dom.clone(), labelled_view, state);
+        let runner = GenetAppRunner::<_, _, _, ()>::new(dom.clone(), labelled_view, state);
         let root = runner.root();
         let mut found = Vec::new();
         classes_of(&dom.borrow(), root, "graph-canvas-swatch-label", &mut found);
@@ -1282,6 +1620,14 @@ mod tests {
                 .iter()
                 .any(|c| c == "graph-canvas-swatch-label hovered"),
             "the hovered node's label must say so: {found:?}"
+        );
+
+        let swatch = model(None, None).with_node_labels(true);
+        assert_eq!(swatch.label_placement(0), GraphLabelPlacement::Above);
+        assert_eq!(swatch.label_placement(1), GraphLabelPlacement::Above);
+        assert!(
+            find_attr(&dom.borrow(), root, "data-label-placement", "above").is_some(),
+            "a horizontal graph publishes its label-clear placement"
         );
     }
 
@@ -1313,6 +1659,35 @@ mod tests {
             ),
             Some(projected[0].1)
         );
+    }
+
+    #[test]
+    fn node_regions_share_projection_and_clamp_inside_the_canvas() {
+        let swatch = model(None, None);
+        let projected = swatch.projected_positions();
+        let region = swatch
+            .projected_node_region(&1, 120.0, 80.0)
+            .expect("node region");
+        let center = projected[0].1;
+        assert!(center.0 >= region.left && center.0 <= region.left + region.width);
+        assert!(center.1 >= region.top && center.1 <= region.top + region.height);
+        assert!(region.left >= 0.0 && region.top >= 0.0);
+        assert!(region.left + region.width <= swatch.width as f32);
+        assert!(region.top + region.height <= swatch.height as f32);
+
+        let full = swatch
+            .projected_node_region(&2, 10_000.0, 10_000.0)
+            .expect("oversized region");
+        assert_eq!(
+            full,
+            GraphCanvasNodeRegion {
+                left: 0.0,
+                top: 0.0,
+                width: swatch.width as f32,
+                height: swatch.height as f32,
+            }
+        );
+        assert!(swatch.projected_node_region(&99, 10.0, 10.0).is_none());
     }
 
     #[test]
@@ -1454,9 +1829,16 @@ mod tests {
         ]);
         let routes = swatch.projected_relations();
         assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].1.len(), 3);
-        assert_eq!(routes[1].1.len(), 3);
-        assert_ne!(routes[0].1[1], routes[1].1[1], "fan midpoints diverge");
+        assert_eq!(routes[0].1.len(), 4);
+        assert_eq!(routes[1].1.len(), 4);
+        assert_eq!(routes[0].1[0], routes[1].1[0]);
+        assert_eq!(routes[0].1[3], routes[1].1[3]);
+        let gap = (routes[0].1[1].1 - routes[1].1[1].1).abs();
+        assert!((gap - 12.0).abs() < 0.01, "pixel-stable lane gap: {gap}");
+        assert_eq!(
+            routes[0].1[1].1, routes[0].1[2].1,
+            "each relation holds its own lane through the graph interior"
+        );
     }
 
     #[test]
