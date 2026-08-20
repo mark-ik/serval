@@ -379,19 +379,49 @@ where
         let Some(surface) = self.s.surface.as_ref() else {
             return;
         };
-        let (_tex, view) = surface.core().rasterize_scaled(
-            &scene,
-            pw,
-            ph,
-            ColorLoad::Clear(wgpu::Color::BLACK),
-            scale,
-        );
+        let clear = if self.options.app_frame_is_transparent() {
+            wgpu::Color::TRANSPARENT
+        } else {
+            wgpu::Color::BLACK
+        };
+        let (_tex, view) =
+            surface
+                .core()
+                .rasterize_scaled(&scene, pw, ph, ColorLoad::Clear(clear), scale);
         let Some(frame) = surface.acquire() else {
             return;
         };
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // The composition pass blends and therefore loads its target. Clear a
+        // fresh swapchain texture first so transparent app-frame margins do
+        // not preserve undefined pixels from the compositor-owned image.
+        let mut encoder =
+            surface
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("cambium surface clear"),
+                });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("cambium surface clear pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        surface.queue().submit([encoder.finish()]);
         surface.renderer().compose_external_texture(
             &view,
             &target,

@@ -84,6 +84,45 @@ pub enum WindowFrame {
     App,
 }
 
+/// Transparent margins reserved inside an application-drawn window frame.
+///
+/// These are logical pixels, matching the application's CSS coordinate space.
+/// The application draws its frame and effects inside them. The desktop host
+/// supplies an alpha-capable surface and, on X11, publishes the corresponding
+/// device-pixel `_GTK_FRAME_EXTENTS` so the window manager snaps and maximizes
+/// against the visible frame rather than the transparent shadow boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AppFrameInsets {
+    pub left: u32,
+    pub right: u32,
+    pub top: u32,
+    pub bottom: u32,
+}
+
+impl AppFrameInsets {
+    /// A frame with no transparent outer effect.
+    pub const NONE: Self = Self {
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+    };
+
+    /// The same margin on every edge.
+    pub const fn uniform(value: u32) -> Self {
+        Self {
+            left: value,
+            right: value,
+            top: value,
+            bottom: value,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.left == 0 && self.right == 0 && self.top == 0 && self.bottom == 0
+    }
+}
+
 /// Window and pipeline configuration.
 pub struct HostOptions {
     /// The window title.
@@ -97,6 +136,13 @@ pub struct HostOptions {
     /// New consumers should set `window_frame` directly. This field can retire
     /// after the existing Woodshed consumer moves off the boolean API.
     pub decorations: bool,
+    /// Transparent margins occupied by effects around an app-drawn frame.
+    ///
+    /// This is geometry, not a shared visual style: the application still
+    /// chooses and draws its own shadow. Keep these values equal to the outer
+    /// transparent margins in that application stylesheet. They are ignored
+    /// when the effective [`WindowFrame`] is [`WindowFrame::Host`].
+    pub app_frame_insets: AppFrameInsets,
     /// Logical size to open at when no environment override is present.
     pub initial_logical_size: (f64, f64),
     /// Environment variable names overriding the logical width and height,
@@ -124,6 +170,7 @@ impl Default for HostOptions {
             title: String::new(),
             window_frame: WindowFrame::Host,
             decorations: true,
+            app_frame_insets: AppFrameInsets::NONE,
             initial_logical_size: (1_100.0, 664.0),
             size_env: None,
             netrender: Box::new(|| NetrenderOptions {
@@ -145,11 +192,25 @@ impl HostOptions {
             WindowFrame::App
         }
     }
+
+    /// Insets that actually participate in this window's frame policy.
+    pub fn effective_app_frame_insets(&self) -> AppFrameInsets {
+        if self.effective_window_frame() == WindowFrame::App {
+            self.app_frame_insets
+        } else {
+            AppFrameInsets::NONE
+        }
+    }
+
+    /// Whether the native window and presentation surface need alpha.
+    pub fn app_frame_is_transparent(&self) -> bool {
+        !self.effective_app_frame_insets().is_empty()
+    }
 }
 
 #[cfg(test)]
 mod window_frame_tests {
-    use super::{HostOptions, WindowFrame};
+    use super::{AppFrameInsets, HostOptions, WindowFrame};
 
     #[test]
     fn host_frame_is_the_default() {
@@ -175,6 +236,25 @@ mod window_frame_tests {
             ..Default::default()
         };
         assert_eq!(options.effective_window_frame(), WindowFrame::App);
+    }
+
+    #[test]
+    fn app_frame_insets_only_apply_to_an_app_frame() {
+        let insets = AppFrameInsets::uniform(12);
+        let host = HostOptions {
+            app_frame_insets: insets,
+            ..Default::default()
+        };
+        assert_eq!(host.effective_app_frame_insets(), AppFrameInsets::NONE);
+        assert!(!host.app_frame_is_transparent());
+
+        let app = HostOptions {
+            window_frame: WindowFrame::App,
+            app_frame_insets: insets,
+            ..Default::default()
+        };
+        assert_eq!(app.effective_app_frame_insets(), insets);
+        assert!(app.app_frame_is_transparent());
     }
 }
 

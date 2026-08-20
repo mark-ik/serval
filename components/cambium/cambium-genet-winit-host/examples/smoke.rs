@@ -35,8 +35,8 @@ use cambium::{
 #[cfg(not(target_os = "macos"))]
 use cambium_genet_winit_host::WindowCommands;
 use cambium_genet_winit_host::{
-    AppCtx, Frame, HostHooks, HostOptions, HostPointer, Init, Runner, WindowCommand, WindowFrame,
-    read_frame, run,
+    AppCtx, AppFrameInsets, Frame, HostHooks, HostOptions, HostPointer, Init, Runner,
+    WindowCommand, WindowFrame, read_frame, run,
 };
 use genet_probe::{Automatable, Driveable, ProbeSnapshot, ProbeSurface, Progress, Scenario};
 
@@ -58,6 +58,8 @@ struct Smoke {
     /// it too, which prevents a host frame and an app title bar appearing
     /// together.
     window_frame: WindowFrame,
+    /// Transparent outer margin used by the X11 shadow receipt.
+    app_frame_inset: u32,
 }
 
 impl Smoke {
@@ -178,7 +180,17 @@ fn root(state: &Smoke) -> Child {
         children.push(title_bar());
     }
     children.push(content);
-    Box::new(el("div", children).attr("class", "frame"))
+    let frame = el("div", children).attr("class", "frame");
+    let frame = if state.app_frame_inset > 0 {
+        let inset = state.app_frame_inset;
+        frame.attr(
+            "style",
+            format!("margin:{inset}px; box-shadow:0 4px 12px rgba(0,0,0,0.55); border-radius:7px;"),
+        )
+    } else {
+        frame
+    };
+    Box::new(frame)
 }
 
 // The controls keep genet's UA `display: inline-block`, the standards-correct
@@ -217,12 +229,14 @@ struct Lane {
     /// the lane while it runs.
     scenario: Option<Scenario>,
     receipt: Option<std::path::PathBuf>,
-    /// Frames captured this run: `(name, width, height, digest, blank)`.
-    captures: Vec<(String, u32, u32, u64, bool)>,
+    /// Frames captured this run: name, geometry, digest, blankness and alpha.
+    captures: Vec<(String, u32, u32, u64, bool, u8, u8, usize, usize)>,
     /// Optional directory for exact frame artifacts. The textual receipt keeps
     /// compact digests; a headed geometry receipt also needs inspectable pixels.
     capture_dir: Option<std::path::PathBuf>,
     capture_errors: Vec<String>,
+    /// A shadow receipt requires both clear margin and blurred shadow pixels.
+    require_alpha: bool,
     /// Optional file an external platform probe creates when it has finished
     /// observing this exact window. This keeps a headed receipt bounded without
     /// guessing how many frames native inspection will take.
@@ -267,6 +281,7 @@ impl Automatable for Probe<'_, '_> {
                     WindowFrame::App => "app",
                 },
             )
+            .with_field("app_frame_inset", state.app_frame_inset.to_string())
             .with_field("captures", self.lane.captures.len().to_string())
             .with_field(
                 "maximized",
@@ -397,8 +412,39 @@ impl Lane {
                             .push(format!("could not write {}: {error}", path.display()));
                     }
                 }
-                self.captures
-                    .push((name, frame.width, frame.height, digest, blank));
+                let alpha_min = frame
+                    .rgba
+                    .chunks_exact(4)
+                    .map(|pixel| pixel[3])
+                    .min()
+                    .unwrap_or(0);
+                let alpha_max = frame
+                    .rgba
+                    .chunks_exact(4)
+                    .map(|pixel| pixel[3])
+                    .max()
+                    .unwrap_or(0);
+                let transparent = frame
+                    .rgba
+                    .chunks_exact(4)
+                    .filter(|pixel| pixel[3] == 0)
+                    .count();
+                let translucent = frame
+                    .rgba
+                    .chunks_exact(4)
+                    .filter(|pixel| (1..=254).contains(&pixel[3]))
+                    .count();
+                self.captures.push((
+                    name,
+                    frame.width,
+                    frame.height,
+                    digest,
+                    blank,
+                    alpha_min,
+                    alpha_max,
+                    transparent,
+                    translucent,
+                ));
             },
             // Not yet presented: put it back and try again next frame.
             None => PENDING.with(|p| *p.borrow_mut() = Some((name, sink))),
@@ -418,16 +464,26 @@ impl Lane {
         let distinct: std::collections::BTreeSet<u64> = self.captures.iter().map(|c| c.3).collect();
         let sizes: std::collections::BTreeSet<(u32, u32)> =
             self.captures.iter().map(|c| (c.1, c.2)).collect();
-        let frames_ok =
-            blanks == 0 && distinct.len() > 1 && sizes.len() > 1 && self.capture_errors.is_empty();
+        let alpha_ok = !self.require_alpha
+            || self
+                .captures
+                .iter()
+                .all(|capture| capture.7 > 0 && capture.8 > 0);
+        let frames_ok = blanks == 0
+            && distinct.len() > 1
+            && sizes.len() > 1
+            && alpha_ok
+            && self.capture_errors.is_empty();
         let ok = outcome.ok && frames_ok;
 
         let result = if ok { "RESULT ok" } else { "RESULT fail" };
         let mut body = vec![result.to_string()];
         body.extend(outcome.log.iter().cloned());
-        for (name, w, h, digest, blank) in &self.captures {
+        for (name, w, h, digest, blank, alpha_min, alpha_max, transparent, translucent) in
+            &self.captures
+        {
             body.push(format!(
-                "capture {name} {w}x{h} digest={digest:016x}{}",
+                "capture {name} {w}x{h} digest={digest:016x} alpha={alpha_min}..{alpha_max} transparent={transparent} translucent={translucent}{}",
                 if *blank { " BLANK" } else { "" }
             ));
         }
@@ -442,6 +498,12 @@ impl Lane {
             body.push(
                 "FAIL: frames must be non-blank, must differ across a state change, \
                  must change size across the resize, and requested artifacts must be written"
+                    .to_string(),
+            );
+        }
+        if !alpha_ok {
+            body.push(
+                "FAIL: a frame-shadow capture needs transparent margin pixels and translucent shadow pixels"
                     .to_string(),
             );
         }
@@ -495,7 +557,7 @@ fn write_bmp(path: &std::path::Path, frame: &Frame) -> std::io::Result<()> {
         let start = row * frame.width as usize * 4;
         let end = start + frame.width as usize * 4;
         for rgba in frame.rgba[start..end].chunks_exact(4) {
-            bytes.extend_from_slice(&[rgba[2], rgba[1], rgba[0], 255]);
+            bytes.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
         }
     }
     std::fs::write(path, bytes)
@@ -519,6 +581,13 @@ fn main() {
         Err(std::env::VarError::NotPresent) => WindowFrame::App,
         Err(error) => panic!("HOST_SMOKE_WINDOW_FRAME is not valid Unicode: {error}"),
     };
+    let app_frame_inset = match std::env::var("HOST_SMOKE_APP_FRAME_INSET") {
+        Ok(value) => value.parse::<u32>().unwrap_or_else(|_| {
+            panic!("HOST_SMOKE_APP_FRAME_INSET must be an unsigned integer, got {value:?}")
+        }),
+        Err(std::env::VarError::NotPresent) => 0,
+        Err(error) => panic!("HOST_SMOKE_APP_FRAME_INSET is not valid Unicode: {error}"),
+    };
     let lane = Rc::new(RefCell::new(std::env::var("HOST_SMOKE_SCENARIO").ok().map(
         |path| {
             let text = std::fs::read_to_string(&path)
@@ -532,6 +601,7 @@ fn main() {
                 captures: Vec::new(),
                 capture_dir: std::env::var("HOST_SMOKE_CAPTURE_DIR").ok().map(Into::into),
                 capture_errors: Vec::new(),
+                require_alpha: app_frame_inset > 0,
                 release_file: None,
                 finished: false,
             }
@@ -583,6 +653,7 @@ fn main() {
         // The view reads this same value before deciding whether to include its
         // title row, so the two frame providers cannot overlap.
         window_frame,
+        app_frame_insets: AppFrameInsets::uniform(app_frame_inset),
         ..Default::default()
     };
     run(
@@ -594,6 +665,7 @@ fn main() {
                 #[cfg(not(target_os = "macos"))]
                 window: _commands.clone(),
                 window_frame,
+                app_frame_inset,
                 ..Smoke::default()
             },
             logic: root as Logic,

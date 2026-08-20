@@ -113,6 +113,23 @@ impl RenderCore {
         width: u32,
         height: u32,
     ) -> Result<WindowSurface, String> {
+        self.create_surface_with_transparency(target, width, height, false)
+    }
+
+    /// Create and configure a presentation surface, requiring composited alpha
+    /// when `transparent` is true.
+    ///
+    /// Ordinary browser canvases and native windows stay on the historical
+    /// opaque path. An app-drawn native frame with transparent shadow margins
+    /// opts in explicitly, so a backend that cannot composite alpha fails at
+    /// surface creation instead of presenting black margins as a false shadow.
+    pub fn create_surface_with_transparency(
+        &self,
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        width: u32,
+        height: u32,
+        transparent: bool,
+    ) -> Result<WindowSurface, String> {
         let core = &self.renderer.wgpu_device.core;
         let surface = core
             .instance
@@ -132,6 +149,23 @@ impl RenderCore {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        let alpha_mode = if transparent {
+            [
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                wgpu::CompositeAlphaMode::Inherit,
+            ]
+            .into_iter()
+            .find(|candidate| caps.alpha_modes.contains(candidate))
+            .ok_or_else(|| {
+                format!(
+                    "surface has no composited-alpha mode (reported {:?})",
+                    caps.alpha_modes
+                )
+            })?
+        } else {
+            caps.alpha_modes[0]
+        };
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -142,7 +176,7 @@ impl RenderCore {
             // pre-30 behavior of letting the platform pick.
             color_space: wgpu::SurfaceColorSpace::Auto,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
         };
         surface.configure(&core.device, &surface_config);

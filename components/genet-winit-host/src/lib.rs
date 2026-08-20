@@ -60,8 +60,20 @@ impl SurfaceHost {
         height: u32,
         options: NetrenderOptions,
     ) -> Result<Self, String> {
+        Self::boot_with_transparency(window, width, height, options, false)
+    }
+
+    /// Boot against a native window that needs compositor-visible alpha.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn boot_with_transparency(
+        window: Arc<Window>,
+        width: u32,
+        height: u32,
+        options: NetrenderOptions,
+        transparent: bool,
+    ) -> Result<Self, String> {
         let core = RenderCore::boot(options)?;
-        let surface = core.create_surface(window, width, height)?;
+        let surface = core.create_surface_with_transparency(window, width, height, transparent)?;
         Ok(Self { core, surface })
     }
 

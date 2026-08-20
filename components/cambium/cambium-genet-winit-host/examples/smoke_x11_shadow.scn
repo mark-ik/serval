@@ -1,0 +1,21 @@
+log host smoke: X11 app frame has client-drawn shadow pixels and native extents
+capture opened
+assert text cambium-genet-winit-host smoke
+assert snap window_frame == app
+assert snap app_frame_inset == 16
+
+# Hold this exact headed window open while the native probe reads its X11
+# property and compositor-facing geometry.
+await-release
+wait
+
+click role:button clicked
+settle 1
+assert event clicks 1
+capture changed
+
+resize 560 400
+settle 4
+capture resized
+assert text cambium-genet-winit-host smoke
+log host smoke: X11 shadow done

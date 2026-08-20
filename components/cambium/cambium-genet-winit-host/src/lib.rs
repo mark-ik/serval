@@ -42,13 +42,15 @@ use winit::window::{Window, WindowId};
 
 mod decorations;
 mod harness;
+#[cfg(target_os = "linux")]
+mod x11_frame;
 
 pub use cambium_rootstock::{
-    AppCtx, AppHook, AppRegion, CaptureFn, CloseDisposition, CloseRequest, CloseRequestHook,
-    Direction, FocusedTextHook, FocusedTextSlot, Frame, FrameHook, Host, HostHooks, HostOptions,
-    HostPointer, HostWake, HostWindow, IdlePolicy, Init, Key, KeyInterceptHook, KeyPress,
-    Modifiers, NamedKey, Runner, Surface, WindowCommand, WindowCommands, WindowFrame,
-    WindowGeometry, read_frame,
+    AppCtx, AppFrameInsets, AppHook, AppRegion, CaptureFn, CloseDisposition, CloseRequest,
+    CloseRequestHook, Direction, FocusedTextHook, FocusedTextSlot, Frame, FrameHook, Host,
+    HostHooks, HostOptions, HostPointer, HostWake, HostWindow, IdlePolicy, Init, Key,
+    KeyInterceptHook, KeyPress, Modifiers, NamedKey, Runner, Surface, WindowCommand,
+    WindowCommands, WindowFrame, WindowGeometry, read_frame,
 };
 pub use harness::{Harness, inert_hooks};
 
@@ -246,6 +248,34 @@ where
         }
     }
 
+    fn boot_surface(
+        &self,
+        window: Arc<Window>,
+        width: u32,
+        height: u32,
+    ) -> Result<SurfaceHost, String> {
+        SurfaceHost::boot_with_transparency(
+            window,
+            width,
+            height,
+            (self.options.netrender)(),
+            self.options.app_frame_is_transparent(),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn publish_x11_frame_extents(&self, window: &Window) {
+        let insets = self.options.effective_app_frame_insets();
+        match x11_frame::publish_gtk_frame_extents(window, insets) {
+            Ok(Some(extents)) if frame_trace() => eprintln!(
+                "[cambium-winit] _GTK_FRAME_EXTENTS left={} right={} top={} bottom={}",
+                extents[0], extents[1], extents[2], extents[3]
+            ),
+            Ok(_) => {},
+            Err(error) => eprintln!("[cambium-winit] could not publish X11 frame extents: {error}"),
+        }
+    }
+
     /// Run the application's close policy, then do what only a desktop window
     /// can: hide on [`CloseDisposition::Hide`], repaint on
     /// [`CloseDisposition::KeepVisible`].
@@ -399,12 +429,7 @@ where
         if let Some(window) = self.native_window.clone() {
             if self.s.surface.is_none() {
                 let size = window.inner_size();
-                match SurfaceHost::boot(
-                    window.clone(),
-                    size.width.max(1),
-                    size.height.max(1),
-                    (self.options.netrender)(),
-                ) {
+                match self.boot_surface(window.clone(), size.width.max(1), size.height.max(1)) {
                     Ok(surface) => {
                         self.s.surface = Some(Box::new(WinitSurface(surface)));
                         // The surface is new, so nothing is cached in it: force
@@ -489,6 +514,7 @@ where
                     attributes
                         .with_title(self.options.title.clone())
                         .with_decorations(decorated)
+                        .with_transparent(self.options.app_frame_is_transparent())
                         // Hidden until the a11y adapter is installed on the
                         // first frame — the Windows AccessKit adapter must
                         // attach before the window is shown. Revealed in
@@ -499,6 +525,8 @@ where
                 )
                 .expect("create window"),
         );
+        #[cfg(target_os = "linux")]
+        self.publish_x11_frame_extents(&window);
         if frame_trace() {
             #[cfg(target_os = "linux")]
             let backend = {
@@ -512,19 +540,16 @@ where
             #[cfg(not(target_os = "linux"))]
             let backend = std::env::consts::OS;
             eprintln!(
-                "[cambium-winit] window-frame backend={backend} policy={:?} decorated={}",
+                "[cambium-winit] window-frame backend={backend} policy={:?} decorated={} transparent={}",
                 self.options.effective_window_frame(),
                 window.is_decorated(),
+                self.options.app_frame_is_transparent(),
             );
         }
         let size = window.inner_size();
-        let surface = SurfaceHost::boot(
-            window.clone(),
-            size.width.max(1),
-            size.height.max(1),
-            (self.options.netrender)(),
-        )
-        .expect("boot genet host");
+        let surface = self
+            .boot_surface(window.clone(), size.width.max(1), size.height.max(1))
+            .expect("boot genet host");
         let init = self.init.take().expect("resumed once");
         // The application takes its end of the window-verb seam here, stores
         // it in its own state, and calls it from ordinary click handlers.
@@ -604,7 +629,13 @@ where
                 }
                 self.note_resize();
             },
-            WindowEvent::ScaleFactorChanged { .. } => self.note_resize(),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                #[cfg(target_os = "linux")]
+                if let Some(window) = self.native_window.as_ref() {
+                    self.publish_x11_frame_extents(window);
+                }
+                self.note_resize();
+            },
             WindowEvent::ModifiersChanged(mods) => {
                 self.s.modifiers = modifiers_from_winit_state(mods.state());
             },
