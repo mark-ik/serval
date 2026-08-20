@@ -88,8 +88,19 @@ where
     /// second event source.
     pub fn pointer_moved(&mut self, x: f32, y: f32) {
         self.s.cursor = (x, y);
-        self.hover();
-        self.hover_dispatch();
+        let captured = self
+            .s
+            .runner
+            .as_ref()
+            .is_some_and(|runner| runner.pointer_capture().is_some());
+        // Pointer capture owns the gesture target. Resolving ordinary hover
+        // against whatever lies under the cursor would dispatch boundary
+        // events to unrelated views and rebuild their DOM while a captured
+        // high-frequency leaf drag is deliberately retaining its target.
+        if !captured {
+            self.hover();
+            self.hover_dispatch();
+        }
         self.pointer_move();
         self.drag_text_selection();
     }

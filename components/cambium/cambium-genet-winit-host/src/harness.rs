@@ -299,11 +299,7 @@ where
 
     /// Move the cursor: hover restyle, Enter/Leave, captured-drag tracking.
     pub fn move_to(&mut self, x: f32, y: f32) {
-        self.host.s.cursor = (x, y);
-        self.host.hover();
-        self.host.hover_dispatch();
-        self.host.pointer_move();
-        self.host.drag_text_selection();
+        self.host.pointer_moved(x, y);
     }
 
     /// Press the left button at a point, through the host's real routing.

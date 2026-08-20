@@ -248,9 +248,9 @@ where
 mod tests {
     use super::*;
     use crate::tags::custom_leaf;
-    use crate::{AnyView, DomHandle, GenetAppRunner, GenetCtx, GenetElement};
+    use crate::{AnyView, DomHandle, GenetAppRunner, GenetCtx, GenetElement, el};
     use genet_scripted_dom::ScriptedDom;
-    use layout_dom_api::LayoutDom;
+    use layout_dom_api::{LayoutDom, LocalName, Namespace};
     use sprigging::{Knob, Size};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -342,5 +342,69 @@ mod tests {
             "release does not reset the value"
         );
         assert_eq!(runner.pointer_capture(), None, "up releases the capture");
+    }
+
+    struct DeferredState {
+        value: u8,
+    }
+
+    type DeferredView = Box<dyn AnyView<DeferredState, (), GenetCtx, GenetElement>>;
+
+    fn deferred_view(state: &DeferredState) -> DeferredView {
+        Box::new(on_pointer(
+            el("div", ()).attr("data-value", state.value.to_string()),
+            |state: &mut DeferredState, event: PointerEvent| {
+                state.value = match event.phase {
+                    PointerPhase::Down => 1,
+                    PointerPhase::Move => 2,
+                    PointerPhase::Up => 3,
+                };
+                if matches!(event.phase, PointerPhase::Move) {
+                    event.defer_rebuild();
+                }
+            },
+        ))
+    }
+
+    fn rendered_value(dom: &ScriptedDom, root: genet_scripted_dom::NodeId) -> String {
+        dom.attribute(root, &Namespace::from(""), &LocalName::from("data-value"))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn deferred_move_updates_state_then_settles_the_dom_on_release() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
+            dom.clone(),
+            deferred_view,
+            DeferredState { value: 0 },
+        );
+        let root = runner.root();
+
+        runner.dispatch_pointer_down(root, drag(PointerPhase::Down, 4.0));
+        assert_eq!(runner.state().value, 1);
+        assert_eq!(rendered_value(&dom.borrow(), root), "1");
+
+        runner.dispatch_pointer_move(drag(PointerPhase::Move, 12.0));
+        assert_eq!(
+            runner.state().value,
+            2,
+            "the custom leaf can read live state"
+        );
+        assert_eq!(
+            rendered_value(&dom.borrow(), root),
+            "1",
+            "captured move leaves retained target geometry untouched",
+        );
+
+        runner.dispatch_pointer_up(drag(PointerPhase::Up, 20.0));
+        assert_eq!(runner.state().value, 3);
+        assert_eq!(
+            rendered_value(&dom.borrow(), root),
+            "3",
+            "release reconciles the retained view",
+        );
+        assert_eq!(runner.pointer_capture(), None);
     }
 }

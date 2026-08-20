@@ -49,8 +49,8 @@ mod x11_frame;
 
 pub use cambium_rootstock::{
     AppCtx, AppFrameInsets, AppHook, AppRegion, CaptureFn, CloseDisposition, CloseRequest,
-    CloseRequestHook, Direction, FocusedTextHook, FocusedTextSlot, Frame, FrameHook, Host,
-    HostHooks, HostOptions, HostPointer, HostWake, HostWindow, IdlePolicy, Init, Key,
+    CloseRequestHook, Direction, FocusedTextHook, FocusedTextSlot, Frame, FrameHook, FrameProfile,
+    Host, HostHooks, HostOptions, HostPointer, HostWake, HostWindow, IdlePolicy, Init, Key,
     KeyInterceptHook, KeyPress, Modifiers, NamedKey, Runner, Surface, WindowCommand,
     WindowCommands, WindowFrame, WindowGeometry, read_frame,
 };
@@ -70,6 +70,12 @@ enum HostEvent {
 /// the application, so it has no reason to branch between them.
 fn frame_trace() -> bool {
     std::env::var_os("CAMBIUM_HOST_FRAME_TRACE").is_some_and(|value| value != "0")
+}
+
+/// Opt-in CPU-side frame attribution. Kept separate from the frame-policy
+/// trace because a performance run emits one line per presented frame.
+fn perf_trace() -> bool {
+    std::env::var_os("CAMBIUM_HOST_PERF_TRACE").is_some_and(|value| value != "0")
 }
 
 /// The winit window, as the neutral seam sees it.
@@ -764,7 +770,16 @@ where
                 // After the frame is laid out and presented, refresh the
                 // accessibility tree and drain any screen-reader actions,
                 // then let the application pump per-presented-frame work.
+                let a11y_started = std::time::Instant::now();
                 self.sync_a11y();
+                if let Some(profile) = self.s.last_frame_profile.as_mut() {
+                    profile.a11y_us =
+                        a11y_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                    profile.total_us = profile.total_us.saturating_add(profile.a11y_us);
+                    if perf_trace() {
+                        eprintln!("[cambium-host] frame {}", profile.summary());
+                    }
+                }
                 self.with_ctx(Hook::AfterFrame);
             },
             _ => {},

@@ -23,7 +23,11 @@ use paint_list_api::{ColorF, DeviceIntSize, PaintList as _};
 
 use crate::input::to_visual_caret;
 use crate::meristem_bounds::RootView;
-use crate::{AppCtx, Host};
+use crate::{AppCtx, FrameProfile, Host};
+
+fn elapsed_us(elapsed: crate::Duration) -> u64 {
+    elapsed.as_micros().min(u64::MAX as u128) as u64
+}
 
 struct SpriggingSource<'a> {
     rendered: &'a sprigging::RenderedLeaves,
@@ -60,6 +64,7 @@ where
         let animating = {
             let logical_size = self.logical_size();
             let geometry = self.s.geometry;
+            let frame_profile = self.s.last_frame_profile;
             let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
@@ -77,6 +82,7 @@ where
                 pointer: &mut self.s.pending_pointer,
                 window_commands: &commands,
                 geometry,
+                frame_profile,
             };
             (self.hooks.frame)(&mut ctx)
         };
@@ -118,9 +124,10 @@ where
     }
 
     pub fn relayout(&mut self, lw: f32, lh: f32) -> bool {
-        let Some(runner) = self.s.runner.as_ref() else {
+        if self.s.runner.is_none() {
             return false;
-        };
+        }
+        let layout_update_started = crate::Instant::now();
         let now_s = self.s.anim_base.elapsed().as_secs_f64();
         let titlebar_moved = self.publish_titlebar_area(lw);
         let runner = self.s.runner.as_ref().expect("checked above");
@@ -132,18 +139,29 @@ where
         let structural = muts
             .iter()
             .any(|m| !matches!(m, DomMutation::AttributeChanged { .. }));
+        let mutation_count = muts.len() as u64;
         let size_changed = self.s.layout_size != (lw, lh);
+        let mut tick_us = 0;
+        let mut apply_us = 0;
+        let mut rebuild_us = 0;
+        let mut rebuilt = false;
         match self.s.layout.as_mut() {
             Some(layout) if !structural && !size_changed && !titlebar_moved => {
                 // Advance the CSS-transition clock to now, then apply this
                 // frame's mutations, so a transition a class-swap starts runs
                 // from *now*, not a stale idle-frozen clock.
+                let phase = crate::Instant::now();
                 let _ = layout.tick_animations(&*dom_ref, now_s);
+                tick_us = elapsed_us(phase.elapsed());
                 if !muts.is_empty() {
+                    let phase = crate::Instant::now();
                     let _ = layout.apply(&*dom_ref, &sheets, &muts);
+                    apply_us = elapsed_us(phase.elapsed());
                 }
             },
             _ => {
+                rebuilt = true;
+                let phase = crate::Instant::now();
                 let mut layout = IncrementalLayout::new(&*dom_ref, &sheets, lw, lh);
                 // Carry BOTH scroll planes across rebuilds: element scroll and
                 // the document scroll. Dropping the latter snaps a scrolled
@@ -154,12 +172,17 @@ where
                 }
                 self.s.layout = Some(layout);
                 self.s.layout_size = (lw, lh);
+                rebuild_us = elapsed_us(phase.elapsed());
             },
         }
         let layout = self.s.layout.as_ref().expect("layout just ensured");
         let anim_active = layout.has_active_animations();
+        let layout_update_us = elapsed_us(layout_update_started.elapsed());
+        let leaf_boxes_started = crate::Instant::now();
         let sizes: HashMap<u64, (f32, f32)> = layout.custom_leaf_boxes().into_iter().collect();
-        self.s.leaves.render_into(
+        let leaf_boxes_us = elapsed_us(leaf_boxes_started.elapsed());
+        let leaf_render_started = crate::Instant::now();
+        let leaf_repaints = self.s.leaves.render_into(
             |key| {
                 sizes
                     .get(&key)
@@ -167,6 +190,15 @@ where
             },
             &mut self.s.rendered,
         );
+        self.s.last_layout_update_us = layout_update_us;
+        self.s.last_layout_tick_us = tick_us;
+        self.s.last_layout_apply_us = apply_us;
+        self.s.last_layout_rebuild_us = rebuild_us;
+        self.s.last_layout_mutations = mutation_count;
+        self.s.last_layout_rebuilt = rebuilt;
+        self.s.last_leaf_boxes_us = leaf_boxes_us;
+        self.s.last_leaf_render_us = elapsed_us(leaf_render_started.elapsed());
+        self.s.last_leaf_repaints = leaf_repaints as u64;
         anim_active
     }
 
@@ -351,9 +383,13 @@ where
     }
 
     pub fn redraw(&mut self) {
+        let frame_started = crate::Instant::now();
+        let mut profile = FrameProfile::default();
         // The application's frame hook first: animation drives, leaf syncs,
         // backend polls. Its return keeps frames coming.
+        let phase = crate::Instant::now();
         let animating = self.frame_hook();
+        profile.frame_hook_us = elapsed_us(phase.elapsed());
         let target_size = self.s.window.as_ref().map(|window| {
             let size = window.inner_size();
             let scale = window.scale_factor() as f32;
@@ -364,25 +400,52 @@ where
             // nothing to present. The layout still advances, so a resume
             // repaints current state rather than a stale one.
             let (lw, lh) = self.logical_size();
+            let phase = crate::Instant::now();
             self.relayout(lw, lh);
+            profile.relayout_us = elapsed_us(phase.elapsed());
+            profile.total_us = elapsed_us(frame_started.elapsed());
+            self.s.last_frame_profile = Some(profile);
             return;
         };
         let (lw, lh) = (pw as f32 / scale, ph as f32 / scale);
 
+        let phase = crate::Instant::now();
         let anim_active = self.relayout(lw, lh);
+        profile.relayout_us = elapsed_us(phase.elapsed());
+        profile.layout_update_us = self.s.last_layout_update_us;
+        profile.layout_tick_us = self.s.last_layout_tick_us;
+        profile.layout_apply_us = self.s.last_layout_apply_us;
+        profile.layout_rebuild_us = self.s.last_layout_rebuild_us;
+        profile.layout_mutations = self.s.last_layout_mutations;
+        profile.layout_rebuilt = self.s.last_layout_rebuilt;
+        profile.leaf_boxes_us = self.s.last_leaf_boxes_us;
+        profile.leaf_render_us = self.s.last_leaf_render_us;
+        profile.leaf_repaints = self.s.last_leaf_repaints;
+        let phase = crate::Instant::now();
         self.sync_leaf_fragments();
+        profile.leaf_fragments_us = elapsed_us(phase.elapsed());
+        let phase = crate::Instant::now();
         self.sync_ime_area();
+        profile.ime_us = elapsed_us(phase.elapsed());
+        let phase = crate::Instant::now();
         let Some(translated) = self.emit_scene(lw, lh) else {
+            profile.emit_scene_us = elapsed_us(phase.elapsed());
+            profile.total_us = elapsed_us(frame_started.elapsed());
+            self.s.last_frame_profile = Some(profile);
             return;
         };
+        profile.emit_scene_us = elapsed_us(phase.elapsed());
 
         let Some(surface) = self.s.surface.as_ref() else {
+            profile.total_us = elapsed_us(frame_started.elapsed());
+            self.s.last_frame_profile = Some(profile);
             return;
         };
         // Blurred shadows lower to image ops backed by per-frame GPU masks.
         // Keeping only `translated.scene` drops those masks and leaves the
         // image keys unresolved, which makes every blurred CSS box-shadow
         // disappear in this host even though the paint list is correct.
+        let phase = crate::Instant::now();
         for mask in &translated.box_shadow_masks {
             surface.renderer().build_box_shadow_mask(
                 mask.key,
@@ -393,25 +456,46 @@ where
                 mask.invert,
             );
         }
+        profile.shadows_us = elapsed_us(phase.elapsed());
         let scene = &translated.scene;
         let clear = if self.options.app_frame_is_transparent() {
             wgpu::Color::TRANSPARENT
         } else {
             wgpu::Color::BLACK
         };
+        let phase = crate::Instant::now();
         let (_tex, view) =
             surface
                 .core()
                 .rasterize_scaled(scene, pw, ph, ColorLoad::Clear(clear), scale);
+        profile.raster_us = elapsed_us(phase.elapsed());
+        if let Some(timings) = surface.renderer().last_frame_timings() {
+            let span = |name: &str| timings.span(name).map(elapsed_us).unwrap_or_default();
+            profile.raster_total_us = elapsed_us(timings.total);
+            profile.tile_invalidate_us = span("tile_invalidate");
+            profile.dirty_tile_rebuild_us = span("dirty_tile_rebuild");
+            profile.master_compose_us = span("master_compose");
+            profile.vello_render_us = span("vello_render");
+        }
+        profile.dirty_tiles = surface
+            .renderer()
+            .vello_last_dirty_count()
+            .unwrap_or_default() as u64;
+        let phase = crate::Instant::now();
         let Some(frame) = surface.acquire() else {
+            profile.acquire_us = elapsed_us(phase.elapsed());
+            profile.total_us = elapsed_us(frame_started.elapsed());
+            self.s.last_frame_profile = Some(profile);
             return;
         };
+        profile.acquire_us = elapsed_us(phase.elapsed());
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         // The composition pass blends and therefore loads its target. Clear a
         // fresh swapchain texture first so transparent app-frame margins do
         // not preserve undefined pixels from the compositor-owned image.
+        let phase = crate::Instant::now();
         let mut encoder =
             surface
                 .device()
@@ -437,6 +521,8 @@ where
             });
         }
         surface.queue().submit([encoder.finish()]);
+        profile.clear_us = elapsed_us(phase.elapsed());
+        let phase = crate::Instant::now();
         surface.renderer().compose_external_texture(
             &view,
             &target,
@@ -445,13 +531,18 @@ where
             ph,
             ExternalTexturePlacement::new([0.0, 0.0, pw as f32, ph as f32]),
         );
+        profile.compose_us = elapsed_us(phase.elapsed());
         // wgpu 30 moved presentation from SurfaceTexture to Queue.
+        let phase = crate::Instant::now();
         surface.queue().present(frame);
+        profile.present_us = elapsed_us(phase.elapsed());
         // A capture armed by the application: run it while the rasterized
         // view is still alive.
+        let phase = crate::Instant::now();
         if let Some(capture) = self.s.pending_capture.take() {
             capture(&**surface, &view, pw, ph);
         }
+        profile.capture_us = elapsed_us(phase.elapsed());
         if (animating || anim_active)
             && let Some(window) = self.s.window.as_ref()
         {
@@ -460,7 +551,11 @@ where
         // A `frame` hook runs before this frame's layout, so anything it queued
         // is delivered here instead — hit-testing against the layout that was
         // just built rather than the previous one.
+        let phase = crate::Instant::now();
         self.drain_pointer();
+        profile.pointer_us = elapsed_us(phase.elapsed());
+        profile.total_us = elapsed_us(frame_started.elapsed());
+        self.s.last_frame_profile = Some(profile);
     }
 
     /// Hand this frame to the accessibility host: build/install/update the

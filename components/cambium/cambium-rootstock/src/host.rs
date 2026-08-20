@@ -278,6 +278,82 @@ pub struct FocusedTextSlot<State> {
     pub get_mut: Box<dyn Fn(&mut State) -> &mut TextInput>,
 }
 
+/// CPU-side timings for the most recently presented frame.
+///
+/// These are host pipeline spans, not GPU timestamp queries. They answer which
+/// retained/layout/paint/present stage consumed the caller thread and carry
+/// netrender's own raster attribution when that backend published it. A host
+/// can expose the value in a receipt without teaching the application about
+/// wgpu, Vello, or a platform event loop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameProfile {
+    pub total_us: u64,
+    pub frame_hook_us: u64,
+    pub relayout_us: u64,
+    pub layout_update_us: u64,
+    pub layout_tick_us: u64,
+    pub layout_apply_us: u64,
+    pub layout_rebuild_us: u64,
+    pub layout_mutations: u64,
+    pub layout_rebuilt: bool,
+    pub leaf_boxes_us: u64,
+    pub leaf_render_us: u64,
+    pub leaf_repaints: u64,
+    pub leaf_fragments_us: u64,
+    pub ime_us: u64,
+    pub emit_scene_us: u64,
+    pub shadows_us: u64,
+    pub raster_us: u64,
+    pub acquire_us: u64,
+    pub clear_us: u64,
+    pub compose_us: u64,
+    pub present_us: u64,
+    pub capture_us: u64,
+    pub pointer_us: u64,
+    pub a11y_us: u64,
+    pub raster_total_us: u64,
+    pub tile_invalidate_us: u64,
+    pub dirty_tile_rebuild_us: u64,
+    pub master_compose_us: u64,
+    pub vello_render_us: u64,
+    pub dirty_tiles: u64,
+}
+
+impl FrameProfile {
+    /// One compact line suitable for a headed receipt's diagnostic log.
+    pub fn summary(self) -> String {
+        format!(
+            "total={}us hook={}us relayout={}us layout-update={}us tick={}us apply={}us layout-rebuild={}us mutations={} layout-rebuilt={} leaf-boxes={}us leaf-render={}us leaf-repaints={} fragments={}us emit={}us raster={}us acquire={}us clear={}us compose={}us present={}us a11y={}us raster-inner={}us invalidate={}us rebuild={}us master={}us vello={}us dirty-tiles={}",
+            self.total_us,
+            self.frame_hook_us,
+            self.relayout_us,
+            self.layout_update_us,
+            self.layout_tick_us,
+            self.layout_apply_us,
+            self.layout_rebuild_us,
+            self.layout_mutations,
+            self.layout_rebuilt,
+            self.leaf_boxes_us,
+            self.leaf_render_us,
+            self.leaf_repaints,
+            self.leaf_fragments_us,
+            self.emit_scene_us,
+            self.raster_us,
+            self.acquire_us,
+            self.clear_us,
+            self.compose_us,
+            self.present_us,
+            self.a11y_us,
+            self.raster_total_us,
+            self.tile_invalidate_us,
+            self.dirty_tile_rebuild_us,
+            self.master_compose_us,
+            self.vello_render_us,
+            self.dirty_tiles,
+        )
+    }
+}
+
 /// A pointer event an application asks the host to deliver to itself, in
 /// logical window coordinates.
 ///
@@ -341,6 +417,9 @@ where
     /// Where the window is now, for persisting across launches. `None` under
     /// [`Harness`], which has no window.
     pub geometry: Option<WindowGeometry>,
+    /// CPU-side attribution for the frame that just completed. Present in
+    /// `after_frame`; other hooks see the last completed frame, if any.
+    pub frame_profile: Option<FrameProfile>,
 }
 
 /// A per-frame hook: return `true` to keep frames coming.
@@ -432,6 +511,15 @@ where
     /// incremental-apply subject.
     pub layout: Option<IncrementalLayout<NodeId>>,
     pub layout_size: (f32, f32),
+    pub(crate) last_layout_update_us: u64,
+    pub(crate) last_layout_tick_us: u64,
+    pub(crate) last_layout_apply_us: u64,
+    pub(crate) last_layout_rebuild_us: u64,
+    pub(crate) last_layout_mutations: u64,
+    pub(crate) last_layout_rebuilt: bool,
+    pub(crate) last_leaf_boxes_us: u64,
+    pub(crate) last_leaf_render_us: u64,
+    pub(crate) last_leaf_repaints: u64,
     pub sheet: String,
     pub leaves: sprigging::LeafRegistry<u64>,
     pub rendered: sprigging::RenderedLeaves,
@@ -486,6 +574,8 @@ where
     /// Pointer events an application hook asked the host to deliver to itself,
     /// drained through the real input path once the hook returns.
     pub pending_pointer: Vec<HostPointer>,
+    /// The last frame's host-owned phase attribution.
+    pub last_frame_profile: Option<FrameProfile>,
     /// Tab is being held: the arrow keys steer focus instead of reaching the
     /// focused element. Set by Tab's first key-repeat, cleared on its release.
     pub tab_held: bool,
@@ -506,6 +596,15 @@ where
             runner: None,
             layout: None,
             layout_size: (0.0, 0.0),
+            last_layout_update_us: 0,
+            last_layout_tick_us: 0,
+            last_layout_apply_us: 0,
+            last_layout_rebuild_us: 0,
+            last_layout_mutations: 0,
+            last_layout_rebuilt: false,
+            last_leaf_boxes_us: 0,
+            last_leaf_render_us: 0,
+            last_leaf_repaints: 0,
             sheet: String::new(),
             leaves: sprigging::LeafRegistry::new(),
             rendered: sprigging::RenderedLeaves::new(),
@@ -528,6 +627,7 @@ where
             pending_sheet: None,
             pending_capture: None,
             pending_pointer: Vec::new(),
+            last_frame_profile: None,
             tab_held: false,
         }
     }
@@ -596,6 +696,7 @@ where
         {
             let logical_size = self.logical_size();
             let geometry = self.s.geometry;
+            let frame_profile = self.s.last_frame_profile;
             let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
@@ -613,6 +714,7 @@ where
                 pointer: &mut self.s.pending_pointer,
                 window_commands: &commands,
                 geometry,
+                frame_profile,
             };
             match which {
                 Hook::AfterDispatch => (self.hooks.after_dispatch)(&mut ctx),
@@ -662,6 +764,7 @@ where
         let disposition = {
             let logical_size = self.logical_size();
             let geometry = self.s.geometry;
+            let frame_profile = self.s.last_frame_profile;
             let commands = self.s.commands.clone();
             let window = self.s.window.as_deref();
             let Some(runner) = self.s.runner.as_mut() else {
@@ -680,6 +783,7 @@ where
                 pointer: &mut self.s.pending_pointer,
                 window_commands: &commands,
                 geometry,
+                frame_profile,
             };
             (self.hooks.close_request)(&mut ctx, request)
         };

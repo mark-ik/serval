@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use cambium::{
-    AnyView, GenetCtx, GenetElement, PointerEvent, PointerPhase, TextInput, WheelEvent, clickable,
-    el, focusable, on_key, on_pointer, on_wheel, text,
+    AnyView, GenetCtx, GenetElement, HoverPhase, PointerEvent, PointerPhase, TextInput, WheelEvent,
+    clickable, el, focusable, on_hover, on_key, on_pointer, on_wheel, text,
 };
 use cambium_genet_winit_host::{FocusedTextSlot, Harness, HostHooks, Init, Modifiers, inert_hooks};
 use genet_probe::Selector;
@@ -35,6 +35,7 @@ struct App {
     /// When set, the Alpha button's key handler swallows Tab.
     traps_tab: bool,
     keys: Vec<String>,
+    hover: Vec<&'static str>,
 }
 
 type Child = Box<dyn AnyView<App, (), GenetCtx, GenetElement>>;
@@ -73,9 +74,16 @@ fn root(state: &App) -> Child {
                         }
                     },
                 )),
-                focusable(clickable(
-                    el("button", text("Beta")).attr("style", place(0, 50, 100, 40)),
-                    |s: &mut App, _| s.clicks.push("beta"),
+                focusable(on_hover(
+                    clickable(
+                        el("button", text("Beta")).attr("style", place(0, 50, 100, 40)),
+                        |s: &mut App, _| s.clicks.push("beta"),
+                    ),
+                    |s: &mut App, event| match event.phase {
+                        HoverPhase::Enter => s.hover.push("beta-enter"),
+                        HoverPhase::Leave => s.hover.push("beta-leave"),
+                        HoverPhase::Move => {},
+                    },
                 )),
                 on_pointer(
                     el("div", text("drag"))
@@ -175,6 +183,26 @@ fn a_drag_carries_the_captured_elements_local_coordinates() {
         Some((PointerPhase::Up, (320.0, -95.0), (200.0, 20.0))),
     );
     assert_eq!(h.pointer_capture(), None, "release ends the capture");
+}
+
+/// Captured motion belongs to the drag target. Crossing another element must
+/// not dispatch hover boundary events or rebuild that unrelated view while the
+/// captured handler is retaining its own high-frequency paint projection.
+#[test]
+fn captured_motion_holds_hover_on_the_drag_target() {
+    let mut h = harness();
+    h.press_at(100.0, 110.0);
+    h.move_to(50.0, 60.0); // geometrically over Beta
+
+    assert!(
+        h.state().hover.is_empty(),
+        "pointer capture suppresses underlying hover transitions"
+    );
+    assert_eq!(
+        h.state().drag.last().map(|event| event.0),
+        Some(PointerPhase::Move),
+        "the captured drag still receives the move"
+    );
 }
 
 /// A press somewhere with no `on_pointer` ancestor starts no drag, so a later

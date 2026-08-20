@@ -776,8 +776,8 @@ pub mod meristem_bounds {
 pub use capture::{Frame, read_frame};
 pub use host::{
     AppCtx, AppFrameInsets, AppHook, CaptureFn, CloseDisposition, CloseRequest, CloseRequestHook,
-    FocusedTextHook, FocusedTextSlot, FrameHook, Hook, Host, HostHooks, HostOptions, HostPointer,
-    HostState, IdlePolicy, Init, KeyInterceptHook, Runner, WindowFrame, env_size,
+    FocusedTextHook, FocusedTextSlot, FrameHook, FrameProfile, Hook, Host, HostHooks, HostOptions,
+    HostPointer, HostState, IdlePolicy, Init, KeyInterceptHook, Runner, WindowFrame, env_size,
 };
 pub use wake::HostWake;
 pub use window_verbs::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};
