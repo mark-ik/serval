@@ -20,8 +20,9 @@ use genet_document_resources::{
 use genet_host_api::ResourceFetcher;
 use genet_layout::{ScrollKey, TextSelection};
 use inker::session_engine::{
-    DocumentClip, DocumentSession, SessionClick, SessionEngine, SessionError, SessionLink,
-    SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
+    DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession, SessionClick,
+    SessionEngine, SessionError, SessionLink, SessionScrollKey, SessionSpawnRequest,
+    SessionTextTarget,
 };
 use layout_dom_api::LayoutDom;
 use netrender::Scene;
@@ -183,7 +184,7 @@ impl DocumentSession<Scene> for StaticDocumentSession {
         Some(self.doc.inspect())
     }
     fn clip(&self) -> Option<DocumentClip> {
-        match self.doc.text_selection() {
+        let mut clip = match self.doc.text_selection() {
             Some(selection) => semantic_clip_from_selection(
                 &self.address,
                 self.doc.dom(),
@@ -191,7 +192,15 @@ impl DocumentSession<Scene> for StaticDocumentSession {
                 self.doc.link_rects(),
             ),
             None => semantic_clip_from_dom(&self.address, self.doc.dom()),
-        }
+        }?;
+        let (bytes, content_type, final_url) = self.doc.source_response();
+        clip.artifacts.push(DocumentClipArtifact {
+            role: DocumentClipArtifactRole::SourceResponse,
+            media_type: content_type.unwrap_or("text/html").to_string(),
+            canonical_uri: final_url.unwrap_or(&self.address).to_string(),
+            bytes: bytes.to_vec(),
+        });
+        Some(clip)
     }
     fn as_any_ref(&self) -> &dyn Any {
         self
@@ -589,6 +598,7 @@ fn semantic_clip_from_dom<D: LayoutDom>(address: &str, dom: &D) -> Option<Docume
         text,
         selector: None,
         links: report.links,
+        artifacts: Vec::new(),
     })
 }
 
@@ -652,6 +662,7 @@ where
         text: selection.text,
         selector: Some(selector),
         links,
+        artifacts: Vec::new(),
     })
 }
 
@@ -1162,6 +1173,21 @@ mod tests {
         assert!(clip.text.contains("A useful finding."));
         assert_eq!(clip.links, vec!["https://example.test/source"]);
         assert_eq!(clip.selector, None, "v1 captures the whole document");
+        assert_eq!(clip.artifacts.len(), 1);
+        assert_eq!(
+            clip.artifacts[0].role,
+            DocumentClipArtifactRole::SourceResponse
+        );
+        assert_eq!(clip.artifacts[0].media_type, "text/html");
+        assert_eq!(
+            clip.artifacts[0].canonical_uri,
+            "https://example.test/report"
+        );
+        assert!(
+            std::str::from_utf8(&clip.artifacts[0].bytes)
+                .unwrap()
+                .contains("A useful finding.")
+        );
     }
 
     #[test]

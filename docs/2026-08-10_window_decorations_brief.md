@@ -93,8 +93,8 @@ where it has controls, we fill it where it does not."
 **Windows 11 Snap Layouts need a native answer we do not have.** Hovering the
 maximize button should raise the layout picker; that requires returning
 `HTMAXBUTTON` from `WM_NCHITTEST`, which winit has not exposed
-([winit#3884](https://github.com/rust-windowing/winit/issues/3884), open since
-2024). The known-good workaround, from `tauri-plugin-frame`, is a small native
+([winit#3884](https://github.com/rust-windowing/winit/issues/3884), opened
+2024-08-21 and still open with no linked PR when re-checked 2026-08-17). The known-good workaround, from `tauri-plugin-frame`, is a small native
 child `HWND` over the custom maximize button that answers `HTMAXBUTTON`. Until
 that exists, an undecorated Windows app silently loses a feature users have.
 
@@ -368,8 +368,15 @@ requires the complementary post-configure decoration results.
 
 - **W3c X11 shadow.** `_GTK_FRAME_EXTENTS` is still absent and wants its own
   headed X11 shadow receipt. It is independent of Wayland frame negotiation.
-- **W4 Snap Layouts.** Still gated on winit#3884 or the `tauri-plugin-frame`
-  child-HWND route, and worth its cost only for a Windows-first product.
+- **W4 Snap Layouts.** Gate re-checked 2026-08-17 rather than assumed:
+  [winit#3884](https://github.com/rust-windowing/winit/issues/3884) is **still
+  open**, labelled `DS - win32` / `S - enhancement`, unassigned, with no linked
+  PR and no in-API workaround — unchanged since it was opened 2024-08-21. Nor
+  does an upgrade help: 0.30.13 (2026-03-02) is the newest stable winit and is
+  what genet already pins; 0.31 has not left beta. So the only route remains
+  `tauri-plugin-frame`'s native child `HWND` over the custom maximize button,
+  and W4 stays worth its cost only for a Windows-first product. Re-check the
+  issue before starting, not the brief.
 - **Window-state persistence** has its host half (`AppCtx::geometry` plus
   `WindowGeometry::is_reachable_on`, unit-tested against the
   unplugged-monitor and dragged-off-the-bottom cases). The storing half is

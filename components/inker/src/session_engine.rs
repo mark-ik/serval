@@ -126,11 +126,32 @@ pub struct ContentReport {
     pub headings: Vec<String>,
 }
 
+/// The relationship between retained bytes and the representation observed by
+/// a document engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentClipArtifactRole {
+    /// Bytes returned by the source transport before document execution.
+    SourceResponse,
+    /// A serialized representation of the state actually observed by the
+    /// lowering, such as a post-script DOM snapshot.
+    ObservedRepresentation,
+}
+
+/// Exact source material offered with a semantic clip. The receiving domain
+/// decides whether and where to retain it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentClipArtifact {
+    pub role: DocumentClipArtifactRole,
+    pub media_type: String,
+    pub canonical_uri: String,
+    pub bytes: Vec<u8>,
+}
+
 /// A host-neutral semantic fragment offered by a retained document session.
 ///
-/// v1 sessions may expose the whole addressed document when they do not yet
-/// implement range selection. The source address and optional selector keep
-/// that distinction explicit for consumers such as Knot clipping.
+/// Sessions may expose the whole addressed document when they do not implement
+/// range selection. The source address and optional selector keep that
+/// distinction explicit for consumers such as Knot clipping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentClip {
     pub source_url: String,
@@ -138,6 +159,9 @@ pub struct DocumentClip {
     pub text: String,
     pub selector: Option<String>,
     pub links: Vec<String>,
+    /// Source artifacts available from the engine's ordinary retained state.
+    /// Engines must not refetch or reconstruct bytes solely for this field.
+    pub artifacts: Vec<DocumentClipArtifact>,
 }
 
 /// A semantic text occurrence resolved to lane-local pointer coordinates.

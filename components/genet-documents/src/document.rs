@@ -189,6 +189,10 @@ pub struct LoadedDocument {
     /// The fetched document URL, retained so relative CSS `url()` values resolve
     /// in Stylo and raw `<img src>` values resolve in the resource cache.
     base_url: Option<String>,
+    /// The exact response the static parser consumed. This is retained once by
+    /// the session and copied only when a user asks to clip.
+    source_bytes: Vec<u8>,
+    source_content_type: Option<String>,
     /// The host-owned, source-attributed resource set. The incumbent Stylo
     /// adapter below retains its string-sheet compatibility only at this edge.
     resource_set: ResolvedDocumentResources,
@@ -287,7 +291,13 @@ impl LoadedDocument {
             .fetch_response(resource)
             .ok_or_else(|| format!("could not load {resource}"))?;
         let doc = StaticDocument::parse(&String::from_utf8_lossy(&response.bytes));
-        let mut me = Self::from_document(doc, Some(&response.final_url), Some(fetcher));
+        let mut me = Self::from_document(
+            doc,
+            Some(&response.final_url),
+            Some(fetcher),
+            response.bytes,
+            response.content_type,
+        );
         me.pending_fragment = fragment;
         Ok(me)
     }
@@ -296,13 +306,21 @@ impl LoadedDocument {
     /// `data:` content), layering the document's inline sheets over the defaults.
     pub fn parse(html: &str) -> Self {
         let doc = StaticDocument::parse(html);
-        Self::from_document(doc, None, None)
+        Self::from_document(
+            doc,
+            None,
+            None,
+            html.as_bytes().to_vec(),
+            Some("text/html".into()),
+        )
     }
 
     fn from_document(
         doc: StaticDocument,
         base_url: Option<&str>,
         fetcher: Option<&dyn ResourceFetcher>,
+        source_bytes: Vec<u8>,
+        source_content_type: Option<String>,
     ) -> Self {
         let mut sheets: Vec<String> = crate::STRUCTURAL_SHEET
             .iter()
@@ -319,6 +337,8 @@ impl LoadedDocument {
             doc,
             sheets,
             base_url,
+            source_bytes,
+            source_content_type,
             resource_set,
             resources,
             session: None,
@@ -332,6 +352,16 @@ impl LoadedDocument {
     /// The engine-neutral resource record backing this incumbent session.
     pub fn resource_set(&self) -> &ResolvedDocumentResources {
         &self.resource_set
+    }
+
+    /// Exact response bytes consumed by the static parser, with their final
+    /// transport identity when one exists.
+    pub fn source_response(&self) -> (&[u8], Option<&str>, Option<&str>) {
+        (
+            &self.source_bytes,
+            self.source_content_type.as_deref(),
+            self.base_url.as_deref(),
+        )
     }
 
     /// Build (or rebuild, on a size change) the layout session for `width`×`height`.
