@@ -22,7 +22,9 @@ use inker::{
     DocumentProvenance, DocumentTrustState, Engine, EngineDocument, EngineError, EngineInput,
 };
 
-use crate::{GemtextEngine, MarkdownEngine};
+use errand::parse::spartan::{SpartanLine, parse as parse_spartan};
+
+use crate::{MarkdownEngine, gemtext::Lowering};
 
 /// Stable engine identifier.
 pub const ENGINE_ID: &str = "nematic.spartan";
@@ -30,14 +32,12 @@ pub const ENGINE_ID: &str = "nematic.spartan";
 /// Spartan body engine. Owns inner gemtext / markdown engines for body
 /// dispatch.
 pub struct SpartanEngine {
-    gemtext: GemtextEngine,
     markdown: MarkdownEngine,
 }
 
 impl SpartanEngine {
     pub fn new() -> Self {
         Self {
-            gemtext: GemtextEngine::new(),
             markdown: MarkdownEngine::new(),
         }
     }
@@ -55,20 +55,51 @@ impl Engine for SpartanEngine {
     }
 
     fn render(&self, input: &EngineInput) -> Result<EngineDocument, EngineError> {
-        let inner: &dyn Engine = match input.content_type.as_deref() {
-            Some(ct) if matches_markdown(ct) => &self.markdown,
-            _ => &self.gemtext,
+        let (mut doc, inner_kind) = match input.content_type.as_deref() {
+            Some(ct) if matches_markdown(ct) => {
+                let doc = self.markdown.render(input)?;
+                (doc, "nematic.markdown")
+            },
+            _ => {
+                let mut lowering = Lowering::default();
+                for line in parse_spartan(&input.body) {
+                    match line {
+                        SpartanLine::Gemtext(line) => lowering.handle(&line),
+                        SpartanLine::Prompt { target, label } => {
+                            lowering.push_submit(&target, &label)
+                        },
+                    }
+                }
+                let (blocks, title) = lowering.finish();
+                (
+                    EngineDocument {
+                        address: input.address.clone(),
+                        title,
+                        content_type: input
+                            .content_type
+                            .clone()
+                            .unwrap_or_else(|| "text/gemini".to_string()),
+                        lang: None,
+                        provenance: DocumentProvenance::for_engine(
+                            "nematic.gemtext",
+                            &input.address,
+                        ),
+                        trust: DocumentTrustState::Unknown,
+                        diagnostics: Vec::new(),
+                        blocks,
+                    },
+                    "nematic.gemtext",
+                )
+            },
         };
-        let mut doc = inner.render(input)?;
 
         // Re-tag provenance so consumers see "nematic.spartan" as the
         // source kind while the inner engine ID stays visible as the label.
-        let inner_kind = doc.provenance.source_kind.clone();
         doc.provenance = DocumentProvenance {
             source_kind: Some(self.engine_id().to_string()),
             canonical_uri: Some(input.address.clone()),
             fetched_at: None,
-            source_label: inner_kind,
+            source_label: Some(inner_kind.to_string()),
         };
         doc.trust = DocumentTrustState::Unknown;
 
@@ -128,6 +159,26 @@ mod tests {
             doc.provenance.source_label.as_deref(),
             Some("nematic.markdown")
         );
+    }
+
+    #[test]
+    fn prompt_line_stays_a_typed_submission() {
+        let doc = SpartanEngine::new()
+            .render(&EngineInput::new(
+                "spartan://capsule.test/",
+                "=: /guestbook Sign the guestbook\n",
+            ))
+            .expect("render");
+        let inker::Block::Paragraph { spans } = &doc.blocks[0] else {
+            panic!("expected prompt paragraph");
+        };
+        assert!(matches!(
+            &spans[0],
+            inker::InlineSpan::Submit { target, spans }
+                if target == "/guestbook"
+                    && inker::inline_text(spans) == "Sign the guestbook"
+        ));
+        assert!(doc.outgoing_links().is_empty());
     }
 
     #[test]

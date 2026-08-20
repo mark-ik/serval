@@ -20,6 +20,17 @@ pub(crate) async fn fetch(url: &Url) -> Result<Response, Error> {
     Ok(map_response(url, response))
 }
 
+/// Submit `body` as the data block requested by a Spartan `=:` prompt.
+pub async fn submit(url: &Url, body: &[u8]) -> Result<Response, Error> {
+    if url.scheme() != "spartan" {
+        return Err(Error::UnsupportedScheme(url.scheme().to_string()));
+    }
+    let response = spartan_protocol::submit(url.as_str(), body, &Default::default())
+        .await
+        .map_err(map_error)?;
+    Ok(map_response(url, response))
+}
+
 fn map_response(url: &Url, response: spartan_protocol::Response) -> Response {
     use spartan_protocol::Status as Spartan;
     let status = match response.status {

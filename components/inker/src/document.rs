@@ -278,6 +278,13 @@ pub enum InlineSpan {
         #[serde(default)]
         predicate: Option<String>,
     },
+    /// A user-triggered submission endpoint. Unlike [`InlineSpan::Link`],
+    /// activating this span asks the host to collect a body before any network
+    /// request is made.
+    Submit {
+        target: String,
+        spans: Vec<InlineSpan>,
+    },
     LineBreak,
     SoftBreak,
 }
@@ -307,7 +314,7 @@ fn append_inline_text(span: &InlineSpan, out: &mut String) {
                 append_inline_text(inner, out);
             }
         },
-        InlineSpan::Link { spans, .. } => {
+        InlineSpan::Link { spans, .. } | InlineSpan::Submit { spans, .. } => {
             for inner in spans {
                 append_inline_text(inner, out);
             }
@@ -414,7 +421,9 @@ fn collect_link_urls<'a>(span: &'a InlineSpan, out: &mut Vec<&'a str>) {
                 collect_link_urls(inner, out);
             }
         },
-        InlineSpan::Emphasis(spans) | InlineSpan::Strong(spans) => {
+        InlineSpan::Emphasis(spans)
+        | InlineSpan::Strong(spans)
+        | InlineSpan::Submit { spans, .. } => {
             for inner in spans {
                 collect_link_urls(inner, out);
             }

@@ -73,7 +73,7 @@ impl Engine for GemtextEngine {
 /// text lines into a paragraph, `* ` items into one list, and `> ` lines into one
 /// quote — the model decisions errand's line-level parser deliberately leaves open.
 #[derive(Default)]
-struct Lowering {
+pub(crate) struct Lowering {
     blocks: Vec<Block>,
     title: Option<String>,
     pending: Pending,
@@ -89,7 +89,7 @@ enum Pending {
 }
 
 impl Lowering {
-    fn run(lines: &[GemLine]) -> (Vec<Block>, Option<String>) {
+    pub(crate) fn run(lines: &[GemLine]) -> (Vec<Block>, Option<String>) {
         let mut state = Self::default();
         for line in lines {
             state.handle(line);
@@ -98,7 +98,7 @@ impl Lowering {
         (state.blocks, state.title)
     }
 
-    fn handle(&mut self, line: &GemLine) {
+    pub(crate) fn handle(&mut self, line: &GemLine) {
         match line {
             GemLine::Heading { level, text } => {
                 self.flush_pending();
@@ -175,6 +175,21 @@ impl Lowering {
                 predicate: None,
             }],
         });
+    }
+
+    pub(crate) fn push_submit(&mut self, target: &str, label: &str) {
+        self.flush_pending();
+        self.blocks.push(Block::Paragraph {
+            spans: vec![InlineSpan::Submit {
+                target: target.to_string(),
+                spans: vec![InlineSpan::Text(label.to_string())],
+            }],
+        });
+    }
+
+    pub(crate) fn finish(mut self) -> (Vec<Block>, Option<String>) {
+        self.flush_pending();
+        (self.blocks, self.title)
     }
 
     fn flush_pending(&mut self) {

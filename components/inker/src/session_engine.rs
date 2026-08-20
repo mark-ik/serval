@@ -195,6 +195,9 @@ pub struct OutlineEntry {
 pub enum SessionClick {
     /// The click resolved to a navigation the HOST performs (a link).
     Navigate(String),
+    /// The click resolved to a mutation endpoint. The host must collect and
+    /// confirm a body before submitting it.
+    Submit(String),
     /// The session consumed the click itself (focus, a scripted handler).
     Handled,
     /// Nothing interactive at that point.

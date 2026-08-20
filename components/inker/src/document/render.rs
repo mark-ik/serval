@@ -347,7 +347,7 @@ impl Block {
                 // link on its own line) IS the link line — emitting its text
                 // first would double it.
                 let text = inline_text(spans);
-                if !text.is_empty() && !is_link_only(spans) {
+                if !text.is_empty() && !is_link_only(spans) && !is_submit_only(spans) {
                     out.push_str(&text);
                     out.push('\n');
                 }
@@ -361,6 +361,19 @@ impl Block {
                     out.push_str("=> ");
                     out.push_str(&url);
                     if !label.is_empty() && label != url {
+                        out.push(' ');
+                        out.push_str(&label);
+                    }
+                    out.push('\n');
+                }
+                let mut submissions = Vec::new();
+                for span in spans {
+                    collect_submit_targets(span, &mut submissions);
+                }
+                for (target, label) in submissions {
+                    out.push_str("=: ");
+                    out.push_str(&target);
+                    if !label.is_empty() && label != target {
                         out.push(' ');
                         out.push_str(&label);
                     }
@@ -594,6 +607,12 @@ fn write_inline_markdown(spans: &[InlineSpan], out: &mut String) {
                 out.push_str(url);
                 out.push(')');
             },
+            InlineSpan::Submit { target, spans } => {
+                write_inline_markdown(spans, out);
+                out.push_str(" [submit: ");
+                out.push_str(target);
+                out.push(']');
+            },
             InlineSpan::SoftBreak => out.push('\n'),
             InlineSpan::LineBreak => out.push_str("  \n"),
         }
@@ -616,6 +635,19 @@ fn is_link_only(spans: &[InlineSpan]) -> bool {
     saw_link
 }
 
+fn is_submit_only(spans: &[InlineSpan]) -> bool {
+    let mut saw_submit = false;
+    for span in spans {
+        match span {
+            InlineSpan::Submit { .. } => saw_submit = true,
+            InlineSpan::Text(text) if text.trim().is_empty() => {},
+            InlineSpan::SoftBreak | InlineSpan::LineBreak => {},
+            _ => return false,
+        }
+    }
+    saw_submit
+}
+
 fn collect_link_targets(span: &InlineSpan, out: &mut Vec<(String, String)>) {
     match span {
         InlineSpan::Link { url, spans, .. } => {
@@ -624,9 +656,27 @@ fn collect_link_targets(span: &InlineSpan, out: &mut Vec<(String, String)>) {
                 collect_link_targets(inner, out);
             }
         },
-        InlineSpan::Emphasis(spans) | InlineSpan::Strong(spans) => {
+        InlineSpan::Emphasis(spans)
+        | InlineSpan::Strong(spans)
+        | InlineSpan::Submit { spans, .. } => {
             for inner in spans {
                 collect_link_targets(inner, out);
+            }
+        },
+        _ => {},
+    }
+}
+
+fn collect_submit_targets(span: &InlineSpan, out: &mut Vec<(String, String)>) {
+    match span {
+        InlineSpan::Submit { target, spans } => {
+            out.push((target.clone(), inline_text(spans)));
+        },
+        InlineSpan::Emphasis(spans)
+        | InlineSpan::Strong(spans)
+        | InlineSpan::Link { spans, .. } => {
+            for inner in spans {
+                collect_submit_targets(inner, out);
             }
         },
         _ => {},

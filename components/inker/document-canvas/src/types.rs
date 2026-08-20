@@ -187,6 +187,8 @@ pub struct InteractionRegion {
 pub enum InteractionKind {
     /// Inline link — clicking navigates the URL.
     Link { url: String },
+    /// A submission endpoint. Hosts must not treat it as navigation.
+    Submit { target: String },
 }
 
 /// The output of [`crate::layout_document`]. A pure-data record describing
@@ -250,10 +252,20 @@ impl DocumentRenderPacket {
         self.interactions
             .iter()
             .rev()
-            .find(|r| rect_contains(r.bounds, x, y))
-            .map(|r| match &r.kind {
-                InteractionKind::Link { url } => url.as_str(),
+            .filter(|r| rect_contains(r.bounds, x, y))
+            .find_map(|r| match &r.kind {
+                InteractionKind::Link { url } => Some(url.as_str()),
+                InteractionKind::Submit { .. } => None,
             })
+    }
+
+    /// The topmost typed interaction whose rect contains `(x, y)`.
+    pub fn interaction_at(&self, x: f32, y: f32) -> Option<&InteractionKind> {
+        self.interactions
+            .iter()
+            .rev()
+            .find(|r| rect_contains(r.bounds, x, y))
+            .map(|r| &r.kind)
     }
 
     /// The deepest rendered block whose bounds contain `(x, y)` (full-document

@@ -32,3 +32,17 @@ pub async fn upload(
         .map_err(map_error)?;
     Ok(crate::gemini::into_errand_response(url, response))
 }
+
+/// Upload while presenting one caller-selected Gemini-family identity.
+pub async fn upload_with_identity(
+    url: &Url,
+    body: &[u8],
+    mime: &str,
+    token: Option<&str>,
+    identity: crate::GeminiClientIdentity<'_>,
+) -> Result<Response, Error> {
+    let response = gemini_protocol::titan::upload_with_identity(url, body, mime, token, identity)
+        .await
+        .map_err(map_error)?;
+    Ok(crate::gemini::into_errand_response(url, response))
+}

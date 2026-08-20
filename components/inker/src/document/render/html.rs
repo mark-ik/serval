@@ -291,6 +291,13 @@ fn write_inline_html(spans: &[InlineSpan], out: &mut String) {
                 write_inline_html(spans, out);
                 out.push_str("</a>");
             },
+            InlineSpan::Submit { target, spans } => {
+                out.push_str("<a href=\"");
+                escape_attr(target, out);
+                out.push_str("\" data-interaction=\"submit\">");
+                write_inline_html(spans, out);
+                out.push_str("</a>");
+            },
             InlineSpan::SoftBreak => out.push('\n'),
             InlineSpan::LineBreak => out.push_str("<br>\n"),
         }

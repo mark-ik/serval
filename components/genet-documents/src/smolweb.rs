@@ -204,32 +204,32 @@ impl SmolwebDocument {
             .packet
             .interactions
             .iter()
-            .map(|region| {
-                let url = match &region.kind {
-                    InteractionKind::Link { url } => url.clone(),
+            .filter_map(|region| {
+                let InteractionKind::Link { url } = &region.kind else {
+                    return None;
                 };
                 let rect = region.bounds;
-                (
-                    url,
+                Some((
+                    url.clone(),
                     [
                         rect.origin.x,
                         rect.origin.y,
                         rect.origin.x + rect.size.width,
                         rect.origin.y + rect.size.height,
                     ],
-                )
+                ))
             })
             .collect()
     }
 
     /// Resolve a viewport-local click through the retained full-document packet.
-    pub fn click_at(&mut self, x: f32, y: f32, width: u32, height: u32) -> Option<String> {
+    pub fn click_at(&mut self, x: f32, y: f32, width: u32, height: u32) -> Option<InteractionKind> {
         self.ensure_layout(width, height);
         self.layout
             .as_ref()?
             .packet
-            .link_at(x, y + self.scroll_y)
-            .map(str::to_string)
+            .interaction_at(x, y + self.scroll_y)
+            .cloned()
     }
 }
 
@@ -470,11 +470,37 @@ mod tests {
         let (url, [x0, y0, x1, y1]) = doc.links().into_iter().next().expect("link region");
         assert_eq!(url, "gemini://x.test/page");
         assert!(x1 > x0 && y1 > y0);
-        assert_eq!(
-            doc.click_at((x0 + x1) / 2.0, (y0 + y1) / 2.0, 400, 300)
-                .as_deref(),
-            Some("gemini://x.test/page")
+        assert!(matches!(
+            doc.click_at((x0 + x1) / 2.0, (y0 + y1) / 2.0, 400, 300),
+            Some(InteractionKind::Link { url }) if url == "gemini://x.test/page"
+        ));
+    }
+
+    #[test]
+    fn spartan_prompt_click_remains_a_submission() {
+        let mut doc = SmolwebDocument::parse(
+            "spartan://x.test/guestbook",
+            "=: /guestbook/sign Sign it\n",
+            SmolwebTheme::Plain,
         );
+        let _ = doc.frame(400, 300);
+        let region = doc
+            .layout
+            .as_ref()
+            .expect("layout")
+            .packet
+            .interactions
+            .iter()
+            .find(|region| matches!(region.kind, InteractionKind::Submit { .. }))
+            .expect("prompt region");
+        let x0 = region.bounds.origin.x;
+        let y0 = region.bounds.origin.y;
+        let x1 = x0 + region.bounds.size.width;
+        let y1 = y0 + region.bounds.size.height;
+        assert!(matches!(
+            doc.click_at((x0 + x1) / 2.0, (y0 + y1) / 2.0, 400, 300),
+            Some(InteractionKind::Submit { target }) if target == "/guestbook/sign"
+        ));
     }
 
     #[test]

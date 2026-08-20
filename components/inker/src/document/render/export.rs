@@ -108,7 +108,9 @@ fn collect_links(span: &InlineSpan, out: &mut Vec<(String, String)>) {
                 collect_links(inner, out);
             }
         },
-        InlineSpan::Emphasis(spans) | InlineSpan::Strong(spans) => {
+        InlineSpan::Emphasis(spans)
+        | InlineSpan::Strong(spans)
+        | InlineSpan::Submit { spans, .. } => {
             for inner in spans {
                 collect_links(inner, out);
             }
@@ -326,6 +328,13 @@ fn text_with_links(spans: &[InlineSpan]) -> String {
                 } else {
                     out.push_str(&format!("{label} <{url}>"));
                 }
+            },
+            InlineSpan::Submit { target, spans } => {
+                let label = inline_text(spans);
+                out.push_str(&label);
+                out.push_str(" [submit to <");
+                out.push_str(target);
+                out.push_str(">]");
             },
             InlineSpan::Emphasis(spans) | InlineSpan::Strong(spans) => {
                 out.push_str(&text_with_links(spans));

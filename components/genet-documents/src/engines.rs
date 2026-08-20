@@ -1135,7 +1135,10 @@ impl DocumentSession<Scene> for SmolwebDocumentSession {
     fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
         let (w, h) = self.viewport;
         match self.doc.click_at(x, y, w, h) {
-            Some(url) => SessionClick::Navigate(url),
+            Some(document_canvas::InteractionKind::Link { url }) => SessionClick::Navigate(url),
+            Some(document_canvas::InteractionKind::Submit { target }) => {
+                SessionClick::Submit(target)
+            },
             None => SessionClick::Miss,
         }
     }

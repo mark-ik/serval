@@ -48,7 +48,8 @@ pub use gemini::exchange as gemini_exchange;
 pub use gemini_protocol::ClientIdentity as GeminiClientIdentity;
 pub use misfin::{ClientIdentity, MISFIN_PORT, send as misfin_send};
 pub use scroll::fetch_with as scroll_fetch;
-pub use titan::upload as titan_upload;
+pub use spartan::submit as spartan_submit;
+pub use titan::{upload as titan_upload, upload_with_identity as titan_upload_with_identity};
 // The TOFU store moved to gemini-protocol with the TLS it guards, and is
 // re-exported here so hosts that install one (genet-documents, mere's fetch)
 // keep the same `errand::` path and the same types.

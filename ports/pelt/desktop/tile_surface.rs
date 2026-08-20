@@ -751,6 +751,7 @@ impl TileSurface {
             SessionClick::Miss => false,
             SessionClick::Handled => true,
             SessionClick::Navigate(href) => self.navigate_tile(id, &href),
+            SessionClick::Submit(_) => true,
         }
     }
 

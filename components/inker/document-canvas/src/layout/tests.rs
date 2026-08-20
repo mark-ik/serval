@@ -100,9 +100,37 @@ fn paragraph_with_link_emits_interaction_region() {
     let region = &packet.interactions[0];
     match &region.kind {
         InteractionKind::Link { url } => assert_eq!(url, "https://x.test/"),
+        InteractionKind::Submit { .. } => panic!("expected navigation link"),
     }
     assert!(region.bounds.size.width > 0.0);
     assert!(region.bounds.size.height > 0.0);
+}
+
+#[test]
+fn submission_span_emits_a_non_navigation_interaction() {
+    let packet = layout_document(
+        &doc(vec![Block::Paragraph {
+            spans: vec![InlineSpan::Submit {
+                target: "/guestbook/sign".into(),
+                spans: vec![InlineSpan::Text("Sign the guestbook".into())],
+            }],
+        }]),
+        viewport(),
+        &DocumentStyleSheet::default(),
+    )
+    .packet;
+    let region = &packet.interactions[0];
+    assert!(matches!(
+        &region.kind,
+        InteractionKind::Submit { target } if target == "/guestbook/sign"
+    ));
+    let x = region.bounds.origin.x + 1.0;
+    let y = region.bounds.origin.y + 1.0;
+    assert!(packet.link_at(x, y).is_none());
+    assert!(matches!(
+        packet.interaction_at(x, y),
+        Some(InteractionKind::Submit { .. })
+    ));
 }
 
 #[test]

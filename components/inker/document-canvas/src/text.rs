@@ -86,6 +86,8 @@ pub struct Flattened {
     pub styles: Vec<(Range<usize>, InlineStyle)>,
     /// Link annotations. Byte range of the link's display text + the URL.
     pub links: Vec<(Range<usize>, String)>,
+    /// Submission annotations. Byte range of the label + mutation target.
+    pub submissions: Vec<(Range<usize>, String)>,
 }
 
 fn flatten_into(
@@ -134,6 +136,17 @@ fn flatten_into(
                 let link_end = out.text.len();
                 if link_start < link_end {
                     out.links.push((link_start..link_end, url.clone()));
+                }
+            },
+            InlineSpan::Submit {
+                target,
+                spans: inner,
+            } => {
+                let start = out.text.len();
+                flatten_into(inner, inherited.with_link(), adornment, base_scheme, out);
+                let end = out.text.len();
+                if start < end {
+                    out.submissions.push((start..end, target.clone()));
                 }
             },
             InlineSpan::SoftBreak => {
@@ -334,12 +347,24 @@ pub fn layout_text_block(
             });
         }
 
-        // Link interaction regions: walk the line's text range, intersect
-        // with each link's byte range, emit a rect for the matched segment.
+        // Typed interaction regions: walk the line's text range, intersect
+        // with each annotation, emit a rect for the matched segment.
         let line_text_range = line.text_range();
-        for (link_range, url) in &flattened.links {
-            let intersect_start = link_range.start.max(line_text_range.start);
-            let intersect_end = link_range.end.min(line_text_range.end);
+        let typed = flattened
+            .links
+            .iter()
+            .map(|(range, url)| (range, InteractionKind::Link { url: url.clone() }))
+            .chain(flattened.submissions.iter().map(|(range, target)| {
+                (
+                    range,
+                    InteractionKind::Submit {
+                        target: target.clone(),
+                    },
+                )
+            }));
+        for (interaction_range, kind) in typed {
+            let intersect_start = interaction_range.start.max(line_text_range.start);
+            let intersect_end = interaction_range.end.min(line_text_range.end);
             if intersect_start >= intersect_end {
                 continue;
             }
@@ -371,7 +396,7 @@ pub fn layout_text_block(
                         max_x - min_x,
                         line_height,
                     ),
-                    kind: InteractionKind::Link { url: url.clone() },
+                    kind,
                 });
             }
         }

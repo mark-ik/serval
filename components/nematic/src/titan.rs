@@ -12,15 +12,11 @@
 //! is gemtext-shaped. This engine delegates that body to
 //! [`crate::GemtextEngine`] and re-tags provenance as `nematic.titan`.
 //!
-//! Building and sending the upload (the size/MIME/token request line, the
-//! payload, redirect following) belongs to the transport/request layer, not
-//! to this portable render engine. The engine records that boundary with an
-//! [`DocumentDiagnostic::UnsupportedConstruct`] so the gap is visible when
-//! the write path is wired. Trust defaults to `Unknown`.
+//! Building and sending the upload belongs to the transport/request layer,
+//! not to this portable render engine. Trust defaults to `Unknown`.
 
 use inker::{
-    DocumentDiagnostic, DocumentProvenance, DocumentTrustState, Engine, EngineDocument,
-    EngineError, EngineInput,
+    DocumentProvenance, DocumentTrustState, Engine, EngineDocument, EngineError, EngineInput,
 };
 
 use crate::GemtextEngine;
@@ -63,13 +59,6 @@ impl Engine for TitanEngine {
             source_label: Some("nematic.gemtext".to_string()),
         };
         doc.trust = DocumentTrustState::Unknown;
-        doc.diagnostics
-            .push(DocumentDiagnostic::UnsupportedConstruct(
-                "titan upload/request construction is handled by the transport layer, not this \
-                 render engine; only the server's Gemini response body is rendered here"
-                    .to_string(),
-            ));
-
         Ok(doc)
     }
 }
@@ -104,18 +93,5 @@ mod tests {
             doc.provenance.source_label.as_deref(),
             Some("nematic.gemtext")
         );
-    }
-
-    #[test]
-    fn upload_scope_boundary_emits_diagnostic() {
-        let doc = render("hi\n");
-        let has_note = doc.diagnostics.iter().any(|d| {
-            matches!(
-                d,
-                DocumentDiagnostic::UnsupportedConstruct(msg)
-                    if msg.contains("upload") && msg.contains("transport")
-            )
-        });
-        assert!(has_note, "expected titan upload-scope diagnostic");
     }
 }
