@@ -757,10 +757,7 @@ where
     }
 
     /// Retained geometry and text for a directed source range.
-    pub fn text_selection(
-        &self,
-        range: crate::TextRange<Id>,
-    ) -> Option<crate::TextSelection<Id>> {
+    pub fn text_selection(&self, range: crate::TextRange<Id>) -> Option<crate::TextSelection<Id>> {
         self.text_frame()?
             .text_selection(range, |_, fragment| crate::TextRect {
                 x: fragment.x,
@@ -2262,7 +2259,15 @@ where
     });
     let table_shadow = std::mem::take(&mut state.table_shadow);
     drop(state);
-    apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
+    apply_relative_positioning(
+        &mut fragments,
+        &boxes,
+        styles,
+        PhysicalSize {
+            width: viewport_width,
+            height: viewport_height,
+        },
+    );
     apply_absolute_and_fixed_positioning(
         &mut fragments,
         &boxes,
@@ -2887,7 +2892,15 @@ where
     drop(state);
     merge_atomic_subtrees(atomic, &boxes, &mut fragments);
     table_paint.merge(atomic.table_paint.clone());
-    apply_relative_positioning(&mut fragments, &boxes, styles, viewport_width);
+    apply_relative_positioning(
+        &mut fragments,
+        &boxes,
+        styles,
+        PhysicalSize {
+            width: viewport_width,
+            height: viewport_height,
+        },
+    );
     apply_absolute_and_fixed_positioning(
         &mut fragments,
         &boxes,
@@ -4506,7 +4519,7 @@ fn apply_relative_positioning<Id>(
     fragments: &mut FragmentTree,
     boxes: &GeneratedBoxTree<Id>,
     styles: &StylePlane<Id>,
-    initial_containing_inline_size: f32,
+    initial_containing_size: PhysicalSize,
 ) where
     Id: Copy + Eq + Hash,
 {
@@ -4543,23 +4556,117 @@ fn apply_relative_positioning<Id>(
 
     for (_box_id, style, roots) in placements {
         for root in roots {
-            let containing_inline_size = fragments
+            let containing = fragments
                 .get(root)
                 .and_then(TreeFragment::containing_fragment)
-                .and_then(|containing| fragments.get(containing))
-                .map_or(initial_containing_inline_size, |fragment| {
-                    style
+                .and_then(|containing| fragments.get(containing));
+            let (containing_inline_size, containing_block_size) = match containing {
+                None => {
+                    let size = style.containing_flow.logical_size(initial_containing_size);
+                    (size.inline, Some(size.block))
+                },
+                Some(fragment) => {
+                    let inline = style
                         .containing_flow
                         .logical_size(PhysicalSize {
                             width: fragment.width,
                             height: fragment.height,
                         })
-                        .inline
-                });
-            let logical = style.relative_offset(containing_inline_size);
+                        .inline;
+                    let block = definite_containing_block_size(boxes, styles, fragments, fragment)
+                        .map(|size| style.containing_flow.logical_size(size).block);
+                    (inline, block)
+                },
+            };
+            let logical = style.relative_offset(containing_inline_size, containing_block_size);
             let physical: PhysicalOffset = style.containing_flow.physical_offset(logical);
             fragments.translate_subtree(root, physical);
         }
+    }
+}
+
+/// The content-box size of a containing block whose block-axis size is
+/// specified, so a block-axis percentage inset has a basis. A containing block
+/// sized by its content has no such basis and CSS treats the percentage as
+/// `auto`; this reports `None` for it.
+fn definite_containing_block_size<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    fragments: &FragmentTree,
+    fragment: &TreeFragment,
+) -> Option<PhysicalSize>
+where
+    Id: Copy + Eq + Hash,
+{
+    let css_box = &boxes[fragment.box_id()];
+    let computed = styles.get(css_box.origin.node()?)?;
+    let font_size = font_size_px(&computed.font_size, LIVE_ROOT_FONT_SIZE);
+    let block_axis = if css_box.flow.is_horizontal() {
+        computed.height
+    } else {
+        computed.width
+    };
+    let definite = match block_size_value(block_axis, font_size) {
+        BlockSizeValue::Length(length) if length.percentage == 0.0 => true,
+        // A percentage block size is only as definite as the size it
+        // resolves against (CSS 2.1 §10.5).
+        BlockSizeValue::Length(_) => match css_box.parent() {
+            None => true,
+            Some(parent) => fragments
+                .fragment_ids_for_box(parent)
+                .first()
+                .and_then(|id| fragments.get(*id))
+                .and_then(|parent| definite_containing_block_size(boxes, styles, fragments, parent))
+                .is_some(),
+        },
+        _ => stretched_item_block_size_is_definite(boxes, styles, css_box, computed),
+    };
+    if !definite {
+        return None;
+    }
+    let (width, height) = content_box_size(computed, fragment);
+    Some(PhysicalSize { width, height })
+}
+
+/// CSS Flexbox §9.8 and CSS Grid §6.6: once a stretched flex item's cross
+/// size or a grid item's area is laid out, its descendants treat that size as
+/// definite, so a percentage inset resolves against it even though the item's
+/// own block size computes to `auto`.
+fn stretched_item_block_size_is_definite<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    css_box: &buckram::CssBox<Id>,
+    computed: &ComputedValues,
+) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let Some(parent) = css_box.parent() else {
+        return false;
+    };
+    let Some(container) = boxes[parent]
+        .origin
+        .node()
+        .and_then(|node| styles.get(node))
+    else {
+        return false;
+    };
+    let stretch =
+        |alignment: CssAlignment| matches!(alignment, CssAlignment::Auto | CssAlignment::Stretch);
+    match container.display {
+        CssDisplay::Grid => stretch(computed.align_self),
+        CssDisplay::Flex => {
+            let cross_axis_is_block = matches!(
+                container.flex_direction,
+                CssFlexDirection::Row | CssFlexDirection::RowReverse
+            ) == css_box.flow.is_horizontal();
+            cross_axis_is_block
+                && match computed.align_self {
+                    CssAlignment::Auto => stretch(container.align_items),
+                    alignment => alignment == CssAlignment::Stretch,
+                }
+        },
+        _ => false,
     }
 }
 
@@ -5841,24 +5948,67 @@ fn table_cell_spans_collapsed_track(visibility: &TableTrackVisibility, cell: &Ta
     )
 }
 
-/// Resolve a table part's CSS relative-position offset against the table
-/// grid's final inline size. CSS 2.1 resolves vertical percentage insets from
-/// the containing block's width too, so both axes use that basis here.
+/// Resolve a table part's CSS relative-position offset. Inline percentages
+/// resolve against the table grid's final inline size. Block percentages
+/// resolve against the part's containing block only when that block size is
+/// specified (CSS 2.1 §9.3.2); a cell inside an auto-height row, or a row in
+/// an auto-height table, treats a percentage `top` or `bottom` as `auto`.
 fn relative_table_part_offset(
     computed: &ComputedValues,
     font_size: f32,
     inline_basis: f32,
+    block_basis: Option<f32>,
 ) -> (f32, f32) {
     if computed.position != CssPosition::Relative {
         return (0.0, 0.0);
     }
-    let inset = |value: Inset| match value {
+    let inline_inset = |value: Inset| match value {
         Inset::Auto => None,
         Inset::Value(value) => Some(signed_length_percentage_px(value, font_size, inline_basis)),
     };
-    let inline = inset(computed.left).or_else(|| inset(computed.right).map(|value| -value));
-    let block = inset(computed.top).or_else(|| inset(computed.bottom).map(|value| -value));
+    let block_inset = |value: Inset| match value {
+        Inset::Auto => None,
+        Inset::Value(value) => {
+            FlowLengthAuto::Value(flow_length(value, font_size)).resolve_block(block_basis)
+        },
+    };
+    let inline =
+        inline_inset(computed.left).or_else(|| inline_inset(computed.right).map(|value| -value));
+    let block =
+        block_inset(computed.top).or_else(|| block_inset(computed.bottom).map(|value| -value));
     (inline.unwrap_or(0.0), block.unwrap_or(0.0))
+}
+
+/// The specified block-axis length of a table part's containing block: the
+/// row for a cell, otherwise the table itself. Percentages and `auto` give no
+/// basis, so the dependent percentage inset stays `auto`.
+fn specified_table_block_basis<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    part: BoxId,
+    table: BoxId,
+    table_font_size: f32,
+) -> Option<f32>
+where
+    Id: Copy + Eq + Hash,
+{
+    let owner = if boxes[part].display.internal_table == Some(InternalTableRole::Cell) {
+        boxes[part].parent()?
+    } else {
+        table
+    };
+    let css_box = &boxes[owner];
+    let computed = styles.get(css_box.origin.node()?)?;
+    let font_size = font_size_px(&computed.font_size, table_font_size);
+    let block_axis = if css_box.flow.is_horizontal() {
+        computed.height
+    } else {
+        computed.width
+    };
+    match block_size_value(block_axis, font_size) {
+        BlockSizeValue::Length(length) if length.percentage == 0.0 => Some(length.px),
+        _ => None,
+    }
 }
 
 /// Preserve relative positioning after table row and row-group boxes have
@@ -5925,7 +6075,9 @@ fn apply_relative_table_part_offsets<Id>(
             return (0.0, 0.0);
         };
         let font_size = font_size_px(&computed.font_size, table_font_size);
-        relative_table_part_offset(computed, font_size, inline_basis)
+        let block_basis =
+            specified_table_block_basis(boxes, styles, box_id, table, table_font_size);
+        relative_table_part_offset(computed, font_size, inline_basis, block_basis)
     });
 
     for placement in &mut block.alignment.cells {
@@ -6491,7 +6643,10 @@ where
 
 /// Return the topmost pointer-events-enabled element whose layout fragment
 /// contains a scene point. The walk mirrors the lane's DOM paint order for the
-/// bounded stacking subset: numeric z-index first, then source order.
+/// bounded stacking subset: numeric z-index first, then source order within a
+/// stacking context. Descendants remain inside their nearest positioned
+/// context, so a child can paint above its context's background without
+/// escaping an ancestor that is below a sibling context.
 pub fn hit_test<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
@@ -6935,8 +7090,10 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             y: overflow(computed.overflow_y),
         },
         // Buckram owns every CSS positioning category. The scratch formatter
-        // starts in flow; only Buckram's explicit flex/grid static-position
-        // provider changes its private backend role after attachment.
+        // starts in flow; Buckram's explicit flex/grid static-position
+        // provider changes a child's private backend role after attachment,
+        // and a Taffy block fallback does the same for its out-of-flow
+        // children only while it runs, so they take no normal-flow space there.
         position: Position::Relative,
         // Sticky geometry is a retained Buckram scroll constraint. The
         // scratch formatter receives no inset so it produces only the normal
@@ -8936,6 +9093,47 @@ mod tests {
             Some(node_by_id(&dom, dom.document(), "collapse").expect("collapse node")),
             "a child z-index is ordered within its parent's context, above the parent and lower siblings",
         );
+    }
+
+    #[test]
+    fn nested_absolute_card_keeps_its_editor_in_the_card_region() {
+        let dom = StaticDocument::parse(
+            "<div id=canvas><div id=card-root><div id=layer><div id=card><button id=collapse>Collapse</button><div id=editor>Card controls</div></div></div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #canvas { position: relative; width: 520px; height: 260px; } \
+                 #card-root { position: absolute; left: 0; top: 0; z-index: 4; } \
+                 #layer { position: absolute; left: 100px; top: 60px; width: 150px; height: 160px; z-index: 4; } \
+                 #card { position: absolute; left: 0; top: 0; width: 100%; height: 100%; \
+                         box-sizing: border-box; overflow: hidden; padding: 10px; z-index: 4; } \
+                 #collapse { position: absolute; right: 8px; top: 8px; z-index: 2; } \
+                 #editor { display: flex; flex-wrap: wrap; }"]),
+            &Device::screen(640.0, 480.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 640.0, 480.0).expect("layout");
+        let rect = |id| {
+            layout
+                .get(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect("fragment")
+        };
+        let layer = rect("layer");
+        let card = rect("card");
+        let collapse = rect("collapse");
+        let editor = rect("editor");
+
+        assert!((card.x - layer.x).abs() < 0.01 && (card.y - layer.y).abs() < 0.01);
+        assert!(
+            (card.width - layer.width).abs() < 0.01 && (card.height - layer.height).abs() < 0.01
+        );
+        assert!(editor.x >= card.x && editor.y >= card.y);
+        assert!(editor.x + editor.width <= card.x + card.width + 0.01);
+        assert!(editor.y + editor.height <= card.y + card.height + 0.01);
+        assert!(collapse.x >= card.x && collapse.y >= card.y);
+        assert!(collapse.x + collapse.width <= card.x + card.width + 0.01);
+        assert!(collapse.y + collapse.height <= card.y + card.height + 0.01);
     }
 
     #[test]

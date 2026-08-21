@@ -1332,6 +1332,38 @@ where
     /// caller owns its participation and static position, so its root may use
     /// Buckram's ordinary block algorithm after temporarily removing only the
     /// root's position deferral.
+    /// Run one Taffy block fallback with this node's absolute and fixed
+    /// children presented to Taffy as out of flow. Buckram owns their final
+    /// geometry; the fallback only needs them to take no normal-flow space
+    /// and to report their hypothetical in-flow position as
+    /// `static_location`. Each child's private backend role is restored
+    /// afterwards so its own leaf or block layout is unchanged.
+    fn with_out_of_flow_children_excluded<R>(
+        &mut self,
+        node_id: NodeId,
+        layout: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let node_index = AlgorithmNodeId::from_taffy(node_id).index();
+        let children = self.tree.nodes[node_index].children.clone();
+        let mut flipped = Vec::new();
+        for child in children {
+            if !self.tree.nodes[child.index()].block_style.is_out_of_flow() {
+                continue;
+            }
+            let style = sealed::AlgorithmStyle::as_taffy_style_mut(
+                &mut self.tree.nodes[child.index()].style,
+            );
+            flipped.push((child, style.position));
+            style.position = taffy::Position::Absolute;
+        }
+        let output = layout(self);
+        for (child, previous) in flipped {
+            sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.tree.nodes[child.index()].style)
+                .position = previous;
+        }
+        output
+    }
+
     fn compute_out_of_flow_block_child(
         &mut self,
         child: AlgorithmNodeId,
@@ -2128,7 +2160,9 @@ where
                                 Some(BlockAlgorithm::Taffy);
                             tree.tree.nodes[node_index].block_deferral = Some(deferral);
                             tree.tree.nodes[node_index].block_margins = None;
-                            compute_block_layout(tree, node_id, inputs, None)
+                            tree.with_out_of_flow_children_excluded(node_id, |tree| {
+                                compute_block_layout(tree, node_id, inputs, None)
+                            })
                         },
                     }
                 },
@@ -2137,7 +2171,9 @@ where
                     tree.tree.nodes[node_index].block_deferral =
                         Some(BlockDeferral::BackendSizingMode);
                     tree.tree.nodes[node_index].block_margins = None;
-                    compute_block_layout(tree, node_id, inputs, block_context)
+                    tree.with_out_of_flow_children_excluded(node_id, |tree| {
+                        compute_block_layout(tree, node_id, inputs, block_context)
+                    })
                 },
                 AlgorithmKind::Flex => compute_flexbox_layout(tree, node_id, inputs),
                 AlgorithmKind::Grid => compute_grid_layout(tree, node_id, inputs),
