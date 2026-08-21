@@ -18,6 +18,8 @@ use genet_document_resources::{
     StylesheetOwner,
 };
 use genet_host_api::ResourceFetcher;
+#[cfg(feature = "livery")]
+use genet_host_api::ResourceResponse;
 #[cfg(feature = "incumbent")]
 use genet_layout::{ScrollKey, TextSelection};
 use inker::session_engine::{
@@ -284,25 +286,34 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessio
         &self,
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
-        let base_resource = request
+        let requested_resource = request
             .address
             .split_once('#')
-            .map_or(request.address.as_str(), |(resource, _)| resource)
-            .to_owned();
-        let source = match &request.body {
-            Some(body) => body.clone(),
-            None => {
-                let response = self.fetcher.fetch_response(&base_resource).ok_or_else(|| {
-                    SessionError::SpawnFailed(format!("could not load {base_resource}"))
-                })?;
-                let base_resource = response.final_url;
-                let source = String::from_utf8_lossy(&response.bytes).into_owned();
-                let dom = genet_static_dom::StaticDocument::parse(&source);
-                return self.spawn_livery_document(request, dom, base_resource);
+            .map_or(request.address.as_str(), |(resource, _)| resource);
+        let source_response = match &request.body {
+            Some(body) => ResourceResponse {
+                final_url: request.address.clone(),
+                content_type: request
+                    .content_type
+                    .clone()
+                    .or_else(|| Some("text/html".to_string())),
+                bytes: body.as_bytes().to_vec(),
             },
+            None => self
+                .fetcher
+                .fetch_response(requested_resource)
+                .ok_or_else(|| {
+                    SessionError::SpawnFailed(format!("could not load {requested_resource}"))
+                })?,
         };
+        let base_resource = source_response
+            .final_url
+            .split_once('#')
+            .map_or(source_response.final_url.as_str(), |(resource, _)| resource)
+            .to_owned();
+        let source = String::from_utf8_lossy(&source_response.bytes).into_owned();
         let dom = genet_static_dom::StaticDocument::parse(&source);
-        self.spawn_livery_document(request, dom, base_resource)
+        self.spawn_livery_document(request, dom, base_resource, source_response)
     }
 }
 
@@ -313,6 +324,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
         request: &SessionSpawnRequest,
         dom: genet_static_dom::StaticDocument,
         base_resource: String,
+        source_response: ResourceResponse,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let resources = ResolvedDocumentResources::resolve_with_limits(
             &dom,
@@ -368,6 +380,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             address: request.address.clone(),
             last_error: None,
             resources,
+            source_response,
         }))
     }
 }
@@ -380,6 +393,7 @@ pub struct LiveryDocumentSession {
     address: String,
     last_error: Option<String>,
     resources: ResolvedDocumentResources,
+    source_response: ResourceResponse,
 }
 
 #[cfg(feature = "livery")]
@@ -570,7 +584,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
 
     fn clip(&self) -> Option<DocumentClip> {
         let selection = self.doc.text_selection();
-        match selection {
+        let mut clip = match selection {
             Some(selection) => {
                 let links = self.doc.links_for_selection(&selection);
                 semantic_clip_from_selection_with_links(
@@ -589,7 +603,19 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                 )
             },
             None => semantic_clip_from_dom(&self.address, self.doc.dom()),
-        }
+        }?;
+        clip.artifacts.push(DocumentClipArtifact {
+            role: DocumentClipArtifactRole::SourceResponse,
+            media_type: self
+                .source_response
+                .content_type
+                .as_deref()
+                .unwrap_or("text/html")
+                .to_string(),
+            canonical_uri: self.source_response.final_url.clone(),
+            bytes: self.source_response.bytes.clone(),
+        });
+        Some(clip)
     }
 
     fn as_any_ref(&self) -> &dyn Any {
@@ -1270,7 +1296,7 @@ mod tests {
                 "https://example.test/start" => Some(
                     genet_host_api::ResourceResponse::new(
                         "https://cdn.example.test/final/index.html",
-                        br#"<link rel="stylesheet" href="site.css"><p class="card">final base</p>"#
+                        br#"<link rel="stylesheet" href="site.css"><main class="card"><h1>final base</h1></main>"#
                             .to_vec(),
                     )
                     .with_content_type("text/html"),
@@ -1570,6 +1596,31 @@ mod tests {
 
     #[cfg(feature = "livery")]
     #[test]
+    fn livery_session_clip_retains_the_source_response() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let body = "<html><head><title>The Page</title></head><body><main>\
+                    <h1>Heading</h1><p>A useful finding.</p></main></body></html>";
+        let request = SessionSpawnRequest::new("https://example.test/report")
+            .with_body(body)
+            .with_content_type("text/html; charset=utf-8");
+        let session = engine.spawn(&request).expect("livery lane spawns");
+        let clip = session.clip().expect("the livery lane can supply a clip");
+
+        assert_eq!(clip.artifacts.len(), 1);
+        assert_eq!(
+            clip.artifacts[0].role,
+            DocumentClipArtifactRole::SourceResponse
+        );
+        assert_eq!(clip.artifacts[0].media_type, "text/html; charset=utf-8");
+        assert_eq!(
+            clip.artifacts[0].canonical_uri,
+            "https://example.test/report"
+        );
+        assert_eq!(clip.artifacts[0].bytes, body.as_bytes());
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
     fn livery_session_pointer_selection_scopes_clip_and_selector() {
         let engine = LiverySessionEngine::new(NoFetch);
         let request = SessionSpawnRequest::new("https://example.test/report")
@@ -1841,6 +1892,12 @@ mod tests {
             }),
             "the final document identity supplies the linked stylesheet base"
         );
+        let clip = session.clip().expect("redirected document supplies a clip");
+        assert_eq!(
+            clip.artifacts[0].canonical_uri,
+            "https://cdn.example.test/final/index.html"
+        );
+        assert_eq!(clip.artifacts[0].media_type, "text/html");
         let concrete = session
             .as_any()
             .downcast_mut::<LiveryDocumentSession>()
