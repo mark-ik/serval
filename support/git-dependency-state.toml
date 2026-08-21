@@ -1,0 +1,14 @@
+schema = 1
+
+# Branches under these namespaces are first-party development edges. When an
+# ignored lockfile resolves one behind its declared branch, that is drift and
+# fails the check. Tracked application lockfiles keep update timing explicit and
+# receive a warning instead.
+owned-url-prefixes = [
+    "https://github.com/mark-ik/",
+    "https://github.com/merely-made/",
+]
+lock-policy = "ignored"
+ignored-owned-drift = "error"
+tracked-owned-drift = "warning"
+external-drift = "warning"
