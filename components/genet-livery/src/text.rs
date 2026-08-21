@@ -580,6 +580,7 @@ impl TextSystem {
                         prepared_sources.push(source);
                     }
                     visual_commands.push(PreparedCommand {
+                        source,
                         owners: run.owners,
                         command,
                     });
@@ -1218,6 +1219,7 @@ where
                         prepared_sources.push(source_node);
                     }
                     visual_commands.push(PreparedCommand {
+                        source: source_node,
                         owners: command_owners,
                         command: PaintCmd::DrawText(TextRunItem {
                             placement: CommonPlacement::new(super::paint::bounds(&container)),
@@ -1472,6 +1474,56 @@ where
 
     pub(crate) fn mark_decoration_painted(&mut self, source: Id) -> bool {
         self.painted_decorations.insert(source)
+    }
+
+    /// Move all shaped text belonging to a translated DOM subtree.
+    ///
+    /// Final relative and absolute positioning moves the fragment tree after
+    /// inline formatting has already placed glyphs in document coordinates.
+    /// Keep the retained text frame in lockstep with that fragment translation.
+    pub(crate) fn translate_subtree<D>(&mut self, dom: &D, root: Id, offset: (f32, f32))
+    where
+        D: LayoutDom<NodeId = Id>,
+    {
+        if offset.0 == 0.0 && offset.1 == 0.0 {
+            return;
+        }
+        let mut nodes = HashSet::new();
+        collect_subtree_nodes(dom, root, &mut nodes);
+        for group in &mut self.prepared_groups {
+            for prepared in group {
+                if nodes.contains(&prepared.source) {
+                    translate_paint_command(&mut prepared.command, offset);
+                }
+            }
+        }
+        for (node, fragments) in &mut self.inline_fragments {
+            if nodes.contains(node) {
+                for fragment in fragments {
+                    translate_fragment(fragment, offset);
+                }
+            }
+        }
+        for (node, lines) in &mut self.inline_line_keys {
+            if nodes.contains(node) {
+                for line in lines {
+                    *line += offset.1;
+                }
+            }
+        }
+        #[cfg(test)]
+        for (node, baselines) in &mut self.inline_baselines {
+            if nodes.contains(node) {
+                for baseline in baselines {
+                    *baseline += offset.1;
+                }
+            }
+        }
+        for cluster in &mut self.text_clusters {
+            if nodes.contains(&cluster.source) {
+                translate_fragment(&mut cluster.fragment, offset);
+            }
+        }
     }
 
     pub(crate) fn inline_fragments(&self, source: Id) -> Option<&[Fragment]> {
@@ -1795,6 +1847,7 @@ where
 
 #[derive(Clone, Debug)]
 struct PreparedCommand<Id> {
+    source: Id,
     owners: Vec<Id>,
     command: PaintCmd,
 }
@@ -1960,6 +2013,31 @@ struct ShapedCluster<Id> {
 fn translate_fragment(fragment: &mut Fragment, origin: (f32, f32)) {
     fragment.x += origin.0;
     fragment.y += origin.1;
+}
+
+fn collect_subtree_nodes<D>(dom: &D, node: D::NodeId, nodes: &mut HashSet<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    nodes.insert(node);
+    for child in dom.dom_children(node) {
+        collect_subtree_nodes(dom, child, nodes);
+    }
+}
+
+fn translate_paint_command(command: &mut PaintCmd, offset: (f32, f32)) {
+    let PaintCmd::DrawText(run) = command else {
+        return;
+    };
+    run.placement.bounds.min.x += offset.0;
+    run.placement.bounds.max.x += offset.0;
+    run.placement.bounds.min.y += offset.1;
+    run.placement.bounds.max.y += offset.1;
+    for glyph in &mut run.glyphs {
+        glyph.point.x += offset.0;
+        glyph.point.y += offset.1;
+    }
 }
 
 fn is_inline<D>(dom: &D, styles: &StylePlane<D::NodeId>, id: D::NodeId) -> bool

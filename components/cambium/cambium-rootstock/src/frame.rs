@@ -27,20 +27,11 @@ fn elapsed_us(elapsed: crate::Duration) -> u64 {
 
 struct SpriggingSource<'a> {
     rendered: &'a sprigging::RenderedLeaves,
-    /// Leaf key → (FragmentId, epoch), synced by `sync_leaf_fragments`
-    /// immediately before every emit, so an entry here is current by
-    /// construction. Empty in headless runs (no surface, no registry),
-    /// which keeps the `Harness` on the pixel-identical inline path.
-    fragments: &'a std::collections::HashMap<u64, (u64, u64)>,
 }
 
 impl SpriggingSource<'_> {
     fn leaf_commands(&self, key: u64) -> Option<Vec<paint_list_api::PaintCmd>> {
         self.rendered.get(key).map(<[_]>::to_vec)
-    }
-
-    fn leaf_fragment(&self, key: u64) -> Option<u64> {
-        self.fragments.get(&key).map(|(id, _epoch)| *id)
     }
 }
 
@@ -316,13 +307,16 @@ where
         let dom_ref = dom.borrow();
         let source = SpriggingSource {
             rendered: &self.s.rendered,
-            fragments: &self.s.leaf_fragments,
         };
         let mut list = layout.emit_paint_list_with_leaves(
             &*dom_ref,
             DeviceIntSize::new(lw as i32, lh as i32),
             |key| source.leaf_commands(key),
-            |key| source.leaf_fragment(key),
+            // A retained fragment has no CSS clip or layer identity in the
+            // renderer yet. Keep custom leaves in the recorded Livery slot as
+            // ordinary commands until that composition boundary is real.
+            // This preserves their stacking relation to DOM overlays.
+            |_| None,
         );
         if let Some((node, caret, selection)) = focused_overlay {
             if let Some((start, end)) = selection {

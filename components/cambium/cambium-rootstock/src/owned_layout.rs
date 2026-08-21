@@ -343,23 +343,12 @@ impl OwnedLayout {
             &mut self.text,
             &self.element_scroll,
             &HashMap::new(),
-        )
-        .translated(-self.viewport_scroll.0, -self.viewport_scroll.1);
-        walk(dom, dom.document(), &mut |node| {
-            let Some(key) = custom_leaf_key(dom, node) else {
-                return;
-            };
-            let Some((x, y, _, _)) = self.painted_rect(dom, node) else {
-                return;
-            };
-            let origin = LayoutPoint::new(x, y);
-            if let Some(id) = fragment(key) {
-                list.push_host_fragment_at(origin, id);
-            } else if let Some(items) = commands(key) {
-                list.push_host_commands_at(origin, &items);
-            }
-        });
-        list
+        );
+        // Slots were recorded against the un-translated list. Fill them before
+        // the document viewport transform is added so their indices and their
+        // CSS paint context stay aligned.
+        list.splice_host_leaf_slots(&mut commands, &mut fragment);
+        list.translated(-self.viewport_scroll.0, -self.viewport_scroll.1)
     }
 
     pub(crate) fn push_rect(

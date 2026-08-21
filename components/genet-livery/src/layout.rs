@@ -2268,6 +2268,7 @@ where
         &boxes,
         styles,
         dom,
+        None,
         image_sources,
         &positioned_intrinsics,
         viewport_width,
@@ -2892,6 +2893,7 @@ where
         &boxes,
         styles,
         dom,
+        Some(&mut text_frame),
         image_sources,
         &positioned_intrinsics,
         viewport_width,
@@ -5034,6 +5036,7 @@ fn apply_absolute_and_fixed_positioning<D>(
     boxes: &GeneratedBoxTree<D::NodeId>,
     styles: &StylePlane<D::NodeId>,
     dom: &D,
+    mut text_frame: Option<&mut TextFrame<D::NodeId>>,
     image_sources: &ImageSources,
     intrinsic_sizes: &HashMap<BoxId, IntrinsicSizes>,
     viewport_width: f32,
@@ -5063,13 +5066,16 @@ fn apply_absolute_and_fixed_positioning<D>(
                 height: target.height,
             },
         );
-        fragments.translate_subtree(
-            placement.root,
-            PhysicalOffset {
-                x: placement.containing_rect.x + target.x - placement.current.x,
-                y: placement.containing_rect.y + target.y - placement.current.y,
-            },
-        );
+        let offset = PhysicalOffset {
+            x: placement.containing_rect.x + target.x - placement.current.x,
+            y: placement.containing_rect.y + target.y - placement.current.y,
+        };
+        fragments.translate_subtree(placement.root, offset);
+        if let Some(node) = boxes[placement.box_id].origin.node()
+            && let Some(text) = text_frame.as_deref_mut()
+        {
+            text.translate_subtree(dom, node, (offset.x, offset.y));
+        }
         fragments.set_containing_fragment(placement.root, placement.containing_fragment);
     }
 }
@@ -6545,6 +6551,27 @@ where
     children
 }
 
+/// Direct children in the admitted paint order. Flex/grid `order` remains the
+/// first ordering step; positioned and flex/grid-item stacking levels then
+/// divide that sequence, with equal levels retaining its stable source order.
+///
+/// This is local to one stacking context. A child of a positioned
+/// `z-index: 4` box may have `z-index: 2`, but it still belongs to the outer
+/// level 4 context rather than competing with an unrelated level 2 sibling.
+fn stacking_paint_children<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    parent: D::NodeId,
+) -> Vec<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let mut children = order_modified_children(dom, styles, parent);
+    children.sort_by_key(|child| z_index_stacking_level(dom, styles, *child).unwrap_or_default());
+    children
+}
+
 /// Hit-test a retained fragment plane after applying per-element scroll
 /// offsets to descendants. The ordinary [`hit_test`] path keeps the map empty;
 /// retained sessions use this variant for wheel-scrolled containers.
@@ -6571,7 +6598,7 @@ where
         order: 0,
         candidates: Vec::new(),
     };
-    collect_hit_candidates(&mut state, dom.document(), (0.0, 0.0));
+    collect_hit_candidates(&mut state, dom.document(), (0.0, 0.0), None);
     state
         .candidates
         .into_iter()
@@ -6605,11 +6632,14 @@ fn collect_hit_candidates<D>(
     state: &mut HitTestState<'_, D>,
     id: D::NodeId,
     ancestor_scroll: (f32, f32),
+    ancestor_stacking_level: Option<i32>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
     let style = state.styles.get(id);
+    let stacking_level =
+        ancestor_stacking_level.or_else(|| z_index_stacking_level(state.dom, state.styles, id));
     // K4e4: the hit target is the node's outermost box - a table element's
     // wrapper - so the caption area belongs to the table when nothing deeper
     // claims it, and the caption element wins inside its own rectangle by
@@ -6634,7 +6664,7 @@ fn collect_hit_candidates<D>(
         && state.y >= fragment.y
         && state.y <= fragment.y + fragment.height
     {
-        let level = z_index_stacking_level(state.dom, state.styles, id).unwrap_or_default();
+        let level = stacking_level.unwrap_or_default();
         state.candidates.push(HitCandidate {
             id,
             level,
@@ -6659,7 +6689,7 @@ fn collect_hit_candidates<D>(
     if let Some(clip) = pushed_clip.as_ref() {
         state.clips.push(*clip);
     }
-    let children = order_modified_children(state.dom, state.styles, id);
+    let children = stacking_paint_children(state.dom, state.styles, id);
     let next_scroll = state
         .scroll_offsets
         .get(&id)
@@ -6668,7 +6698,7 @@ fn collect_hit_candidates<D>(
             (ancestor_scroll.0 + offset.0, ancestor_scroll.1 + offset.1)
         });
     for child in children {
-        collect_hit_candidates(state, child, next_scroll);
+        collect_hit_candidates(state, child, next_scroll, stacking_level);
     }
     if pushed_clip.is_some() {
         state.clips.pop();
@@ -8882,6 +8912,29 @@ mod tests {
         assert_ne!(
             hit_test(&dom, &styles, &layout, 75.0, 110.0),
             Some(node("overlay"))
+        );
+    }
+
+    #[test]
+    fn positioned_descendant_paints_above_its_stacking_context_background() {
+        let dom = StaticDocument::parse(
+            "<div id=card><div id=collapse></div><div id=editor></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #card { position: relative; width: 80px; height: 80px; z-index: 4; } \
+                 #collapse, #editor { position: absolute; left: 0; top: 0; width: 80px; height: 80px; } \
+                 #collapse { z-index: 2; } #editor { z-index: 0; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+
+        assert_eq!(
+            hit_test(&dom, &styles, &layout, 10.0, 10.0),
+            Some(node_by_id(&dom, dom.document(), "collapse").expect("collapse node")),
+            "a child z-index is ordered within its parent's context, above the parent and lower siblings",
         );
     }
 
