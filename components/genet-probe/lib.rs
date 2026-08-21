@@ -169,8 +169,11 @@ fn matches(dom: &ScriptedDom, node: NodeId, sel: &Selector) -> bool {
 }
 
 /// Every matching element in pre-order (document order). The caller takes the
-/// first one that also has a laid-out box.
-fn matching(dom: &ScriptedDom, sel: &Selector) -> Vec<NodeId> {
+/// first one that also has a laid-out box. Public so a host that retains its
+/// own live layout (the winit-host harness) can pair this DOM match with the
+/// laid-out rectangle it already owns, instead of re-deriving a second layout
+/// whose font metrics may disagree with the shipping one.
+pub fn matching(dom: &ScriptedDom, sel: &Selector) -> Vec<NodeId> {
     fn walk(dom: &ScriptedDom, node: NodeId, sel: &Selector, out: &mut Vec<NodeId>) {
         if matches(dom, node, sel) {
             out.push(node);

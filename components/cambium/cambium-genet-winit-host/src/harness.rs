@@ -23,7 +23,7 @@
 //! states and its keyboard order without a display.
 
 use cambium_winit_a11y::{A11yAction, A11yRequest};
-use genet_probe::{ProbeSurface, Selector, resolve};
+use genet_probe::{ProbeSurface, Selector};
 use genet_scripted_dom::NodeId;
 use winit::keyboard::{Key as WinitKey, NamedKey};
 
@@ -292,9 +292,20 @@ where
         }])
     }
 
-    /// Resolve a semantic selector to the centre of the matching element.
+    /// Resolve a semantic selector to the centre of the matching element,
+    /// using the host's own live layout. The probe's independent re-layout is
+    /// deliberately not used for coordinates: its font resolution can disagree
+    /// with the shipping layout's, and a receipt must click where the real
+    /// window actually painted the control.
     pub fn resolve(&self, selector: &Selector) -> Option<(f32, f32)> {
-        self.with_surfaces(|surfaces| resolve(surfaces, selector).map(|hit| hit.point))
+        let dom = self.runner().dom();
+        let dom_ref = dom.borrow();
+        genet_probe::matching(&dom_ref, selector)
+            .into_iter()
+            .find_map(|node| {
+                self.painted_rect(node)
+                    .map(|(x, y, width, height)| (x + width / 2.0, y + height / 2.0))
+            })
     }
 
     /// Move the cursor: hover restyle, Enter/Leave, captured-drag tracking.
