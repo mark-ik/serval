@@ -7269,6 +7269,18 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
                 }
             }
             tree.enable_flex_grid_static_position_provider(child);
+            // CSS Grid §9.2: the static position is aligned in the grid's
+            // content box unless the grid container also generates the
+            // child's containing block, in which case the §9.1 grid area
+            // applies. K5a's box graph is the only authority for that
+            // relationship; the backend never selects it.
+            if grid_flow.is_some()
+                && tree.source(child).direct_box().is_some_and(|box_id| {
+                    boxes[box_id].containing_block == ContainingBlock::Box(container)
+                })
+            {
+                tree.use_grid_area_for_static_position(child);
+            }
         }
     }
 }
@@ -8513,7 +8525,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_grid_static_position_uses_content_edges_not_placed_area() {
+    fn absolute_grid_static_position_uses_the_placed_area_when_the_grid_is_its_containing_block() {
         let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
         let styles = resolve_styles(
             &dom,
@@ -8557,8 +8569,9 @@ mod tests {
                 static_position.logical_rect.inline_start,
                 static_position.logical_rect.block_start,
             ),
-            (0.0, 90.0),
-            "the static rectangle is the aligned grid content rectangle, not the placed area"
+            (20.0, 90.0),
+            "CSS Grid 9.2: a grid that generates the containing block aligns the static \
+             rectangle in the placed grid area, not its content box"
         );
         assert_eq!(
             static_position.containing_block_area,
@@ -8572,12 +8585,70 @@ mod tests {
         );
         assert_eq!(
             (positioned_rect.x, positioned_rect.y),
+            (grid_rect.x + 20.0, grid_rect.y + 90.0),
+        );
+    }
+
+    #[test]
+    fn absolute_grid_static_position_uses_content_edges_when_the_containing_block_is_elsewhere() {
+        let dom = StaticDocument::parse(
+            "<div id=outer><div id=grid><div id=positioned></div></div></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #outer { position: relative; width: 100px; height: 100px; } \
+                 #grid { display: grid; width: 100px; height: 100px; \
+                         grid-template-columns: 20px 80px; grid-template-rows: 30px 70px; } \
+                 #positioned { position: absolute; grid-area: 2 / 2 / 3 / 3; \
+                               width: 20px; height: 10px; align-self: self-end; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let grid = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "grid").expect("grid node"))
+            .expect("grid box");
+        let positioned = layout
+            .boxes()
+            .principal_box(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+            .expect("positioned box");
+        let grid_rect = layout
+            .fragments()
+            .fragments_for_box(grid)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("grid fragment");
+        let positioned_rect = layout
+            .fragments()
+            .fragments_for_box(positioned)
+            .next()
+            .map(TreeFragment::physical_rect)
+            .expect("positioned fragment");
+        let static_position = layout
+            .fragments()
+            .static_position_for_box(positioned)
+            .expect("grid static position");
+
+        assert_eq!(
+            (
+                static_position.logical_rect.inline_start,
+                static_position.logical_rect.block_start,
+            ),
+            (0.0, 90.0),
+            "CSS Grid 9.2: a grid that is only the static-position parent aligns the static \
+             rectangle in its content box; its placement lines do not apply"
+        );
+        assert_eq!(
+            (positioned_rect.x, positioned_rect.y),
             (grid_rect.x, grid_rect.y + 90.0),
         );
     }
 
     #[test]
-    fn vertical_grid_static_alignment_uses_the_content_block_end() {
+    fn vertical_grid_static_alignment_uses_the_placed_area_block_end() {
         let dom = StaticDocument::parse("<div id=grid><div id=positioned></div></div>");
         for (writing_mode, expected_x) in [("vertical-rl", 0.0), ("vertical-lr", 80.0)] {
             let styles = resolve_styles(
@@ -8617,11 +8688,11 @@ mod tests {
                 .next()
                 .map(TreeFragment::physical_rect)
                 .expect("positioned fragment");
-
             assert_eq!(
                 (positioned_rect.x, positioned_rect.y),
-                (grid_rect.x + expected_x, grid_rect.y),
-                "{writing_mode} block-end alignment uses the grid content's physical end edge"
+                (grid_rect.x + expected_x, grid_rect.y + 20.0),
+                "{writing_mode}: block-end alignment uses the placed row's physical end edge, \
+                 and the inline start is the placed column's start"
             );
         }
     }

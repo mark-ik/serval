@@ -286,6 +286,9 @@ pub trait LayoutGridContainer: LayoutPartialTree {
         _child_node_id: NodeId,
         grid_area: Rect<f32>,
         _content_box: Rect<f32>,
+        _grid_area_auto: Rect<bool>,
+        _container_border: Rect<f32>,
+        _container_border_box: Size<f32>,
     ) -> Rect<f32> {
         grid_area
     }

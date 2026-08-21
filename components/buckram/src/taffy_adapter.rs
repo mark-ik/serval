@@ -143,6 +143,12 @@ struct AlgorithmNode<S, Context, Source> {
     unrounded_layout: Layout,
     final_layout: Layout,
     grid_info: Option<DetailedGridInfo>,
+    /// CSS Grid §9.2: a direct absolute or fixed child's static position is
+    /// aligned in the grid container's content box unless that grid also
+    /// generates the child's containing block, in which case the §9.1 grid
+    /// area applies. The renderer sets this from the K5a box graph; the
+    /// adapter never derives it from backend positioning.
+    grid_static_position_uses_grid_area: bool,
     baselines: Baselines,
 }
 
@@ -250,6 +256,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             grid_info: None,
+            grid_static_position_uses_grid_area: false,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -341,6 +348,31 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         );
         sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[id.index()].style).position =
             taffy::Position::Absolute;
+    }
+
+    /// Select this direct grid child's finalized grid area as its
+    /// static-position alignment container (CSS Grid §9.2, second sentence).
+    /// Callers make this selection only when the K5a containing-block graph
+    /// chose this same grid as the child's containing block; otherwise the
+    /// provider keeps the grid's content box. With `auto` grid lines the area
+    /// is bounded by the grid's padding edges, as §9.1 requires.
+    pub fn use_grid_area_for_static_position(&mut self, id: AlgorithmNodeId) {
+        let parent = self.nodes[id.index()]
+            .parent
+            .expect("a grid static-position area requires an attached direct child");
+        assert_eq!(
+            self.nodes[parent.index()].kind,
+            AlgorithmKind::Grid,
+            "only a direct grid child can use a grid-area static-position rectangle"
+        );
+        assert!(
+            matches!(
+                self.nodes[id.index()].block_style.position,
+                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+            ),
+            "the grid-area static-position rectangle requires an absolute or fixed child"
+        );
+        self.nodes[id.index()].grid_static_position_uses_grid_area = true;
     }
 
     /// Supply the resolved CSS inline size to a detached absolute/fixed
@@ -2548,17 +2580,85 @@ where
 
     fn grid_child_static_position_area(
         &self,
-        _container_node_id: NodeId,
+        container_node_id: NodeId,
         child_node_id: NodeId,
-        _grid_area: taffy::geometry::Rect<f32>,
+        grid_area: taffy::geometry::Rect<f32>,
         content_box: taffy::geometry::Rect<f32>,
+        grid_area_auto: taffy::geometry::Rect<bool>,
+        container_border: taffy::geometry::Rect<f32>,
+        container_border_box: taffy::Size<f32>,
     ) -> taffy::geometry::Rect<f32> {
-        let _ = child_node_id;
-        // CSS Grid §9.2 treats the direct absolute child as the sole grid item
-        // in an area formed by the grid container's content edges. Its
-        // grid-placement area still belongs to the positioned containing-block
-        // calculation, which is retained separately in `grid_positioned_area`.
-        content_box
+        // CSS Grid §9.2 aligns the direct absolute child as the sole grid item
+        // in an area formed by the grid container's content edges, unless the
+        // grid container also generates the child's containing block; then
+        // the §9.1 grid area applies, an `auto` line being the padding edge.
+        // The renderer records that K5a relationship through
+        // `use_grid_area_for_static_position`. Either way the placement area
+        // stays available to the containing-block route in
+        // `grid_positioned_area`.
+        if self.tree.nodes[AlgorithmNodeId::from_taffy(child_node_id).index()]
+            .grid_static_position_uses_grid_area
+        {
+            let container =
+                &self.tree.nodes[AlgorithmNodeId::from_taffy(container_node_id).index()];
+            let container_size = PhysicalSize {
+                width: container_border_box.width,
+                height: container_border_box.height,
+            };
+            let logical_padding_box = container.block_style.flow.logical_rect(
+                PhysicalRect {
+                    x: container_border.left,
+                    y: container_border.top,
+                    width: (container_border_box.width
+                        - container_border.left
+                        - container_border.right)
+                        .max(0.0),
+                    height: (container_border_box.height
+                        - container_border.top
+                        - container_border.bottom)
+                        .max(0.0),
+                },
+                container_size,
+            );
+            let inline_start = if grid_area_auto.left {
+                logical_padding_box.inline_start
+            } else {
+                grid_area.left
+            };
+            let inline_end = if grid_area_auto.right {
+                logical_padding_box.inline_start + logical_padding_box.inline_size
+            } else {
+                grid_area.right
+            };
+            let block_start = if grid_area_auto.top {
+                logical_padding_box.block_start
+            } else {
+                grid_area.top
+            };
+            let block_end = if grid_area_auto.bottom {
+                logical_padding_box.block_start + logical_padding_box.block_size
+            } else {
+                grid_area.bottom
+            };
+            let track_area = LogicalRect {
+                inline_start,
+                block_start,
+                inline_size: (inline_end - inline_start).max(0.0),
+                block_size: (block_end - block_start).max(0.0),
+            };
+            let physical = container.block_style.flow.physical_rect(
+                track_area,
+                container_size,
+            );
+            taffy::geometry::Rect {
+                left: physical.x,
+                right: physical.x + physical.width,
+                top: physical.y,
+                bottom: physical.y + physical.height,
+            }
+        } else {
+            content_box
+        }
     }
 
     fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
@@ -2836,6 +2936,137 @@ mod tests {
                 height: 60.0,
             }),
             "the grid area remains available to the positioned containing-block route"
+        );
+    }
+
+    #[test]
+    fn grid_static_layout_uses_the_grid_area_when_the_grid_is_the_containing_block() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                grid_row: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                padding: Rect {
+                    left: length(10.0_f32),
+                    right: length(30.0_f32),
+                    top: length(5.0_f32),
+                    bottom: length(25.0_f32),
+                },
+                grid_template_columns: vec![length(80.0_f32), length(80.0_f32)],
+                grid_template_rows: vec![length(40.0_f32), length(30.0_f32)],
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+        tree.use_grid_area_for_static_position(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        // Column 2 starts at padding 10 + 80 and row 2 at padding 5 + 40: the
+        // static location is the start of the placed area, not the content
+        // origin (10, 5) the unselected provider would report.
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
+            (90.0, 45.0)
+        );
+        assert_eq!(
+            tree.grid_positioned_area(positioned),
+            Some(PhysicalRect {
+                x: 90.0,
+                y: 45.0,
+                width: 80.0,
+                height: 30.0,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_static_layout_auto_lines_align_in_the_padding_box_when_selected() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                align_self: Some(AlignItems::CENTER),
+                justify_self: Some(AlignItems::CENTER),
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                padding: Rect {
+                    left: length(10.0_f32),
+                    right: length(30.0_f32),
+                    top: length(5.0_f32),
+                    bottom: length(25.0_f32),
+                },
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+        tree.use_grid_area_for_static_position(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        // `auto` lines bound the area at the padding edges, so centering uses
+        // the 200 x 100 padding box: (85, 40). Centering in the asymmetric
+        // 160 x 70 content box would give (75, 30).
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
+            (85.0, 40.0)
         );
     }
 
