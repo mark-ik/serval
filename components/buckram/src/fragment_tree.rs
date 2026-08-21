@@ -296,6 +296,18 @@ impl FragmentTree {
         }
     }
 
+    /// Replace an earlier provisional record when a retained formatting
+    /// handoff publishes the authoritative source rectangle for the same box.
+    /// The caller must have already emitted both the box and its first record;
+    /// a missing entry is a broken handoff rather than an insertion route.
+    pub fn reconcile_static_position(&mut self, position: StaticPosition) {
+        let entry = self
+            .static_positions
+            .get_mut(&position.box_id)
+            .expect("static-position reconciliation requires an existing record");
+        *entry = position;
+    }
+
     pub fn len(&self) -> usize {
         self.fragments.len()
     }
@@ -370,6 +382,23 @@ impl FragmentTree {
         {
             fragment.containing_fragment = containing_fragment;
         }
+    }
+
+    /// Reattach a provisional fragment after its retained formatting context
+    /// has materialized the structural parent. This preserves the fragment's
+    /// identity while restoring tree order for paint and overflow propagation.
+    pub fn reconcile_parent(&mut self, id: FragmentId, parent: Option<FragmentId>) {
+        if let Some(parent) = parent {
+            assert!(
+                self.get(parent).is_some(),
+                "a reconciled parent must be live"
+            );
+        }
+        let Some(slot) = self.slots.get(&id).copied() else {
+            return;
+        };
+        self.fragments[slot].parent = parent;
+        self.recompute_overflow();
     }
 
     /// Replace one fragment's overflow and union it into every structural

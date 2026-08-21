@@ -124,8 +124,16 @@ fn uses_zero_track_static_anchor(role: InternalTableRole) -> bool {
 #[derive(Clone, Debug)]
 struct AtomicSubtree {
     root: BoxId,
-    fragments: Vec<(BoxId, Fragment)>,
+    fragments: Vec<AtomicFragment>,
     tables: TableFragmentPlane,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AtomicFragment {
+    box_id: BoxId,
+    fragment: Fragment,
+    static_fragment: Fragment,
+    containing_block_area: Option<PhysicalRect>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2442,7 +2450,7 @@ where
         collect_atomic_fragments(&state.tree, root, Point { x: 0.0, y: 0.0 }, &mut fragments);
         let Some(root_rect) = fragments
             .iter()
-            .find_map(|(candidate, rect)| (*candidate == box_id).then_some(*rect))
+            .find_map(|candidate| (candidate.box_id == box_id).then_some(candidate.fragment))
         else {
             // Widths are stable across the origin shift below, so verification
             // can read them either side of it. It consumes the pending list,
@@ -2450,8 +2458,8 @@ where
             state.verify_table_layout(|needle| {
                 fragments
                     .iter()
-                    .find(|(candidate, _)| *candidate == needle)
-                    .map(|(_, rect)| *rect)
+                    .find(|candidate| candidate.box_id == needle)
+                    .map(|candidate| candidate.fragment)
             });
             plane
                 .table_shadow
@@ -2466,10 +2474,9 @@ where
             let Some(wrapper) = pending.grid.wrapper else {
                 continue;
             };
-            let Some(grid_rect) = fragments
-                .iter()
-                .find_map(|(candidate, rect)| (*candidate == pending.grid.grid).then_some(*rect))
-            else {
+            let Some(grid_rect) = fragments.iter().find_map(|candidate| {
+                (candidate.box_id == pending.grid.grid).then_some(candidate.fragment)
+            }) else {
                 continue;
             };
             let Some(first) = state.tree.baselines(pending.table_node).first else {
@@ -2485,17 +2492,17 @@ where
         state.verify_table_layout(|needle| {
             fragments
                 .iter()
-                .find(|(candidate, _)| *candidate == needle)
-                .map(|(_, rect)| *rect)
+                .find(|candidate| candidate.box_id == needle)
+                .map(|candidate| candidate.fragment)
         });
         plane
             .table_shadow
             .merge(std::mem::take(&mut state.table_shadow));
         plane.table_paint.merge(table_paint);
-        for (candidate, rect) in &mut fragments {
-            rect.x -= root_rect.x;
-            rect.y -= root_rect.y;
-            plane.fragments.insert(*candidate, *rect);
+        for candidate in &mut fragments {
+            candidate.fragment.x -= root_rect.x;
+            candidate.fragment.y -= root_rect.y;
+            plane.fragments.insert(candidate.box_id, candidate.fragment);
         }
         plane.subtrees.push(AtomicSubtree {
             root: box_id,
@@ -2510,23 +2517,35 @@ fn collect_atomic_fragments(
     tree: &AlgorithmTree<Style, TextMeasure, Option<BoxId>>,
     node: AlgorithmNodeId,
     parent_origin: Point<f32>,
-    output: &mut Vec<(BoxId, Fragment)>,
+    output: &mut Vec<AtomicFragment>,
 ) {
     let computed = tree.layout(node);
+    let static_computed = tree.static_layout(node);
     let origin = Point {
         x: parent_origin.x + computed.x,
         y: parent_origin.y + computed.y,
     };
     if let Some(box_id) = *tree.source(node) {
-        output.push((
+        output.push(AtomicFragment {
             box_id,
-            Fragment {
+            fragment: Fragment {
                 x: origin.x,
                 y: origin.y,
                 width: computed.width,
                 height: computed.height,
             },
-        ));
+            // Unlike the final fragment above, a static rectangle is local to
+            // the formatting-context parent that emitted it. Preserve that
+            // backend record separately so the atomic-inline handoff does not
+            // relabel a completed absolute child location as its K5b input.
+            static_fragment: Fragment {
+                x: static_computed.x,
+                y: static_computed.y,
+                width: static_computed.width,
+                height: static_computed.height,
+            },
+            containing_block_area: tree.grid_positioned_area(node),
+        });
     }
     for child in tree.children(node) {
         collect_atomic_fragments(tree, *child, origin, output);
@@ -2555,7 +2574,7 @@ fn merge_atomic_subtrees<Id>(
         let local_root = subtree
             .fragments
             .iter()
-            .find_map(|(box_id, rect)| (*box_id == subtree.root).then_some(*rect))
+            .find_map(|candidate| (candidate.box_id == subtree.root).then_some(candidate.fragment))
             .unwrap_or_default();
         let offset = (final_root.x - local_root.x, final_root.y - local_root.y);
 
@@ -2564,8 +2583,9 @@ fn merge_atomic_subtrees<Id>(
         // its normal content can later attach to the emitted structural cell
         // rather than to an accidental root fallback.
         let grids = subtree.tables.keys().copied().collect::<HashSet<_>>();
-        for (box_id, local) in &subtree.fragments {
-            let mut parent = boxes[*box_id].parent();
+        for atomic_fragment in &subtree.fragments {
+            let box_id = atomic_fragment.box_id;
+            let mut parent = boxes[box_id].parent();
             let mut inside_grid = false;
             while let Some(ancestor) = parent {
                 if grids.contains(&ancestor) {
@@ -2574,7 +2594,7 @@ fn merge_atomic_subtrees<Id>(
                 }
                 parent = boxes[ancestor].parent();
             }
-            if inside_grid && !grids.contains(box_id) {
+            if inside_grid && !grids.contains(&box_id) {
                 continue;
             }
             append_atomic_fragment(
@@ -2583,8 +2603,7 @@ fn merge_atomic_subtrees<Id>(
                 subtree.root,
                 root_id,
                 offset,
-                *box_id,
-                *local,
+                *atomic_fragment,
             );
         }
 
@@ -2609,15 +2628,14 @@ fn merge_atomic_subtrees<Id>(
         // The second pass fills in ordinary descendants. Grid and cell boxes
         // already exist, so their text and replaced content inherit the
         // structural parent just committed above.
-        for (box_id, local) in &subtree.fragments {
+        for atomic_fragment in &subtree.fragments {
             append_atomic_fragment(
                 boxes,
                 fragments,
                 subtree.root,
                 root_id,
                 offset,
-                *box_id,
-                *local,
+                *atomic_fragment,
             );
         }
     }
@@ -2629,33 +2647,48 @@ fn append_atomic_fragment<Id>(
     root_box: BoxId,
     root_id: FragmentId,
     offset: (f32, f32),
-    box_id: BoxId,
-    local: Fragment,
+    atomic_fragment: AtomicFragment,
 ) where
     Id: Copy + Eq + Hash,
 {
-    if box_id == root_box || !fragments.fragment_ids_for_box(box_id).is_empty() {
+    let box_id = atomic_fragment.box_id;
+    if box_id == root_box {
         return;
     }
+    let existing = fragments.fragment_ids_for_box(box_id).first().copied();
     let rect = Fragment {
-        x: local.x + offset.0,
-        y: local.y + offset.1,
-        width: local.width,
-        height: local.height,
+        x: atomic_fragment.fragment.x + offset.0,
+        y: atomic_fragment.fragment.y + offset.1,
+        width: atomic_fragment.fragment.width,
+        height: atomic_fragment.fragment.height,
     };
     let parent = boxes[box_id]
         .parent()
         .and_then(|parent_box| fragments.fragment_ids_for_box(parent_box).last().copied())
         .or(Some(root_id));
-    let mut output = FragmentOutput { fragments };
-    record_static_position(
+    let output = FragmentOutput { fragments };
+    let static_position = static_position_record(
         boxes,
         box_id,
         parent,
-        LogicalRect::from_horizontal_physical(local),
-        None,
-        &mut output,
+        LogicalRect::from_horizontal_physical(atomic_fragment.static_fragment),
+        atomic_fragment.containing_block_area,
+        output.fragments,
     );
+    if let Some(existing) = existing {
+        output.fragments.reconcile_parent(existing, parent);
+        if let Some(position) = static_position {
+            // The outer inline tree keeps a duplicate positioned node for
+            // intrinsic sizing, but its source rectangle is only provisional.
+            // The atomic block formatter owns the descendant's real K5b
+            // coordinate space and reconciles that record at the handoff.
+            output.fragments.reconcile_static_position(position);
+        }
+        return;
+    }
+    if let Some(position) = static_position {
+        output.fragments.record_static_position(position);
+    }
     output.fragments.push(
         TreeFragment::from_horizontal_physical(box_id, rect)
             .with_baselines(Baselines::synthesized_from_block_end(rect.height)),
@@ -4481,25 +4514,26 @@ struct FragmentOutput<'a> {
 /// Publish a static-position rectangle at the formatting boundary that
 /// produced it. The selected absolute or fixed containing block comes from
 /// Buckram's K5a box graph; the backend never chooses it here.
-fn record_static_position<Id>(
+fn static_position_record<Id>(
     boxes: &GeneratedBoxTree<Id>,
     box_id: BoxId,
     source_fragment: Option<FragmentId>,
     logical_rect: LogicalRect,
     containing_block_area: Option<PhysicalRect>,
-    output: &mut FragmentOutput<'_>,
-) where
+    fragments: &FragmentTree,
+) -> Option<StaticPosition>
+where
     Id: Copy + Eq + Hash,
 {
     if !matches!(
         boxes[box_id].positioning,
         PositioningScheme::Absolute | PositioningScheme::Fixed
     ) {
-        return;
+        return None;
     }
     let containing_block_area = containing_block_area.and_then(|area| {
         let source = source_fragment?;
-        let fragment = output.fragments.get(source)?;
+        let fragment = fragments.get(source)?;
         let rect = fragment.physical_rect();
         Some(fragment.flow().logical_rect(
             area,
@@ -4509,7 +4543,7 @@ fn record_static_position<Id>(
             },
         ))
     });
-    output.fragments.record_static_position(StaticPosition {
+    Some(StaticPosition {
         box_id,
         source: source_fragment.map_or(
             StaticPositionSource::InitialContainingBlock,
@@ -4526,7 +4560,29 @@ fn record_static_position<Id>(
             logical_rect
         },
         containing_block_area,
-    });
+    })
+}
+
+fn record_static_position<Id>(
+    boxes: &GeneratedBoxTree<Id>,
+    box_id: BoxId,
+    source_fragment: Option<FragmentId>,
+    logical_rect: LogicalRect,
+    containing_block_area: Option<PhysicalRect>,
+    output: &mut FragmentOutput<'_>,
+) where
+    Id: Copy + Eq + Hash,
+{
+    if let Some(position) = static_position_record(
+        boxes,
+        box_id,
+        source_fragment,
+        logical_rect,
+        containing_block_area,
+        output.fragments,
+    ) {
+        output.fragments.record_static_position(position);
+    }
 }
 
 /// Apply relative positioning only after every normal-flow fragment exists.

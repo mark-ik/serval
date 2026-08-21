@@ -266,8 +266,6 @@ fn relative_block_percentage_insets_resolve_only_against_a_specified_height() {
 /// in-flow table keeps the static position it would have had before the
 /// table, not one after it.
 #[test]
-#[ignore = "open K5b defect, 2026-08-21: the static position lands after the table; \
-            see the master plan's K5 regression ledger"]
 fn absolute_box_before_a_table_keeps_its_static_position_above_the_table() {
     let html = "<html><body style=\"margin:0\">\
         <div id=\"group\" style=\"display:inline-block; position:relative; width:150px; height:200px\">\
