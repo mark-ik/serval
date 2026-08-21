@@ -626,9 +626,14 @@ where
         if offset.x == 0.0 && offset.y == 0.0 {
             return false;
         }
-        let fragments = self.buckram.fragments_mut();
-        fragments.translate_subtree(placement.root, offset);
-        fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        {
+            let fragments = self.buckram.fragments_mut();
+            fragments.translate_subtree(placement.root, offset);
+            fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        }
+        if let Some(text_frame) = self.text_frame.as_mut() {
+            text_frame.translate_subtree(dom, node, (offset.x, offset.y));
+        }
         true
     }
 
@@ -664,6 +669,16 @@ where
             x: placement.containing_rect.x + target.x - placement.current.x,
             y: placement.containing_rect.y + target.y - placement.current.y,
         };
+        let size_changed = (target.width - placement.current.width).abs() > 0.001
+            || (target.height - placement.current.height).abs() > 0.001;
+        if size_changed
+            && self
+                .text_frame
+                .as_ref()
+                .is_some_and(|text_frame| text_frame.subtree_has_prepared_text(dom, node))
+        {
+            return false;
+        }
         let fragments = self.buckram.fragments_mut();
         if !fragments.resize_leaf(
             placement.root,
@@ -676,6 +691,9 @@ where
         }
         fragments.translate_subtree(placement.root, offset);
         fragments.set_containing_fragment(placement.root, placement.containing_fragment);
+        if let Some(text_frame) = self.text_frame.as_mut() {
+            text_frame.translate_subtree(dom, node, (offset.x, offset.y));
+        }
         true
     }
 

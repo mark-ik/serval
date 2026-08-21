@@ -1526,6 +1526,23 @@ where
         }
     }
 
+    /// Whether a retained DOM subtree owns shaped text commands.
+    ///
+    /// A geometry-only leaf resize cannot reuse these commands because a new
+    /// inline size may change wrapping and glyph placement. Pure translation
+    /// remains safe and is handled by [`Self::translate_subtree`].
+    pub(crate) fn subtree_has_prepared_text<D>(&self, dom: &D, root: Id) -> bool
+    where
+        D: LayoutDom<NodeId = Id>,
+    {
+        let mut nodes = HashSet::new();
+        collect_subtree_nodes(dom, root, &mut nodes);
+        self.prepared_groups
+            .iter()
+            .flatten()
+            .any(|prepared| nodes.contains(&prepared.source))
+    }
+
     pub(crate) fn inline_fragments(&self, source: Id) -> Option<&[Fragment]> {
         self.inline_fragments.get(&source).map(Vec::as_slice)
     }

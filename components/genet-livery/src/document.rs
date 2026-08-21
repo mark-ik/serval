@@ -3729,6 +3729,42 @@ mod tests {
     }
 
     #[test]
+    fn positioned_text_leaf_resize_reformats_instead_of_reusing_shaped_text() {
+        let initial = "<html><body><div id=containing><div id=positioned>one two three four five six</div></div><div id=outside>outside</div></body></html>";
+        let final_document = "<html><body><div id=containing><div id=positioned style=\"width: 120px\">one two three four five six</div></div><div id=outside>outside</div></body></html>";
+        let styles = || {
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #containing { position: relative; width: 200px; height: 100px; } \
+                 #positioned { position: absolute; left: 10px; top: 5px; width: 70px; } \
+                 #outside { width: 80px; height: 20px; }",
+            ])
+        };
+        let mut dom = ScriptedDom::from_serialized_document(initial);
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut retained = LiveryDocument::new(dom, styles(), Device::screen(240.0, 140.0));
+        retained.frame(240, 140).expect("initial retained frame");
+
+        retained.mutate_dom(|dom| {
+            dom.set_attribute(by_id(dom, "positioned"), attr("style"), "width: 120px");
+        });
+        let retained_paint = retained.frame(240, 140).expect("reformatted frame");
+
+        let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
+        let mut fresh_mutations = Vec::new();
+        fresh_dom.drain_mutations(&mut fresh_mutations);
+        let mut fresh = LiveryDocument::new(fresh_dom, styles(), Device::screen(240.0, 140.0));
+        let fresh_paint = fresh.frame(240, 140).expect("fresh final frame");
+        assert_eq!(
+            format!("{:?}", retained_paint.commands()),
+            format!("{:?}", fresh_paint.commands()),
+            "a text-bearing resize must reshape exactly like a fresh final layout",
+        );
+        assert_eq!(retained.content_height(0), fresh.content_height(0));
+    }
+
+    #[test]
     fn positioned_leaf_resize_updates_nested_scroll_range() {
         let initial = "<html><body><div id=scroller><canvas id=positioned width=\"100\" height=\"20\"></canvas></div></body></html>";
         let final_document = "<html><body><div id=scroller><canvas id=positioned width=\"100\" height=\"20\" style=\"top: 200px; width: 120px; height: 60px\"></canvas></div></body></html>";
