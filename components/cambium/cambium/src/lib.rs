@@ -99,10 +99,11 @@ pub use disclosure::{
 pub use editor::{EditHistory, pair_close, wrap_selection};
 pub use graph_canvas::{
     GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasEvent, GraphCanvasNode,
-    GraphCanvasNodeDrag, GraphCanvasNodeRegion, GraphCanvasRelation, GraphCanvasSubgraph,
-    GraphCanvasSwatch, graph_canvas, graph_canvas_swatch, graph_canvas_swatch_with_drag,
-    graph_canvas_swatch_with_drag_and_relations, graph_canvas_swatch_with_focus,
-    graph_canvas_swatch_with_focus_and_drag, graph_canvas_swatch_with_focus_and_drag_and_relations,
+    GraphCanvasNodeDrag, GraphCanvasNodeFootprint, GraphCanvasNodeRegion, GraphCanvasRelation,
+    GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas, graph_canvas_swatch,
+    graph_canvas_swatch_with_drag, graph_canvas_swatch_with_drag_and_relations,
+    graph_canvas_swatch_with_focus, graph_canvas_swatch_with_focus_and_drag,
+    graph_canvas_swatch_with_focus_and_drag_and_relations,
 };
 pub use grid::{GridView, data_grid};
 pub use menu::{MENU_CLASS, MENU_ROW_ACTIVE_CLASS, MENU_ROW_CLASS, menu};

@@ -139,6 +139,19 @@ pub struct GraphCanvasNodeRegion {
     pub height: f32,
 }
 
+/// An app-owned rectangular overlay that occupies one graph node.
+///
+/// Cambium uses the requested size to derive the same clamped region exposed
+/// by [`GraphCanvasSwatch::projected_node_footprint`], then terminates incident
+/// relation routes at that region's perimeter. The overlay contents remain the
+/// consumer's responsibility.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphCanvasNodeFootprint<Id> {
+    pub id: Id,
+    pub width: f32,
+    pub height: f32,
+}
+
 /// One app-facing edge. Endpoints that are absent from the subgraph are skipped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphCanvasEdge<Id> {
@@ -184,6 +197,8 @@ pub struct GraphCanvasSwatch<Id, Kind> {
     /// Relation cells rendered in preference to the legacy endpoint-only
     /// [`GraphCanvasSubgraph::edges`] when nonempty.
     pub relations: Vec<GraphCanvasRelation<Id>>,
+    /// App-owned rectangular overlays currently occupying graph nodes.
+    pub node_footprints: Vec<GraphCanvasNodeFootprint<Id>>,
     pub selected: Option<Id>,
     pub focus: Option<Id>,
     pub hovered: Option<Id>,
@@ -221,6 +236,7 @@ impl<Id, Kind> GraphCanvasSwatch<Id, Kind> {
             leaf_key,
             graph,
             relations: Vec::new(),
+            node_footprints: Vec::new(),
             selected: None,
             focus: None,
             hovered: None,
@@ -285,6 +301,18 @@ impl<Id, Kind> GraphCanvasSwatch<Id, Kind> {
 }
 
 impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
+    /// Declare that an app-owned rectangular overlay occupies this node.
+    ///
+    /// Repeating an id replaces its earlier footprint, which makes the builder
+    /// safe to apply after consumer-specific view state has been reconciled.
+    #[must_use]
+    pub fn with_node_footprint(mut self, id: Id, width: f32, height: f32) -> Self {
+        self.node_footprints.retain(|footprint| footprint.id != id);
+        self.node_footprints
+            .push(GraphCanvasNodeFootprint { id, width, height });
+        self
+    }
+
     fn node_index(&self, id: Option<&Id>) -> Option<u16> {
         let id = id?;
         self.graph
@@ -333,7 +361,7 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
         leaf.edge_width = self.edge_width;
         if !self.relations.is_empty() {
             leaf.set_relations(
-                self.relation_routes()
+                self.resolved_relation_routes()
                     .into_iter()
                     .map(|(relation, points)| GraphGlyphRelation {
                         points,
@@ -388,6 +416,17 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
             width,
             height,
         })
+    }
+
+    /// Resolve the declared rectangular footprint for one node through this
+    /// canvas's current viewport and clamping rules.
+    pub fn projected_node_footprint(&self, id: &Id) -> Option<GraphCanvasNodeRegion> {
+        let footprint = self
+            .node_footprints
+            .iter()
+            .rev()
+            .find(|footprint| &footprint.id == id)?;
+        self.projected_node_region(id, footprint.width, footprint.height)
     }
 
     /// Put a visible node label across the quieter axis at that node. A
@@ -461,7 +500,7 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
             height: self.height as f32,
         };
         let inset = self.node_radius + self.edge_width;
-        self.relation_routes()
+        self.resolved_relation_routes()
             .into_iter()
             .map(|(relation, route)| {
                 (
@@ -473,6 +512,65 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
                 )
             })
             .collect()
+    }
+
+    /// Apply view-local node footprints to the normalized relation routes.
+    /// Clipping happens in leaf pixels so the perimeter remains exact under a
+    /// non-square canvas, pan, or zoom, then returns to graph coordinates for
+    /// the shared Sprigging paint path.
+    fn resolved_relation_routes(&self) -> Vec<(&GraphCanvasRelation<Id>, Vec<(f32, f32)>)> {
+        let size = Size {
+            width: self.width as f32,
+            height: self.height as f32,
+        };
+        let inset = self.node_radius + self.edge_width;
+        self.relation_routes()
+            .into_iter()
+            .map(|(relation, route)| {
+                let from_region = self.projected_node_footprint(&relation.from);
+                let to_region = self.projected_node_footprint(&relation.to);
+                if from_region.is_none() && to_region.is_none() {
+                    return (relation, route);
+                }
+                let mut projected = route
+                    .into_iter()
+                    .map(|point| self.viewport.project(point, size, inset))
+                    .collect::<Vec<_>>();
+                if projected.len() >= 2 {
+                    if let Some(region) = from_region {
+                        let center = self.projected_position(&relation.from);
+                        if let Some(center) = center {
+                            projected[0] = rectangle_ray_exit(center, projected[1], region);
+                        }
+                    }
+                    if let Some(region) = to_region {
+                        let center = self.projected_position(&relation.to);
+                        if let Some(center) = center {
+                            let last = projected.len() - 1;
+                            projected[last] =
+                                rectangle_ray_exit(center, projected[last - 1], region);
+                        }
+                    }
+                }
+                let route = projected
+                    .into_iter()
+                    .map(|point| graph_position_at_unclamped(self.viewport, size, inset, point))
+                    .collect();
+                (relation, route)
+            })
+            .collect()
+    }
+
+    fn projected_position(&self, id: &Id) -> Option<(f32, f32)> {
+        let node = self.graph.nodes.iter().find(|node| &node.id == id)?;
+        Some(self.viewport.project(
+            node.position,
+            Size {
+                width: self.width as f32,
+                height: self.height as f32,
+            },
+            self.node_radius + self.edge_width,
+        ))
     }
 
     /// Resolve authored routes and endpoint-only relation cells into distinct
@@ -582,6 +680,47 @@ impl<Id: PartialEq, Kind> GraphCanvasSwatch<Id, Kind> {
             local,
         )
     }
+}
+
+/// Follow a ray from a point inside a rectangle to the first perimeter it
+/// exits. A clamped node can already sit on that perimeter, in which case the
+/// unchanged origin is the truthful endpoint.
+fn rectangle_ray_exit(
+    origin: (f32, f32),
+    toward: (f32, f32),
+    region: GraphCanvasNodeRegion,
+) -> (f32, f32) {
+    const EPSILON: f32 = 0.0001;
+    let dx = toward.0 - origin.0;
+    let dy = toward.1 - origin.1;
+    if dx.abs() < EPSILON && dy.abs() < EPSILON {
+        return origin;
+    }
+
+    let right = region.left + region.width;
+    let bottom = region.top + region.height;
+    let tx = if dx > EPSILON {
+        (right - origin.0) / dx
+    } else if dx < -EPSILON {
+        (region.left - origin.0) / dx
+    } else {
+        f32::INFINITY
+    };
+    let ty = if dy > EPSILON {
+        (bottom - origin.1) / dy
+    } else if dy < -EPSILON {
+        (region.top - origin.1) / dy
+    } else {
+        f32::INFINITY
+    };
+    let distance = tx.max(0.0).min(ty.max(0.0));
+    if !distance.is_finite() {
+        return origin;
+    }
+    (
+        (origin.0 + dx * distance).clamp(region.left, right),
+        (origin.1 + dy * distance).clamp(region.top, bottom),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1372,31 +1511,28 @@ where
                 {
                     let width = (props.width as f32).max(1.0);
                     let height = (props.height as f32).max(1.0);
-                    move |local: &mut GraphCanvasLocal<Id>, event: PointerEvent| {
-                        match event.phase {
-                            PointerPhase::Down => {
-                                local.pan_anchor = Some(event.local);
-                                None
+                    move |local: &mut GraphCanvasLocal<Id>, event: PointerEvent| match event.phase {
+                        PointerPhase::Down => {
+                            local.pan_anchor = Some(event.local);
+                            None
+                        },
+                        PointerPhase::Move => {
+                            let Some(anchor) = local.pan_anchor else {
+                                return None;
+                            };
+                            let delta = (event.local.0 - anchor.0, event.local.1 - anchor.1);
+                            local.pan_anchor = Some(event.local);
+                            if delta == (0.0, 0.0) {
+                                return None;
                             }
-                            PointerPhase::Move => {
-                                let Some(anchor) = local.pan_anchor else {
-                                    return None;
-                                };
-                                let delta =
-                                    (event.local.0 - anchor.0, event.local.1 - anchor.1);
-                                local.pan_anchor = Some(event.local);
-                                if delta == (0.0, 0.0) {
-                                    return None;
-                                }
-                                Some(GraphCanvasEvent::Pan {
-                                    delta: (delta.0 / width, delta.1 / height),
-                                })
-                            }
-                            PointerPhase::Up => {
-                                local.pan_anchor = None;
-                                None
-                            }
-                        }
+                            Some(GraphCanvasEvent::Pan {
+                                delta: (delta.0 / width, delta.1 / height),
+                            })
+                        },
+                        PointerPhase::Up => {
+                            local.pan_anchor = None;
+                            None
+                        },
                     }
                 },
                 |_: &mut GraphCanvasLocal<Id>, event: WheelEvent| {
@@ -1496,7 +1632,7 @@ mod tests {
             |state: &mut ViewportState, event: GraphCanvasEvent<u8>| match event {
                 GraphCanvasEvent::Pan { delta } => state.pans.push(delta),
                 GraphCanvasEvent::Zoom { factor } => state.zooms.push(factor),
-                _ => {}
+                _ => {},
             },
         ))
     }
@@ -1688,6 +1824,67 @@ mod tests {
             }
         );
         assert!(swatch.projected_node_region(&99, 10.0, 10.0).is_none());
+    }
+
+    #[test]
+    fn node_footprints_clip_incident_relation_routes_to_the_card_perimeter() {
+        let relations = vec![
+            GraphCanvasRelation {
+                id: "outgoing".into(),
+                from: 1,
+                to: 2,
+                kind: "First".into(),
+                label: "Outgoing relation".into(),
+                route: Vec::new(),
+                visible: true,
+                emphasized: false,
+            },
+            GraphCanvasRelation {
+                id: "incoming".into(),
+                from: 2,
+                to: 1,
+                kind: "Second".into(),
+                label: "Incoming relation".into(),
+                route: Vec::new(),
+                visible: true,
+                emphasized: false,
+            },
+        ];
+        let compact = model(None, None).with_relations(relations.clone());
+        let compact_routes = compact.projected_relations();
+        let swatch = model(None, None)
+            .with_relations(relations)
+            .with_node_footprint(1, 80.0, 60.0);
+        let region = swatch
+            .projected_node_footprint(&1)
+            .expect("declared footprint");
+        let routes = swatch.projected_relations();
+        let on_perimeter = |point: (f32, f32)| {
+            let right = region.left + region.width;
+            let bottom = region.top + region.height;
+            let on_vertical =
+                (point.0 - region.left).abs() < 0.01 || (point.0 - right).abs() < 0.01;
+            let on_horizontal =
+                (point.1 - region.top).abs() < 0.01 || (point.1 - bottom).abs() < 0.01;
+            (on_vertical && point.1 >= region.top && point.1 <= bottom)
+                || (on_horizontal && point.0 >= region.left && point.0 <= right)
+        };
+
+        assert_eq!(routes.len(), 2);
+        assert!(on_perimeter(routes[0].1[0]), "outgoing source is clipped");
+        assert!(
+            on_perimeter(*routes[1].1.last().expect("incoming endpoint")),
+            "incoming target is clipped"
+        );
+        assert_eq!(routes[0].1[1], compact_routes[0].1[1]);
+        assert_eq!(routes[0].1[2], compact_routes[0].1[2]);
+        assert_eq!(routes[1].1[1], compact_routes[1].1[1]);
+        assert_eq!(routes[1].1[2], compact_routes[1].1[2]);
+        assert_eq!(
+            *routes[0].1.last().expect("unoccupied target"),
+            *compact_routes[0].1.last().expect("compact target")
+        );
+        assert_eq!(routes[1].1[0], compact_routes[1].1[0]);
     }
 
     #[test]
