@@ -19,11 +19,6 @@ path = "lib.rs"
 
 [features]
 default = ["livery"]
-# Scene production is a host extension. The worker artifact disables this feature
-# and carries only DOM, runtime, layout-state, and extraction dependencies. This
-# compatibility name now means the frozen incumbent renderer.
-render = ["dep:netrender", "dep:genet-layout", "dep:genet-render", "genet-render/incumbent"]
-incumbent = ["render"]
 # Optional local conformance fixtures that exercise the same document tests on
 # Nova. The default suite keeps Boa as the baseline worker-compatible backend.
 # Gates the `dep:script-engine-nova` below too, so a Boa-only consumer never
@@ -31,17 +26,19 @@ incumbent = ["render"]
 # regardless of this feature -- an unconditional dependency the `#[cfg(feature =
 # "scripted-nova")]` test gate never actually covered).
 scripted-nova = ["dep:script-engine-nova"]
-# Opt-in clean-room CSSOM bridge. The default scripted/fullweb path keeps its
-# incumbent Stylo session; hosts selecting Livery install this adapter.
+# Owned CSSOM, layout, and paint bridge for scripted/fullweb hosts.
 livery = ["dep:genet-livery", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
+
+[lints.rust]
+# `document.rs` and `capture.rs` retain inert pre-L7 source blocks for history
+# while their public route is removed. Git history is the long-term archive.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("render"))'] }
 
 [dependencies]
 genet-scripted-dom = { path = "../genet-scripted-dom" }
 genet-document-resources = { workspace = true }
 genet-host-api = { workspace = true }
 layout-dom-api = { path = "../shared/layout-dom", features = ["capture"] }
-genet-layout = { path = "../genet-layout", optional = true }
-genet-render = { path = "../genet-render", optional = true, default-features = false }
 genet-livery = { path = "../genet-livery", optional = true }
 paint_list_api = { workspace = true, optional = true }
 paint_list_render = { workspace = true, optional = true }

@@ -19,26 +19,8 @@ default = ["livery", "netfetch"]
 # Engine-neutral headed presentation. Both engines can produce a `Scene`; this
 # feature owns only the winit/wgpu shell that presents one.
 present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
-# The GPU-free surface lib: the `LoadedDocument` loader/scene-producer and the
-# tile-tree surface (`TileSurface` / `TileShell`) — everything a host needs to load
-# documents and render a tile frame, WITHOUT the windowed present stack (no
-# `genet-winit-host`, no `wgpu`). This is the seam meerkat consumes
-# (`default-features = false, features = ["tile-surface"]`) to host the pelt tile
-# surface as its workbench pane (V6) without dragging in pelt's reference-shell
-# windowing. The windowed viewers (`viewer`, `tiles`) build the present stack on top.
-tile-surface = [
-    "dep:genet-documents", "genet-documents/incumbent",
-    "dep:netrender", "dep:genet-render", "genet-render/incumbent",
-    "dep:genet-static-dom", "dep:genet-layout",
-    "dep:genet-scripted-dom", "dep:layout-dom-api", "dep:cambium",
-    "dep:sprigging", "dep:accesskit", "dep:paint_list_api", "dep:paint_list_render",
-    "dep:inker",
-]
-# The frozen on-screen incumbent viewer: the GPU-free `tile-surface` lib plus
-# the windowed present stack (`genet-winit-host` + `wgpu`).
-incumbent = ["present", "tile-surface"]
-# Compatibility name for the frozen Stylo + genet-layout oracle route.
-viewer = ["incumbent"]
+# Compatibility name for the headed viewer, now routed to the owned engine.
+viewer = ["livery"]
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
@@ -64,21 +46,6 @@ livery-scripted = ["scripted", "genet-documents/livery-scripted"]
 # it links a second engine, which on Windows can exceed the linker's image-size limit
 # alongside wgpu — build it on Linux/macOS, or Windows without the present stack.
 scripted-nova = ["scripted", "dep:script-engine-nova"]
-# The chrome profile (V2): browser chrome (omnibar + back/forward) built as
-# Cambium views over a second `ScriptedDom`, rendered GPU-free through
-# genet-render. No JS engine — the chrome is view-driven, not script-driven (a
-# sanctioned mod tier is a later lane). The windowed two-root shell additionally
-# needs `viewer` for the present stack + the content document.
-chrome = [
-    "dep:netrender", "dep:genet-render", "genet-render/incumbent",
-    "dep:genet-layout", "dep:genet-scripted-dom",
-    "dep:layout-dom-api", "dep:cambium", "dep:genet-clipboard", "dep:tinct",
-]
-# The windowed tile-tree demo (V5): the GPU-free `tile-surface` lib plus the windowed
-# shell (`tile_viewer`). `chrome` for the Cambium render path it shares, `viewer`
-# for the present stack. The GPU-free surface itself is `tile-surface` (what meerkat
-# consumes); this adds the standalone winit window over it.
-tiles = ["tile-surface", "chrome", "viewer", "smolweb"]
 # Remote document loading (V1's http(s) half): the `LocalFetcher` gains an http(s)
 # branch backed by the netfetcher engine (the sibling Fetch network engine; the same
 # wiring genet-wpt's `fetch()` uses). Default-on so the reference browser visibly
@@ -94,15 +61,8 @@ netfetch = ["dep:genet-documents", "genet-documents/netfetch"]
 # The host owns networking (pelt is the reference shell), matching meerkat driving
 # errand in the product; genet's engine components stay byte-consuming. errand pulls
 # its own tokio net/time/io-util features, which unify with the `rt` runtime here.
-smolweb = ["tile-surface", "genet-documents/smolweb"]
+smolweb = ["livery", "genet-documents/smolweb"]
 netrender = ["dep:netrender", "dep:webgl_wgpu", "dep:wgpu"]
-# The rasterized-PNG reftest lane (V3 follow-up): renders the headless `Scene`
-# through netrender's offscreen wgpu readback to a PNG — the "for human eyes"
-# artifact (`--out <file>.png`) plus an optional `name.png` fixture comparison
-# with a fuzz threshold. GPU-required, so opt-in; the scene-snapshot lane stays
-# GPU-free. `viewer` already brings the netrender + wgpu crates (via
-# `tile-surface`); this just adds the PNG encoder.
-png-reftest = ["viewer", "dep:image", "dep:sprigging"]
 # Headed presentation through genet's `WindowsDxgiBackend`. Drives
 # the netrender renderer through the C4 DCOMP composition swapchain
 # attached to a winit window's HWND. Windows-only at runtime; the
@@ -153,11 +113,7 @@ webgl_wgpu = { workspace = true, optional = true }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"], optional = true }
 winit = { workspace = true }
 
-# V1 viewer (behind the `viewer` feature): the genet render-driver + present
-# core, the static-document parser, and genet-layout's convenience entries.
-genet-render = { path = "../../../components/genet-render", optional = true, default-features = false }
 genet-static-dom = { path = "../../../components/genet-static-dom", optional = true }
-genet-layout = { path = "../../../components/genet-layout", optional = true }
 # The render-free extraction lane: extract a PageExtract from the live post-JS DOM
 # (the headless-scripted-DOM scrape path for SPAs). Depends only on layout-dom-api.
 genet-extract = { path = "../../../components/genet-extract", optional = true }
@@ -246,4 +202,4 @@ ash = "0.38"
 mockito = "1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)', 'cfg(feature, values("incumbent", "tile-surface", "tiles", "chrome", "png-reftest"))'] }

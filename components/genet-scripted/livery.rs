@@ -631,6 +631,28 @@ impl LiveryCssom {
         ])
     }
 
+    /// Hit-test the most recently rendered live frame without dispatching an
+    /// event. Test drivers use this to resolve typed pointer and wheel targets;
+    /// product clicks continue through [`Self::click_at`].
+    pub fn hit_test<E: ScriptEngine>(
+        &self,
+        runtime: &Runtime<E>,
+        x: f32,
+        y: f32,
+    ) -> Option<NodeId> {
+        let host = runtime.host().borrow();
+        let state = self.state.borrow();
+        let frame = state.frame.as_ref()?;
+        hit_test(
+            &host.dom,
+            &frame.styles,
+            &frame.fragments,
+            x + state.scroll.0,
+            y + state.scroll.1,
+        )
+        .and_then(|node| pointer_event_target(&host.dom, node))
+    }
+
     /// Begin a primary-pointer selection against the live shaped frame.
     pub fn begin_text_selection(&self, x: f32, y: f32) -> bool {
         let mut state = self.state.borrow_mut();

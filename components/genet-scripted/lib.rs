@@ -7,8 +7,8 @@
 //! A JS script, handed a **reflector** (a value carrying a `NodeId`), can mutate
 //! the corresponding `genet-scripted-dom` node through a native callback: the
 //! callback recovers the `NodeId` from the reflector and calls [`LayoutDomMut`].
-//! This closes the JS→DOM half of the live-scripting loop (the DOM→layout half is
-//! the next pass: draining `DomMutation` into genet-layout).
+//! This closes the JS→DOM half of the live-scripting loop. Livery observes the
+//! runtime-owned mutation stream through its retained CSSOM session.
 //!
 //! Built on the engine-neutral `script-engine-api` contract (`NativeFn` +
 //! `CallCx` + host data), implemented by `script-engine-nova`. The host DOM
@@ -72,17 +72,12 @@ fn has_scheme(url: &str) -> bool {
     }
 }
 
-/// The live incremental layout engine. Re-exported as the scripted
-/// tier's relayout-on-mutation entry: a persistent cascade + layout
-/// session that restyles attribute changes through Stylo invalidation
-/// (skipping layout for paint-only changes) and splices structural
-/// changes — one engine for both, superseding the earlier stateless
-/// `relayout_incremental` splice. See `genet_layout::IncrementalLayout`
-/// and `docs/2026-05-25_fine_grained_restyle_plan.md`.
+/// Retired incumbent compatibility export. The block remains unreachable so
+/// the mixed source file can be split independently of dependency retirement.
 #[cfg(feature = "render")]
 pub use genet_layout::{Applied, IncrementalLayout};
 
-/// Coarse relayout-on-mutation — the **correctness oracle**. Drain the DOM's
+/// Retired incumbent coarse-relayout oracle. Drain the DOM's
 /// pending [`DomMutation`](layout_dom_api::DomMutation)s; if anything changed, re-run
 /// the *whole* layout pipeline and return the fresh fragment plane. Correct by
 /// construction (a full recompute can't be stale), so it is the ground truth the
@@ -104,11 +99,7 @@ pub fn relayout_if_dirty(
     Some(render(dom, stylesheets, width, height))
 }
 
-// Incremental relayout is now `genet_layout::IncrementalLayout` (re-exported
-// above) — a persistent cascade+layout session that handles both attribute
-// restyle (via Stylo invalidation, skipping layout for paint-only changes) and
-// structural splice, superseding the earlier stateless `relayout_incremental`
-// here. `relayout_if_dirty` stays as the coarse oracle it's diff-tested against.
+// The retained Livery CSSOM session is the live relayout owner.
 
 /// The reflector-pin table (G1 reflector liveness) now lives next to the
 /// collector it feeds, in `genet-scripted-dom` as [`Pins`] (keyed on `NodeId`).

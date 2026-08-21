@@ -16,7 +16,6 @@ use embedder_traits::{
 };
 use encoding_rs::Encoding;
 use euclid::default::Size2D as UntypedSize2D;
-use fonts_traits::SystemFontServiceProxySender;
 use http::{HeaderMap, Method};
 use ipc_channel::ipc::IpcSender;
 use malloc_size_of_derive::MallocSizeOf;
@@ -244,8 +243,6 @@ pub struct SWManagerSenders {
     pub resource_threads: ResourceThreads,
     /// [`CrossProcessPaintApi`] for communicating with `Paint`.
     pub paint_api: CrossProcessPaintApi,
-    /// The [`SystemFontServiceProxy`] used to communicate with the `SystemFontService`.
-    pub system_font_service_sender: SystemFontServiceProxySender,
     /// Sender of messages to the manager.
     pub own_sender: GenericSender<ServiceWorkerMsg>,
     /// Receiver of messages from the constellation.

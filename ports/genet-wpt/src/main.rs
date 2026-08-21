@@ -8,8 +8,7 @@
 //! subsystem can be checked without the whole 1.2 GB suite.
 //!
 //! Phase 1 (this binary) is a **crash-smoke**: each runnable test is loaded
-//! through `genet_static_dom::parse` + `genet_layout::render` (with inline
-//! `<style>` extracted), wrapped in `catch_unwind`. A test "passes" if
+//! through the owned Livery + Buckram route, wrapped in `catch_unwind`. A test "passes" if
 //! loading does not panic. That finds layout panics across real pages, the
 //! highest-leverage early signal, and needs no GPU and no JS. Reftest pixel
 //! comparison and testharness.js are later phases.
@@ -265,9 +264,18 @@ fn smoke_test(test: &TestCase) -> (Kind, Outcome) {
         } else {
             StaticDocument::parse(&html)
         };
-        let sheets = genet_layout::inline_stylesheets_from_source(&html);
+        let sheets = genet_document_resources::ResolvedDocumentResources::discover(&document, None)
+            .stylesheets
+            .into_iter()
+            .map(|sheet| sheet.text)
+            .collect::<Vec<_>>();
         let sheet_refs: Vec<&str> = sheets.iter().map(String::as_str).collect();
-        let _fragments = genet_layout::render(&document, &sheet_refs, VIEWPORT_W, VIEWPORT_H);
+        let mut session = genet_livery::LiveryDocument::new(
+            document,
+            genet_livery::StyleSet::cambium(&sheet_refs),
+            genet_livery::Device::screen(VIEWPORT_W, VIEWPORT_H),
+        );
+        let _ = session.frame(VIEWPORT_W as u32, VIEWPORT_H as u32);
     }));
 
     (
@@ -486,7 +494,7 @@ fn parse_args() -> Result<Args, String> {
     let mut tests_root = DEFAULT_TESTS_ROOT.to_string();
     let mut verbose = false;
     let mut engine = harness::Engine::default();
-    let mut renderer = ReftestRenderer::Stylo;
+    let mut renderer = ReftestRenderer::Livery;
     let mut device_scale = 1.0f32;
     let mut server_base = None;
     let mut spawn_server = false;
@@ -515,12 +523,9 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or_else(|| format!("unknown engine: {v} (expected boa | nova)"))?;
             },
             "--renderer" => {
-                let value = it
-                    .next()
-                    .ok_or("--renderer needs a value (stylo | livery)")?;
-                renderer = ReftestRenderer::parse(&value).ok_or_else(|| {
-                    format!("unknown renderer: {value} (expected stylo | livery)")
-                })?;
+                let value = it.next().ok_or("--renderer needs a value (livery)")?;
+                renderer = ReftestRenderer::parse(&value)
+                    .ok_or_else(|| format!("unknown renderer: {value} (expected livery)"))?;
             },
             "--device-scale" => {
                 let value = it
@@ -664,7 +669,7 @@ Options:
     --allow-unpinned-conformance-inputs
                          permit legacy result maps only in a diagnostic report
     --engine <name>      testharness JS engine: boa (default) | nova
-    --renderer <name>    style/render route: stylo (default) | livery
+    --renderer <name>    style/render route: livery (default)
     --device-scale <n>   device pixels per CSS pixel for reftest/dump (default: 1)
     --server-base <url>  run testharness against a live `wpt serve` at <url>
                          (server mode; needs --features netfetch)
@@ -2676,31 +2681,23 @@ fn testharness(tests: &[TestCase], args: &Args) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReftestRenderer {
-    Stylo,
     Livery,
 }
 
 impl ReftestRenderer {
     fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
-            "stylo" => Some(Self::Stylo),
             "livery" => Some(Self::Livery),
             _ => None,
         }
     }
 
     fn harness_style(self) -> harness::StyleRoute {
-        match self {
-            Self::Stylo => harness::StyleRoute::Stylo,
-            Self::Livery => harness::StyleRoute::Livery,
-        }
+        harness::StyleRoute::Livery
     }
 
     fn label(self) -> &'static str {
-        match self {
-            Self::Stylo => "stylo",
-            Self::Livery => "livery",
-        }
+        "livery"
     }
 }
 
@@ -3262,16 +3259,9 @@ fn reftest(tests: &[TestCase], args: &Args) {
         let test_xml = is_xml_path(&test.path);
         let ref_xml = is_xml_path(&ref_path);
         let rendered = panic::catch_unwind(AssertUnwindSafe(|| {
-            let render = |html: &str, dir: &Path, xml: bool| match args.renderer {
-                ReftestRenderer::Stylo => (
-                    renderer.render_html(html, dir, tests_root, viewport, xml),
-                    None,
-                ),
-                ReftestRenderer::Livery => {
-                    let rendered =
-                        renderer.render_html_livery(html, dir, tests_root, viewport, xml);
-                    (rendered.image, Some(rendered.table_ledger))
-                },
+            let render = |html: &str, dir: &Path, xml: bool| {
+                let rendered = renderer.render_html(html, dir, tests_root, viewport, xml);
+                (rendered.image, Some(rendered.table_ledger))
             };
             let t = render(&test_html, test_dir, test_xml);
             let r = render(&ref_html, ref_dir, ref_xml);
@@ -3422,13 +3412,10 @@ fn dump(tests: &[TestCase], args: &Args) {
         };
         let test_dir = test.path.parent().unwrap_or(tests_root);
         let ref_dir = ref_path.parent().unwrap_or(tests_root);
-        let render = |html: &str, dir: &Path, xml: bool| match args.renderer {
-            ReftestRenderer::Stylo => renderer.render_html(html, dir, tests_root, viewport, xml),
-            ReftestRenderer::Livery => {
-                renderer
-                    .render_html_livery(html, dir, tests_root, viewport, xml)
-                    .image
-            },
+        let render = |html: &str, dir: &Path, xml: bool| {
+            renderer
+                .render_html(html, dir, tests_root, viewport, xml)
+                .image
         };
         let t = render(&test_html, test_dir, is_xml_path(&test.path));
         let r = render(&ref_html, ref_dir, is_xml_path(&ref_path));
@@ -3865,11 +3852,8 @@ mod tests {
     }
 
     #[test]
-    fn reftest_renderer_selects_the_clean_room_lane_explicitly() {
-        assert_eq!(
-            ReftestRenderer::parse("stylo"),
-            Some(ReftestRenderer::Stylo)
-        );
+    fn reftest_renderer_accepts_only_the_owned_lane() {
+        assert_eq!(ReftestRenderer::parse("stylo"), None);
         assert_eq!(
             ReftestRenderer::parse("LIVERY"),
             Some(ReftestRenderer::Livery)

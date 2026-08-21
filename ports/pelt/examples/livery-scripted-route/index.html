@@ -5,7 +5,7 @@
   <title>Livery scripted product route</title>
   <link rel="stylesheet" href="assets/route.css">
   <style id="face-source">
-    @font-face { font-family: RouteAhem; src: url("../../../../components/genet-layout/Ahem.ttf"); }
+    @font-face { font-family: RouteAhem; src: url("../Ahem.ttf"); }
   </style>
 </head>
 <body>
@@ -22,7 +22,7 @@
     status.textContent = document.styleSheets.length + ' Livery CSS sheets are live.';
     headline.className = 'ready';
     document.getElementById('face-source').textContent =
-      '@font-face { font-family: RouteAhem; src: url("../../../../components/genet-layout/Ahem.ttf"); }';
+      '@font-face { font-family: RouteAhem; src: url("../Ahem.ttf"); }';
     document.getElementById('swap').addEventListener('click', () => {
       status.textContent = 'The live Livery document accepted a click.';
       document.getElementById('badge').src = '../../../../resources/servo_1024.png';

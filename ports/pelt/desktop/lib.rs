@@ -34,17 +34,7 @@ pub(crate) fn url_host(url: &str) -> Option<&str> {
     (!host.is_empty()).then_some(host)
 }
 
-// The content lanes moved to `genet-documents` (2026-07-10 session-engines
-// plan): pelt is now one consumer among hosts. These shim modules keep the
-// crate-internal paths (`crate::document::…`, `crate::href::…`) and the
-// public re-export surface stable while the shell code consumes the
-// component.
-#[cfg(feature = "tile-surface")]
-pub(crate) mod document {
-    pub use genet_documents::{ClickOutcome, LoadedDocument, LocalFetcher};
-}
-
-#[cfg(any(feature = "tile-surface", feature = "scripted"))]
+#[cfg(any(feature = "scripted", feature = "smolweb"))]
 pub(crate) mod href {
     pub use genet_documents::resolve_href;
 }
@@ -55,15 +45,10 @@ mod smolweb_glue;
 pub use genet_documents::SmolwebDocument;
 // Re-exported so a host that builds a `SmolwebDocument` can name its compatibility
 // theme and, for the App theme, supply a palette.
-#[cfg(all(feature = "smolweb", feature = "viewer", feature = "chrome"))]
-pub use chrome_viewer::run_smolweb_browser;
 #[cfg(feature = "smolweb")]
 pub use genet_documents::{SmolwebPalette, SmolwebTheme};
 #[cfg(all(feature = "smolweb", feature = "viewer"))]
 pub use smolweb_glue::run_smolweb_viewer;
-
-#[cfg(feature = "incumbent")]
-mod headless;
 
 #[cfg(feature = "scripted")]
 mod scripted;
@@ -71,28 +56,9 @@ mod scripted;
 #[cfg(all(feature = "present", feature = "scripted"))]
 mod scripted_viewer;
 
-#[cfg(feature = "chrome")]
-mod chrome;
-#[cfg(feature = "chrome")]
-mod theme;
-
-#[cfg(all(feature = "viewer", feature = "chrome"))]
-mod chrome_viewer;
-
-#[cfg(feature = "tile-surface")]
-mod tile_surface;
-
-#[cfg(feature = "tile-surface")]
-mod tile_shell;
-
-#[cfg(feature = "tiles")]
-mod tile_viewer;
-
 // (STRUCTURAL_SHEET moved to genet-documents with the lanes; genet-scripted
 // keeps its own copy, as before.)
 
-#[cfg(feature = "png-reftest")]
-mod smoke_chisel;
 #[cfg(feature = "macos-present")]
 mod smoke_macos;
 #[cfg(feature = "netrender")]
@@ -104,19 +70,9 @@ mod smoke_webgl;
 #[cfg(feature = "windows-present")]
 mod smoke_windows;
 
-#[cfg(feature = "tile-surface")]
-pub use document::{ClickOutcome, LoadedDocument, LocalFetcher};
-#[cfg(feature = "incumbent")]
-pub use headless::{
-    DEFAULT_HEIGHT, DEFAULT_WIDTH, Outcome, ReftestResult, render_snapshot, run_reftests,
-};
-#[cfg(feature = "png-reftest")]
-pub use headless::{Fuzz, png_within_fuzz, render_png, render_png_scrolled};
-#[cfg(any(feature = "tile-surface", feature = "scripted"))]
+#[cfg(any(feature = "scripted", feature = "smolweb"))]
 pub use href::resolve_href;
 pub use profile::{DesktopHostProfile, WindowingMode};
-#[cfg(feature = "png-reftest")]
-pub use smoke_chisel::{ChiselSmokeOutcome, run_chisel_smoke};
 #[cfg(feature = "macos-present")]
 pub use smoke_macos::{
     MacosCALayerPresentSmokeConfig, MacosCALayerPresentSmokeOutcome,
@@ -150,21 +106,9 @@ pub use scripted::{ScriptResourceFetcher, ScriptedDocument, ScriptedEngine};
 pub use script_runtime_api::CookieProvider;
 // The headless-scripted-DOM scrape (`ScriptedDocument::extract`) returns these; re-export
 // so the host names the post-JS extract without a direct `genet-extract` dep. (Phase 4.)
-#[cfg(feature = "chrome")]
-pub use chrome::{Chrome, ChromeIntent, ChromeState, StripSide};
-#[cfg(all(feature = "viewer", feature = "chrome"))]
-pub use chrome_viewer::run_chrome_viewer;
 #[cfg(feature = "scripted")]
 pub use genet_extract::{Heading, Link, Metadata, PageExtract};
 #[cfg(feature = "livery-scripted")]
 pub use scripted_viewer::run_livery_scripted_viewer;
 #[cfg(all(feature = "present", feature = "scripted"))]
 pub use scripted_viewer::run_scripted_viewer;
-#[cfg(feature = "chrome")]
-pub use theme::PeltTheme;
-#[cfg(feature = "tile-surface")]
-pub use tile_shell::TileShell;
-#[cfg(feature = "tile-surface")]
-pub use tile_surface::{DividerHit, TileFrame, TileLayer, TileSurface};
-#[cfg(feature = "tiles")]
-pub use tile_viewer::{TileViewerConfig, run_tile_viewer, run_tile_viewer_with_config};

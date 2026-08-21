@@ -8,7 +8,6 @@ use std::str::FromStr;
 use euclid::Angle;
 use euclid::approxeq::ApproxEq;
 use euclid::default::{Point2D, Rect, Size2D, Transform2D};
-use fonts_traits::{FontDataAndIndex, FontIdentifier};
 use kurbo::{BezPath, ParamCurveNearest as _, PathEl, Point, Shape, Triangle};
 use malloc_size_of::MallocSizeOf;
 use malloc_size_of_derive::MallocSizeOf;
@@ -780,23 +779,23 @@ pub struct GlyphAndPosition {
     pub point: Point2D<f32>,
 }
 
+/// Host-supplied font bytes for one canvas text run.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct FontDataAndIndex {
+    pub data: Vec<u8>,
+    pub index: u32,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct CanvasFont {
-    /// A [`FontIdentifier`] for this [`CanvasFont`], maybe either `Local` or `Web`.
-    pub identifier: FontIdentifier,
-    /// If this font is a web font, this field contains the data for the font. If
-    /// the font is a local font, it will be `None`.
+    /// Resolved bytes supplied by the host. Canvas messages do not depend on a
+    /// styling engine's font-identifier vocabulary.
     pub data: Option<FontDataAndIndex>,
 }
 
 impl CanvasFont {
     pub fn font_data_and_index(&self) -> Option<FontDataAndIndex> {
-        self.data.clone().or_else(|| match &self.identifier {
-            FontIdentifier::Local(local_font_identifier) => {
-                local_font_identifier.font_data_and_index()
-            },
-            FontIdentifier::Web(_) | FontIdentifier::ArrayBuffer(_) => None,
-        })
+        self.data.clone()
     }
 }
 

@@ -6,6 +6,13 @@
 adversarial verdicts are folded in below. Where a verdict overturned a report,
 the verdict wins and the plan says so.
 
+**2026-08-21 current-state note:** this table records the former incumbent
+implementation. The completed Stylo deletion lane removed its chrome, tile,
+and headless compatibility adapters. Active Pelt presentation is now the
+Livery/Buckram static and scripted viewer plus the bare smolweb viewer on the
+shared presentation shell. The receipts below remain historical evidence;
+they are not claims that the deleted feature names still exist.
+
 ## Completion record
 
 This is the implementation record, not a claim that Pelt is now a conforming

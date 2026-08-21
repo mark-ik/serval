@@ -14,10 +14,11 @@ name = "genet-wpt"
 path = "src/main.rs"
 
 [dependencies]
-# Phase 1 (crash-smoke): parse + layout, no GPU.
+# Phase 1 (crash-smoke): parse + owned layout, no GPU.
 genet-static-dom = { path = "../../components/genet-static-dom" }
-genet-layout = { path = "../../components/genet-layout" }
+genet-document-resources = { path = "../../components/genet-document-resources" }
 genet-livery = { path = "../../components/genet-livery" }
+livery = { path = "../../components/livery" }
 genet-scripted = { path = "../../components/genet-scripted", default-features = false, features = ["livery"] }
 # H7a rendering session: the testharness lane's IncrementalLayout runs over the
 # runtime's live (mutable) DOM, whose node ids are genet-scripted-dom's.
@@ -45,9 +46,6 @@ servo-base = { workspace = true }
 dpi = { workspace = true }
 euclid = { workspace = true }
 image = { workspace = true }
-# Must match genet-layout's experimental pin (layout() takes a taffy::Size).
-taffy = { version = "=0.13.0", default-features = false, features = ["std", "taffy_tree", "block_layout", "flexbox", "grid", "float_layout", "calc", "content_size", "detailed_layout_info"] }
-
 # Phase 3 (testharness): run testharness.js + the test's scripts on the host
 # surface and read results, with the JS engine selectable via `--engine`
 # (boa | nova). Boa is the pure-Rust conformance oracle; Nova is the native

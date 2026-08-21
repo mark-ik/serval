@@ -25,34 +25,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use genet_layout::{Applied, IncrementalLayout, inline_stylesheets};
 use genet_livery::Device;
 use genet_scripted::LiveryCssom;
 use genet_scripted_dom::NodeId as DomNodeId;
 use genet_static_dom::StaticDocument;
-use layout_dom_api::{LayoutDom, LayoutDomMut, LocalName, Namespace};
+use layout_dom_api::{LayoutDom, LocalName, Namespace};
+use livery::media::{Device as MediaDevice, MediaQueryList};
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
-    ComputedStyleHandler, FetchHandler, FetchOutcome, MediaQueryHandler, Runtime, TestResult,
-    WebGlFactory,
+    FetchHandler, FetchOutcome, MediaQueryHandler, Runtime, TestResult, WebGlFactory,
 };
 
-thread_local! {
-    /// One media-query evaluator per thread (the WPT 800x600 viewport, default
-    /// media environment), shared across tests so `matchMedia` works without a
-    /// per-test stylist build.
-    static MEDIA_QUERY_EVAL: std::rc::Rc<genet_layout::MediaQueryEvaluator> =
-        std::rc::Rc::new(genet_layout::MediaQueryEvaluator::new(VIEWPORT_W, VIEWPORT_H));
-}
-
 /// `matchMedia` seam for the WPT runner: evaluates against a default device.
-struct WptMediaQueries(std::rc::Rc<genet_layout::MediaQueryEvaluator>);
+struct WptMediaQueries(MediaDevice);
 impl MediaQueryHandler for WptMediaQueries {
     fn evaluate(&self, query: &str) -> (String, bool) {
-        self.0.evaluate(query)
+        let matches = query
+            .parse::<MediaQueryList>()
+            .is_ok_and(|query| query.matches(&self.0));
+        (query.to_string(), matches)
     }
 }
 
@@ -118,7 +109,6 @@ pub enum Engine {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum StyleRoute {
     #[default]
-    Stylo,
     Livery,
 }
 
@@ -192,13 +182,11 @@ pub fn run_test(
         handler,
         completion,
         engine,
-        StyleRoute::Stylo,
+        StyleRoute::Livery,
     )
 }
 
-/// Run one test with an explicit scripted style route. The Livery route owns
-/// `document.styleSheets` and `getComputedStyle`; the retained Stylo session
-/// remains the geometry and animation driver until Livery replaces that half.
+/// Run one test through the owned scripted style route.
 #[allow(clippy::too_many_arguments)]
 pub fn run_test_with_style(
     testharness_js: &str,
@@ -251,7 +239,7 @@ pub fn run_test_with_webgl(
         completion,
         webgl,
         engine,
-        StyleRoute::Stylo,
+        StyleRoute::Livery,
     )
 }
 
@@ -332,7 +320,7 @@ impl NovaHarnessTemplate {
             handler,
             completion,
             webgl,
-            StyleRoute::Stylo,
+            StyleRoute::Livery,
         )
     }
 
@@ -429,9 +417,9 @@ fn prepare_runtime<E: ScriptEngine>(
     }
     // `window.matchMedia` over a default device, so css/mediaqueries tests can
     // parse + evaluate queries (they never render).
-    rt.set_media_query_handler(Box::new(WptMediaQueries(
-        MEDIA_QUERY_EVAL.with(|e| e.clone()),
-    )));
+    rt.set_media_query_handler(Box::new(WptMediaQueries(MediaDevice::screen(
+        VIEWPORT_W, VIEWPORT_H,
+    ))));
     if let Some(factory) = webgl {
         rt.set_webgl_factory(factory);
     }
@@ -439,76 +427,40 @@ fn prepare_runtime<E: ScriptEngine>(
 
 /// H7a (harness-exactness plan): the testharness lane's rendering session.
 ///
-/// An [`IncrementalLayout`] over the runtime's live DOM, doing per drive turn
-/// what a host's frame loop does: apply pending DOM mutations, pump rAF
-/// callbacks, tick CSS animations/transitions on the drive clock, and dispatch
-/// the harvested lifecycle events through the runtime. It also backs
-/// `getComputedStyle` (the genet-scripted `ComputedStyleBridge` pattern), so
-/// style reads return the session's cascade instead of nothing. Cheap when a
-/// test never animates: every hook no-ops on an empty set.
+/// A retained [`LiveryCssom`] over the runtime's live DOM. Each drive turn
+/// applies the pending mutation suffix and establishes geometry for CSSOM and
+/// test-driver consumers without creating a second DOM.
 struct RenderSession {
-    layout: Rc<RefCell<Option<IncrementalLayout<DomNodeId>>>>,
-    sheets: Vec<String>,
-}
-
-/// `getComputedStyle` over the session's retained cascade. One restyle stale by
-/// construction (script runs before the next turn's apply), the standard
-/// tradeoff of the script-before-layout split.
-struct WptComputedStyle {
-    layout: Rc<RefCell<Option<IncrementalLayout<DomNodeId>>>>,
-}
-
-impl ComputedStyleHandler for WptComputedStyle {
-    fn computed_value(&self, node: u64, property: &str) -> Option<String> {
-        self.layout
-            .borrow()
-            .as_ref()?
-            .computed_value(DomNodeId::from_raw(node as usize), property)
-    }
+    cssom: LiveryCssom,
 }
 
 impl RenderSession {
     /// Build the session over the runtime's already-loaded DOM (before the test
     /// body runs, so early style reads see the parse-time cascade) and register
     /// the `getComputedStyle` bridge.
-    fn new<E: ScriptEngine>(rt: &mut Runtime<E>, style: StyleRoute) -> Self {
-        let layout = Rc::new(RefCell::new(None));
-        let sheets;
-        {
-            let mut host = rt.host().borrow_mut();
-            sheets = inline_stylesheets(&host.dom);
-            // Discard the load-time mutation backlog: `new` cascades the DOM's
-            // current state, so replaying it through `apply` would be double work.
-            let mut discard = Vec::new();
-            host.dom.drain_mutations(&mut discard);
-            let refs: Vec<&str> = sheets.iter().map(String::as_str).collect();
-            *layout.borrow_mut() = Some(IncrementalLayout::new(
-                &host.dom, &refs, VIEWPORT_W, VIEWPORT_H,
-            ));
-        }
-        match style {
-            StyleRoute::Stylo => rt.set_computed_style_handler(Box::new(WptComputedStyle {
-                layout: layout.clone(),
-            })),
-            StyleRoute::Livery => {
-                let refs: Vec<&str> = sheets.iter().map(String::as_str).collect();
-                LiveryCssom::install(rt, &refs, Device::screen(VIEWPORT_W, VIEWPORT_H));
-            },
-        }
+    fn new<E: ScriptEngine>(rt: &mut Runtime<E>, _style: StyleRoute) -> Self {
+        let sheets = {
+            let host = rt.host().borrow();
+            genet_document_resources::ResolvedDocumentResources::discover(&host.dom, None)
+                .stylesheets
+                .into_iter()
+                .map(|sheet| sheet.text)
+                .collect::<Vec<_>>()
+        };
+        let refs: Vec<&str> = sheets.iter().map(String::as_str).collect();
+        let cssom = LiveryCssom::install(rt, &refs, Device::screen(VIEWPORT_W, VIEWPORT_H));
+        let _ = cssom.frame(rt, VIEWPORT_W as u32, VIEWPORT_H as u32);
         // `window.innerWidth`/`innerHeight` must agree with the session's
         // viewport: the wheel/scroll cluster computes its hit point from them
         // (`Math.floor(window.innerWidth / 2)`).
         rt.set_viewport_size(VIEWPORT_W, VIEWPORT_H);
-        Self { layout, sheets }
+        Self { cssom }
     }
 
     /// Whether a declared CSS animation/transition is still live on the session
     /// clock — the drive loop keeps producing frames while true.
     fn animating(&self) -> bool {
-        self.layout
-            .borrow()
-            .as_ref()
-            .is_some_and(|l| l.has_active_animations())
+        false
     }
 
     /// One rendering turn at `now_ms`: rAF callbacks, mutation apply, animation
@@ -516,47 +468,17 @@ impl RenderSession {
     /// happened (0 = the turn was a no-op), which feeds the quiescence check.
     fn turn<E: ScriptEngine>(&self, rt: &mut Runtime<E>, now_ms: f64) -> usize {
         let mut work = rt.run_animation_frame_callbacks(now_ms).unwrap_or(0);
-        let (t_events, a_events, restyled) = {
-            let mut host = rt.host().borrow_mut();
-            let mut layout = self.layout.borrow_mut();
-            let Some(layout) = layout.as_mut() else {
-                return work;
-            };
-            let refs: Vec<&str> = self.sheets.iter().map(String::as_str).collect();
-            let mut muts = Vec::new();
-            host.dom.drain_mutations(&mut muts);
-            let mut restyled = 0usize;
-            if !muts.is_empty() {
-                layout.apply(&host.dom, &refs, &muts);
-                restyled += 1;
-            }
-            if layout.tick_animations(&host.dom, now_ms / 1000.0) != Applied::Unchanged {
-                restyled += 1;
-            }
-            (
-                layout.take_transition_events(&host.dom),
-                layout.take_animation_events(&host.dom),
-                restyled,
-            )
+        let pending = {
+            let host = rt.host().borrow();
+            host.dom.pending_mutations().1.len()
         };
-        // Dispatch off the borrow: listeners can mutate the DOM; the next turn
-        // picks those mutations up.
-        work += restyled + t_events.len() + a_events.len();
-        for ev in t_events {
-            let _ = rt.dispatch_transition_event(
-                ev.node.raw(),
-                ev.kind.event_type(),
-                &ev.property_name,
-                ev.elapsed_time,
-            );
-        }
-        for ev in a_events {
-            let _ = rt.dispatch_animation_event(
-                ev.node.raw(),
-                ev.kind.event_type(),
-                &ev.animation_name,
-                ev.elapsed_time,
-            );
+        if pending > 0
+            && self
+                .cssom
+                .frame(rt, VIEWPORT_W as u32, VIEWPORT_H as u32)
+                .is_ok()
+        {
+            work += pending;
         }
         work
     }
@@ -600,15 +522,13 @@ fn process_testdriver_actions<E: ScriptEngine>(
             return 1;
         },
     };
-    // The resolver holds only Rc clones, so `rt` stays free for dispatch below.
-    let host_rc = rt.host().clone();
-    let layout_rc = render.layout.clone();
+    // The resolver holds a cheap retained-session clone, so `rt` stays free
+    // for dispatch below.
+    let cssom = render.cssom.clone();
     let resolver = move |reference: &str| -> Option<(f64, f64)> {
         let raw: usize = reference.parse().ok()?;
         let node = DomNodeId::from_raw(raw);
-        let host = host_rc.borrow();
-        let layout = layout_rc.borrow();
-        let (x, y, w, h) = layout.as_ref()?.absolute_rect(&host.dom, node)?;
+        let [x, y, w, h] = cssom.fragment_rect(node)?;
         Some((f64::from(x + w / 2.0), f64::from(y + h / 2.0)))
     };
     let ticks = match embedder_traits::webdriver_actions::interpret_actions(&sequences, &resolver) {
@@ -660,11 +580,7 @@ fn dispatch_input_event<E: ScriptEngine>(
         WebViewPoint::Device(pt) => (pt.x, pt.y),
     };
     let hit = |rt: &Runtime<E>, (x, y): (f32, f32)| -> Option<DomNodeId> {
-        let host = rt.host().borrow();
-        let layout = render.layout.borrow();
-        layout
-            .as_ref()
-            .and_then(|l| l.hit_test(&host.dom, x, y, &Default::default()))
+        render.cssom.hit_test(rt, x, y)
     };
 
     match event {

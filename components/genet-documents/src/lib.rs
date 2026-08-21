@@ -14,9 +14,6 @@
 //! `SessionRegistry` instead of hand-matching engine ids; pelt consumes this
 //! component like any other host.
 
-#[cfg(feature = "incumbent")]
-pub mod document;
-
 mod fetch;
 
 // Dependency-free link resolution, shared by `document`, the scripted lane,
@@ -39,29 +36,12 @@ pub use genet_scripted::{
 
 pub mod engines;
 
-#[cfg(feature = "incumbent")]
-pub use document::{ClickOutcome, LoadedDocument};
 #[cfg(feature = "livery")]
 pub use engines::{LiveryDocumentSession, LiverySessionEngine};
 #[cfg(feature = "scripted")]
 pub use engines::{ScriptedDocumentSession, ScriptedSessionEngine};
 #[cfg(feature = "smolweb")]
 pub use engines::{SmolwebDocumentSession, SmolwebSessionEngine};
-#[cfg(feature = "incumbent")]
-pub use engines::{StaticSessionEngine, open_document_session, session_click_from_outcome};
 pub use fetch::{ConfiguredLocalFetcher, LocalFetcher, ResourceFetchPolicy};
 pub use genet_host_api::ResourceFetcher;
 pub use href::resolve_href;
-
-/// Structural display defaults the lanes layer over genet's UA cascade, so a
-/// plain HTML document lays out as a stack of blocks rather than one inline
-/// run, and document metadata stays unpainted. (V1; a fuller UA sheet is a
-/// follow-up. genet-scripted carries its own copy for the same reason.)
-#[cfg(feature = "incumbent")]
-pub(crate) const STRUCTURAL_SHEET: &[&str] = &[
-    "html, body, div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, dl, dt, dd, \
-     section, article, header, footer, nav, main, aside, figure, figcaption, \
-     blockquote, pre, table, thead, tbody, tr, hr, form, fieldset { display: block; }",
-    "head, style, script, title, meta, link, base { display: none; }",
-    "body { padding: 8px; }",
-];

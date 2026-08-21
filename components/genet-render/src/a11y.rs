@@ -2,25 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#[cfg(feature = "incumbent")]
-pub use genet_layout::accesskit_tree;
-
-#[cfg(feature = "livery")]
 use std::hash::Hash;
 
-#[cfg(feature = "livery")]
 use accesskit::{Node as AccessNode, NodeId as AccessNodeId, Rect, Role, Tree, TreeId, TreeUpdate};
-#[cfg(feature = "livery")]
 use genet_livery::LiveryLayout;
-#[cfg(feature = "livery")]
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 
-#[cfg(feature = "livery")]
 fn access_id<D: LayoutDom>(dom: &D, node: D::NodeId) -> AccessNodeId {
     AccessNodeId(dom.opaque_id(node))
 }
 
-#[cfg(feature = "livery")]
 fn role_for<D: LayoutDom>(dom: &D, node: D::NodeId) -> Role {
     if let Some(role) = dom.attribute(node, &Namespace::default(), &LocalName::from("role")) {
         match role {
@@ -53,7 +44,6 @@ fn role_for<D: LayoutDom>(dom: &D, node: D::NodeId) -> Role {
     }
 }
 
-#[cfg(feature = "livery")]
 fn direct_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
     dom.dom_children(node)
         .filter_map(|child| {
@@ -64,7 +54,6 @@ fn direct_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
         .collect()
 }
 
-#[cfg(feature = "livery")]
 fn walk<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -103,7 +92,6 @@ where
 }
 
 /// Project a Livery/Buckram document into an AccessKit tree.
-#[cfg(feature = "livery")]
 pub fn accesskit_tree<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,

@@ -75,20 +75,6 @@ pub(crate) enum ViewerScrollKey {
     End,
 }
 
-#[cfg(feature = "incumbent")]
-pub(crate) fn incumbent_scroll_key(key: ViewerScrollKey) -> genet_layout::ScrollKey {
-    match key {
-        ViewerScrollKey::Up => genet_layout::ScrollKey::Up,
-        ViewerScrollKey::Down => genet_layout::ScrollKey::Down,
-        ViewerScrollKey::Left => genet_layout::ScrollKey::Left,
-        ViewerScrollKey::Right => genet_layout::ScrollKey::Right,
-        ViewerScrollKey::PageUp => genet_layout::ScrollKey::PageUp,
-        ViewerScrollKey::PageDown => genet_layout::ScrollKey::PageDown,
-        ViewerScrollKey::Home => genet_layout::ScrollKey::Home,
-        ViewerScrollKey::End => genet_layout::ScrollKey::End,
-    }
-}
-
 /// Turn a document title into the stable native-window title, falling back to
 /// the loaded URL's host.
 ///
@@ -363,7 +349,7 @@ mod livery_route_tests {
             resources.resources.iter().any(|resource| resource
                 .resolved_url
                 .replace('\\', "/")
-                .ends_with("components/genet-layout/Ahem.ttf")),
+                .ends_with("assets/../../Ahem.ttf")),
             "the linked font remains attributed to its stylesheet-relative URL"
         );
         assert!(
@@ -425,12 +411,11 @@ pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             redraws: 0,
             size: (0, 0),
         }),
-        WindowingMode::Headed => run_headed(config),
+        WindowingMode::Headed => run_livery_viewer(config),
     }
 }
 
-/// Run the default Livery engine through its inker registry entry. The
-/// incumbent compatibility viewer keeps its direct `LoadedDocument` route.
+/// Run the owned Livery engine through its inker registry entry.
 #[cfg(feature = "livery")]
 pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
     use genet_documents::LiverySessionEngine;
@@ -457,18 +442,9 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     run_headed_with(config, LiveryViewerContent { session })
 }
 
-/// The static compatibility route names the incumbent engine explicitly.
-#[cfg(not(feature = "incumbent"))]
-fn run_headed(_config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
-    Err("the static viewer needs the `incumbent` feature".to_string())
-}
-
-#[cfg(feature = "incumbent")]
-fn run_headed(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
-    // Load the document before opening a window, so a bad URL fails fast (and the
-    // caller reports the error) rather than flashing an empty window.
-    let doc = crate::document::LoadedDocument::load(&crate::document::LocalFetcher, &config.url)?;
-    run_headed_with(config, doc)
+#[cfg(not(feature = "livery"))]
+pub fn run_livery_viewer(_config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
+    Err("the static viewer requires the livery feature".to_string())
 }
 
 #[cfg(feature = "livery")]
@@ -548,8 +524,6 @@ pub(crate) mod windowed {
     use winit::window::{Window, WindowId};
 
     use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
-    #[cfg(feature = "incumbent")]
-    use crate::document::LoadedDocument;
 
     /// A document the viewer can present: render at a size, scroll, click, and (for
     /// scripted content) advance time-based work. The static [`LoadedDocument`] and
@@ -584,36 +558,6 @@ pub(crate) mod windowed {
         /// none — the default returns `false` and the shell redraws only on input.
         fn pump(&mut self, _now_ms: f64) -> bool {
             false
-        }
-    }
-
-    #[cfg(feature = "incumbent")]
-    impl ViewerContent for LoadedDocument {
-        fn title(&self) -> Option<String> {
-            LoadedDocument::inspect(self).title
-        }
-
-        fn frame(&mut self, width: u32, height: u32) -> Scene {
-            LoadedDocument::frame_for_viewer(self, width, height)
-        }
-        fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-            LoadedDocument::scroll_by(self, dx, dy)
-        }
-        fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-            LoadedDocument::scroll_at(self, x, y, dx, dy)
-        }
-        fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
-            let key = super::incumbent_scroll_key(key);
-            LoadedDocument::scroll_for_key(self, key)
-        }
-        fn click_at(&mut self, x: f32, y: f32) -> bool {
-            // The bare viewer has no chrome/history to navigate, so it only acts on the
-            // in-page scroll; a cross-document link is a no-op here (navigation is the
-            // chrome (V2) and tile (V5) lanes' job).
-            matches!(
-                LoadedDocument::click_at(self, x, y),
-                crate::document::ClickOutcome::Scrolled
-            )
         }
     }
 

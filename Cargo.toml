@@ -7,7 +7,6 @@ members = [
     "components/xpath",
     "components/webgl-wgpu",
     "components/webgl-essl",
-    "components/genet-layout",
     "components/genet-document-resources",
     "components/genet-probe",
     "components/genet-clipboard",
@@ -19,7 +18,6 @@ members = [
     "components/genet-scripted-dom",
     "components/genet-scripted",
     "components/genet-scripted-worker",
-    "components/genet-static-html",
     "components/verso-tile",
     # The engine-management layer, adopted from mere 2026-07-10
     # (docs/2026-07-09_inker_genet_adoption_plan.md): inker (contracts +
@@ -96,7 +94,8 @@ default-members = ["ports/pelt"]
 # (`script_tests`) were deleted 2026-05-20 — they were already cut from
 # the build graph (not workspace members, not reachable from `pelt`).
 # Git history is the reference for the eventual scripting rebuild. See
-# docs/2026-05-20_stylo_taffy_adoption_plan.md (and the cut commit).
+# docs/2026-05-20_stylo_taffy_adoption_plan.md (and the cut commit). The
+# remaining Stylo + genet-layout compatibility cone was deleted 2026-08-21.
 exclude = [".cargo"]
 
 [workspace.package]
@@ -300,7 +299,7 @@ serde = "1.0.228"
 serde_bytes = "0.11"
 serde_core = "1.0.226"
 serde_json = "1.0"
-servo_arc = "0.4.3"
+servo_arc = { version = "0.4.3", features = ["servo"] }
 sha2 = "0.10"
 speexdsp-resampler = "0.1.0"
 # Font enumeration + family resolution, the same stack parley uses (so the
@@ -310,22 +309,7 @@ skrifa = "0.42.1"
 smallvec = { version = "1.15", features = ["serde", "union"] }
 string_cache = "0.9"
 strum = { version = "0.28", features = ["derive"] }
-# Workspace-dependency KEY is `style` (not `stylo`) because the package's own
-# `[lib] name = "style"` (servo's convention; unchanged by the T1 rename —
-# see docs/2026-07-12_ring3_fork_rename_publish_plan.md). Cargo's extern-name
-# binding rule: with no `package =` override, a dependency is visible under
-# its target's OWN `[lib] name`; ADDING `package =` (needed here, since the
-# real crate is renamed to `genet-stylo`) switches that to the TOML key
-# instead — so the key must equal the desired import name (`style::...`,
-# used workspace-wide) or every consumer's source breaks. `stylo_atoms` /
-# `stylo_dom` / `stylo_static_prefs` have no such mismatch (their `[lib]
-# name` already equals their old package name), so their keys are untouched.
-style = { version = "0.19.0", package = "genet-stylo" }
-stylo_atoms = { version = "0.19.0", package = "genet-stylo-atoms" }
-stylo_dom = { version = "0.19.0", package = "genet-stylo-dom" }
 stylo_malloc_size_of = "0.19.0"
-stylo_static_prefs = { version = "0.19.0", package = "genet-stylo-static-prefs" }
-stylo_traits = { version = "0.19.0", package = "genet-stylo-traits" }
 syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
 synstructure = "0.13"
 taffy = { version = "0.10.1", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"] }
@@ -399,10 +383,7 @@ deny_public_fields = { package = "servo-deny-public-fields", version = "=0.2.0",
 devtools_traits = { package = "servo-devtools-traits", version = "=0.2.0", path = "components/shared/devtools" }
 embedder_traits = { package = "servo-embedder-traits", version = "=0.2.0", path = "components/shared/embedder" }
 engine_observables_api = { package = "engine-observables-api", version = "=0.1.1", path = "components/shared/engine-observables-api" }
-fonts = { package = "servo-fonts", version = "=0.2.0", path = "components/fonts" }
-fonts_traits = { package = "servo-fonts-traits", version = "=0.2.0", path = "components/shared/fonts" }
 hyper_serde = { package = "servo-hyper-serde", version = "=0.2.0", path = "components/hyper_serde" }
-layout_api = { package = "servo-layout-api", version = "=0.2.0", path = "components/shared/layout" }
 layout_dom_api = { package = "layout-dom-api", version = "=0.1.0", path = "components/shared/layout-dom" }
 malloc_size_of = { package = "servo-malloc-size-of", version = "=0.2.0", path = "components/malloc_size_of" }
 media = { package = "servo-media-thread", version = "=0.2.0", path = "components/media/media-thread" }
@@ -553,23 +534,12 @@ sonic-rs = { path = "support/patches/sonic-rs-0.5.8" }
 # at its right edge, placing a fixed-width BFC child there instead of below
 # the float — present on taffy `main` too), a float exclusion-band accessor
 # (feeds genet's parley-measured inline float wrap), and flex `order` (taffy
-# does not model CSS `order`). Only the `=0.12.1` requirement (genet-layout +
-# stylo_taffy) is redirected; the workspace's plain taffy 0.10.1 is
-# unaffected. See docs/2026-07-12_ring3_fork_rename_publish_plan.md (T0) and
+# does not model CSS `order`). Buckram consumes this independently of the
+# deleted Stylo compatibility cone. See
+# docs/2026-07-12_ring3_fork_rename_publish_plan.md (T0) and
 # docs/2026-05-31_css_rendering_conformance_plan.md (floats × BFC, the
 # original patch's context).
 taffy = { path = "support/patches/taffy" }
-# stylo_taffy fork, vendored 2026-07-12 at 0.3.0-beta.1 (the first stylo_taffy
-# release targeting taffy 0.12.x; alpha.5/6 still pinned the experimental
-# line). Two edits from the published source, both to match genet's actual
-# stylo fork surface rather than the registry `stylo` lineage stylo_taffy's
-# authors track: `TrackBreadth::Flex` reverted to `TrackBreadth::Fr` (our
-# fork's servo/stylo-derived variant name/shape; beta.1's is a newtype,
-# ours a bare float) — everything else (the taffy 0.12
-# AlignContent/AlignItems bitflag-style consts) is upstream's own change,
-# taken as-is. See support/patches/stylo_taffy/ and
-# docs/2026-07-12_ring3_fork_rename_publish_plan.md (T2).
-stylo_taffy = { path = "support/patches/stylo_taffy" }
 # Vano fork (genet-embedder branch on github.com/merely-made/vano). Carries the
 # EmbedderObject native-data patch plus the reflector-liveness weak-ref API
 # (`EmbedderObject::into_weak_ref`/`from_weak_ref` + `clear_weak_ref_kept_objects`,
@@ -598,17 +568,6 @@ boa_gc = { git = "https://github.com/mark-ik/boa.git", branch = "genet" }
 # the dx12 suballocator in any build that compiles the dx12 backend (meerkat, via
 # scrying). Vendored, not a git fork, since the change is manifest-only.
 ipc-channel = { path = "support/patches/ipc-channel" }
-# NOTE: stylo/stylo_atoms used to be redirected here via `[patch.crates-io]`
-# (unifying stylo_taffy's crates.io `^0.18` requirement with genet's git
-# rev, since `stylo` declares `links = "servo_style_crate"` — only one Stylo
-# allowed in the graph). Removed 2026-07-12 (T3 of
-# docs/2026-07-12_ring3_fork_rename_publish_plan.md, the stylo rename to
-# `genet-stylo`/`genet-stylo-atoms`): `[patch]` cannot rename its target
-# (the patch source's package name must match the registry name being
-# replaced). The renamed family now has its own registry packages, consumed
-# through `[workspace.dependencies]` above and directly by the vendored
-# stylo_taffy adapter. See docs/2026-05-20_stylo_taffy_adoption_plan.md
-# and the css transitions plan for the original rationale.
 # vello, re-forked 2026-08-15 for the stack-wide wgpu 30 unification. The
 # 2026-05-15 audit removed the previous patch and took vello 0.9 from
 # crates.io; that is no longer possible, because upstream vello 0.10 still
@@ -631,18 +590,6 @@ vello = { git = "https://github.com/mark-ik/vello.git", branch = "mark-ik/wgpu-3
 #
 # Or for CSP crate:
 # content-security-policy = { path = "../rust-content-security-policy" }
-#
-# Or for Stylo:
-#
-# [patch."https://github.com/servo/stylo"]
-# selectors = { path = "../stylo/selectors" }
-# servo_arc = { path = "../stylo/servo_arc" }
-# stylo = { path = "../stylo/style" }
-# stylo_atoms = { path = "../stylo/stylo_atoms" }
-# stylo_dom = { path = "../stylo/stylo_dom" }
-# stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
-# stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
-# stylo_traits = { path = "../stylo/style_traits" }
 #
 # Or for another Git dependency:
 #

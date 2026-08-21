@@ -1,6 +1,6 @@
 @font-face {
   font-family: RouteAhem;
-  src: url("../../../../../components/genet-layout/Ahem.ttf") format("truetype");
+  src: url("../../Ahem.ttf") format("truetype");
 }
 
 .webfont { font-family: RouteAhem, sans-serif; }

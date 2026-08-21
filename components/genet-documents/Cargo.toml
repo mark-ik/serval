@@ -12,9 +12,6 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Frozen Stylo + genet-layout lane. It is an explicit oracle/compatibility
-# selection and never enters a Livery-only graph.
-incumbent = ["dep:genet-layout", "dep:genet-render", "genet-render/incumbent"]
 # Clean-room Livery implementation of the static HTML session lane.
 livery = ["dep:genet-livery", "dep:paint_list_render", "dep:url"]
 # Remote http(s) loading for LocalFetcher via the netfetcher engine.
@@ -34,6 +31,11 @@ livery-scripted = ["scripted"]
 # Add the Nova engine as a second scripted rung (64-bit targets).
 scripted-nova = ["scripted", "dep:script-engine-nova"]
 
+[lints.rust]
+# The shared engines file still contains unreachable pre-L7 adapter blocks;
+# their feature was removed with the dependency.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("incumbent"))'] }
+
 [dependencies]
 # The engine contracts this component implements (SessionEngine<Scene>).
 inker = { workspace = true }
@@ -41,8 +43,6 @@ inker = { workspace = true }
 genet-host-api = { workspace = true }
 genet-document-resources = { workspace = true }
 netrender = { workspace = true }
-genet-layout = { path = "../genet-layout", optional = true }
-genet-render = { path = "../genet-render", optional = true, default-features = false }
 genet-extract = { path = "../genet-extract" }
 genet-static-dom = { path = "../genet-static-dom" }
 layout_dom_api = { workspace = true }

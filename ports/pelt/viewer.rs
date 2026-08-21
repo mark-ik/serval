@@ -410,32 +410,15 @@ fn parse_frames(value: &str) -> u32 {
     }
 }
 
-/// Dispatch a smolweb URL to the chrome browser over a native smolweb content root:
-/// omnibar + back/forward + link navigation, the same shell `--chrome` uses for HTML.
+/// Dispatch a smolweb URL to the owned headed document viewer.
 #[cfg(feature = "smolweb")]
 fn run_smolweb_profile(
     url: String,
-    side: String,
+    _side: String,
     profile: EngineProfile,
     size: Option<(u32, u32)>,
     frames: Option<u32>,
 ) {
-    use pelt_desktop::StripSide;
-    let side = match side.to_ascii_lowercase().as_str() {
-        "top" => StripSide::Top,
-        "bottom" => StripSide::Bottom,
-        "left" => StripSide::Left,
-        "right" => StripSide::Right,
-        other => {
-            eprintln!("--strip expects top, bottom, left, or right (got '{other}')");
-            std::process::exit(2);
-        },
-    };
-    let thickness = if matches!(side, StripSide::Left | StripSide::Right) {
-        280
-    } else {
-        40
-    };
     let mut config =
         pelt_desktop::StaticViewerConfig::new(profile, pelt_desktop::WindowingMode::Headed, url);
     if let Some((width, height)) = size {
@@ -444,9 +427,9 @@ fn run_smolweb_profile(
     if let Some(limit) = frames {
         config = config.with_frame_limit(limit);
     }
-    match pelt_desktop::run_smolweb_browser(config, side, thickness) {
+    match pelt_desktop::run_smolweb_viewer(config) {
         Ok(outcome) => println!(
-            "pelt smolweb browser url={} window={} redraws={} size={}x{}",
+            "pelt smolweb viewer url={} window={} redraws={} size={}x{}",
             outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
         ),
         Err(error) => {

@@ -21,11 +21,7 @@ use std::rc::Rc;
 use dpi::PhysicalSize;
 use embedder_traits::ViewportDetails;
 use euclid::{Scale, Size2D};
-use genet_layout::{
-    BackgroundImagePlane, ImageLoader, ImagePlane, LocalFileImageLoader, ResourceResolver,
-    StylePlane, emit_paint_list_with_layouts, inline_stylesheets, layout, linked_stylesheets,
-    run_cascade,
-};
+use genet_document_resources::{ResolvedDocumentResources, ResourceKind, resolve_with};
 use genet_livery::{
     Device as LiveryDevice, LiveryDocument, StyleSet as LiveryStyleSet,
     table_shadow::TableShadowLedger,
@@ -46,6 +42,57 @@ use paint_types::units::{DeviceIntRect, LayoutSize};
 use servo_base::id::{PainterId, PipelineNamespace, PipelineNamespaceId, WebViewId};
 
 pub type Image = image::ImageBuffer<image::Rgba<u8>, Vec<u8>>;
+
+#[derive(Clone)]
+struct ResourceResolver {
+    base_dir: std::path::PathBuf,
+    tests_root: std::path::PathBuf,
+}
+
+impl ResourceResolver {
+    fn resolve(&self, authored: &str) -> Option<std::path::PathBuf> {
+        let authored = authored.split(['#', '?']).next()?.trim();
+        if authored.is_empty() || authored.starts_with("data:") {
+            return None;
+        }
+        for scheme in ["http://", "https://"] {
+            if let Some(rest) = authored.strip_prefix(scheme) {
+                let (_, path) = rest.split_once('/')?;
+                return Some(self.tests_root.join(path));
+            }
+        }
+        if let Some(rest) = authored.strip_prefix('/') {
+            return Some(self.tests_root.join(rest));
+        }
+        Some(self.base_dir.join(authored))
+    }
+
+    fn load(&self, authored: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.resolve(authored)?).ok()
+    }
+
+    fn document_url(&self) -> String {
+        let relative = self
+            .base_dir
+            .strip_prefix(&self.tests_root)
+            .unwrap_or(self.base_dir.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        format!(
+            "http://web-platform.test/{}/__genet_wpt_document__.html",
+            relative.trim_matches('/')
+        )
+    }
+}
+
+fn document_resources<D: LayoutDom>(
+    dom: &D,
+    resolver: &ResourceResolver,
+) -> ResolvedDocumentResources {
+    let document_url = resolver.document_url();
+    let mut fetch = |url: &str| resolver.load(url);
+    resolve_with(dom, Some(&document_url), &mut fetch)
+}
 
 /// The visual result and the exact table dispatch record that produced it.
 ///
@@ -168,7 +215,8 @@ impl Renderer {
     /// Render `html` to an image in `viewport`, resolving the page's inline +
     /// linked CSS and local images relative to `base_dir` (and `tests_root`
     /// for `/`-absolute URLs).
-    pub fn render_html(
+    #[cfg(any())]
+    pub fn render_html_incumbent(
         &self,
         html: &str,
         base_dir: &Path,
@@ -222,7 +270,7 @@ impl Renderer {
     /// intentionally bounded: it extracts inline and local linked stylesheets,
     /// supplies host-resolved local image bytes, and lets Livery handle its own
     /// declarations and data-URI image subset.
-    pub fn render_html_livery(
+    pub fn render_html(
         &self,
         html: &str,
         base_dir: &Path,
@@ -238,27 +286,32 @@ impl Renderer {
             StaticDocument::parse(html)
         };
         let resolver = ResourceResolver {
-            base_dir: Some(base_dir.to_path_buf()),
-            tests_root: Some(tests_root.to_path_buf()),
+            base_dir: base_dir.to_path_buf(),
+            tests_root: tests_root.to_path_buf(),
         };
-        let mut sheets = inline_stylesheets(&document);
-        sheets.extend(linked_stylesheets(&document, &resolver));
+        let resources = document_resources(&document, &resolver);
+        let sheets = resources
+            .stylesheets
+            .iter()
+            .map(|sheet| sheet.text.clone())
+            .collect::<Vec<_>>();
         let sheet_refs = sheets.iter().map(String::as_str).collect::<Vec<_>>();
-        let dom_image_urls = livery_dom_image_urls(&document);
         let mut session = LiveryDocument::new(
             document,
             LiveryStyleSet::cambium(&sheet_refs),
             LiveryDevice::screen(css_width as f32, css_height as f32),
         );
-        let image_loader = LocalFileImageLoader::new(resolver);
-        for url in livery_image_urls(&sheets).into_iter().chain(dom_image_urls) {
-            if let Some(bytes) = image_loader.load(&url) {
-                session.set_image_resource(url, bytes);
-            }
-        }
-        for url in livery_font_urls(&sheets) {
-            if let Some(bytes) = image_loader.load(&url) {
-                session.set_font_resource(url, bytes);
+        for resource in resources.resources {
+            match resource.kind {
+                ResourceKind::Image => {
+                    session
+                        .set_image_resource(resource.authored_url.clone(), resource.bytes.clone());
+                    session.set_image_resource(resource.resolved_url, resource.bytes);
+                },
+                ResourceKind::Font => {
+                    session.set_font_resource(resource.authored_url, resource.bytes.clone());
+                    session.set_font_resource(resource.resolved_url, resource.bytes);
+                },
             }
         }
         let list = session
@@ -666,6 +719,7 @@ fn paint_info_for(pid: PipelineId, viewport: RenderViewport) -> PaintDisplayList
 /// `html_to_envelope`, plus author sheets from inline `<style>` + linked
 /// `<link rel="stylesheet">`, and a file-backed image loader. data-URI
 /// images decode inline; remote (`http(s)://`) resources are not fetched.
+#[cfg(any())]
 fn html_to_envelope(
     html: &str,
     base_dir: &Path,

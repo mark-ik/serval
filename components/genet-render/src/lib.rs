@@ -11,23 +11,10 @@
 
 pub mod a11y;
 pub mod inspect;
-#[cfg(feature = "incumbent")]
-pub mod render;
-#[cfg(feature = "livery")]
 #[path = "livery_render.rs"]
 pub mod render;
 
-#[cfg(all(feature = "incumbent", feature = "livery"))]
-compile_error!("genet-render engine features are exclusive; select livery or incumbent");
-
-#[cfg(not(any(feature = "incumbent", feature = "livery")))]
-compile_error!("genet-render requires either the livery or incumbent feature");
-
 pub use a11y::accesskit_tree;
-#[cfg(feature = "incumbent")]
-pub use genet_layout::{
-    ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection,
-};
 pub use inspect::{ContentReport, OutlineEntry, content_report};
 pub use render::{
     ExternalTextureDraw, LaidOutDocument, RenderedFrame, TextCursor, caret_byte_at,
@@ -38,12 +25,11 @@ pub use render::{
     scene_from_session_dom_with_scrollbars, soft_wrap_caret_byte,
     translated_frame_from_session_dom,
 };
-#[cfg(feature = "livery")]
 pub use render::{
     ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection, translate_frame,
 };
 
-#[cfg(all(test, feature = "livery"))]
+#[cfg(test)]
 mod tests {
     use genet_scripted_dom::ScriptedDom;
     use layout_dom_api::{LayoutDom, LayoutDomMut, QualName};

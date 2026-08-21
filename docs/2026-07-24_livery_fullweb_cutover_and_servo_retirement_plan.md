@@ -1,21 +1,17 @@
 # Livery fullweb cutover and the servo-* retirement
 
 **Date:** 2026-07-24
-**Status:** in execution, current-state correction 2026-08-15. D0 is ruled
-(lane, at the revised price; multicol knocked out). Every stage F0-F6 carries
-its detail, instrument, and receipt. Product reachability completed as an
-earlier projection gate rather than part of the final F4 flip; see the
-[Livery product route and document resources plan](2026-08-08_livery_product_route_and_document_resources_execution_plan.md).
+**Status:** superseded for engine selection by the completed
+[Stylo fork deletion lane](2026-08-16_stylo_fork_deletion_lane_plan.md). On
+2026-08-21 the incumbent engine and its differential were deleted. The
+property and layout ledgers below remain useful Livery/Buckram defect maps,
+but their parity bars and flip gates are historical.
 
-**Current truth.** Product-route R0-R4 and R5a-R5d are landed. Pelt exposes
-explicit `livery` and `livery-scripted` routes over the shared document-resource
-boundary, including linked CSS, image and font replacement, and Livery's
-supported CSS rule-object projection. The incumbent `viewer` and scripted
-routes remain the defaults. The F4 scripted implementation boundary is
-complete, but the default flip is still gated by its parity receipts. Buckram
-K4 is closed at `610df0981a8`; K5 is active on `buckram-k5-positioning`, and
-K6 is planned but blocked on K5h closure. The recorded F0/F3 figures below
-remain the latest full cutover ledger, not a fresh 2026-08-15 rerun.
+**Current truth.** Product-route R0-R4 and R5a-R5d are landed. Pelt's static
+and scripted document routes are owned by Livery and Buckram. The former
+incumbent feature routes are gone, and `genet-wpt` is Livery-only. Buckram's
+later K-stage work continues on its own plan. The recorded F0/F3 figures below
+are the final differential snapshot, not a current gate.
 
 **Where the two lanes stand.**
 

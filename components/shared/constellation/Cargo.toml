@@ -24,7 +24,6 @@ devtools_traits = { workspace = true }
 embedder_traits = { workspace = true }
 encoding_rs = { workspace = true }
 euclid = { workspace = true }
-fonts_traits = { workspace = true }
 http = { workspace = true }
 hyper_serde = { workspace = true }
 ipc-channel = { workspace = true }

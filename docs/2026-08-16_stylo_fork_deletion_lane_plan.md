@@ -2,18 +2,18 @@
 
 **Date:** 2026-08-16
 
-**Status:** L0-L6 complete (2026-08-18). L7 is blocked on the named
-dogfooding gate.
+**Status:** complete. L0-L6 landed 2026-08-18; L7 landed 2026-08-21 after
+the owner retired the undefined dogfooding gate and explicitly ruled to delete.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md),
 whose 2026-08-16 revision rules the goal and authorises F5 feature-gating.
 
 ## The ruling this serves
 
-One owned styling-and-layout system serving every platform lane, sized by a
-dogfooding gate rather than the W3C surface. Not Stylo replacement. If a
-Stylo behaviour is ever needed it comes from upstream servo/stylo, never
-from our fork.
+One owned styling-and-layout system serving every platform lane. Removing the
+fork is the work; parity is a direction and a continuing defect ledger, not a
+precondition for removal. If a Stylo behaviour is needed later, upstream
+servo/stylo is reference material rather than a dependency to restore.
 
 ## Fork deletion is not a fork-side task
 
@@ -355,24 +355,68 @@ Receipts:
   Stylo + genet-layout oracle are present.
 - `cargo check -p genet-wpt`: passed.
 
+### L7 - complete (2026-08-21)
+
+The owner explicitly retired the undefined named-page dogfooding gate and
+ruled to proceed with deletion. That ruling expires the differential oracle;
+it does not convert its last measurement into a parity claim.
+
+The workspace no longer contains `genet-layout`, the `stylo_taffy` adapter,
+or any dependency on the published `genet-stylo` family. The removal also
+found a hidden inherited route outside the earlier map:
+`genet-static-html -> servo-layout-api -> servo-fonts`. Those obsolete static,
+layout, and font crates were part of the same incumbent cone and are deleted.
+The old Pelt chrome, tile, smoke, and incumbent headless adapters disappeared
+with their only engine. Pelt's Livery static, scripted, bare smolweb, and
+engine-neutral presentation routes remain.
+
+`genet-wpt` is now Livery-only. It retains its testharness and rendering
+infrastructure but no longer carries the frozen differential. Historical
+expectation labels are evidence, not selectable engines. Removing Stylo also
+made a surviving requirement visible: `servo-url` needs `servo_arc`'s `servo`
+feature for serialization, so that feature is now explicit rather than
+arriving accidentally through the fork.
+
+The unrelated `support/patches/taffy` algorithm patch survives. So do the
+upstream `stylo_malloc_size_of` utility crate used by Servo heap accounting and
+Livery's build-time `tools/import-stylo-db`; neither is the deleted fork or a
+runtime CSS engine.
+
+Receipts:
+
+- `cargo metadata --no-deps --format-version 1`: passed with no deleted
+  workspace packages.
+- `cargo check -p genet-render -p genet-scripted -p genet-documents -p
+  pelt-desktop -p genet-wpt`: passed.
+- `cargo test -p genet-render -p genet-scripted -p pelt-desktop --lib`:
+  27 passed before the relocated Pelt font-fixture assertion exposed its old
+  path; the focused rerun passed after the receipt was updated to the new
+  stylesheet-relative identity.
+- `cargo test -p genet-wpt --bin genet-wpt`: 49 passed, 3 ignored.
+- `cargo tree --workspace --prefix none`: zero `genet-layout`,
+  `genet-stylo`, `stylo_taffy`, `servo-layout-api`, or `servo-fonts` nodes.
+- `python -m unittest support/ci/test_check_git_dependency_state.py`: passed.
+- `python support/ci/check_git_dependency_state.py`: passed for Genet's
+  configured dependency edges.
+
 ## The oracle conflict, and its resolution
 
 Deleting the fork destroys the Livery/Stylo differential, which is our only
 instrument for detecting Livery regressions against a mature engine. That
 instrument earns its keep through L4 and L5 and becomes dead weight after.
 
-**Ruling: the oracle expires with the dogfooding gate.** genet-wpt keeps its
-incumbent path until that gate fires; past it we are measuring against an
-engine we have already declined to be. Do not bump the fork to keep the
-oracle current: an oracle wants stability, not currency, or the measured
-delta moves for reasons unrelated to Livery.
+**Ruling: the oracle expired on 2026-08-21.** The owner declined to invent a
+page list merely to satisfy the plan and explicitly authorized deletion.
+`genet-wpt` now measures Livery directly. Upstream Stylo remains available as
+reference material when a specific behavior warrants comparison.
 
-## Open, and needed before L7
+## Former gate, resolved
 
-**The dogfooding gate is undefined.** It is a named set of real pages and
-flows that must work, chosen because we use them. Every stage above can
-proceed without it; deletion cannot, because nothing else says when we are
-allowed to stop. This one is Mark to name.
+The named-page dogfooding gate was never defined, so it could not produce a
+truthful stop condition. On 2026-08-21 Mark ruled that its absence must not
+hold the rejected engine in the product. Deletion itself is the stop
+condition. Real-page failures now enter the Livery or Buckram ledgers as owned
+defects rather than reopening this lane.
 
 ## Adjacent tool boundary - resolved (2026-08-18)
 
