@@ -18,7 +18,7 @@ use std::marker::PhantomData;
 use layout_dom_api::{LayoutDom, LayoutDomMut};
 use meristem::{AnyView, MessageCtx, MessageResult, Mut, View, ViewMarker};
 
-use crate::{GenetCtx, GenetElement, attr_qual};
+use crate::{GenetCtx, GenetElement, OptionalAction, attr_qual};
 
 /// The DOM attribute stamped by [`Component::probe_id`].
 ///
@@ -37,7 +37,7 @@ pub type ComponentView<Local, Event> = Box<dyn AnyView<Local, Event, GenetCtx, G
 /// Component-owned interaction state should remain untouched when its props did
 /// not change.
 #[must_use = "View values do nothing unless provided to a Cambium runner"]
-pub struct Component<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent> {
+pub struct Component<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent> {
     props: Props,
     init: Init,
     reconcile: Reconcile,
@@ -48,21 +48,22 @@ pub struct Component<Props, Local, Event, State, Action, Init, Reconcile, Body, 
     // impl: only `memo()` requires equality, so un-memoized components keep
     // working with non-comparable props (closures, trait objects).
     props_unchanged: Option<fn(&Props, &Props) -> bool>,
-    phantom: PhantomData<fn(Local, Event, State) -> Action>,
+    phantom: PhantomData<fn(Local, Event, State) -> (Action, Output)>,
 }
 
 /// Construct a state-owning Cambium component.
 ///
 /// `body` receives the current props and local state and returns one erased
 /// child view. `on_event` is the sole point where the child's event vocabulary
-/// meets the parent's state and action vocabulary.
-pub fn component<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>(
+/// meets the parent's state and action vocabulary. Like Cambium's native event
+/// handlers, it may return `()`, an `Action`, or an `Option<Action>`.
+pub fn component<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>(
     props: Props,
     init: Init,
     reconcile: Reconcile,
     body: Body,
     on_event: OnEvent,
-) -> Component<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
+) -> Component<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>
 where
     Local: 'static,
     Event: 'static,
@@ -71,7 +72,8 @@ where
     Init: Fn(&Props) -> Local + 'static,
     Reconcile: Fn(&Props, &Props, &mut Local) + 'static,
     Body: Fn(&Props, &Local) -> ComponentView<Local, Event> + 'static,
-    OnEvent: Fn(&mut State, Event) -> Action + 'static,
+    Output: OptionalAction<Action> + 'static,
+    OnEvent: Fn(&mut State, Event) -> Output + 'static,
 {
     Component {
         props,
@@ -85,8 +87,8 @@ where
     }
 }
 
-impl<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
-    Component<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
+impl<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>
+    Component<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>
 {
     /// Stamp a caller-owned, DOM-visible identity on the component root for
     /// `genet-probe` attribute selectors.
@@ -126,14 +128,14 @@ pub struct ComponentState<Local: 'static, Event: 'static> {
     local_dirty: bool,
 }
 
-impl<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent> ViewMarker
-    for Component<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
+impl<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent> ViewMarker
+    for Component<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>
 {
 }
 
-impl<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
+impl<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>
     View<State, Action, GenetCtx>
-    for Component<Props, Local, Event, State, Action, Init, Reconcile, Body, OnEvent>
+    for Component<Props, Local, Event, State, Action, Output, Init, Reconcile, Body, OnEvent>
 where
     Props: 'static,
     Local: 'static,
@@ -143,7 +145,8 @@ where
     Init: Fn(&Props) -> Local + 'static,
     Reconcile: Fn(&Props, &Props, &mut Local) + 'static,
     Body: Fn(&Props, &Local) -> ComponentView<Local, Event> + 'static,
-    OnEvent: Fn(&mut State, Event) -> Action + 'static,
+    Output: OptionalAction<Action> + 'static,
+    OnEvent: Fn(&mut State, Event) -> Output + 'static,
 {
     type Element = GenetElement;
     type ViewState = ComponentState<Local, Event>;
@@ -221,8 +224,9 @@ where
             .child
             .message(&mut state.child_state, message, element, &mut state.local)
         {
-            MessageResult::Action(event) => {
-                MessageResult::Action((self.on_event)(app_state, event))
+            MessageResult::Action(event) => match (self.on_event)(app_state, event).action() {
+                Some(action) => MessageResult::Action(action),
+                None => MessageResult::Nop,
             },
             MessageResult::RequestRebuild => MessageResult::RequestRebuild,
             MessageResult::Nop => MessageResult::Nop,
@@ -251,7 +255,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use genet_scripted_dom::ScriptedDom;
-    use layout_dom_api::{LayoutDom, LocalName, Namespace};
+    use layout_dom_api::{DomMutation, LayoutDom, LayoutDomMut, LocalName, Namespace};
 
     use super::*;
     use crate::{
@@ -274,7 +278,6 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum AppEvent {
         Activated(Vec<usize>),
-        Dismissed,
     }
 
     impl Action for AppEvent {}
@@ -306,13 +309,13 @@ mod tests {
         Box::new(command_picker(local, &props.items))
     }
 
-    fn lower_picker_event(app: &mut AppState, event: CommandEvent) -> AppEvent {
+    fn lower_picker_event(app: &mut AppState, event: CommandEvent) -> Option<AppEvent> {
         match event {
             CommandEvent::Activate(path) => {
                 app.activated.push(path.clone());
-                AppEvent::Activated(path)
+                Some(AppEvent::Activated(path))
             },
-            CommandEvent::Dismiss => AppEvent::Dismissed,
+            CommandEvent::Dismiss => None,
         }
     }
 
@@ -376,6 +379,93 @@ mod tests {
         let events = runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::Enter)));
         assert_eq!(events, [AppEvent::Activated(vec![1])]);
         assert_eq!(runner.state().activated, [vec![1]]);
+
+        let dismissed = runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::Escape)));
+        assert!(
+            dismissed.is_empty(),
+            "the component may swallow a child event without minting a parent action"
+        );
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ProbeAction;
+    impl Action for ProbeAction {}
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ProbeEvent;
+
+    #[derive(Debug)]
+    struct ProbeApp {
+        probe_id: Option<String>,
+    }
+
+    fn probe_view(
+        app: &ProbeApp,
+    ) -> impl View<ProbeApp, ProbeAction, GenetCtx, Element = GenetElement> + use<> {
+        let view = component(
+            (),
+            |_: &()| (),
+            |_: &(), _: &(), _: &mut ()| {},
+            |_: &(), _: &()| -> ComponentView<(), ProbeEvent> {
+                Box::new(crate::el::<_, (), ProbeEvent>("div", "probe"))
+            },
+            |_: &mut ProbeApp, _: ProbeEvent| {},
+        );
+        match &app.probe_id {
+            Some(id) => view.probe_id(id.clone()),
+            None => view,
+        }
+    }
+
+    fn drain(dom: &DomHandle) -> Vec<DomMutation<genet_scripted_dom::NodeId>> {
+        let mut mutations = Vec::new();
+        dom.borrow_mut().drain_mutations(&mut mutations);
+        mutations
+    }
+
+    fn probe_old_values(
+        mutations: &[DomMutation<genet_scripted_dom::NodeId>],
+    ) -> Vec<Option<&str>> {
+        mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                DomMutation::AttributeChanged {
+                    name, old_value, ..
+                } if name.local.as_ref() == COMPONENT_PROBE_ATTR => Some(old_value.as_deref()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn probe_stamp_mutates_only_when_its_value_changes() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::new(
+            dom.clone(),
+            probe_view,
+            ProbeApp {
+                probe_id: Some("primary".into()),
+            },
+        );
+        let root = runner.root();
+        assert_eq!(probe_old_values(&drain(&dom)), [None]);
+
+        runner.update(|_| {});
+        assert!(
+            probe_old_values(&drain(&dom)).is_empty(),
+            "an unchanged probe stamp must not enqueue a restyle mutation"
+        );
+
+        runner.update(|app| app.probe_id = Some("secondary".into()));
+        assert_eq!(probe_old_values(&drain(&dom)), [Some("primary")]);
+        assert_eq!(
+            attr(&dom.borrow(), root, COMPONENT_PROBE_ATTR),
+            Some("secondary")
+        );
+
+        runner.update(|app| app.probe_id = None);
+        assert_eq!(probe_old_values(&drain(&dom)), [Some("secondary")]);
+        assert_eq!(attr(&dom.borrow(), root, COMPONENT_PROBE_ATTR), None);
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -408,7 +498,7 @@ mod tests {
         };
 
         let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
-        let mut runner = GenetAppRunner::new(dom.clone(), app_view, 1_i64);
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(dom.clone(), app_view, 1_i64);
         assert_eq!(body_runs.get(), 1, "build runs the body once");
 
         runner.update(|_| {});
@@ -422,7 +512,12 @@ mod tests {
         assert_eq!(body_runs.get(), 2, "changed props run the body");
 
         let root = runner.root();
-        runner.dispatch_click(root, PointerClick::at((2.0, 2.0)));
+        assert!(
+            runner
+                .dispatch_click(root, PointerClick::at((2.0, 2.0)))
+                .is_empty(),
+            "a unit-returning component mapper yields no parent action"
+        );
         assert_eq!(
             body_runs.get(),
             3,

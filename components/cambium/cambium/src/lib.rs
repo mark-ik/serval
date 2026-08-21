@@ -60,6 +60,7 @@ mod portable;
 mod propagation;
 mod radio;
 mod reorderable_list;
+mod resize_handle;
 mod runner;
 mod sectioned_list;
 mod select;
@@ -98,8 +99,8 @@ pub use disclosure::{
 pub use editor::{EditHistory, pair_close, wrap_selection};
 pub use graph_canvas::{
     GRAPH_CANVAS_SWATCH_CSS, GraphCanvasEdge, GraphCanvasEvent, GraphCanvasNode,
-    GraphCanvasNodeDrag, GraphCanvasRelation, GraphCanvasSubgraph, GraphCanvasSwatch, graph_canvas,
-    graph_canvas_swatch, graph_canvas_swatch_with_drag,
+    GraphCanvasNodeDrag, GraphCanvasNodeRegion, GraphCanvasRelation, GraphCanvasSubgraph,
+    GraphCanvasSwatch, graph_canvas, graph_canvas_swatch, graph_canvas_swatch_with_drag,
     graph_canvas_swatch_with_drag_and_relations, graph_canvas_swatch_with_focus,
     graph_canvas_swatch_with_focus_and_drag, graph_canvas_swatch_with_focus_and_drag_and_relations,
 };
@@ -139,6 +140,7 @@ pub use radio::{RadioGroup, radio_group};
 pub use reorderable_list::{
     ReorderItem, ReorderMove, ReorderState, reorderable_list, reorderable_list_with,
 };
+pub use resize_handle::{RESIZE_HANDLE_CSS, ResizeBounds, ResizeHandleEvent, resize_handle};
 pub use runner::GenetAppRunner;
 pub use select::{SelectState, select};
 pub use selection_bar::{

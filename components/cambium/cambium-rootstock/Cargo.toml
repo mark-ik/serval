@@ -33,7 +33,7 @@ netrender = { workspace = true }
 wgpu = { workspace = true }
 # The view layer the host runs, its overlay-scrollbar fade clock, and the paint
 # list a frame emits. All portable; none of them names a windowing system.
-meristem = { version = "0.1.0", path = "../meristem" }
+meristem = { version = "0.2.0", path = "../meristem" }
 cambium-winit = { version = "0.3.0", path = "../cambium-winit" }
 paint_list_api = { workspace = true }
 paint_list_render = { workspace = true }

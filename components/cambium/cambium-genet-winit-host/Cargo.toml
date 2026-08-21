@@ -16,7 +16,7 @@ publish = false
 # The accessibility tree type the host projects into and hands the adapter;
 # named here so the `Harness` can return one for a test to assert against.
 accesskit = "0.24"
-meristem = { version = "0.1.0", path = "../meristem" }
+meristem = { version = "0.2.0", path = "../meristem" }
 cambium = { version = "0.3.3", path = "../cambium" }
 # The windowing-neutral half. This crate is now the winit event source for
 # it: it converts winit input into the neutral vocabulary and routes.

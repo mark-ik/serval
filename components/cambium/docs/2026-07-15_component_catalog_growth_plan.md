@@ -189,10 +189,13 @@ optional caller-owned probe metadata and is not keyed or routing identity.
 
 The focused command-picker proof moves local selection, reconciles a changed
 parent label without resetting that selection, emits activation into the
-parent's event vocabulary, and exposes its probe id on the root. Turnstone's
-omnibar established the opposite boundary: it is an app-owned mirror, so it
-pulls only Cambium's pure `caret_field_children` projection and keeps its keys
-on Turnstone's Action spine.
+parent's event vocabulary, swallows Dismiss through `OptionalAction`, and
+exposes its probe id on the root. The mutation-stream receipt proves the probe
+stamp is quiet when unchanged and emits exactly one attribute mutation when
+changed or removed. Turnstone's omnibar established the opposite boundary: it
+is an app-owned mirror, so it pulls only Cambium's pure
+`caret_field_children` projection and keeps its keys on Turnstone's Action
+spine.
 
 The catalog carries the boundary's specimen (2026-08-12): a counter whose
 count is component-owned. The headless contract clicks it, changes the

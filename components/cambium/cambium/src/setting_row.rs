@@ -21,8 +21,8 @@ use meristem::{MessageResult, View, lens, map_message_result};
 
 use crate::component::{ComponentView, component};
 use crate::{
-    Action, GenetCtx, GenetElement, PointerClick, RadioGroup, Slider, TextInput, button, el,
-    radio_group, slider, text_field_typed, toggle,
+    Action, GenetCtx, GenetElement, OptionalAction, PointerClick, RadioGroup, Slider, TextInput,
+    button, el, radio_group, slider, text_field_typed, toggle,
 };
 
 impl Action for SettingValue {}
@@ -248,16 +248,17 @@ fn row_body(props: &RowProps, draft: &SettingDraft) -> ComponentView<SettingDraf
 /// caller's action vocabulary; the caller already knows the setting id it
 /// passed in. The row is memoized on `(spec, label)`, so unchanged rows skip
 /// their body on parent rebuilds.
-pub fn setting_row<State, A, L, F>(
+pub fn setting_row<State, A, Output, L, F>(
     spec: &SettingSpec,
     label: L,
     on_apply: F,
-) -> impl View<State, A, GenetCtx, Element = GenetElement> + use<State, A, L, F>
+) -> impl View<State, A, GenetCtx, Element = GenetElement> + use<State, A, Output, L, F>
 where
     State: 'static,
     A: 'static,
+    Output: OptionalAction<A> + 'static,
     L: Into<String>,
-    F: Fn(&mut State, SettingValue) -> A + 'static,
+    F: Fn(&mut State, SettingValue) -> Output + 'static,
 {
     component(
         RowProps {

@@ -12,7 +12,7 @@ publish = true
 highlight = ["dep:illume", "dep:tinct"]
 
 [dependencies]
-meristem = { version = "0.1.0", path = "../meristem" }
+meristem = { version = "0.2.0", path = "../meristem" }
 sprigging = { version = "0.2.0", path = "../sprigging" }
 genet-scripted-dom = { version = "0.1.0", path = "../../genet-scripted-dom" }
 # The pane-frame contract the `frisket` module renders (TileTree / TileEvent).

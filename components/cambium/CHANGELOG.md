@@ -15,6 +15,9 @@
 
 ## Unreleased
 
+- Version `meristem` as 0.2.0 for the public scope cut: remove the unused
+  worker, task, environment, and documentation-backend APIs, and keep the
+  retained diff and message core.
 - Split the Genet/AccessKit accessibility host out of `cambium-winit` into
   the deliberately unpublishable `cambium-winit-a11y` (2026-07-26), leaving
   `cambium-winit` at `cambium` + `winit` only and publishable again. The
@@ -23,7 +26,8 @@
 - Release-record reconciliation (2026-08-09): `cambium` 0.3.3 and
   `cambium-winit` 0.3.0 published the same day, closing the registry gap;
   `meristem` 0.1.1, `sprigging` 0.2.1, and `cambium-nematic` 0.3.1 were
-  already current; `cambium-winit` 0.2.0 remains yanked. Authority:
+  current at that reconciliation; `cambium-winit` 0.2.0 remains yanked.
+  Authority:
   `docs/genet-compatibility.md`.
 
 ## 0.3.0 - 2026-07-22

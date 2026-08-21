@@ -23,11 +23,11 @@ Verified on 2026-07-22:
 | `genet-static-dom` | 0.1.0 | crates.io |
 | `genet-scripted-dom` | 0.1.0 | crates.io and sibling path |
 
-## The Cambium stack: source vs registry (verified 2026-08-09)
+## The Cambium stack: source vs registry (updated 2026-08-20)
 
 | Package | Workspace | crates.io | State |
 | --- | --- | --- | --- |
-| `meristem` | 0.1.1 | 0.1.1 | current |
+| `meristem` | 0.2.0 | 0.1.1 | 0.2.0 pending publication; breaking scope cut |
 | `sprigging` | 0.2.1 | 0.2.1 | current |
 | `cambium` | 0.3.3 | 0.3.3 | current (published 2026-08-09; 0.3.2 lacked the IME composition surface) |
 | `cambium-nematic` | 0.3.1 | 0.3.1 | current |

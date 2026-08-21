@@ -54,9 +54,9 @@ sprigging, hosts, turnstone, woodshed, mere, hocket, isometry, retinue):
 Public trait count fell from 16 to 10. Reconciling these files against a
 future upstream pull means re-evaluating, not re-vendoring: see
 `docs/2026-08-12_meristem_scope_cut_and_component_contract_brief.md` at the
-repository root for the rationale and receipts. The next publish of
-`meristem` needs a semver-breaking bump (0.1.x to 0.2.0) for the removed
-public API.
+repository root for the rationale and receipts. The workspace now versions
+`meristem` as 0.2.0 for the removed public API; registry publication remains
+a separate release operation.
 
 ## Update policy
 
