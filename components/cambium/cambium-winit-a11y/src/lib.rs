@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use accesskit::{Action, NodeId as A11yNodeId, TreeUpdate};
+use accesskit::{Action, Affine, NodeId as A11yNodeId, TreeUpdate};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use genet_winit_host::{AccessKitBridge, BridgeStatus};
 use layout_dom_api::{LayoutDom as _, LocalName, Namespace, NodeKind};
@@ -115,8 +115,9 @@ impl A11yHost {
             // No window yet: nothing to install against, and no reader to ask.
             return Vec::new();
         };
-        let (tree, action_map) = project_tree(dom, layout, leaves, focus);
+        let (mut tree, action_map) = project_tree(dom, layout, leaves, focus);
         self.action_map = action_map;
+        scale_tree_to_window(&mut tree, dom, window.scale_factor());
         let node_count = tree.nodes.len();
 
         if !self.installed {
@@ -211,6 +212,20 @@ pub fn project_tree(
     (tree, action_map)
 }
 
+/// Stamp the window's DPI scale on the tree root.
+///
+/// Layout bounds are logical CSS pixels, and AccessKit expects the final
+/// transformed coordinates to be the platform's physical client pixels. The
+/// Windows adapter applies no DPI conversion of its own, so without this a
+/// screen reader or UI Automation client at 125% is told every control sits
+/// at four fifths of its true position.
+pub fn scale_tree_to_window(tree: &mut TreeUpdate, dom: &ScriptedDom, scale_factor: f64) {
+    let root = A11yNodeId(dom.opaque_id(dom.document()));
+    if let Some((_, node)) = tree.nodes.iter_mut().find(|(id, _)| *id == root) {
+        node.set_transform(Affine::scale(scale_factor));
+    }
+}
+
 fn walk(dom: &ScriptedDom, node: NodeId, visit: &mut impl FnMut(NodeId)) {
     visit(node);
     for child in dom.dom_children(node) {
@@ -238,4 +253,27 @@ fn custom_leaf_key(dom: &ScriptedDom, node: NodeId) -> Option<u64> {
     dom.attribute(node, &Namespace::default(), &LocalName::from("key"))?
         .parse()
         .ok()
+}
+
+#[cfg(test)]
+mod dpi_tests {
+    use super::*;
+    use accesskit::{Node, Role, Tree, TreeId};
+
+    /// A 125% window must report physical coordinates to the platform: the
+    /// logical layout bounds ride a root transform that scales them.
+    #[test]
+    fn tree_root_carries_the_window_scale() {
+        let dom = ScriptedDom::new();
+        let root = A11yNodeId(dom.opaque_id(dom.document()));
+        let mut tree = TreeUpdate {
+            nodes: vec![(root, Node::new(Role::Window))],
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            focus: root,
+        };
+        scale_tree_to_window(&mut tree, &dom, 1.25);
+        let (_, node) = tree.nodes.iter().find(|(id, _)| *id == root).unwrap();
+        assert_eq!(node.transform(), Some(&Affine::scale(1.25)));
+    }
 }
