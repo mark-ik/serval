@@ -296,8 +296,6 @@ fn absolute_box_before_a_table_keeps_its_static_position_above_the_table() {
 /// relatively positioned caption moves like any other relatively positioned
 /// block inside the table wrapper.
 #[test]
-#[ignore = "open K5c defect, 2026-08-21: captions are routed by neither relative path; \
-            see the master plan's K5 regression ledger"]
 fn relative_caption_moves_by_its_inset() {
     let html = "<html><body style=\"margin:0\">\
         <table id=\"table\" style=\"border-collapse:collapse\">\

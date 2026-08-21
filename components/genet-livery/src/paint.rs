@@ -1297,6 +1297,30 @@ mod positioned_paint_tests {
     }
 
     #[test]
+    fn relative_subtree_translates_its_shaped_text_with_its_fragment() {
+        let list = render(
+            "<div id=relative>Moved text</div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #relative { position: relative; left: 80px; top: 50px; width: 120px; }",
+        );
+        let run = list
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                PaintCmd::DrawText(run) if !run.glyphs.is_empty() => Some(run),
+                _ => None,
+            })
+            .expect("the relative box's text paints");
+        let glyph = &run.glyphs[0];
+
+        assert!(
+            glyph.point.x >= 80.0 && glyph.point.y >= 50.0,
+            "the shaped text follows the relative box's 80px, 50px translation: {:?}",
+            glyph.point
+        );
+    }
+
+    #[test]
     fn positioned_numeric_z_indices_wrap_the_normal_paint_phase() {
         let list = render(
             "<div id=host><div id=behind></div><div id=normal></div><div id=front></div></div>",

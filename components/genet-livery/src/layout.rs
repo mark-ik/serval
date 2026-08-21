@@ -2281,6 +2281,8 @@ where
         &mut fragments,
         &boxes,
         styles,
+        dom,
+        None,
         PhysicalSize {
             width: viewport_width,
             height: viewport_height,
@@ -2914,6 +2916,8 @@ where
         &mut fragments,
         &boxes,
         styles,
+        dom,
+        Some(&mut text_frame),
         PhysicalSize {
             width: viewport_width,
             height: viewport_height,
@@ -4533,13 +4537,16 @@ fn record_static_position<Id>(
 /// table traversal for now, because it owns their structural fragment draft
 /// and cell-content offset together. The table wrapper itself is ordinary
 /// flow geometry and uses this route.
-fn apply_relative_positioning<Id>(
+fn apply_relative_positioning<D>(
     fragments: &mut FragmentTree,
-    boxes: &GeneratedBoxTree<Id>,
-    styles: &StylePlane<Id>,
+    boxes: &GeneratedBoxTree<D::NodeId>,
+    styles: &StylePlane<D::NodeId>,
+    dom: &D,
+    mut text_frame: Option<&mut TextFrame<D::NodeId>>,
     initial_containing_size: PhysicalSize,
 ) where
-    Id: Copy + Eq + Hash,
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
 {
     let placements = boxes
         .iter()
@@ -4547,7 +4554,11 @@ fn apply_relative_positioning<Id>(
             if css_box.positioning != PositioningScheme::Relative
                 || matches!(
                     css_box.display.internal_table,
-                    Some(role) if role != InternalTableRole::Wrapper
+                    Some(role)
+                        if !matches!(
+                            role,
+                            InternalTableRole::Wrapper | InternalTableRole::Caption
+                        )
                 )
             {
                 return None;
@@ -4568,11 +4579,16 @@ fn apply_relative_positioning<Id>(
                         .is_none_or(|parent| parent.box_id() != box_id)
                 })
                 .collect::<Vec<_>>();
-            (!roots.is_empty()).then_some((box_id, style, roots))
+            (!roots.is_empty()).then_some((box_id, node, style, roots))
         })
         .collect::<Vec<_>>();
 
-    for (_box_id, style, roots) in placements {
+    for (_box_id, node, style, roots) in placements {
+        // The retained text frame shaped this box's glyphs at its normal-flow
+        // position. Move those glyphs in lockstep with the fragment subtree,
+        // once per box, while nested relative descendants retain their own
+        // additional offset.
+        let mut text_offset: Option<PhysicalOffset> = None;
         for root in roots {
             let containing = fragments
                 .get(root)
@@ -4598,7 +4614,13 @@ fn apply_relative_positioning<Id>(
             };
             let logical = style.relative_offset(containing_inline_size, containing_block_size);
             let physical: PhysicalOffset = style.containing_flow.physical_offset(logical);
+            text_offset.get_or_insert(physical);
             fragments.translate_subtree(root, physical);
+        }
+        if let (Some(offset), Some(text)) = (text_offset, text_frame.as_deref_mut())
+            && (offset.x != 0.0 || offset.y != 0.0)
+        {
+            text.translate_subtree(dom, node, (offset.x, offset.y));
         }
     }
 }
