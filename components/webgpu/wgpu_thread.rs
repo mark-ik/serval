@@ -595,14 +595,14 @@ impl WGPU {
                         };
                     },
                     WebGPURequest::RenderBundleEncoderFinish {
-                        render_bundle_encoder,
+                        mut render_bundle_encoder,
                         descriptor,
                         render_bundle_id,
                         device_id,
                     } => {
                         let global = &self.global;
                         let (_, error) = global.render_bundle_encoder_finish(
-                            render_bundle_encoder,
+                            &mut render_bundle_encoder,
                             &descriptor,
                             Some(render_bundle_id),
                         );
@@ -866,7 +866,7 @@ impl WGPU {
                         let desc = &RenderPassDescriptor {
                             label,
                             color_attachments: color_attachments.into(),
-                            depth_stencil_attachment: depth_stencil_attachment.as_ref(),
+                            depth_stencil_attachment,
                             timestamp_writes: None,
                             occlusion_query_set: None,
                             multiview_mask: None,

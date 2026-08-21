@@ -115,7 +115,7 @@ pub fn apply_render_command(
             buffer_id,
             offset,
             size,
-        } => global.render_pass_set_vertex_buffer(pass, slot, buffer_id, offset, size),
+        } => global.render_pass_set_vertex_buffer(pass, slot, Some(buffer_id), offset, size),
         RenderCommand::Draw {
             vertex_count,
             instance_count,

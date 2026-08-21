@@ -106,7 +106,6 @@ paint = { workspace = true, optional = true }
 genet-host-api = { workspace = true }
 genet-documents = { workspace = true, optional = true, default-features = false }
 inker = { workspace = true, optional = true }
-tinct = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 raw-window-handle = { workspace = true, optional = true }
 webgl_wgpu = { workspace = true, optional = true }
@@ -118,22 +117,6 @@ genet-static-dom = { path = "../../../components/genet-static-dom", optional = t
 # (the headless-scripted-DOM scrape path for SPAs). Depends only on layout-dom-api.
 genet-extract = { path = "../../../components/genet-extract", optional = true }
 genet-winit-host = { path = "../../../components/genet-winit-host", optional = true }
-# Sprigging widget leaves (png-reftest feature): the first-pixels smoke renders
-# Knob/Meter/GraphGlyph leaves through the session leaf path to an offscreen PNG.
-#
-# By path, for exactly the reason spelled out on `cambium` below: the registry
-# pin this replaces (`version = "0.1.0"`) left Pelt building a published
-# Sprigging while the workspace copy moved to 0.2.x, so BOTH landed in the
-# graph. Cambium path-deps the workspace copy, so the two disagreed. It also
-# pinned the last vello 0.9 in the tree, which is what blocked a single wgpu
-# row when the stack moved to wgpu 30 on 2026-08-15.
-sprigging = { path = "../../../components/cambium/sprigging", optional = true }
-# The tile surface projects its laid-out frame DOM (chisel leaf interiors
-# included) into an AccessKit tree; the windowed viewer pushes it to the OS
-# through `genet_winit_host::AccessKitBridge`.
-accesskit = { workspace = true, optional = true }
-paint_list_api = { workspace = true, optional = true }
-paint_list_render = { workspace = true, optional = true }
 # Spec `data:` URL decoding for the LocalFetcher (percent-encoded + base64 bodies).
 
 # Remote document loading (behind the `netfetch` feature): the netfetcher engine
@@ -165,20 +148,6 @@ layout-dom-api = { path = "../../../components/shared/layout-dom", optional = tr
 encoding_rs = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
-# Chrome profile (behind the `chrome` feature): the Cambium reactive toolkit the
-# omnibar + back/forward views are built with, over a ScriptedDom the runner drives.
-#
-# By path like every other component here. The registry pin this replaces
-# (`version = "0.2.0"`) dates from 2026-07-14, when Cambium was still a sibling
-# repo and a published dep plus `[patch.crates-io]` seam redirects was the only
-# way to share DOM types with it. Cambium became a Genet component on
-# 2026-07-23, so the pin outlived its reason: it left the reference host building
-# against a nine-day-old published toolkit while the workspace copy moved to
-# 0.3.1, which is how `cambium::frisket` was unreachable from Pelt.
-cambium = { path = "../../../components/cambium/cambium", optional = true }
-# OS clipboard access for the omnibar's Ctrl/Cmd+V paste (chrome feature). Reads only;
-# a failed open (e.g. a headless host) degrades to a no-op paste.
-genet-clipboard = { path = "../../../components/genet-clipboard", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Windows-only types (HWND) used by the `windows-present` feature's
@@ -202,4 +171,4 @@ ash = "0.38"
 mockito = "1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)', 'cfg(feature, values("incumbent", "tile-surface", "tiles", "chrome", "png-reftest"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }

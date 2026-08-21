@@ -22,7 +22,7 @@ bench = false
 
 [lints.rust]
 # These are not official flags but still used for testing and pgo.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)', 'cfg(feature, values("incumbent", "tiles", "chrome"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }
 
 [features]
 default = ["livery", "netfetch"]

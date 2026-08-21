@@ -17,22 +17,10 @@ pub(crate) fn main() {
     // scripted-nova). Parsed as a string so the flag exists even in builds without
     // the scripted profile.
     let mut js_engine = String::from("boa");
-    // Headless profile (V3 reftest harness): `--out <path>` writes a scene snapshot;
-    // `--reftest <dir>` runs a fixture directory; `--bless` (re)writes the snapshots.
-    let mut out_path: Option<String> = None;
-    let mut reftest_dir: Option<String> = None;
-    let mut bless = false;
-    // Physical client size for headed viewers and explicit-size headless captures.
-    // Reftests stay pinned at 800x600 so their committed fixtures remain meaningful.
+    // Physical client size for headed viewers.
     let mut size: Option<(u32, u32)> = None;
     // Bounded headed capture/smoke run. Interactive profiles leave this unset.
     let mut frames: Option<u32> = None;
-    // Chrome demo (V2): wrap the content viewer in an omnibar + back/forward strip.
-    let mut with_chrome = false;
-    let mut strip_side = String::from("top");
-    // Tiles demo (V5): split the window into tiles, one document each.
-    let mut with_tiles = false;
-    let mut tile_urls: Vec<String> = Vec::new();
     let mut netrender_smoke = false;
     let mut webgl_wgpu_smoke = false;
     #[cfg(feature = "windows-present")]
@@ -62,7 +50,7 @@ pub(crate) fn main() {
             "--engine" => {
                 let Some(value) = args.next() else {
                     eprintln!(
-                        "--engine requires browser, viewer, static, livery, scripted, livery-scripted, or headless"
+                        "--engine requires viewer, static, livery, scripted, or livery-scripted"
                     );
                     std::process::exit(2);
                 };
@@ -80,29 +68,6 @@ pub(crate) fn main() {
             },
             value if value.starts_with("--js=") => {
                 js_engine = value["--js=".len()..].to_owned();
-            },
-            "--out" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--out requires a path");
-                    std::process::exit(2);
-                };
-                out_path = Some(value);
-            },
-            value if value.starts_with("--out=") => {
-                out_path = Some(value["--out=".len()..].to_owned());
-            },
-            "--reftest" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--reftest requires a fixture directory");
-                    std::process::exit(2);
-                };
-                reftest_dir = Some(value);
-            },
-            value if value.starts_with("--reftest=") => {
-                reftest_dir = Some(value["--reftest=".len()..].to_owned());
-            },
-            "--bless" => {
-                bless = true;
             },
             "--size" => {
                 let Some(value) = args.next() else {
@@ -123,22 +88,6 @@ pub(crate) fn main() {
             },
             value if value.starts_with("--frames=") => {
                 frames = Some(parse_frames(&value["--frames=".len()..]));
-            },
-            "--chrome" => {
-                with_chrome = true;
-            },
-            "--tiles" => {
-                with_tiles = true;
-            },
-            "--strip" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--strip requires top, bottom, left, or right");
-                    std::process::exit(2);
-                };
-                strip_side = value;
-            },
-            value if value.starts_with("--strip=") => {
-                strip_side = value["--strip=".len()..].to_owned();
             },
             "--netrender-smoke" => {
                 netrender_smoke = true;
@@ -176,7 +125,6 @@ pub(crate) fn main() {
             },
             value => {
                 url = Some(value.to_owned());
-                tile_urls.push(value.to_owned());
             },
         }
     }
@@ -265,7 +213,7 @@ pub(crate) fn main() {
 
     // `pelt --engine livery-scripted <url>` is the F4 product route: one live
     // scripted DOM, with Livery owning CSSOM, resources, shaped layout, and paint.
-    // It is intentionally separate from both incumbent routes.
+    // It retains the explicit route spelling while sharing the owned engine.
     if matches!(engine_profile, EngineProfile::LiveryScripted) {
         #[cfg(feature = "livery-scripted")]
         {
@@ -291,22 +239,8 @@ pub(crate) fn main() {
         // A smolweb scheme (gemini/gopher/…) renders natively through the smolweb
         // viewer (errand transport + parse + native themed view), not the HTML path.
         #[cfg(feature = "smolweb")]
-        // `--tiles`: split the window into tiles, one document each (V5's tile surface).
-        if with_tiles {
-            run_tiles_profile(tile_urls, size, frames);
-            return;
-        }
-        // A smolweb scheme (gemini/gopher/…) renders natively through the smolweb
-        // viewer (errand transport + parse + native themed view), not the HTML path.
-        #[cfg(feature = "smolweb")]
         if is_smolweb_url(&url) {
-            run_smolweb_profile(url, strip_side.clone(), engine_profile, size, frames);
-            return;
-        }
-        // `--chrome`: wrap the content in a xilem-serval omnibar + back/forward strip
-        // (V2's two-root browser shell).
-        if with_chrome {
-            run_chrome_profile(url, strip_side, engine_profile, size, frames);
+            run_smolweb_profile(url, engine_profile, size, frames);
             return;
         }
         let mut config = pelt_desktop::StaticViewerConfig::new(
@@ -347,14 +281,6 @@ pub(crate) fn main() {
         return;
     }
 
-    // `pelt --engine headless`: GPU-free scene-snapshot render (V3 reftest harness).
-    // `--reftest <dir>` runs a fixture directory; otherwise `--out <path>` (or stdout)
-    // writes the snapshot for `<file>`.
-    if matches!(engine_profile, EngineProfile::Headless) {
-        run_headless_profile(url, out_path, reftest_dir, bless, size, frames);
-        return;
-    }
-
     eprintln!(
         "pelt has no engine for profile {engine_profile} in this build; use \
          --engine static <url> for the on-screen document viewer, \
@@ -380,8 +306,7 @@ fn is_smolweb_url(url: &str) -> bool {
     .any(|scheme| url.starts_with(scheme))
 }
 
-/// Parse a physical client size accepted by headed profiles and explicit headless
-/// captures. Keep it separate from reftests, whose fixtures are authored at 800x600.
+/// Parse a physical client size accepted by headed profiles.
 fn parse_size(value: &str) -> (u32, u32) {
     let Some((width, height)) = value.split_once(['x', 'X']) else {
         eprintln!("--size expects WxH in physical pixels (got '{value}')");
@@ -414,7 +339,6 @@ fn parse_frames(value: &str) -> u32 {
 #[cfg(feature = "smolweb")]
 fn run_smolweb_profile(
     url: String,
-    _side: String,
     profile: EngineProfile,
     size: Option<(u32, u32)>,
     frames: Option<u32>,
@@ -517,7 +441,7 @@ fn run_livery_scripted_profile(
 }
 
 /// Dispatch the explicit Livery pin. This is intentionally a distinct call
-/// from the incumbent static route, whose frozen scene receipts remain valid.
+/// from the static route while retaining its own document protocol.
 #[cfg(feature = "livery")]
 fn run_livery_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
     let mut config = pelt_desktop::StaticViewerConfig::new(
@@ -543,99 +467,6 @@ fn run_livery_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>
     }
 }
 
-/// Dispatch `--tiles` to the tile viewer: a window split into tiles, one document per
-/// content URL. Present only when built with `--features tiles`.
-#[cfg(feature = "tiles")]
-fn run_tiles_profile(urls: Vec<String>, size: Option<(u32, u32)>, frames: Option<u32>) {
-    let mut config = pelt_desktop::TileViewerConfig::new(urls, pelt_desktop::WindowingMode::Headed);
-    if let Some((width, height)) = size {
-        config = config.with_size(width, height);
-    }
-    if let Some(limit) = frames {
-        config = config.with_frame_limit(limit);
-    }
-    match pelt_desktop::run_tile_viewer_with_config(config) {
-        Ok(outcome) => println!(
-            "pelt tile viewer url={} window={} redraws={} size={}x{}",
-            outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
-        ),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        },
-    }
-}
-
-/// Without the tiles demo compiled in, `--tiles` is a clean error pointing at the
-/// feature to enable.
-#[cfg(not(feature = "tiles"))]
-fn run_tiles_profile(_urls: Vec<String>, _size: Option<(u32, u32)>, _frames: Option<u32>) {
-    eprintln!("pelt was built without the tiles demo; rebuild with `--features tiles`");
-    std::process::exit(2);
-}
-
-/// Dispatch `--chrome` to the two-root browser shell: the content viewer wrapped in a
-/// xilem-serval omnibar + back/forward strip on the chosen side. Present only when
-/// built with `--features chrome`.
-#[cfg(feature = "chrome")]
-fn run_chrome_profile(
-    url: String,
-    side: String,
-    profile: EngineProfile,
-    size: Option<(u32, u32)>,
-    frames: Option<u32>,
-) {
-    use pelt_desktop::StripSide;
-    let side = match side.to_ascii_lowercase().as_str() {
-        "top" => StripSide::Top,
-        "bottom" => StripSide::Bottom,
-        "left" => StripSide::Left,
-        "right" => StripSide::Right,
-        other => {
-            eprintln!("--strip expects top, bottom, left, or right (got '{other}')");
-            std::process::exit(2);
-        },
-    };
-    // A vertical strip wants room for the toolbar; a horizontal one is a thin bar.
-    let thickness = if matches!(side, StripSide::Left | StripSide::Right) {
-        280
-    } else {
-        40
-    };
-    let mut config =
-        pelt_desktop::StaticViewerConfig::new(profile, pelt_desktop::WindowingMode::Headed, url);
-    if let Some((width, height)) = size {
-        config = config.with_size(width, height);
-    }
-    if let Some(limit) = frames {
-        config = config.with_frame_limit(limit);
-    }
-    match pelt_desktop::run_chrome_viewer(config, side, thickness) {
-        Ok(outcome) => println!(
-            "pelt chrome viewer url={} window={} redraws={} size={}x{}",
-            outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
-        ),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        },
-    }
-}
-
-/// Without the chrome demo compiled in, `--chrome` is a clean error pointing at the
-/// feature to enable.
-#[cfg(not(feature = "chrome"))]
-fn run_chrome_profile(
-    _url: String,
-    _side: String,
-    _profile: EngineProfile,
-    _size: Option<(u32, u32)>,
-    _frames: Option<u32>,
-) {
-    eprintln!("pelt was built without the chrome demo; rebuild with `--features chrome`");
-    std::process::exit(2);
-}
-
 /// Without the scripted profile compiled in, `--engine scripted` is a clean error
 /// pointing at the feature to enable.
 #[cfg(not(feature = "scripted"))]
@@ -648,147 +479,6 @@ fn run_scripted_profile(
     eprintln!(
         "pelt was built without the scripted profile; rebuild with `--features scripted` \
          (or `--features scripted-nova` for the Nova backend)"
-    );
-    std::process::exit(2);
-}
-
-/// The headless reftest harness. With `reftest`, run every `name.html` fixture in the
-/// directory against its committed `name.scene` snapshot (or write them under `bless`);
-/// otherwise render `url` to a single scene snapshot, to `out` (or stdout). Exits
-/// non-zero on any reftest failure / error. This is the frozen incumbent oracle
-/// and therefore requires the explicit `incumbent` feature.
-#[cfg(feature = "incumbent")]
-fn run_headless_profile(
-    url: String,
-    out: Option<String>,
-    reftest: Option<String>,
-    bless: bool,
-    size: Option<(u32, u32)>,
-    frames: Option<u32>,
-) {
-    use pelt_desktop::{DEFAULT_HEIGHT, DEFAULT_WIDTH, Outcome, render_snapshot, run_reftests};
-
-    if frames.is_some() {
-        eprintln!("--frames applies to headed viewers, not --engine headless");
-        std::process::exit(2);
-    }
-
-    if let Some(dir) = reftest {
-        if size.is_some() {
-            eprintln!("--size cannot be combined with --reftest; fixtures are pinned at 800x600");
-            std::process::exit(2);
-        }
-        let results = match run_reftests(
-            std::path::Path::new(&dir),
-            DEFAULT_WIDTH,
-            DEFAULT_HEIGHT,
-            bless,
-        ) {
-            Ok(results) => results,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            },
-        };
-        let (mut passed, mut failed, mut errored) = (0u32, 0u32, 0u32);
-        for result in &results {
-            match &result.outcome {
-                Outcome::Pass => {
-                    passed += 1;
-                    println!("  ok     {}", result.name);
-                },
-                Outcome::Fail {
-                    first_diff_line, ..
-                } => {
-                    failed += 1;
-                    println!(
-                        "  FAIL   {} (first diff at line {first_diff_line})",
-                        result.name
-                    );
-                },
-                Outcome::PngFail { detail } => {
-                    failed += 1;
-                    println!("  FAIL   {} (png: {detail})", result.name);
-                },
-                Outcome::Error(message) => {
-                    errored += 1;
-                    println!("  ERROR  {} ({message})", result.name);
-                },
-            }
-        }
-        let blessed = if bless { " (blessed)" } else { "" };
-        println!("reftest: {passed} passed, {failed} failed, {errored} errored{blessed}");
-        if failed > 0 || errored > 0 {
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    // `--out *.png`: the rasterized "for human eyes" artifact instead of the scene
-    // text snapshot. GPU-required, so behind the png-reftest feature.
-    if out.as_deref().is_some_and(|p| p.ends_with(".png")) {
-        let path = out.expect("checked Some above");
-        write_headless_png(&url, &path, size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT)));
-        return;
-    }
-
-    let (width, height) = size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
-    match render_snapshot(&url, width, height) {
-        Ok(snapshot) => match out {
-            Some(path) => match std::fs::write(&path, &snapshot) {
-                Ok(()) => println!("pelt headless wrote {} bytes to {path}", snapshot.len()),
-                Err(error) => {
-                    eprintln!("could not write {path}: {error}");
-                    std::process::exit(1);
-                },
-            },
-            None => print!("{snapshot}"),
-        },
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        },
-    }
-}
-
-#[cfg(not(feature = "incumbent"))]
-fn run_headless_profile(
-    _url: String,
-    _out: Option<String>,
-    _reftest: Option<String>,
-    _bless: bool,
-    _size: Option<(u32, u32)>,
-    _frames: Option<u32>,
-) {
-    eprintln!("the frozen headless oracle needs `--features incumbent`");
-    std::process::exit(2);
-}
-
-/// Render `url` to a PNG and write it to `path`. Present only with `--features
-/// png-reftest` (it boots wgpu); without it, a clean pointer to the feature.
-#[cfg(feature = "png-reftest")]
-fn write_headless_png(url: &str, path: &str, size: (u32, u32)) {
-    use pelt_desktop::render_png;
-    match render_png(url, size.0, size.1) {
-        Ok(png) => match std::fs::write(path, &png) {
-            Ok(()) => println!("pelt headless wrote {} PNG bytes to {path}", png.len()),
-            Err(error) => {
-                eprintln!("could not write {path}: {error}");
-                std::process::exit(1);
-            },
-        },
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        },
-    }
-}
-
-#[cfg(not(feature = "png-reftest"))]
-fn write_headless_png(_url: &str, _path: &str, _size: (u32, u32)) {
-    eprintln!(
-        "pelt was built without the PNG lane; rebuild with `--features png-reftest` to \
-         write a .png (the GPU-free .scene snapshot needs no feature)."
     );
     std::process::exit(2);
 }
@@ -1008,26 +698,16 @@ pelt {VERSION}
 Usage: pelt [--engine <profile>] [<url-or-file>] [options]
 
 Script-free Pelt: genet's reference browser. `--engine static <url-or-file>`
-opens the genet-native on-screen document viewer (file://, a bare path, data:
-URLs, and http(s) in the default build);
-`--chrome` wraps it in an omnibar + back/forward strip, `--tiles` splits the
-window into per-document tiles. The other profiles: `--engine scripted` runs a
-page's <script> with incumbent geometry (needs --features scripted),
-`--engine livery-scripted` runs it through the Livery live-document route
-(needs --features livery-scripted), and `--engine headless` is the GPU-free
-scene-snapshot / reftest harness.
+opens the Livery/Buckram on-screen document viewer (file://, a bare path, data:
+URLs, and http(s) in the default build). `--engine scripted` runs a page's
+<script> through the same owned document route (needs --features scripted),
+and `--engine livery-scripted` retains the explicit compatibility spelling.
 Smoke runners validate the present backends (--help lists them).
 
 Options:
-    --engine <browser|viewer|static|livery|scripted|livery-scripted|headless>
-    --chrome                           (wrap the content viewer in an omnibar + back/forward strip; needs --features chrome)
-    --strip <top|bottom|left|right>    (chrome strip side; default top)
-    --tiles <url>...                   (one or two tile side by side; three or more stack the first two beside the third, and ignore the rest; needs --features tiles)
+    --engine <viewer|static|livery|scripted|livery-scripted>
     --js <boa|nova>                    (scripted and livery-scripted profiles: JS backend; nova needs --features scripted-nova)
-    --out <path>                       (headless profile: write the scene snapshot for <file>)
-    --reftest <dir>                    (headless profile: run a name.html + name.scene fixture dir)
-    --bless                            (headless --reftest: (re)write the .scene snapshots)
-    --size <WxH>                       (physical client/capture size; rejected for --reftest)
+    --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
     --netrender-smoke
     --webgl-wgpu-smoke

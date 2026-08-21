@@ -398,6 +398,10 @@ Receipts:
 - `python -m unittest support/ci/test_check_git_dependency_state.py`: passed.
 - `python support/ci/check_git_dependency_state.py`: passed for Genet's
   configured dependency edges.
+- `cargo check --workspace`: passed after four mechanical wgpu-core 30 call
+  adaptations exposed by the first full wall. The same follow-through removed
+  Pelt's remaining dead CLI switches and orphaned optional dependencies for the
+  deleted chrome, tile, and headless routes.
 
 ## The oracle conflict, and its resolution
 
