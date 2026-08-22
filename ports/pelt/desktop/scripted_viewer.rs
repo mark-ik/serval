@@ -73,17 +73,6 @@ pub fn run_scripted_viewer(
     }
 }
 
-/// Run the opt-in scripted Livery route. Its JavaScript backend selection is
-/// identical to the incumbent scripted viewer, but the live frame and CSSOM
-/// route are Livery from construction onward.
-#[cfg(feature = "livery-scripted")]
-pub fn run_livery_scripted_viewer(
-    config: StaticViewerConfig,
-    engine: ScriptedEngine,
-) -> Result<StaticViewerOutcome, String> {
-    run_scripted_viewer(config, engine)
-}
-
 fn run_scripted_headed(
     config: StaticViewerConfig,
     engine: ScriptedEngine,

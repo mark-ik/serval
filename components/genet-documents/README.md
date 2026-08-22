@@ -1,6 +1,6 @@
 # genet-documents
 
-Genet's retained document sessions: the static, scripted, and smolweb
+Genet's retained document sessions: Livery HTML, scripted HTML, and smolweb
 content lanes as inker **session engines** (the third engine kind — spawn a
 session, take paint frames, scroll, click, settle).
 
@@ -10,10 +10,8 @@ session, take paint frames, scroll, click, settle).
 > an engine-grade component; pelt is now one consumer among hosts
 > (turnstone's mere, meerkat).
 
-- `LoadedDocument` / `StaticSessionEngine` (`genet.web`): fetched HTML laid
-  out by genet's cascade, no scripts.
 - `LiveryDocument` / `LiverySessionEngine` (`livery` feature,
-  `genet.livery`): the opt-in clean-room static implementation. It retains
+  `genet.livery`): the owned script-free HTML implementation. It retains
   style/layout/text paint state and lowers the neutral PaintList into the same
   scene contract. It also routes bounded viewport scrolling, retained link
   rectangles, pointer hit testing, fragment navigation, and focus state. The
@@ -29,8 +27,9 @@ session, take paint frames, scroll, click, settle).
   position/repeat modes; URL policy and caching remain a host fetch/cache
   concern.
 - `ScriptedDocument` sessions / `ScriptedSessionEngine<E, _>` (`scripted`
-  feature): a live page whose JS runs on Boa (or Nova on the nova rung),
-  with the tick + quiescence seam (`pump` / `settled`).
+  feature): the same Livery/Buckram document path with a live DOM whose JS
+  runs on Boa (or Nova on the nova rung), plus the tick + quiescence seam
+  (`pump` / `settled`).
 - `SmolwebDocument` / `SmolwebSessionEngine` (`smolweb` feature): capsules
   rendered through the engine-native document path: Nematic lowers protocol
   content to `EngineDocument`, then document-canvas lays it out and lowers its

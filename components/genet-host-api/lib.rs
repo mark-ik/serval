@@ -14,52 +14,33 @@ use std::str::FromStr;
 pub mod settings;
 pub mod tile;
 
+/// Coarse engine selection for diagnostic hosts such as standalone Pelt.
+///
+/// Product hosts route individual content through Inker engine ids. This enum
+/// deliberately names only the two HTML capabilities that still need a CLI
+/// override; windowing mode, protocol, and historical implementation names are
+/// separate concerns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineProfile {
-    /// Current all-up Servo browser engine: JS, DOM, layout, paint, webdriver.
-    Browser,
-    /// Future script-free static resource / document validation profile.
-    Viewer,
-    /// Alias for the script-free validation profile.
-    Static,
-    /// The opt-in clean-room Livery static engine. Its inker identity is
-    /// `genet.livery`; selecting it never changes the incumbent static default.
+    /// Script-free HTML through the owned Livery/Buckram engine. Its Inker
+    /// identity is `genet.livery`.
     Livery,
-    /// The scripted profile (V4): a live document whose inline `<script>` runs
-    /// through `script-runtime-api` on a JS engine, mutating the DOM, rendered each
-    /// frame. The content tier's proving ground (and the gc-arena soak's host).
+    /// Live HTML whose scripts mutate the DOM while Livery/Buckram retain style,
+    /// layout, and paint state.
     Scripted,
-    /// Explicit scripted Livery route. The runtime owns the mutable DOM while
-    /// Livery owns its CSSOM, resource graph, shaped layout, and paint session.
-    /// Selecting it never changes either incumbent profile.
-    LiveryScripted,
-    /// Future automation-first profile. This is separate from `--headless`,
-    /// which only selects the shell windowing mode.
-    Headless,
-}
-
-impl EngineProfile {
-    pub fn is_browser(self) -> bool {
-        matches!(self, Self::Browser)
-    }
 }
 
 impl Default for EngineProfile {
     fn default() -> Self {
-        Self::Viewer
+        Self::Livery
     }
 }
 
 impl fmt::Display for EngineProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::Browser => "browser",
-            Self::Viewer => "viewer",
-            Self::Static => "static",
             Self::Livery => "livery",
             Self::Scripted => "scripted",
-            Self::LiveryScripted => "livery-scripted",
-            Self::Headless => "headless",
         };
         f.write_str(name)
     }
@@ -70,15 +51,12 @@ impl FromStr for EngineProfile {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "browser" => Ok(Self::Browser),
-            "viewer" => Ok(Self::Viewer),
-            "static" => Ok(Self::Static),
-            "livery" => Ok(Self::Livery),
-            "scripted" => Ok(Self::Scripted),
-            "livery-scripted" => Ok(Self::LiveryScripted),
-            "headless" => Ok(Self::Headless),
+            // Keep the shipped command spellings as input aliases while making
+            // their canonical identity truthful in logs and host state.
+            "livery" | "viewer" | "static" => Ok(Self::Livery),
+            "scripted" | "livery-scripted" => Ok(Self::Scripted),
             other => Err(format!(
-                "unknown engine profile '{other}'; expected browser, viewer, static, livery, scripted, livery-scripted, or headless"
+                "unknown engine profile '{other}'; expected livery or scripted (legacy aliases: viewer, static, livery-scripted)"
             )),
         }
     }
@@ -122,13 +100,28 @@ impl ShellEngine for DeferredShellEngine {
 
     fn capabilities(&self) -> ShellEngineCapabilities {
         ShellEngineCapabilities {
-            // The scripted profile runs JS; the other profiles are script-free today.
-            javascript: matches!(
-                self.profile,
-                EngineProfile::Scripted | EngineProfile::LiveryScripted
-            ),
+            javascript: matches!(self.profile, EngineProfile::Scripted),
             ..ShellEngineCapabilities::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EngineProfile;
+
+    #[test]
+    fn legacy_profile_spellings_canonicalize_to_owned_engines() {
+        assert_eq!("viewer".parse(), Ok(EngineProfile::Livery));
+        assert_eq!("static".parse(), Ok(EngineProfile::Livery));
+        assert_eq!("livery-scripted".parse(), Ok(EngineProfile::Scripted));
+        assert_eq!(EngineProfile::default().to_string(), "livery");
+    }
+
+    #[test]
+    fn retired_profiles_are_rejected() {
+        assert!("browser".parse::<EngineProfile>().is_err());
+        assert!("headless".parse::<EngineProfile>().is_err());
     }
 }
 

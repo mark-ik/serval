@@ -1005,7 +1005,7 @@ mod multi {
 // --- MARK: Stage 3a — component composition (backend-only) --------------------
 //
 // These prove the `meristem` composition vocabulary works over `GenetCtx`
-// using only this crate + the `ScriptedDom` — no genet-layout/genet-render. The
+// using only this crate + the `ScriptedDom`, without Livery/Buckram or presentation. The
 // `pelt-desktop` suite asserts the same with full render-path coverage; these are
 // the boundary-level twin, so a `lens`/`map_action`/`OptionalAction` regression
 // is caught even with the engine stack absent.
@@ -1157,7 +1157,7 @@ mod composition {
 //
 // The headless twin of `pelt-desktop`'s Stage 3b suite: focus routing, the
 // no-focus no-op, click-to-focus, and key bubbling — proven over the
-// `ScriptedDom` with no genet-layout/genet-render, so a key-registry/focus
+// `ScriptedDom` without Livery/Buckram or presentation, so a key-registry/focus
 // regression is caught even with the engine stack absent.
 
 #[cfg(test)]
@@ -1688,7 +1688,7 @@ mod keyboard {
 // The headless twin of `pelt-desktop`'s Stage 3 form-control coverage: a reusable
 // `text_field` whose state is its own `TextInput` (buffer + caret), edited through the focus + key
 // dispatch foundation, and composed under a larger struct via `lens` — proven
-// over the `ScriptedDom` with no genet-layout/genet-render, so a regression in the
+// over the `ScriptedDom` without Livery/Buckram or presentation, so a regression in the
 // field's edit handler or its `lens` composition is caught with the engine stack
 // absent. (NB: per Stage 3b, space arrives as `Named(Space)`, not
 // `Character(" ")`, so the sequence below exercises that path explicitly.)
@@ -2979,7 +2979,7 @@ mod controls {
 // (`.capture(true)` vs the default bubble), and the dispatch order it produces
 // (capture → target → bubble). Each handler appends a label to a shared
 // `Vec<String>` log on the app state, so the assertions read the literal firing
-// order — proven over the `ScriptedDom` with no genet-layout/genet-render.
+// order, proven over the `ScriptedDom` without Livery/Buckram or presentation.
 
 #[cfg(test)]
 mod capture {

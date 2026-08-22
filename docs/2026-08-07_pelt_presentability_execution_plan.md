@@ -2,9 +2,10 @@
 
 **Date:** 2026-08-07
 
-**Status:** implemented 2026-08-07. Seven investigation lanes and their
-adversarial verdicts are folded in below. Where a verdict overturned a report,
-the verdict wins and the plan says so.
+**Status:** historical implementation record. Superseded for current work by
+[`2026-08-22_pelt_host_reconstruction_execution_plan.md`](2026-08-22_pelt_host_reconstruction_execution_plan.md).
+Seven investigation lanes and their adversarial verdicts are folded in below.
+Where a verdict overturned a report, the verdict wins and the plan says so.
 
 **2026-08-21 current-state note:** this table records the former incumbent
 implementation. The completed Stylo deletion lane removed its chrome, tile,

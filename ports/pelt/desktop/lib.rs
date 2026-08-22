@@ -47,7 +47,7 @@ pub use genet_documents::SmolwebDocument;
 // theme and, for the App theme, supply a palette.
 #[cfg(feature = "smolweb")]
 pub use genet_documents::{SmolwebPalette, SmolwebTheme};
-#[cfg(all(feature = "smolweb", feature = "viewer"))]
+#[cfg(feature = "smolweb")]
 pub use smolweb_glue::run_smolweb_viewer;
 
 #[cfg(feature = "scripted")]
@@ -108,7 +108,5 @@ pub use script_runtime_api::CookieProvider;
 // so the host names the post-JS extract without a direct `genet-extract` dep. (Phase 4.)
 #[cfg(feature = "scripted")]
 pub use genet_extract::{Heading, Link, Metadata, PageExtract};
-#[cfg(feature = "livery-scripted")]
-pub use scripted_viewer::run_livery_scripted_viewer;
 #[cfg(all(feature = "present", feature = "scripted"))]
 pub use scripted_viewer::run_scripted_viewer;

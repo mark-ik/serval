@@ -20,8 +20,6 @@ use genet_document_resources::{
 use genet_host_api::ResourceFetcher;
 #[cfg(feature = "livery")]
 use genet_host_api::ResourceResponse;
-#[cfg(feature = "incumbent")]
-use genet_layout::{ScrollKey, TextSelection};
 use inker::session_engine::{
     DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession, SessionClick,
     SessionEngine, SessionError, SessionLink, SessionScrollKey, SessionSpawnRequest,
@@ -29,22 +27,6 @@ use inker::session_engine::{
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use netrender::Scene;
-
-#[cfg(feature = "incumbent")]
-use crate::document::{ClickOutcome, LoadedDocument};
-
-/// Map the host-neutral scroll-key vocabulary onto genet-layout's.
-#[cfg(feature = "incumbent")]
-pub(crate) fn layout_scroll_key(key: SessionScrollKey) -> ScrollKey {
-    match key {
-        SessionScrollKey::LineUp => ScrollKey::Up,
-        SessionScrollKey::LineDown => ScrollKey::Down,
-        SessionScrollKey::PageUp => ScrollKey::PageUp,
-        SessionScrollKey::PageDown => ScrollKey::PageDown,
-        SessionScrollKey::Home => ScrollKey::Home,
-        SessionScrollKey::End => ScrollKey::End,
-    }
-}
 
 /// Map the host-neutral scroll-key vocabulary onto the owned scripted lane.
 #[cfg(feature = "scripted")]
@@ -59,185 +41,9 @@ pub(crate) fn scripted_scroll_key(key: SessionScrollKey) -> genet_scripted::Scro
     }
 }
 
-/// Map the static lane's click outcome onto the unified enum. The host
-/// resolves a relative href against the current URL (see
-/// [`resolve_href`](crate::href::resolve_href)), same contract as today.
-#[cfg(feature = "incumbent")]
-pub fn session_click_from_outcome(outcome: ClickOutcome) -> SessionClick {
-    match outcome {
-        ClickOutcome::None => SessionClick::Miss,
-        ClickOutcome::Scrolled => SessionClick::Handled,
-        ClickOutcome::Navigate(href) => SessionClick::Navigate(href),
-    }
-}
+// ── Script-free HTML lane (genet.livery) ─────────────────────────────────
 
-// ── Static lane (genet.web) ───────────────────────────────────────────────
-
-/// Session engine for the static HTML lane. Holds the shell's fetcher.
-#[cfg(feature = "incumbent")]
-pub struct StaticSessionEngine<Fetch> {
-    fetcher: Fetch,
-}
-
-#[cfg(feature = "incumbent")]
-impl<Fetch> StaticSessionEngine<Fetch> {
-    pub fn new(fetcher: Fetch) -> Self {
-        Self { fetcher }
-    }
-}
-
-#[cfg(feature = "incumbent")]
-impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for StaticSessionEngine<Fetch> {
-    fn engine_id(&self) -> &str {
-        inker::routing::ENGINE_GENET_WEB
-    }
-
-    fn spawn(
-        &self,
-        request: &SessionSpawnRequest,
-    ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
-        let doc = match &request.body {
-            Some(body) => LoadedDocument::parse(body),
-            None => LoadedDocument::load(&self.fetcher, &request.address)
-                .map_err(SessionError::SpawnFailed)?,
-        };
-        Ok(Box::new(StaticDocumentSession {
-            doc,
-            address: request.address.clone(),
-        }))
-    }
-}
-
-/// Open the retained document lane appropriate for one address. This is the
-/// small host seam for compositions such as Pelt tiles: the static and
-/// smolweb session implementations stay private, while the host stores one
-/// honest `DocumentSession<Scene>` per pane.
-#[cfg(feature = "incumbent")]
-pub fn open_document_session(
-    fetcher: &impl ResourceFetcher,
-    address: &str,
-) -> Result<Box<dyn DocumentSession<Scene>>, String> {
-    #[cfg(feature = "smolweb")]
-    if is_smolweb_address(address) {
-        let doc = crate::SmolwebDocument::load(fetcher, address, crate::SmolwebTheme::default())?;
-        return Ok(Box::new(SmolwebDocumentSession::new(doc, (0, 0))));
-    }
-
-    let doc = LoadedDocument::load(fetcher, address)?;
-    Ok(Box::new(StaticDocumentSession {
-        doc,
-        address: address.to_string(),
-    }))
-}
-
-#[cfg(all(feature = "incumbent", feature = "smolweb"))]
-fn is_smolweb_address(address: &str) -> bool {
-    matches!(
-        address.split_once("://").map(|(scheme, _)| scheme),
-        Some(
-            "gemini"
-                | "gopher"
-                | "nex"
-                | "finger"
-                | "spartan"
-                | "titan"
-                | "misfin"
-                | "guppy"
-                | "scroll"
-        )
-    )
-}
-
-#[cfg(feature = "incumbent")]
-struct StaticDocumentSession {
-    doc: LoadedDocument,
-    address: String,
-}
-
-#[cfg(feature = "incumbent")]
-impl DocumentSession<Scene> for StaticDocumentSession {
-    fn frame(&mut self, width: u32, height: u32) -> Scene {
-        self.doc.frame_for_viewer(width, height)
-    }
-    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-        self.doc.scroll_by(dx, dy)
-    }
-    fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        self.doc.scroll_at(x, y, dx, dy)
-    }
-    fn scroll_for_key(&mut self, key: SessionScrollKey) -> bool {
-        self.doc.scroll_for_key(layout_scroll_key(key))
-    }
-    fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
-        session_click_from_outcome(self.doc.click_at(x, y))
-    }
-    fn pointer_down(&mut self, x: f32, y: f32) -> SessionClick {
-        if self.doc.begin_text_selection(x, y) {
-            SessionClick::Handled
-        } else {
-            session_click_from_outcome(self.doc.click_at(x, y))
-        }
-    }
-    fn pointer_move(&mut self, x: f32, y: f32) -> bool {
-        self.doc.extend_text_selection(x, y)
-    }
-    fn pointer_up(&mut self, x: f32, y: f32) -> SessionClick {
-        if self.doc.finish_text_selection(x, y) {
-            SessionClick::Handled
-        } else {
-            session_click_from_outcome(self.doc.click_at(x, y))
-        }
-    }
-    fn text_target(&self, text: &str) -> Option<SessionTextTarget> {
-        self.doc.text_target(text)
-    }
-    fn links(&self) -> Vec<SessionLink> {
-        self.doc
-            .link_rects()
-            .into_iter()
-            .map(|(url, [x0, y0, x1, y1])| SessionLink {
-                url,
-                rect: [x0, y0, x1 - x0, y1 - y0],
-            })
-            .collect()
-    }
-    /// The structural report, through the trait: this session type is private,
-    /// so a host cannot take the `as_any` detour meerkat uses on its own types
-    /// (the accessor turnstone's Inspector pane needs — rung-5 plan, slice F's
-    /// "genet ask").
-    fn inspect(&self) -> Option<inker::ContentReport> {
-        Some(self.doc.inspect())
-    }
-    fn clip(&self) -> Option<DocumentClip> {
-        let mut clip = match self.doc.text_selection() {
-            Some(selection) => semantic_clip_from_selection(
-                &self.address,
-                self.doc.dom(),
-                selection,
-                self.doc.link_rects(),
-            ),
-            None => semantic_clip_from_dom(&self.address, self.doc.dom()),
-        }?;
-        let (bytes, content_type, final_url) = self.doc.source_response();
-        clip.artifacts.push(DocumentClipArtifact {
-            role: DocumentClipArtifactRole::SourceResponse,
-            media_type: content_type.unwrap_or("text/html").to_string(),
-            canonical_uri: final_url.unwrap_or(&self.address).to_string(),
-            bytes: bytes.to_vec(),
-        });
-        Some(clip)
-    }
-    fn as_any_ref(&self) -> &dyn Any {
-        self
-    }
-    fn as_any(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
-// ── Clean-room static lane (genet.livery) ────────────────────────────────
-
-/// Opt-in session engine for the clean-room Livery CSS/layout path.
+/// Session engine for the owned Livery CSS and Buckram layout path.
 #[cfg(feature = "livery")]
 pub struct LiverySessionEngine<Fetch> {
     fetcher: Fetch,
@@ -635,6 +441,7 @@ struct ClipRange<Id> {
     focus_offset: usize,
 }
 
+#[cfg(feature = "scripted")]
 #[derive(Clone, Copy)]
 struct ClipRect {
     x: f32,
@@ -747,50 +554,6 @@ fn semantic_clip_from_dom<D: LayoutDom>(address: &str, dom: &D) -> Option<Docume
     })
 }
 
-#[cfg(feature = "incumbent")]
-fn semantic_clip_from_selection<D>(
-    address: &str,
-    dom: &D,
-    selection: TextSelection<D::NodeId>,
-    link_rects: Vec<(String, [f32; 4])>,
-) -> Option<DocumentClip>
-where
-    D: LayoutDom,
-    D::NodeId: Copy + Eq,
-{
-    let mut links = Vec::new();
-    for (url, rect) in link_rects {
-        if selection.rects.iter().any(|selected| {
-            rect_intersects_selection(
-                rect,
-                &ClipRect {
-                    x: selected.x,
-                    y: selected.y,
-                    width: selected.width,
-                    height: selected.height,
-                },
-            )
-        }) && !links.iter().any(|seen| seen == &url)
-        {
-            links.push(url);
-        }
-    }
-    semantic_clip_from_selection_with_links(
-        address,
-        dom,
-        ClipSelection {
-            range: ClipRange {
-                anchor_node: selection.range.anchor_node,
-                anchor_offset: selection.range.anchor_offset,
-                focus_node: selection.range.focus_node,
-                focus_offset: selection.range.focus_offset,
-            },
-            text: selection.text,
-        },
-        links,
-    )
-}
-
 fn semantic_clip_from_selection_with_links<D>(
     address: &str,
     dom: &D,
@@ -847,6 +610,7 @@ where
     Some(path)
 }
 
+#[cfg(feature = "scripted")]
 fn rect_intersects_selection(rect: [f32; 4], selected: &ClipRect) -> bool {
     let selected_right = selected.x + selected.width;
     let selected_bottom = selected.y + selected.height;
@@ -1376,133 +1140,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "incumbent")]
-    #[test]
-    fn static_session_spawns_from_body_and_navigates() {
-        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
-        registry.register(Box::new(StaticSessionEngine::new(NoFetch)));
-
-        let request = SessionSpawnRequest::new("https://example.test/")
-            .with_body(r#"<html><body><a href="/next">next</a></body></html>"#)
-            .with_viewport(640, 480);
-        let mut session = registry
-            .spawn(inker::routing::ENGINE_GENET_WEB, &request)
-            .expect("static lane spawns from body");
-
-        let _scene = session.frame(640, 480);
-        assert!(session.settled(), "static lane is always settled");
-
-        // The anchor is the document's first (only) inline box: probe a few
-        // points inside the first line rather than betting on font metrics.
-        let click = [(12.0, 14.0), (14.0, 18.0), (10.0, 12.0), (20.0, 16.0)]
-            .into_iter()
-            .map(|(x, y)| session.click_at(x, y))
-            .find(|c| *c != SessionClick::Miss)
-            .expect("a probe point lands on the only link");
-        match click {
-            SessionClick::Navigate(href) => assert_eq!(href, "/next"),
-            other => panic!("expected the link to navigate, got {other:?}"),
-        }
-    }
-
-    /// The structural report is reachable THROUGH THE TRAIT — the accessor a
-    /// host without downcast access (turnstone: this session type is private)
-    /// stands on. Title, links, and headings come back from the live session.
-    #[cfg(feature = "incumbent")]
-    #[test]
-    fn static_session_reports_structure_through_the_trait() {
-        let engine = StaticSessionEngine::new(NoFetch);
-        let request = SessionSpawnRequest::new("https://example.test/")
-            .with_body(
-                "<html><head><title>The Page</title></head>\
-                 <body><h1>Heading</h1><a href=\"/next\">next</a></body></html>",
-            )
-            .with_viewport(640, 480);
-        let session = engine.spawn(&request).expect("spawns");
-        let report = session
-            .inspect()
-            .expect("the static lane has a structural read");
-        assert_eq!(report.title.as_deref(), Some("The Page"));
-        assert_eq!(report.headings, vec!["Heading"]);
-        assert_eq!(report.links, vec!["/next"]);
-    }
-
-    #[cfg(feature = "incumbent")]
-    #[test]
-    fn static_session_exposes_a_host_neutral_semantic_clip() {
-        let engine = StaticSessionEngine::new(NoFetch);
-        let request = SessionSpawnRequest::new("https://example.test/report").with_body(
-            "<html><head><title>The Page</title></head><body><main>\
-                 <h1>Heading</h1><p>A useful finding.</p>\
-                 <a href=\"https://example.test/source\">source</a></main></body></html>",
-        );
-        let session = engine.spawn(&request).expect("spawns");
-        let clip = session.clip().expect("the static lane can supply a clip");
-        assert_eq!(clip.source_url, "https://example.test/report");
-        assert_eq!(clip.title.as_deref(), Some("The Page"));
-        assert!(clip.text.contains("A useful finding."));
-        assert_eq!(clip.links, vec!["https://example.test/source"]);
-        assert_eq!(clip.selector, None, "v1 captures the whole document");
-        assert_eq!(clip.artifacts.len(), 1);
-        assert_eq!(
-            clip.artifacts[0].role,
-            DocumentClipArtifactRole::SourceResponse
-        );
-        assert_eq!(clip.artifacts[0].media_type, "text/html");
-        assert_eq!(
-            clip.artifacts[0].canonical_uri,
-            "https://example.test/report"
-        );
-        assert!(
-            std::str::from_utf8(&clip.artifacts[0].bytes)
-                .unwrap()
-                .contains("A useful finding.")
-        );
-    }
-
-    #[cfg(feature = "incumbent")]
-    #[test]
-    fn static_session_pointer_selection_scopes_clip_and_selector() {
-        let engine = StaticSessionEngine::new(NoFetch);
-        let request = SessionSpawnRequest::new("https://example.test/report")
-            .with_body(
-                "<html><head><title>The Page</title></head><body style=\"margin:0\">\
-                 <p style=\"margin:0\">before <a href=\"/chosen\">selected link</a> after \
-                 <a href=\"/outside\">outside</a></p></body></html>",
-            )
-            .with_viewport(640, 200);
-        let mut session = engine.spawn(&request).expect("spawns");
-        let _ = session.frame(640, 200);
-        let target = session
-            .text_target("selected link")
-            .expect("retained text resolves to pointer endpoints");
-
-        assert_eq!(
-            session.pointer_down(target.anchor[0], target.anchor[1]),
-            SessionClick::Handled
-        );
-        assert!(
-            session.pointer_move(target.focus[0], target.focus[1]),
-            "the range extends through ordinary pointer input"
-        );
-        assert_eq!(
-            session.pointer_up(target.focus[0], target.focus[1]),
-            SessionClick::Handled
-        );
-
-        let clip = session.clip().expect("selection supplies a clip");
-        assert_eq!(clip.text, "selected link");
-        assert_eq!(clip.links, vec!["/chosen"]);
-        let selector: serde_json::Value =
-            serde_json::from_str(clip.selector.as_deref().expect("range selector"))
-                .expect("selector is typed JSON");
-        assert_eq!(selector["type"], "dom-range");
-        assert_eq!(selector["version"], 1);
-        assert_eq!(selector["quote"], "selected link");
-        assert!(selector["anchor"]["path"].is_array());
-        assert!(selector["focus"]["path"].is_array());
-    }
-
     #[cfg(feature = "scripted")]
     #[test]
     fn scripted_session_selects_and_clips_the_live_dom() {
@@ -1568,23 +1205,6 @@ mod tests {
         assert_eq!(selector["quote"], "selected link");
         assert!(selector["anchor"]["path"].is_array());
         assert!(selector["focus"]["path"].is_array());
-    }
-
-    #[cfg(feature = "incumbent")]
-    #[test]
-    fn static_session_scrolls_long_content() {
-        let engine = StaticSessionEngine::new(NoFetch);
-        let body = format!("<html><body>{}</body></html>", "<p>line</p>".repeat(200));
-        let request = SessionSpawnRequest::new("https://example.test/")
-            .with_body(&body)
-            .with_viewport(320, 240);
-        let mut session = engine.spawn(&request).expect("spawns");
-        let _ = session.frame(320, 240);
-        assert!(session.scroll_by(0.0, 120.0), "long content scrolls");
-        assert!(
-            session.scroll_for_key(SessionScrollKey::Home),
-            "home returns to the top"
-        );
     }
 
     #[cfg(feature = "livery")]

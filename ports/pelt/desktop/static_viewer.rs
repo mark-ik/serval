@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! The on-screen static document viewer (`pelt --engine static <url>`).
+//! Pelt's headed single-document adapter.
 //!
 //! A thin winit shell over an engine-owned document session, presented through
 //! the shared [`SurfaceHost`](genet_winit_host::SurfaceHost):
@@ -15,7 +15,7 @@
 use crate::{DesktopHostProfile, WindowingMode};
 use genet_host_api::EngineProfile;
 
-/// Configuration for one static-viewer run.
+/// Configuration for one single-document host run.
 pub struct StaticViewerConfig {
     pub profile: DesktopHostProfile,
     pub url: String,
@@ -400,9 +400,8 @@ mod livery_route_tests {
     }
 }
 
-/// Run the static viewer for `config`. Headless returns immediately with no window
-/// (the CI smoke shape); headed opens a window, presents the document, and scrolls
-/// it on the wheel until the window is closed.
+/// Compatibility entrypoint for callers of the former static viewer. Script-free
+/// HTML is always routed to Livery/Buckram.
 pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
     match config.profile.windowing {
         WindowingMode::Headless => Ok(StaticViewerOutcome {
@@ -444,7 +443,7 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
 
 #[cfg(not(feature = "livery"))]
 pub fn run_livery_viewer(_config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
-    Err("the static viewer requires the livery feature".to_string())
+    Err("the document host requires the livery feature".to_string())
 }
 
 #[cfg(feature = "livery")]
@@ -489,7 +488,7 @@ impl windowed::ViewerContent for LiveryViewerContent {
 }
 
 /// Open a window and present `content` (any [`ViewerContent`](windowed::ViewerContent))
-/// through the shared winit shell until the window closes. The static viewer and the
+/// through the shared winit shell until the window closes. The Livery viewer and the
 /// scripted viewer ([`crate::scripted`]) are the two callers — same shell, different
 /// document. Kept generic (not a trait object) so each content type monomorphizes and
 /// the scripted profile can pick its JS engine at the call site.
@@ -526,10 +525,9 @@ pub(crate) mod windowed {
     use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
 
     /// A document the viewer can present: render at a size, scroll, click, and (for
-    /// scripted content) advance time-based work. The static [`LoadedDocument`] and
-    /// the scripted [`ScriptedDocument`](crate::scripted::ScriptedDocument) both
-    /// implement it, so they share this one winit shell — the lib-first surface the
-    /// pelt plan's V5/V6 grow from.
+    /// scripted content) advance time-based work. Livery-backed static and scripted
+    /// documents implement it, so they share this one winit shell. The Pelt
+    /// host-reconstruction lane replaces this private seam with a public host core.
     pub(crate) trait ViewerContent {
         /// The document title for native window chrome, when this content has one.
         fn title(&self) -> Option<String> {
@@ -543,9 +541,8 @@ pub(crate) mod windowed {
         /// action routes to the nearest `overflow: scroll/auto` container under the
         /// pointer, falling through to the document viewport. Returns whether anything
         /// moved. The default ignores the position and scrolls the viewport (the
-        /// behaviour for content with no retained per-element scroll, e.g. the scripted
-        /// document's per-frame-rebuilt session); the static [`LoadedDocument`] overrides
-        /// it with the position-aware nested scroll its persistent session retains.
+        /// behaviour for content with no retained per-element scroll. The retained
+        /// Livery session overrides it with position-aware nested scrolling.
         fn scroll_at(&mut self, _x: f32, _y: f32, dx: f32, dy: f32) -> bool {
             self.scroll_by(dx, dy)
         }
