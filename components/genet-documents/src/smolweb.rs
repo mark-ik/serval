@@ -331,7 +331,8 @@ impl SmolwebDocument {
             .max(height.max(1) as f32) as u32
     }
 
-    /// Full-document link rectangles as `[x0, y0, x1, y1]`.
+    /// Viewport-space link rectangles as `[x, y, width, height]`, matching the
+    /// shared retained-session contract.
     pub fn links(&self) -> Vec<(String, [f32; 4])> {
         let Some(layout) = &self.layout else {
             return Vec::new();
@@ -349,9 +350,9 @@ impl SmolwebDocument {
                     url.clone(),
                     [
                         rect.origin.x,
-                        rect.origin.y,
-                        rect.origin.x + rect.size.width,
-                        rect.origin.y + rect.size.height,
+                        rect.origin.y - self.scroll_y,
+                        rect.size.width,
+                        rect.size.height,
                     ],
                 ))
             })
@@ -696,10 +697,11 @@ mod tests {
                 .iter()
                 .any(|operation| matches!(operation, netrender::SceneOp::Image(_)))
         );
-        let (url, [x0, y0, x1, y1]) = doc.links().into_iter().next().expect("image link region");
+        let (url, [x, y, width, height]) =
+            doc.links().into_iter().next().expect("image link region");
         assert_eq!(url, "gemini://x.test/posts/media/picture.png");
         assert!(matches!(
-            doc.click_at((x0 + x1) / 2.0, (y0 + y1) / 2.0, 400, 300),
+            doc.click_at(x + width / 2.0, y + height / 2.0, 400, 300),
             Some(InteractionKind::Link { url })
                 if url == "gemini://x.test/posts/media/picture.png"
         ));
@@ -792,19 +794,25 @@ mod tests {
     }
 
     #[test]
-    fn links_and_clicks_use_full_document_coordinates() {
-        let mut doc = SmolwebDocument::parse(
-            "gemini://x.test/",
-            "=> gemini://x.test/page A link\n",
-            SmolwebTheme::Plain,
-        );
+    fn links_and_clicks_share_viewport_coordinates() {
+        let mut body: String = (0..30).map(|i| format!("Line {i}\n\n")).collect();
+        body.push_str("=> gemini://x.test/page A link\n");
+        let mut doc = SmolwebDocument::parse("gemini://x.test/", &body, SmolwebTheme::Plain);
         assert!(doc.links().is_empty());
         let _ = doc.frame(400, 300);
-        let (url, [x0, y0, x1, y1]) = doc.links().into_iter().next().expect("link region");
+        let (url, [_, initial_y, _, _]) = doc.links().into_iter().next().expect("link region");
         assert_eq!(url, "gemini://x.test/page");
-        assert!(x1 > x0 && y1 > y0);
+        doc.scroll_to(f32::MAX);
+        let (url, [x, y, width, height]) = doc
+            .links()
+            .into_iter()
+            .next()
+            .expect("scrolled link region");
+        assert_eq!(url, "gemini://x.test/page");
+        assert!(y < initial_y, "scrolling must move the host hit table");
+        assert!(width > 0.0 && height > 0.0);
         assert!(matches!(
-            doc.click_at((x0 + x1) / 2.0, (y0 + y1) / 2.0, 400, 300),
+            doc.click_at(x + width / 2.0, y + height / 2.0, 400, 300),
             Some(InteractionKind::Link { url }) if url == "gemini://x.test/page"
         ));
     }
