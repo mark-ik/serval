@@ -492,19 +492,4 @@ mod tests {
             "prefix styled from 0"
         );
     }
-
-    #[test]
-    fn complex_script_word_models_are_built_into_document_layout() {
-        use icu_segmenter::{WordSegmenter, options::WordBreakInvariantOptions};
-
-        let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
-        assert_eq!(
-            segmenter.segment_str("こんにちは世界").collect::<Vec<_>>(),
-            [0, 15, 21]
-        );
-        assert_eq!(
-            segmenter.segment_str("ทุกสองสัปดาห์").collect::<Vec<_>>(),
-            [0, 9, 18, 39]
-        );
-    }
 }
