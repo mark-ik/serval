@@ -1,4 +1,4 @@
-# Livery logical longhands: insets, block-size, block margins
+# Livery logical longhands and the inset shorthand
 
 **Date:** 2026-08-22
 
@@ -45,7 +45,7 @@ wrong test side, producing the false pass.
 
 ## What landed
 
-`components/livery/properties.toml` only. The generator in
+Catalog data plus one shorthand expansion arm. The generator in
 `components/livery/build.rs` already emits the full logical-to-physical
 projection from catalog data; 53 logical properties rode it before this
 change, so no cascade, computed-value, or layout code was touched.
@@ -57,6 +57,11 @@ change, so no cascade, computed-value, or layout code was touched.
 - **Seven longhands promoted** from `[[unimplemented]]` to `[[property]]`:
   `inset-block-start`, `inset-block-end`, `inset-inline-start`,
   `inset-inline-end`, `block-size`, `margin-block-start`, `margin-block-end`.
+- **The `inset` shorthand implemented**, after measurement showed it was the
+  real cause of the `css-sizing` auto-margin family. This one is not catalog
+  data alone: shorthand expansion is hand-written per `ShorthandId` in
+  `components/livery/src/cascade.rs`, so it needed a match arm beside the
+  existing `margin`/`padding` ones as well as the catalog entry.
 
 Whole groups were completed rather than only the four names the references
 need. A half-populated logical group is a latent trap — `margin-block-end`
@@ -72,8 +77,8 @@ physical properties that are already in the consumed set.
 - `cargo test -p livery`: green, including `catalog_contract`'s
   `generated_logical_groups_project_axes_and_sides` and the
   `source_url` assertion (the new entries use `css_logical_properties_1`).
-- `components/genet-livery/tests/logical_insets.rs`, new: 7 green tests plus
-  one `#[ignore]`d probe pinning the pre-existing centring defect below.
+- `components/genet-livery/tests/logical_insets.rs`, new: 9 green tests, none
+  ignored.
   They assert the projection **end to end** — cascade, computed style, used
   geometry — not merely `PropertyId::to_physical`, because a catalog entry
   alone would not catch a cascade that never applied it:
@@ -83,7 +88,11 @@ physical properties that are already in the consumed set.
   - `block-size` is height in `horizontal-tb` and width in `vertical-rl`;
   - `margin-block-end` pushes the following sibling;
   - a later physical declaration beats an earlier logical one and vice versa;
-  - the shape-reference shape places three boxes distinctly instead of stacking them.
+  - the shape-reference shape places three boxes distinctly instead of stacking them;
+  - `inset: 0` with `margin: auto` centres for `height`/`block-size` in both
+    definite and `max-content` form;
+  - the `inset` shorthand expands one, two, and four values, and drops an
+    invalid declaration whole rather than applying it partially.
 - `cargo test -p buckram`: 223 green. Full `genet-livery --all-targets`: green,
   including `grid_abspos` and the K5h retained-inset receipt, both of which the
   recovery had already closed.
@@ -97,43 +106,65 @@ Measured with a runner built from this tree, against the recovery base.
 Directory subsets, recovery runner (`f0a50c7e8de8`) versus a runner built
 from this tree. Per-file diffs, not just totals.
 
-| directory | before | after | gains | losses |
+| directory | recovery base | after | gains | losses |
 |---|---:|---:|---:|---:|
 | `css/css-position` | 43 / 75 | **47 / 71** | +4 | 0 |
 | `css/css-writing-modes` | 262 / 851 | **264 / 849** | +2 | 0 |
-| `css/css-sizing` | 213 / 299 | 200 / 312 | +2 | 15 |
+| `css/css-sizing` | 213 / 299 | 208 / 304 | +2 | 7 |
 | `css/css-shapes/shape-outside` | 60 / 154 | 56 / 158 | 0 | 4 |
 | `css/CSS2/tables` | 169 / 93 | 169 / 93 | 0 | 0 |
 | `css/CSS2/abspos` | 14 / 10 | 14 / 10 | 0 | 0 |
 
-**+8 real gains, 19 false passes converted to honest failures, 0 genuine
+**+8 gains, 11 false passes converted to honest failures, 0 genuine
 regressions.** The gains are all logical-axis positioning: four
-`css-position/vrl-*-in-multicol` files and two
-`css-writing-modes/abs-pos-border-offset-00{1,2}`, plus two
-`css-sizing/*-block-size-small-or-larger-than-container-*` files.
+`css-position/vrl-*-in-multicol`, two
+`css-writing-modes/abs-pos-border-offset-00{1,2}`, and two
+`css-sizing/*-block-size-small-or-larger-than-container-*`.
 
-Every loss is a file whose two sides previously agreed *because* the
-declaration was dropped, and now disagree because one side is correct:
+Every remaining loss is a file whose two sides previously agreed *because* a
+declaration was dropped, and now disagree because one side is correct. Each
+has a named owner outside this change:
 
 - **4 in `css-shapes`** (`circle-054`, `circle-055`, `inset-020`, `inset-021`)
-  have references built from the same `block-size` / `inset-block-start` /
-  `inset-inline-start` / `margin-block-end` set as the 32 already-red files.
-  They join that family: 36 files now failing honestly, owned by the absent
+  have references built from the same longhand set as the 32 already-red
+  files. That family is now 36 files failing honestly, owned by the absent
   `shape-outside`.
-- **15 in `css-sizing`**, almost all `div-*-auto-margin*.tentative.html`.
-  Their test and reference differ *only* in `block-size: max-content` versus
-  `block-size: 200px`; with the property dropped, both collapsed identically.
-  Renders confirm both sides now size correctly at 100x200 — the residual
-  difference is that the intrinsic-sized side stops centring.
+- **6 `css-sizing/div-fit-content-*`** use the bare `fit-content` keyword.
+  Livery's `Size` grammar accepts only the `fit-content(<length-percentage>)`
+  function form, so the declaration is dropped. Bare `fit-content` is
+  `fit-content(stretch)` in CSS Sizing 3 and needs a new value variant in both
+  crates plus a CSSOM contract (it must not serialize as `fit-content(100%)`).
+  That is CSS Sizing feature work, deliberately not bundled here.
+- **1 `css-sizing/intrinsic-percent-replaced-029`** pairs `block-size: 100%`
+  with `inline-size: min-content` on a replaced element, so it needs
+  percentage block-size resolution against replaced intrinsics.
 
-That centring failure is **pre-existing and not caused by this change**:
-`intrinsic_block_size_still_centres_by_auto_margin`, added `#[ignore]`d,
-shows `height: 200px` centres at offset 150 while `height: max-content`
-centres at 0. `height` is a physical longhand this change cannot affect, so
-the defect lives in the positioned solver's auto-margin resolution and is
-K5d work. These 15 files were false passes standing on a dropped
-declaration.
+The `css-sizing` auto-margin family — 8 of the original 15 — is closed by the
+`inset` shorthand described next.
 
+That first diagnosis was wrong, and the correction is the substance of this
+change. `solve_positioned_box` centres identically for `Length` and
+`MaxContent` once the insets are definite -- a direct Buckram probe showed
+`inline_start: 150` and margins `150/150` for both. The two cases diverged
+only in their *static rectangle* (`inline_start` 150 versus 0), which the box
+falls back to when it has no definite insets.
+
+It had none, because the **`inset` shorthand was unimplemented**: `inset: 0`
+never reached `top`/`right`/`bottom`/`left`, so every one of these boxes sat
+at a static position that legitimately differs between the definite and
+intrinsic block-size paths. Implementing the shorthand resolves all four
+variants to the same centred result.
+
+- `components/livery/properties.toml`: added `[shorthands.inset]` over the
+  four physical longhands and removed the now-contradictory
+  `[[unimplemented_shorthand]]` entry, which the generator itself flagged.
+- `components/livery/src/cascade.rs`: added the `ShorthandId::Inset` arm to
+  `expand_box_shorthand`, reusing the shared one-to-four `box_sides` pattern.
+
+The remaining logical shorthands (`inset-block`, `inset-inline`,
+`margin-block`, `margin-inline`) take one or two values rather than one to
+four, so they need a different expansion and are deliberately left for a
+follow-up rather than bundled in here.
 
 ## What this does not fix
 

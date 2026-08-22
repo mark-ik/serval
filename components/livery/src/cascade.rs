@@ -8,8 +8,9 @@ use crate::custom::{
 use crate::media::{Device, SystemPalette};
 use crate::values::{
     AnimationDelay, AnimationName, BackgroundImage, BorderStyle, BorderWidth, BoxShadow,
-    ColorScheme, ComputedColor, Duration, FontFamily, FontSize, FontStyle, FontWeight, LineHeight,
-    Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty, UsedColorContext,
+    ColorScheme, ComputedColor, Duration, FontFamily, FontSize, FontStyle, FontWeight, Inset,
+    LineHeight, Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty,
+    UsedColorContext,
 };
 use crate::{ComputedValues, PropertyId, PropertyValue, ShorthandId};
 
@@ -300,6 +301,13 @@ fn expand_box_shorthand(
             .ok()
             .and_then(|values| box_sides(&values))
             .map(|values| values.map(|value| DeclaredValue::Value(PropertyValue::Margin(value)))),
+        ShorthandId::Inset => split_components(value)
+            .into_iter()
+            .map(str::parse::<Inset>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+            .and_then(|values| box_sides(&values))
+            .map(|values| values.map(|value| DeclaredValue::Value(PropertyValue::Inset(value)))),
         ShorthandId::Padding => split_components(value)
             .into_iter()
             .map(str::parse::<Padding>)

@@ -82,6 +82,12 @@ url = "https://www.w3.org/TR/css-writing-modes-4/"
 [sources.css2_2]
 url = "https://www.w3.org/TR/CSS22/visuren.html#flow-control"
 
+[shorthands.inset]
+longhands = ["top", "right", "bottom", "left"]
+grammar = "auto | <length-percentage>, one to four values"
+seed_values = ["px", "em", "zero"]
+source = "css_position_3"
+
 [shorthands.margin]
 longhands = ["margin-top", "margin-right", "margin-bottom", "margin-left"]
 grammar = "<length-percentage> | auto, one to four values"
@@ -2736,11 +2742,6 @@ spec = "https://drafts.csswg.org/css-flexbox/#flex-flow-property"
 name = "font-variant"
 sub_properties = ["font-variant-caps", "font-variant-east-asian", "font-variant-ligatures", "font-variant-numeric", "font-variant-position"]
 spec = "https://drafts.csswg.org/css-fonts-3/#propdef-font-variant"
-
-[[unimplemented_shorthand]]
-name = "inset"
-sub_properties = ["top", "right", "bottom", "left"]
-spec = "https://drafts.csswg.org/css-logical/#propdef-inset"
 
 [[unimplemented_shorthand]]
 name = "inset-block"

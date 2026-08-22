@@ -171,16 +171,18 @@ fn shape_reference_shape_places_each_box_distinctly() {
     assert_eq!(got[1].2, 12.0, "b's block-size is its width {:?}", got[1]);
 }
 
-/// An intrinsic block size must not defeat inline auto-margin centring.
+/// `inset: 0` with `margin: auto` centres a definite-inline-size box, whatever
+/// resolves its block size.
 ///
-/// Recorded 2026-08-22: `css-sizing/div-*-auto-margin*.tentative.html` size
-/// correctly once `block-size` resolves, but the test side stops centring
-/// while its reference centres. The defect is reachable through the physical
-/// `height` longhand too, so it predates the logical catalog entries and
-/// belongs to the positioned solver's auto-margin resolution, not here.
+/// Recorded 2026-08-22 from `css-sizing/div-*-auto-margin*.tentative.html`.
+/// The first diagnosis blamed the positioned solver, wrongly:
+/// `solve_positioned_box` centres identically for `Length` and `MaxContent`
+/// when the insets are definite. The real cause was that the `inset`
+/// shorthand was unimplemented, so `inset: 0` never reached the longhands and
+/// every box fell back to its static position, which *does* differ between
+/// the definite and intrinsic block-size paths.
 #[test]
-#[ignore = "open K5d defect, 2026-08-22: an intrinsic block size defeats inline auto-margin centring"]
-fn intrinsic_block_size_still_centres_by_auto_margin() {
+fn auto_margins_centre_under_inset_zero_for_every_block_size() {
     for decl in [
         "height: 200px",
         "height: max-content",
@@ -205,4 +207,42 @@ fn intrinsic_block_size_still_centres_by_auto_margin() {
             "{decl}: auto margins centre a 100px box in 400px"
         );
     }
+}
+
+/// The `inset` shorthand expands to all four physical longhands, in the
+/// one-to-four value pattern the box shorthands share.
+#[test]
+fn inset_shorthand_expands_to_four_sides() {
+    let one = positioned("", "inset: 10px");
+    assert_eq!(
+        (one.0, one.1),
+        (10.0, 10.0),
+        "one value sets every side {one:?}"
+    );
+
+    // Two values are block then inline: `inset: 10px 40px` puts the box 10
+    // from the top and 40 from the left.
+    let two = positioned("", "inset: 10px 40px");
+    assert_eq!(
+        (two.0, two.1),
+        (40.0, 10.0),
+        "two values are block/inline {two:?}"
+    );
+
+    // Four values run top, right, bottom, left.
+    let four = positioned("", "inset: 5px 0 0 25px");
+    assert_eq!(
+        (four.0, four.1),
+        (25.0, 5.0),
+        "four values are TRBL {four:?}"
+    );
+
+    // An invalid component leaves the whole declaration out rather than
+    // applying a partial expansion.
+    let invalid = positioned("", "inset: 10px nonsense");
+    let untouched = positioned("", "");
+    assert_eq!(
+        invalid, untouched,
+        "an invalid inset is dropped whole {invalid:?}"
+    );
 }
