@@ -225,6 +225,9 @@ fn image_emits_image_block_with_url_and_alt() {
     };
     assert_eq!(url, "https://x.test/pic.png");
     assert_eq!(alt, "a picture");
+    assert!(packet.interactions.iter().any(
+        |region| matches!(&region.kind, InteractionKind::Link { url } if url == "https://x.test/pic.png")
+    ));
 }
 
 #[test]

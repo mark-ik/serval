@@ -404,8 +404,8 @@ fn collect_block_link_urls<'a>(block: &'a Block, out: &mut Vec<&'a str>) {
                 }
             }
         },
+        Block::Image { url, .. } => out.push(url.as_str()),
         Block::CodeBlock { .. }
-        | Block::Image { .. }
         | Block::Preformatted { .. }
         | Block::Rule
         | Block::MetadataRow { .. }

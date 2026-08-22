@@ -309,6 +309,19 @@ pub trait DocumentSession<F>: Any {
         height
     }
 
+    /// Absolute subresource URLs this retained session wants the host to
+    /// fetch. The host owns transport, trust, credentials, and scheduling;
+    /// sessions only name resources needed for their current presentation.
+    fn subresources(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Deliver one host-fetched subresource. `true` means visible session
+    /// state changed and the host should redraw.
+    fn provide_subresource(&mut self, _url: &str, _bytes: &[u8]) -> bool {
+        false
+    }
+
     /// Drive timers / pending script work (scripted lanes). No-op default.
     fn pump(&mut self, _now_ms: f64) {}
 

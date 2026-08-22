@@ -9,13 +9,18 @@
 //! PaintList lowering. This module retains that packet plus viewport scroll
 //! and exposes the existing session API to Pelt and Mere.
 
+use std::collections::HashMap;
+use std::io::Cursor;
+
 use document_canvas::{
-    ColorVocabulary, DocumentStyleSheet, InteractionKind, LaidOutDocument, Viewport,
-    layout_document, netrender_backend::scene_from_packet,
+    ColorVocabulary, DecodedImage, DocumentStyleSheet, InteractionKind, LaidOutDocument, Viewport,
+    layout_document, netrender_backend::scene_from_packet_with_images,
 };
 use genet_host_api::ResourceFetcher;
-use inker::SessionScrollKey;
-use inker::{Engine, EngineDocument, EngineInput};
+use image::GenericImageView;
+use inker::{
+    Block, Engine, EngineDocument, EngineInput, InlineSpan, SessionScrollKey, inline_text,
+};
 use netrender::Scene;
 
 /// How an engine-native smolweb document is colored.
@@ -49,11 +54,47 @@ pub struct SmolwebPalette {
     pub pre_bg: String,
 }
 
+/// Host policy for promoting image-shaped gemtext links into inline images.
+///
+/// The generic Genet lane defaults this off: gemtext specifies links, while
+/// embedding them is a browser presentation choice. Product hosts opt in at
+/// engine registration and retain explicit fetch and decode budgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SmolwebInlineMediaPolicy {
+    pub enabled: bool,
+    pub max_images: usize,
+    pub max_encoded_bytes_per_image: usize,
+    pub max_decoded_bytes_per_image: usize,
+    pub max_dimension: u32,
+}
+
+impl SmolwebInlineMediaPolicy {
+    pub fn images() -> Self {
+        Self {
+            enabled: true,
+            max_images: 8,
+            max_encoded_bytes_per_image: 8 * 1024 * 1024,
+            max_decoded_bytes_per_image: 64 * 1024 * 1024,
+            max_dimension: 8192,
+        }
+    }
+}
+
+impl Default for SmolwebInlineMediaPolicy {
+    fn default() -> Self {
+        let mut policy = Self::images();
+        policy.enabled = false;
+        policy
+    }
+}
+
 /// A retained engine document, its document-canvas layout, and host viewport.
 pub struct SmolwebDocument {
     document: EngineDocument,
     style: DocumentStyleSheet,
     background: [f32; 4],
+    images: HashMap<String, DecodedImage>,
+    inline_media: SmolwebInlineMediaPolicy,
     layout: Option<LaidOutDocument>,
     size: (u32, u32),
     scroll_y: f32,
@@ -72,11 +113,43 @@ impl SmolwebDocument {
         Ok(Self::parse(url, &String::from_utf8_lossy(&bytes), theme))
     }
 
+    /// Fetch a document and apply the host's inline-media presentation policy.
+    pub fn load_with_inline_media(
+        fetcher: &impl ResourceFetcher,
+        url: &str,
+        theme: SmolwebTheme,
+        policy: SmolwebInlineMediaPolicy,
+    ) -> Result<Self, String> {
+        let bytes = fetcher
+            .fetch(url)
+            .ok_or_else(|| format!("could not load {url}"))?;
+        Ok(Self::parse_with_inline_media(
+            url,
+            &String::from_utf8_lossy(&bytes),
+            theme,
+            policy,
+        ))
+    }
+
     /// Lower already-fetched content through the matching Nematic engine.
     pub fn parse(url: &str, body: &str, theme: SmolwebTheme) -> Self {
         let document = lower(url, body);
         let (style, background) = style_for_theme(&theme, url, &document.content_type);
         Self::from_document(document, style, background)
+    }
+
+    /// Lower an already-fetched body and expose eligible linked images for the
+    /// host to resolve through [`SmolwebDocument::subresources`].
+    pub fn parse_with_inline_media(
+        url: &str,
+        body: &str,
+        theme: SmolwebTheme,
+        policy: SmolwebInlineMediaPolicy,
+    ) -> Self {
+        let mut document = lower(url, body);
+        promote_inline_image_links(&mut document, policy);
+        let (style, background) = style_for_theme(&theme, url, &document.content_type);
+        Self::from_document_with_media_policy(document, style, background, policy)
     }
 
     /// Retain an already-lowered document with an explicit host style.
@@ -85,10 +158,26 @@ impl SmolwebDocument {
         style: DocumentStyleSheet,
         background: [f32; 4],
     ) -> Self {
+        Self::from_document_with_media_policy(
+            document,
+            style,
+            background,
+            SmolwebInlineMediaPolicy::default(),
+        )
+    }
+
+    fn from_document_with_media_policy(
+        document: EngineDocument,
+        style: DocumentStyleSheet,
+        background: [f32; 4],
+        inline_media: SmolwebInlineMediaPolicy,
+    ) -> Self {
         Self {
             document,
             style,
             background,
+            images: HashMap::new(),
+            inline_media,
             layout: None,
             size: (0, 0),
             scroll_y: 0.0,
@@ -98,6 +187,34 @@ impl SmolwebDocument {
     /// The portable document retained by this session.
     pub fn document(&self) -> &EngineDocument {
         &self.document
+    }
+
+    /// Unresolved inline-image URLs for the host fetch actor.
+    pub fn subresources(&self) -> Vec<String> {
+        self.document
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Image { url, .. } if !self.images.contains_key(url) => Some(url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Decode and retain one host-fetched inline image within this document's
+    /// configured resource limits.
+    pub fn provide_subresource(&mut self, url: &str, bytes: &[u8]) -> bool {
+        if self.images.contains_key(url)
+            || !self.subresources().iter().any(|pending| pending == url)
+            || bytes.len() > self.inline_media.max_encoded_bytes_per_image
+        {
+            return false;
+        }
+        let Some(image) = decode_image(bytes, self.inline_media) else {
+            return false;
+        };
+        self.images.insert(url.to_string(), image);
+        true
     }
 
     fn ensure_layout(&mut self, width: u32, height: u32) {
@@ -126,7 +243,8 @@ impl SmolwebDocument {
         self.ensure_layout(width, height);
         let layout = self.layout.as_ref().expect("layout built above");
         let packet = layout.packet.window(self.scroll_y, self.size.1 as f32);
-        let mut scene = scene_from_packet(&packet, &layout.fonts, &self.style.colors);
+        let mut scene =
+            scene_from_packet_with_images(&packet, &layout.fonts, &self.style.colors, &self.images);
         scene.push_rect(
             0.0,
             0.0,
@@ -231,6 +349,82 @@ impl SmolwebDocument {
             .interaction_at(x, y + self.scroll_y)
             .cloned()
     }
+}
+
+fn promote_inline_image_links(document: &mut EngineDocument, policy: SmolwebInlineMediaPolicy) {
+    if !policy.enabled || !is_gemtext_document(document) {
+        return;
+    }
+
+    let base_address = document.address.clone();
+    let mut promoted = 0;
+    for block in &mut document.blocks {
+        if promoted >= policy.max_images {
+            break;
+        }
+        let Some((href, alt)) = image_link(block) else {
+            continue;
+        };
+        let resolved = crate::resolve_href(&base_address, &href);
+        if !looks_like_image_url(&resolved) {
+            continue;
+        }
+        *block = Block::Image { url: resolved, alt };
+        promoted += 1;
+    }
+}
+
+fn is_gemtext_document(document: &EngineDocument) -> bool {
+    document
+        .content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/gemini"))
+}
+
+fn image_link(block: &Block) -> Option<(String, String)> {
+    let Block::Paragraph { spans } = block else {
+        return None;
+    };
+    let [InlineSpan::Link { url, spans, .. }] = spans.as_slice() else {
+        return None;
+    };
+    Some((url.clone(), inline_text(spans)))
+}
+
+fn looks_like_image_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let extension = path.rsplit_once('.').map(|(_, extension)| extension);
+    extension.is_some_and(|extension| {
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "avif" | "bmp" | "gif" | "ico" | "jfif" | "jpeg" | "jpg" | "png" | "webp"
+        )
+    })
+}
+
+fn decode_image(bytes: &[u8], policy: SmolwebInlineMediaPolicy) -> Option<DecodedImage> {
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(policy.max_dimension);
+    limits.max_image_height = Some(policy.max_dimension);
+    limits.max_alloc = Some(policy.max_decoded_bytes_per_image as u64);
+    reader.limits(limits);
+    let decoded = reader.decode().ok()?;
+    let (width, height) = decoded.dimensions();
+    let rgba_bytes = u64::from(width)
+        .checked_mul(u64::from(height))?
+        .checked_mul(4)?;
+    if rgba_bytes > policy.max_decoded_bytes_per_image as u64 {
+        return None;
+    }
+    Some(DecodedImage {
+        width,
+        height,
+        rgba8: decoded.to_rgba8().into_raw(),
+    })
 }
 
 fn lower(url: &str, body: &str) -> EngineDocument {
@@ -424,6 +618,15 @@ fn parse_color(value: &str) -> Option<[f32; 4]> {
 mod tests {
     use super::*;
 
+    fn test_png() -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(2, 1, image::Rgba([20, 40, 60, 255]));
+        let mut bytes = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .expect("encode PNG fixture");
+        bytes
+    }
+
     #[test]
     fn gemtext_uses_engine_document_and_paints_text() {
         let mut doc = SmolwebDocument::parse(
@@ -445,6 +648,42 @@ mod tests {
         assert!(matches!(
             scene.ops.first(),
             Some(netrender::SceneOp::Rect(_))
+        ));
+    }
+
+    #[test]
+    fn opted_in_gemtext_image_link_fetches_decodes_paints_and_stays_clickable() {
+        let mut doc = SmolwebDocument::parse_with_inline_media(
+            "gemini://x.test/posts/index.gmi",
+            "=> media/picture.png A picture\n",
+            SmolwebTheme::Plain,
+            SmolwebInlineMediaPolicy::images(),
+        );
+        assert!(matches!(
+            &doc.document().blocks[0],
+            Block::Image { url, alt }
+                if url == "gemini://x.test/posts/media/picture.png" && alt == "A picture"
+        ));
+        assert_eq!(
+            doc.subresources(),
+            ["gemini://x.test/posts/media/picture.png"]
+        );
+        assert!(doc.provide_subresource("gemini://x.test/posts/media/picture.png", &test_png()));
+        assert!(doc.subresources().is_empty());
+
+        let scene = doc.frame(400, 300);
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|operation| matches!(operation, netrender::SceneOp::Image(_)))
+        );
+        let (url, [x0, y0, x1, y1]) = doc.links().into_iter().next().expect("image link region");
+        assert_eq!(url, "gemini://x.test/posts/media/picture.png");
+        assert!(matches!(
+            doc.click_at((x0 + x1) / 2.0, (y0 + y1) / 2.0, 400, 300),
+            Some(InteractionKind::Link { url })
+                if url == "gemini://x.test/posts/media/picture.png"
         ));
     }
 

@@ -26,7 +26,7 @@ pub(crate) mod net_fetch;
 #[cfg(feature = "smolweb")]
 pub mod smolweb;
 #[cfg(feature = "smolweb")]
-pub use smolweb::{SmolwebDocument, SmolwebPalette, SmolwebTheme};
+pub use smolweb::{SmolwebDocument, SmolwebInlineMediaPolicy, SmolwebPalette, SmolwebTheme};
 
 #[cfg(feature = "scripted")]
 pub use genet_scripted::{

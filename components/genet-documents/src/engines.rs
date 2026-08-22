@@ -1079,6 +1079,7 @@ pub struct SmolwebSessionEngine<Fetch> {
     engine_id: String,
     fetcher: Fetch,
     theme: crate::SmolwebTheme,
+    inline_media: crate::SmolwebInlineMediaPolicy,
 }
 
 #[cfg(feature = "smolweb")]
@@ -1088,7 +1089,14 @@ impl<Fetch> SmolwebSessionEngine<Fetch> {
             engine_id: engine_id.into(),
             fetcher,
             theme,
+            inline_media: crate::SmolwebInlineMediaPolicy::default(),
         }
+    }
+
+    /// Apply a host-owned inline-media policy to documents this engine spawns.
+    pub fn with_inline_media(mut self, policy: crate::SmolwebInlineMediaPolicy) -> Self {
+        self.inline_media = policy;
+        self
     }
 }
 
@@ -1103,11 +1111,19 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for SmolwebSessi
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let doc = match &request.body {
-            Some(body) => crate::SmolwebDocument::parse(&request.address, body, self.theme.clone()),
-            None => {
-                crate::SmolwebDocument::load(&self.fetcher, &request.address, self.theme.clone())
-                    .map_err(SessionError::SpawnFailed)?
-            },
+            Some(body) => crate::SmolwebDocument::parse_with_inline_media(
+                &request.address,
+                body,
+                self.theme.clone(),
+                self.inline_media,
+            ),
+            None => crate::SmolwebDocument::load_with_inline_media(
+                &self.fetcher,
+                &request.address,
+                self.theme.clone(),
+                self.inline_media,
+            )
+            .map_err(SessionError::SpawnFailed)?,
         };
         Ok(Box::new(SmolwebDocumentSession {
             doc,
@@ -1178,6 +1194,12 @@ impl DocumentSession<Scene> for SmolwebDocumentSession {
     fn content_height(&mut self, width: u32, height: u32) -> u32 {
         self.doc.content_height(width, height)
     }
+    fn subresources(&self) -> Vec<String> {
+        self.doc.subresources()
+    }
+    fn provide_subresource(&mut self, url: &str, bytes: &[u8]) -> bool {
+        self.doc.provide_subresource(url, bytes)
+    }
     fn inspect(&self) -> Option<inker::ContentReport> {
         Some(inker::ContentReport {
             title: self.doc.document().title.clone(),
@@ -1226,6 +1248,41 @@ mod tests {
             self.requests.lock().unwrap().push(url.to_owned());
             Some(self.bytes.clone())
         }
+    }
+
+    #[cfg(feature = "smolweb")]
+    #[test]
+    fn smolweb_session_body_route_requests_and_accepts_inline_images() {
+        let image = image::RgbaImage::from_pixel(2, 1, image::Rgba([0, 128, 255, 255]));
+        let mut image_bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut image_bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode PNG fixture");
+        let engine = SmolwebSessionEngine::new(
+            inker::routing::ENGINE_NEMATIC_GEMTEXT,
+            NoFetch,
+            crate::SmolwebTheme::Plain,
+        )
+        .with_inline_media(crate::SmolwebInlineMediaPolicy::images());
+        let request = SessionSpawnRequest::new("gemini://x.test/docs/index.gmi")
+            .with_body("=> picture.png Picture\n")
+            .with_viewport(320, 240);
+        let mut session = engine.spawn(&request).expect("smolweb session spawns");
+
+        assert_eq!(session.subresources(), ["gemini://x.test/docs/picture.png"]);
+        assert!(session.provide_subresource("gemini://x.test/docs/picture.png", &image_bytes));
+        let scene = session.frame(320, 240);
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|operation| matches!(operation, netrender::SceneOp::Image(_)))
+        );
+        assert!(session.subresources().is_empty());
+        assert_eq!(session.links()[0].url, "gemini://x.test/docs/picture.png");
     }
 
     #[cfg(feature = "livery")]

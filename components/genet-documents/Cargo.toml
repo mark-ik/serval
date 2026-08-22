@@ -19,7 +19,7 @@ netfetch = ["dep:netfetcher", "dep:tokio", "dep:bytes", "dep:url"]
 # The smolweb engine-native lane: errand transport, Nematic EngineDocument
 # lowering, and document-canvas layout/paint.
 smolweb = [
-    "dep:errand", "dep:nematic", "dep:document-canvas", "dep:tokio", "dep:url",
+    "dep:errand", "dep:nematic", "dep:document-canvas", "dep:image", "dep:tokio", "dep:url",
 ]
 # The scripted lane: a live LiveryScriptedDocument on Boa.
 scripted = [
@@ -63,9 +63,9 @@ netfetcher = { path = "../netfetcher", optional = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"], optional = true }
 bytes = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Offline mock HTTP server for the netfetch integration test (moved with
 # net_fetch.rs from pelt); runs without a live network.
 mockito = "1"
-image = { workspace = true }
