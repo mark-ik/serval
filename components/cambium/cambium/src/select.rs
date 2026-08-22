@@ -12,7 +12,7 @@
 //! control like [`checkbox`](crate::checkbox) / [`text_field`](crate::text_field).
 //!
 //! Stacking: the option list is `position: absolute`, so it auto-lifts above
-//! in-flow content (genet-layout's CSS 2.1 Appendix E stacking + z-index). To sit
+//! in-flow content (Livery/Buckram positioned stacking + z-index). To sit
 //! above a *later positioned* sibling, give the open list (or the select) a higher
 //! `z-index`; the old "place the select last" workaround is no longer required.
 

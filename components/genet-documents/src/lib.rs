@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Genet's retained document sessions: the static, scripted, and smolweb
+//! Genet's retained document sessions: Livery HTML, scripted HTML, and smolweb
 //! content lanes, as inker **session engines** (2026-07-10 session-engines
 //! plan).
 //!

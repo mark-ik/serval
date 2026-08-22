@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Pragmatic local-first link resolution, shared by the static ([`document`]) and
-//! scripted ([`scripted`]) loaders (and the chrome viewer) so they cannot drift —
-//! and, being dependency-free, usable from the headless `scripted` profile without
-//! dragging in the `document` module's render/`data-url` stack. This is deliberately
+//! Pragmatic local-first link resolution, shared by the Livery and scripted
+//! loaders so they cannot drift. Being dependency-free keeps it usable by
+//! render-free hosts without dragging in the document resource stack. This is deliberately
 //! *not* the full WHATWG URL algorithm: it resolves bare local paths (which a real
 //! `Url::join` mishandles — a Windows `C:\…` path parses as a `c:` scheme) as well as
 //! `http(s):`/`data:`/`file:` bases. The module-resolution path that needs `./`/`../`

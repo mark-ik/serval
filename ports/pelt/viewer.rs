@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Script-free Pelt entrypoint.
+//! Standalone Pelt reference-host entrypoint.
 
 use std::env;
 
@@ -49,9 +49,7 @@ pub(crate) fn main() {
             },
             "--engine" => {
                 let Some(value) = args.next() else {
-                    eprintln!(
-                        "--engine requires viewer, static, livery, scripted, or livery-scripted"
-                    );
+                    eprintln!("--engine requires livery or scripted");
                     std::process::exit(2);
                 };
                 engine_profile = parse_engine_profile(&value);
@@ -120,7 +118,7 @@ pub(crate) fn main() {
                 wayland_present_surfaces_smoke = true;
             },
             value if value.starts_with('-') => {
-                eprintln!("unsupported script-free viewer option: {value}");
+                eprintln!("unsupported pelt option: {value}");
                 std::process::exit(2);
             },
             value => {
@@ -129,16 +127,11 @@ pub(crate) fn main() {
         }
     }
 
-    if engine_profile.is_browser() {
-        eprintln!("pelt does not host the old browser engine profile");
-        std::process::exit(2);
-    }
-
     let engine = DeferredShellEngine::new(engine_profile);
     let capabilities = engine.capabilities();
     let url = url.unwrap_or_else(|| "about:blank".to_owned());
     println!(
-        "pelt viewer profile={} url={} javascript={} webdriver={} devtools={} webgpu={} webxr={}",
+        "pelt host profile={} url={} javascript={} webdriver={} devtools={} webgpu={} webxr={}",
         engine.profile(),
         url,
         capabilities.javascript,
@@ -149,8 +142,8 @@ pub(crate) fn main() {
     );
 
     if netrender_smoke {
-        // Pre-retirement this fell through into the viewer window; with the
-        // viewer gone the smoke is the whole run, exiting clean.
+        // Presentation-backend smoke: it is independent of the selected
+        // document engine and exits after its bounded receipt.
         run_optional_netrender_smoke();
         return;
     }
@@ -196,99 +189,32 @@ pub(crate) fn main() {
         return;
     }
 
-    if matches!(engine_profile, EngineProfile::Livery) {
-        #[cfg(feature = "livery")]
-        {
-            run_livery_profile(url, size, frames);
-            return;
-        }
-        #[cfg(not(feature = "livery"))]
-        {
-            eprintln!(
-                "pelt has no registered engine 'genet.livery'; rebuild with `--features livery`"
-            );
-            std::process::exit(2);
-        }
-    }
-
-    // `pelt --engine livery-scripted <url>` is the F4 product route: one live
-    // scripted DOM, with Livery owning CSSOM, resources, shaped layout, and paint.
-    // It retains the explicit route spelling while sharing the owned engine.
-    if matches!(engine_profile, EngineProfile::LiveryScripted) {
-        #[cfg(feature = "livery-scripted")]
-        {
-            run_livery_scripted_profile(url, js_engine, size, frames);
-            return;
-        }
-        #[cfg(not(feature = "livery-scripted"))]
-        {
-            eprintln!(
-                "pelt has no registered engine 'genet.livery-scripted'; rebuild with `--features livery-scripted`"
-            );
-            std::process::exit(2);
-        }
-    }
-
-    // `pelt --engine static|viewer <url>`: the genet-native on-screen document
-    // viewer (the orrery-host present shape over the genet-host-api / pelt-desktop
-    // contracts). Static and Viewer are the script-free document profiles.
-    if matches!(
-        engine_profile,
-        EngineProfile::Static | EngineProfile::Viewer
-    ) {
-        // A smolweb scheme (gemini/gopher/…) renders natively through the smolweb
-        // viewer (errand transport + parse + native themed view), not the HTML path.
-        #[cfg(feature = "smolweb")]
-        if is_smolweb_url(&url) {
-            run_smolweb_profile(url, engine_profile, size, frames);
-            return;
-        }
-        let mut config = pelt_desktop::StaticViewerConfig::new(
-            engine_profile,
-            pelt_desktop::WindowingMode::Headed,
-            url,
-        );
-        if let Some((width, height)) = size {
-            config = config.with_size(width, height);
-        }
-        if let Some(limit) = frames {
-            config = config.with_frame_limit(limit);
-        }
-        match pelt_desktop::run_static_viewer(config) {
-            Ok(outcome) => {
-                println!(
-                    "pelt static viewer url={} window={} redraws={} size={}x{}",
-                    outcome.url,
-                    outcome.created_window,
-                    outcome.redraws,
-                    outcome.size.0,
-                    outcome.size.1
-                );
+    match engine_profile {
+        EngineProfile::Livery => {
+            // Protocol-native content bypasses the HTML engine while retaining
+            // the same headed host. P4 will move this choice into Inker routing.
+            #[cfg(feature = "smolweb")]
+            if is_smolweb_url(&url) {
+                run_smolweb_profile(url, size, frames);
                 return;
-            },
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            },
-        }
-    }
+            }
 
-    // `pelt --engine scripted <url> [--js boa|nova]`: the live, script-driven
-    // document profile (V4). Runs the page's inline <script> on the chosen engine and
-    // renders the mutated DOM, driving timers + the GC tick at frame cadence.
-    if matches!(engine_profile, EngineProfile::Scripted) {
-        run_scripted_profile(url, js_engine, size, frames);
-        return;
+            #[cfg(feature = "livery")]
+            run_livery_profile(url, size, frames);
+            #[cfg(not(feature = "livery"))]
+            {
+                eprintln!(
+                    "pelt has no registered engine 'genet.livery'; rebuild with `--features livery`"
+                );
+                std::process::exit(2);
+            }
+        },
+        EngineProfile::Scripted => {
+            // Runs inline scripts on the chosen backend and retains the mutated
+            // document through the same owned Livery/Buckram route.
+            run_scripted_profile(url, js_engine, size, frames);
+        },
     }
-
-    eprintln!(
-        "pelt has no engine for profile {engine_profile} in this build; use \
-         --engine static <url> for the on-screen document viewer, \
-         --engine scripted <url> for the scripted profile (needs --features scripted), \
-         --engine livery-scripted <url> for the explicit F4 route (needs --features livery-scripted), \
-         or a smoke flag (--help)."
-    );
-    std::process::exit(2);
 }
 
 /// Whether `url` is a smolweb scheme the native smolweb viewer handles.
@@ -337,14 +263,12 @@ fn parse_frames(value: &str) -> u32 {
 
 /// Dispatch a smolweb URL to the owned headed document viewer.
 #[cfg(feature = "smolweb")]
-fn run_smolweb_profile(
-    url: String,
-    profile: EngineProfile,
-    size: Option<(u32, u32)>,
-    frames: Option<u32>,
-) {
-    let mut config =
-        pelt_desktop::StaticViewerConfig::new(profile, pelt_desktop::WindowingMode::Headed, url);
+fn run_smolweb_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
+    let mut config = pelt_desktop::StaticViewerConfig::new(
+        EngineProfile::Livery,
+        pelt_desktop::WindowingMode::Headed,
+        url,
+    );
     if let Some((width, height)) = size {
         config = config.with_size(width, height);
     }
@@ -399,49 +323,7 @@ fn run_scripted_profile(url: String, js: String, size: Option<(u32, u32)>, frame
     }
 }
 
-/// Dispatch the explicit Livery-scripted route to the shared headed shell.
-/// The existing scripted route remains Stylo-geometry backed.
-#[cfg(feature = "livery-scripted")]
-fn run_livery_scripted_profile(
-    url: String,
-    js: String,
-    size: Option<(u32, u32)>,
-    frames: Option<u32>,
-) {
-    let Some(engine) = pelt_desktop::ScriptedEngine::parse(&js) else {
-        eprintln!("--js expects boa or nova (got '{js}')");
-        std::process::exit(2);
-    };
-    let mut config = pelt_desktop::StaticViewerConfig::new(
-        EngineProfile::LiveryScripted,
-        pelt_desktop::WindowingMode::Headed,
-        url,
-    );
-    if let Some((width, height)) = size {
-        config = config.with_size(width, height);
-    }
-    if let Some(limit) = frames {
-        config = config.with_frame_limit(limit);
-    }
-    match pelt_desktop::run_livery_scripted_viewer(config, engine) {
-        Ok(outcome) => println!(
-            "pelt livery-scripted viewer engine={} url={} window={} redraws={} size={}x{}",
-            engine.label(),
-            outcome.url,
-            outcome.created_window,
-            outcome.redraws,
-            outcome.size.0,
-            outcome.size.1,
-        ),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        },
-    }
-}
-
-/// Dispatch the explicit Livery pin. This is intentionally a distinct call
-/// from the static route while retaining its own document protocol.
+/// Dispatch script-free HTML to the owned Livery/Buckram document engine.
 #[cfg(feature = "livery")]
 fn run_livery_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
     let mut config = pelt_desktop::StaticViewerConfig::new(
@@ -697,16 +579,15 @@ pelt {VERSION}
 
 Usage: pelt [--engine <profile>] [<url-or-file>] [options]
 
-Script-free Pelt: genet's reference browser. `--engine static <url-or-file>`
-opens the Livery/Buckram on-screen document viewer (file://, a bare path, data:
-URLs, and http(s) in the default build). `--engine scripted` runs a page's
-<script> through the same owned document route (needs --features scripted),
-and `--engine livery-scripted` retains the explicit compatibility spelling.
-Smoke runners validate the present backends (--help lists them).
+Pelt is Genet's reference host. Livery/Buckram renders script-free HTML by
+default (file://, bare paths, data: URLs, and http(s)). `--engine scripted`
+runs a page's <script> through the same owned document route (needs
+--features scripted). The former viewer, static, and livery-scripted spellings
+remain accepted as input aliases. Smoke runners validate the present backends.
 
 Options:
-    --engine <viewer|static|livery|scripted|livery-scripted>
-    --js <boa|nova>                    (scripted and livery-scripted profiles: JS backend; nova needs --features scripted-nova)
+    --engine <livery|scripted>         (diagnostic override; legacy aliases accepted)
+    --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
     --netrender-smoke

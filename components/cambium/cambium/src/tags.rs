@@ -177,7 +177,7 @@ mod tests {
 
     /// `external_texture(7, 320, 240)` builds an `<external-texture>` element carrying
     /// the host texture key and a block box sized via its `style` attribute — the
-    /// element genet-layout paints as a `DrawExternalTexture` compositor pass.
+    /// element Livery paints as a `DrawExternalTexture` compositor pass.
     #[test]
     fn external_texture_builds_keyed_element() {
         use layout_dom_api::{LocalName, Namespace};
@@ -209,7 +209,7 @@ mod tests {
 
     /// `custom_leaf(7, 20, 10)` builds a `<custom-leaf>` element carrying the leaf
     /// key and a block box sized via its `style` attribute — the element
-    /// genet-layout treats as a replaced leaf whose paint is the host leaf's
+    /// Livery/Buckram treats as a replaced leaf whose paint is the host leaf's
     /// Path-A commands. Mirrors `external_texture_builds_keyed_element`.
     #[test]
     fn custom_leaf_builds_keyed_element() {

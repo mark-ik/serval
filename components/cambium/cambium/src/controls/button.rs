@@ -40,8 +40,7 @@ where
 /// The child leaf reaches paint at any button `display`. It takes the block
 /// replaced-leaf path inside a block button, and rides as an `InlineBoxItem`
 /// inside the `inline-block` button Genet's UA sheet gives `<button>`. Pinned by
-/// `a_chisel_leaf_inside_a_button_is_reported_at_every_button_display` in
-/// genet-layout.
+/// the Buckram/Livery replaced-leaf route.
 pub fn button_with<Seq, State, Action, OA, F>(
     child: Seq,
     handler: F,

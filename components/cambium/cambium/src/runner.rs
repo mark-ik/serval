@@ -9,7 +9,7 @@
 //! that turns a state change into DOM mutations.
 //!
 //! [`GenetAppRunner`] is that owner, kept deliberately thin: it depends only
-//! on `meristem` and this backend, never on genet-layout / genet-render. A host
+//! on `meristem` and this backend, never on Livery/Buckram or presentation. A host
 //! crate such as `pelt-desktop` drives the render side over the
 //! [`ScriptedDom`](genet_scripted_dom::ScriptedDom) the runner mutates.
 //!

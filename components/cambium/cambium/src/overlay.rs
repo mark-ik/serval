@@ -5,8 +5,7 @@
 //! Host overlays / popups: an absolutely-positioned layer placed by a point.
 //!
 //! An overlay is a `position: absolute` element placed by an inline `style`.
-//! genet-layout implements CSS 2.1
-//! Appendix E stacking with z-index (`genet-layout/paint_stacking.rs`), so an
+//! Livery/Buckram implements positioned stacking and z-index, so an
 //! out-of-flow `position: absolute` box auto-lifts above in-flow content regardless
 //! of document order; overlapping positioned boxes order by `(z-index, document
 //! order)`. (No portal / teleport: an overlay stays a DOM child of wherever it is

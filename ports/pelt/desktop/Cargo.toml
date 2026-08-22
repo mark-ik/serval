@@ -19,8 +19,6 @@ default = ["livery", "netfetch"]
 # Engine-neutral headed presentation. Both engines can produce a `Scene`; this
 # feature owns only the winit/wgpu shell that presents one.
 present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
-# Compatibility name for the headed viewer, now routed to the owned engine.
-viewer = ["livery"]
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
@@ -39,7 +37,7 @@ scripted = [
     "dep:script-engine-boa",
     "dep:genet-extract",
 ]
-# Compatibility name for the now-owned live scripted route.
+# Compatibility feature spelling; the scripted route is already Livery/Buckram.
 livery-scripted = ["scripted", "genet-documents/livery-scripted"]
 # Add the Nova engine to the scripted profile (64-bit targets, including wasm64).
 # Off by default; enabling

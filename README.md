@@ -1,29 +1,29 @@
 # genet
 
 genet is a prototype web/UI engine derived from [Servo](https://servo.org) and
-rebuilt on the [Linebender](https://linebender.org/) ecosystem (vello, parley,
-taffy). It keeps Servo's Rust foundation and the Stylo CSS cascade, removes
-SpiderMonkey and the multiprocess subsystems, and layers its own modular
-layout, pluggable JS scripting, and rendering paths on top.
+rebuilt around an owned Rust web stack: Livery for CSS, Buckram for layout,
+pluggable script runtimes, and wgpu presentation. Servo remains upstream
+reference material rather than a runtime dependency.
 
 <p align="center">
   <img src="assets/screenshots/pelt-chrome.png" alt="Pelt showing its native chrome around a local document" width="900"><br>
   <sub>Pelt, genet's reference browser, driving a local document through its native chrome.</sub>
 </p>
 
-## Status (2026-08-12)
+## Status (2026-08-22)
 
 Active prototype. A development monorepo of ~50 crates, all `publish = false`.
 
-- Layout, hit-testing, scrolling, selection, find-in-page, focus order, and
-  the external-texture element view are landed and tested. Remote http(s)
-  loading is on by default via the in-repo netfetcher family.
+- Livery/Buckram is the sole HTML style and layout route. It owns retained
+  layout, hit testing, nested scrolling, selection, resources, and scene
+  production. Remote http(s) loading is on by default through netfetcher.
 - Scripting is an engine-neutral seam with three working backends: Nova
   (primary native), Boa (pure Rust, wasm and conformance oracle), and Piccolo
   (Lua).
-- A clean-room CSS engine (`components/livery`) and layout engine
-  (`components/buckram`) are under heavy development beside the incumbent
-  Stylo lane. The scripted livery route reached Pelt on 2026-08-10.
+- Pelt currently proves the static and scripted Livery routes in a headed
+  single-document adapter. Its next lane rebuilds the embeddable, tiled,
+  tiered reference host around those engines; see
+  `docs/2026-08-22_pelt_host_reconstruction_execution_plan.md`.
 - `components/cambium/` is the reactive UI toolkit, including the shared
   desktop host (`cambium-genet-winit-host`) that sibling apps build on.
   Client-side window decorations landed on that host 2026-08-10.
@@ -32,8 +32,7 @@ Active prototype. A development monorepo of ~50 crates, all `publish = false`.
   the sibling [netrender](https://github.com/merely-made/netrender) repo.
 
 Current state and plans are tracked in `docs/`, named by date; the most recent
-docs are authoritative. The strategic arc is the livery + buckram clean-room
-CSS-and-layout route toward a full-web cutover.
+docs are authoritative.
 
 ## Use
 
@@ -44,20 +43,17 @@ validation viewer.
 ```sh
 cargo build
 
-# On-screen document viewer (file://, bare paths, data:, http(s))
-cargo run -p pelt -- --engine static <url-or-file>
+# Script-free HTML through Livery/Buckram (file://, bare paths, data:, http(s))
+cargo run -p pelt -- <url-or-file>
 
 # Scripted profile: run a page's inline <script> and render the mutated DOM
 cargo run -p pelt --features scripted -- --engine scripted <file>
 
-# Clean-room CSS lane
-cargo run -p pelt --features livery-scripted -- --engine livery-scripted <file>
-
-# Headless snapshot / reftest harness
-cargo run -p pelt -- --engine headless --out <file>.scene
+# Protocol-native document lane
+cargo run -p pelt --features smolweb -- gemini://example.org/
 ```
 
-`pelt --help` lists every profile, flag, and smoke runner.
+`pelt --help` lists the diagnostic engine override and presentation smoke runners.
 
 ```sh
 cargo test --workspace                 # unit/lib tests

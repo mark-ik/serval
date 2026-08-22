@@ -26,12 +26,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)
 
 [features]
 default = ["livery", "netfetch"]
-# viewer-engine pulls the desktop host (smoke runners, present backends).
-# The Masonry-era Xilem viewer (pelt-viewer) was retired 2026-06-12 — its
-# CPU-readback render path predated direct present; pelt-live is the
-# on-screen genet window until a genet-native viewer mode is built on the
-# genet-host-api/pelt-desktop contracts. (The egui chrome crate was retired
-# 2026-05-20 before it.)
+# viewer-engine is the retained compatibility name for the desktop adapter:
+# smoke runners, winit, and present backends around the Pelt host.
 viewer-engine = ["dep:pelt-desktop"]
 viewer-netrender = ["livery", "pelt-desktop/netrender"]
 # Owned CSS/layout route and the default reference-browser engine.
@@ -41,7 +37,7 @@ livery = ["viewer-engine", "pelt-desktop/livery"]
 # runtime on top of the present stack. Boa-only by default (a single engine links
 # under the Windows image-size limit alongside wgpu); add `scripted-nova` for Nova.
 scripted = ["viewer-engine", "pelt-desktop/scripted"]
-# Compatibility name for the now-owned scripted route.
+# Compatibility feature spelling; scripted HTML already uses Livery/Buckram.
 livery-scripted = ["scripted", "pelt-desktop/livery-scripted"]
 scripted-nova = ["scripted", "pelt-desktop/scripted-nova"]
 # Remote document loading: the default Livery profile loads http(s) through the
@@ -49,7 +45,7 @@ scripted-nova = ["scripted", "pelt-desktop/scripted-nova"]
 # feature remains selectable so `--no-default-features` can keep the light contracts
 # profile free of the async network stack.
 netfetch = ["viewer-engine", "pelt-desktop/netfetch"]
-# Smolweb document loading: `pelt --features smolweb --engine static gemini://…`
+# Smolweb document loading: `pelt --features smolweb gemini://…`
 # renders a native, per-site-themed capsule (gemtext / gopher / feed) over the errand
 # transport. Off by default — the async network stack is opt-in.
 smolweb = ["livery", "pelt-desktop/smolweb"]

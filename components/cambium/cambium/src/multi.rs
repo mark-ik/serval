@@ -31,11 +31,12 @@
 //! - [`push_forest_projection`](GenetMultiRunner::push_forest_projection) —
 //!   the **forest dom** (design step 3): every projection shares ONE document
 //!   and builds under its own **window-root** element (a runner tree that
-//!   mounts at a node, not the document root — genet-layout's `ForestDom` /
-//!   `layout_subtree` lay each window-root out at its own size). Because the
+//!   mounts at a node, not the document root. The retired `ForestDom` spike
+//!   proved the shape; Pelt's host-reconstruction lane must supply the owned
+//!   Livery/Buckram subtree layout seam. Because the
 //!   windows are subtrees of one document, a cross-window `move_before` is
 //!   intra-document, so a torn-out tile keeps its DOM node, scroll, focus, and
-//!   animation. This is the substrate genet-layout's forest-dom spike de-risked.
+//!   animation. This is the substrate that spike de-risked.
 
 use genet_scripted_dom::NodeId;
 use layout_dom_api::{LayoutDom, LayoutDomMut};
