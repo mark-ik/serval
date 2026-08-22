@@ -237,7 +237,7 @@ parley = { version = "0.10.0", default-features = true }
 # plan). inker + nematic publish (0.1.0); the rest inherit publish = false.
 # errand (the smolweb wire layer) + its protocol members adopted the same day,
 # all published crates keeping their identities.
-errand = { version = "=0.3.3", path = "components/errand" }
+errand = { version = "=0.3.4", path = "components/errand" }
 # The three spec crates moved to the smolweb workspace on 2026-07-23 (the repo
 # consolidation plan in mere's design docs): their names belong to the protocols'
 # communities, not to the engine that speaks them. genet keeps errand (the client
