@@ -149,6 +149,10 @@ fn matches(dom: &ScriptedDom, node: NodeId, sel: &Selector) -> bool {
                     && dom
                         .element_name(node)
                         .is_some_and(|name| name.local.as_ref() == "button"))
+                || (r == "textbox"
+                    && dom
+                        .element_name(node)
+                        .is_some_and(|name| name.local.as_ref() == "textarea"))
         },
     };
     if !by_kind {
@@ -517,6 +521,23 @@ mod tests {
         let hit = resolve(&s, &Selector::role("button").containing("Example Domain"))
             .expect("a native button has the button role without a redundant role attribute");
         assert_eq!(hit.point, swatch_centre(200.0));
+    }
+
+    #[test]
+    fn a_textbox_role_selector_honors_the_native_textarea_role() {
+        let mut dom = strip_dom();
+        let root = dom.document();
+        let textarea = dom.create_element(qual("textarea"));
+        dom.set_attribute(
+            textarea,
+            qual("style"),
+            "position:absolute;left:10px;top:80px;width:120px;height:40px;",
+        );
+        dom.append_child(root, textarea);
+        let s = surfaces(&dom);
+        let hit = resolve(&s, &Selector::role("textbox"))
+            .expect("a native textarea has the textbox role without a redundant role attribute");
+        assert_eq!(hit.point, (570.0, 110.0));
     }
 
     #[test]

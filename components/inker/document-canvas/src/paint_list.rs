@@ -40,15 +40,17 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use paint_list_api::{
-    ColorF, CommonPlacement, DeviceIntSize, EngineId, FontInstanceKey, FontResource, GlyphInstance,
-    IdNamespace, LayoutPoint, LayoutRect, LineItem, LineOrientation, LineStyle, PaintCmd,
-    PaintList, RectItem, TextOptions, TextRunItem,
+    AlphaType, ColorF, CommonPlacement, DeviceIntSize, EngineId, FontInstanceKey, FontResource,
+    GlyphInstance, IdNamespace, ImageItem, ImageKey, ImageRendering, ImageResource, LayoutPoint,
+    LayoutRect, LineItem, LineOrientation, LineStyle, PaintCmd, PaintList, RectItem, TextOptions,
+    TextRunItem,
 };
 
 use crate::font_table::FontTable;
 use crate::style::ColorVocabulary;
 use crate::types::{
-    DocumentRenderPacket, FontFaceId, GlyphRun, Rect, RenderedBlock, RenderedBlockKind,
+    DecodedImage, DocumentRenderPacket, FontFaceId, GlyphRun, Rect, RenderedBlock,
+    RenderedBlockKind,
 };
 
 /// Half the hairline thickness used for [`RenderedBlockKind::Rule`]
@@ -64,6 +66,7 @@ pub struct InkerPaintList {
     viewport: DeviceIntSize,
     commands: Vec<PaintCmd>,
     fonts: Vec<FontResource>,
+    images: Vec<ImageResource>,
     generation: u64,
 }
 
@@ -83,6 +86,9 @@ impl PaintList for InkerPaintList {
     fn fonts(&self) -> &[FontResource] {
         &self.fonts
     }
+    fn images(&self) -> &[ImageResource] {
+        &self.images
+    }
 }
 
 /// Build an [`InkerPaintList`] from a [`DocumentRenderPacket`] and its
@@ -98,11 +104,22 @@ pub fn paint_list_from_packet(
     fonts: &FontTable,
     colors: &ColorVocabulary,
 ) -> InkerPaintList {
+    paint_list_from_packet_with_images(packet, fonts, colors, &HashMap::new())
+}
+
+/// Build a paint list while resolving image blocks against decoded host
+/// resources keyed by the block URL.
+pub fn paint_list_from_packet_with_images(
+    packet: &DocumentRenderPacket,
+    fonts: &FontTable,
+    colors: &ColorVocabulary,
+    images: &HashMap<String, DecodedImage>,
+) -> InkerPaintList {
     let viewport = DeviceIntSize::new(
         packet.viewport.width.max(0.0).round() as i32,
         packet.viewport.height.max(0.0).round() as i32,
     );
-    let mut builder = Builder::new(fonts, colors);
+    let mut builder = Builder::new(fonts, colors, images);
     for block in &packet.blocks {
         builder.emit_block(block);
     }
@@ -110,6 +127,7 @@ pub fn paint_list_from_packet(
         viewport,
         commands: builder.commands,
         fonts: builder.fonts,
+        images: builder.images,
         generation: 0,
     }
 }
@@ -120,21 +138,33 @@ pub fn paint_list_from_packet(
 struct Builder<'a> {
     face_table: &'a FontTable,
     colors: &'a ColorVocabulary,
+    decoded_images: &'a HashMap<String, DecodedImage>,
     commands: Vec<PaintCmd>,
     fonts: Vec<FontResource>,
+    images: Vec<ImageResource>,
     face_keys: HashMap<FontFaceId, FontInstanceKey>,
+    image_keys: HashMap<String, ImageKey>,
     next_font_key: u32,
+    next_image_key: u32,
 }
 
 impl<'a> Builder<'a> {
-    fn new(face_table: &'a FontTable, colors: &'a ColorVocabulary) -> Self {
+    fn new(
+        face_table: &'a FontTable,
+        colors: &'a ColorVocabulary,
+        decoded_images: &'a HashMap<String, DecodedImage>,
+    ) -> Self {
         Self {
             face_table,
             colors,
+            decoded_images,
             commands: Vec::new(),
             fonts: Vec::new(),
+            images: Vec::new(),
             face_keys: HashMap::new(),
+            image_keys: HashMap::new(),
             next_font_key: 0,
+            next_image_key: 0,
         }
     }
 
@@ -145,8 +175,22 @@ impl<'a> Builder<'a> {
                     self.emit_glyph_run(run);
                 }
             },
-            RenderedBlockKind::Image { .. } => {
-                self.push_rect(block.bounds, self.colors.placeholder_image);
+            RenderedBlockKind::Image { url, .. } => {
+                if let Some((key, width, height)) = self.intern_image(url) {
+                    self.commands.push(PaintCmd::DrawImage(ImageItem {
+                        placement: CommonPlacement::new(layout_rect(contained_image_bounds(
+                            block.bounds,
+                            width,
+                            height,
+                        ))),
+                        image_key: key,
+                        image_rendering: ImageRendering::Auto,
+                        alpha_type: AlphaType::Alpha,
+                        color: ColorF::WHITE,
+                    }));
+                } else {
+                    self.push_rect(block.bounds, self.colors.placeholder_image);
+                }
             },
             RenderedBlockKind::Rule => {
                 // Hairline: a 1px-tall strip centered on the rect's
@@ -228,6 +272,23 @@ impl<'a> Builder<'a> {
         Some(key)
     }
 
+    fn intern_image(&mut self, url: &str) -> Option<(ImageKey, u32, u32)> {
+        let image = self.decoded_images.get(url)?;
+        if let Some(&key) = self.image_keys.get(url) {
+            return Some((key, image.width, image.height));
+        }
+        let key = ImageKey::new(IdNamespace(0), self.next_image_key);
+        self.next_image_key += 1;
+        self.images.push(ImageResource {
+            key,
+            width: image.width,
+            height: image.height,
+            data: image.rgba8.clone(),
+        });
+        self.image_keys.insert(url.to_string(), key);
+        Some((key, image.width, image.height))
+    }
+
     fn push_rect(&mut self, bounds: Rect, color: [f32; 4]) {
         if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
             return;
@@ -237,6 +298,21 @@ impl<'a> Builder<'a> {
             color: colorf(color),
         }));
     }
+}
+
+fn contained_image_bounds(bounds: Rect, width: u32, height: u32) -> Rect {
+    if width == 0 || height == 0 || bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return bounds;
+    }
+    let scale = (bounds.size.width / width as f32).min(bounds.size.height / height as f32);
+    let fitted_width = width as f32 * scale;
+    let fitted_height = height as f32 * scale;
+    Rect::from_xywh(
+        bounds.origin.x + (bounds.size.width - fitted_width) * 0.5,
+        bounds.origin.y + (bounds.size.height - fitted_height) * 0.5,
+        fitted_width,
+        fitted_height,
+    )
 }
 
 fn glyph_run_bounds(run: &GlyphRun) -> Rect {
@@ -305,6 +381,54 @@ mod tests {
         assert_eq!(list.engine_id(), EngineId::INKER);
         assert!(list.commands().is_empty());
         assert!(list.fonts().is_empty());
+        assert!(list.images().is_empty());
+    }
+
+    #[test]
+    fn decoded_image_emits_draw_image_and_resource_sidecar() {
+        let laid = layout_document(
+            &doc(vec![Block::Image {
+                url: "https://x.test/pic.png".into(),
+                alt: "picture".into(),
+            }]),
+            Viewport::new(640.0, 480.0),
+            &DocumentStyleSheet::default(),
+        );
+        let decoded = DecodedImage {
+            width: 2,
+            height: 1,
+            rgba8: vec![255, 0, 0, 255, 0, 0, 255, 255],
+        };
+        let images = HashMap::from([("https://x.test/pic.png".to_string(), decoded.clone())]);
+        let list = paint_list_from_packet_with_images(
+            &laid.packet,
+            &laid.fonts,
+            &ColorVocabulary::default(),
+            &images,
+        );
+
+        let draw = list
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                PaintCmd::DrawImage(image) => Some(image),
+                _ => None,
+            })
+            .expect("decoded resource paints as an image");
+        let resource = list
+            .images()
+            .iter()
+            .find(|resource| resource.key == draw.image_key)
+            .expect("draw key resolves through the image sidecar");
+        assert_eq!((resource.width, resource.height), (2, 1));
+        assert_eq!(resource.data, decoded.rgba8);
+        assert!(
+            !list
+                .commands()
+                .iter()
+                .any(|command| matches!(command, PaintCmd::DrawRect(_))),
+            "a resolved image does not fall back to its placeholder"
+        );
     }
 
     #[test]

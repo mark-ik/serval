@@ -14,9 +14,11 @@
 use netrender::Scene;
 
 use crate::font_table::FontTable;
-use crate::paint_list::paint_list_from_packet;
+use std::collections::HashMap;
+
+use crate::paint_list::{paint_list_from_packet, paint_list_from_packet_with_images};
 use crate::style::ColorVocabulary;
-use crate::types::DocumentRenderPacket;
+use crate::types::{DecodedImage, DocumentRenderPacket};
 
 /// Build a `netrender::Scene` from a laid-out document.
 ///
@@ -30,6 +32,17 @@ pub fn scene_from_packet(
     colors: &ColorVocabulary,
 ) -> Scene {
     let list = paint_list_from_packet(packet, fonts, colors);
+    paint_list_render::translate_paint_list(&list)
+}
+
+/// Build a scene while resolving image blocks against decoded host resources.
+pub fn scene_from_packet_with_images(
+    packet: &DocumentRenderPacket,
+    fonts: &FontTable,
+    colors: &ColorVocabulary,
+    images: &HashMap<String, DecodedImage>,
+) -> Scene {
+    let list = paint_list_from_packet_with_images(packet, fonts, colors, images);
     paint_list_render::translate_paint_list(&list)
 }
 

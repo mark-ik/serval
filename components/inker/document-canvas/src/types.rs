@@ -8,6 +8,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A decoded image ready to cross the engine-neutral paint-list boundary.
+///
+/// The document model and layout packet keep only the resource URL. Hosts
+/// resolve and decode bytes according to their own network and privacy policy,
+/// then supply matching resources when lowering the packet to paint commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    /// Tightly packed, row-major RGBA8 pixels.
+    pub rgba8: Vec<u8>,
+}
+
 /// Viewport into which the document is laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Viewport {

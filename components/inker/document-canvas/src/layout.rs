@@ -437,6 +437,10 @@ impl<'a> DocumentLayouter<'a> {
                 height + self.style.block_spacing(),
             ),
         );
+        self.interactions.push(InteractionRegion {
+            bounds,
+            kind: crate::types::InteractionKind::Link { url: url.clone() },
+        });
         RenderedBlock {
             source_block_index: source_index,
             bounds,

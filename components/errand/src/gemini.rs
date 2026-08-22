@@ -29,6 +29,26 @@ pub(crate) async fn fetch(
     Ok(into_errand_response(url, response))
 }
 
+/// Fetch Gemini while exposing each successful body chunk before EOF.
+pub(crate) async fn fetch_streaming<F>(
+    url: &Url,
+    identity: Option<gemini_protocol::ClientIdentity<'_>>,
+    on_chunk: F,
+) -> Result<Response, Error>
+where
+    F: FnMut(&gemini_protocol::ResponseHead, &[u8]),
+{
+    let response = match identity {
+        Some(identity) => {
+            gemini_protocol::client::fetch_url_streaming_with_identity(url, identity, on_chunk)
+                .await
+        },
+        None => gemini_protocol::client::fetch_url_streaming(url, on_chunk).await,
+    }
+    .map_err(map_error)?;
+    Ok(into_errand_response(url, response))
+}
+
 /// Run a gemini request/response over an already-connected stream.
 ///
 /// Transport-independent: an already-encrypted carrier needs no TLS, so a

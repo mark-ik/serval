@@ -3,7 +3,7 @@ name = "errand"
 # 0.2.0, not 0.1.4: `parse::gopher::GopherItem` gained its Gopher+ marker
 # field when the grammar moved to gopher-protocol, and in 0.x the minor
 # version is the breaking position.
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 # Own license line, not workspace: errand predates the genet adoption and is
 # published MIT/Apache (founding convention); genet's workspace default is MPL.

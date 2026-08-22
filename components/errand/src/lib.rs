@@ -209,6 +209,15 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A borrowed Gemini body fragment observed before the connection closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyChunk<'a> {
+    /// The successful response's MIME type, without parameters.
+    pub content_type: Option<&'a str>,
+    /// Exact bytes from this transport read.
+    pub bytes: &'a [u8],
+}
+
 /// Fetch `url` over its smolweb scheme. Convenience wrapper over [`fetch_url`]
 /// that parses the string first.
 pub async fn fetch(url: &str) -> Result<Response, Error> {
@@ -242,12 +251,63 @@ pub async fn fetch_url_with_identity(
     fetch_url_traced(url, Some(identity)).await
 }
 
+/// Fetch one Gemini URL and report body fragments as they arrive.
+///
+/// The terminal response remains fully buffered, so exact-byte custody users
+/// and incremental presentation users share one network exchange.
+pub async fn fetch_gemini_url_streaming<F>(url: &Url, on_chunk: F) -> Result<Response, Error>
+where
+    F: FnMut(BodyChunk<'_>),
+{
+    fetch_gemini_url_streaming_traced(url, None, on_chunk).await
+}
+
+/// [`fetch_gemini_url_streaming`], presenting a caller-owned certificate.
+pub async fn fetch_gemini_url_streaming_with_identity<F>(
+    url: &Url,
+    identity: GeminiClientIdentity<'_>,
+    on_chunk: F,
+) -> Result<Response, Error>
+where
+    F: FnMut(BodyChunk<'_>),
+{
+    fetch_gemini_url_streaming_traced(url, Some(identity), on_chunk).await
+}
+
+async fn fetch_gemini_url_streaming_traced<F>(
+    url: &Url,
+    identity: Option<GeminiClientIdentity<'_>>,
+    mut on_chunk: F,
+) -> Result<Response, Error>
+where
+    F: FnMut(BodyChunk<'_>),
+{
+    if Scheme::parse(url.scheme()) != Some(Scheme::Gemini) {
+        return Err(Error::UnsupportedScheme(url.scheme().to_string()));
+    }
+    let started = std::time::Instant::now();
+    let result = gemini::fetch_streaming(url, identity, |head, bytes| {
+        on_chunk(BodyChunk {
+            content_type: head.mime(),
+            bytes,
+        });
+    })
+    .await;
+    trace_fetch_result(url, started, &result);
+    result
+}
+
 async fn fetch_url_traced(
     url: &Url,
     identity: Option<GeminiClientIdentity<'_>>,
 ) -> Result<Response, Error> {
     let started = std::time::Instant::now();
     let result = fetch_url_inner(url, identity).await;
+    trace_fetch_result(url, started, &result);
+    result
+}
+
+fn trace_fetch_result(url: &Url, started: std::time::Instant, result: &Result<Response, Error>) {
     let elapsed_ms = started.elapsed().as_millis();
     let scheme = url.scheme();
     let trace_url = trace_url(url);
@@ -275,7 +335,6 @@ async fn fetch_url_traced(
             );
         },
     }
-    result
 }
 
 fn trace_url(url: &Url) -> Url {
@@ -328,6 +387,38 @@ pub async fn fetch_url_timeout_with_identity(
     tokio::time::timeout(timeout, fetch_url_with_identity(url, identity))
         .await
         .map_err(|_| Error::Timeout)?
+}
+
+/// [`fetch_gemini_url_streaming`] with a per-request timeout.
+pub async fn fetch_gemini_url_streaming_timeout<F>(
+    url: &Url,
+    timeout: std::time::Duration,
+    on_chunk: F,
+) -> Result<Response, Error>
+where
+    F: FnMut(BodyChunk<'_>),
+{
+    tokio::time::timeout(timeout, fetch_gemini_url_streaming(url, on_chunk))
+        .await
+        .map_err(|_| Error::Timeout)?
+}
+
+/// [`fetch_gemini_url_streaming_with_identity`] with a per-request timeout.
+pub async fn fetch_gemini_url_streaming_timeout_with_identity<F>(
+    url: &Url,
+    identity: GeminiClientIdentity<'_>,
+    timeout: std::time::Duration,
+    on_chunk: F,
+) -> Result<Response, Error>
+where
+    F: FnMut(BodyChunk<'_>),
+{
+    tokio::time::timeout(
+        timeout,
+        fetch_gemini_url_streaming_with_identity(url, identity, on_chunk),
+    )
+    .await
+    .map_err(|_| Error::Timeout)?
 }
 
 #[cfg(test)]
