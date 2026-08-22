@@ -2335,6 +2335,10 @@ where
         if height <= 0.0 {
             return;
         }
+        let retain_source_fragment = matches!(
+            self.boxes[source].positioning,
+            buckram::PositioningScheme::Relative | buckram::PositioningScheme::Sticky
+        );
         self.inline_boxes.push(InlineAtom {
             source,
             owners: owners.to_vec(),
@@ -2351,7 +2355,11 @@ where
             margin_left: 0.0,
             margin_top: 0.0,
             edge: false,
-            paint: false,
+            // An empty positioned inline still establishes the containing
+            // block for an absolute descendant. `paint` also controls source
+            // fragment retention for an atom; keep this zero-width line
+            // rectangle without making it consume inline space.
+            paint: retain_source_fragment,
             marker: false,
             vertical_align: style.vertical_align,
             font_size,
