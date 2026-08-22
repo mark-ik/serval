@@ -709,6 +709,92 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "bottom"
+
+[[property]]
+name = "block-size"
+value_type = "size"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage> | min-content | max-content | fit-content(<length-percentage>)"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "size"
+logical_axis = "block"
+
+[[property]]
+name = "margin-block-start"
+value_type = "margin"
+inherited = false
+initial = "0"
+grammar = "<length-percentage> | auto"
+seed_values = ["0", "px", "em", "auto"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "margin"
+logical_side = "block-start"
+
+[[property]]
+name = "margin-block-end"
+value_type = "margin"
+inherited = false
+initial = "0"
+grammar = "<length-percentage> | auto"
+seed_values = ["0", "px", "em", "auto"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "margin"
+logical_side = "block-end"
+
+[[property]]
+name = "inset-block-start"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "block-start"
+
+[[property]]
+name = "inset-block-end"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "block-end"
+
+[[property]]
+name = "inset-inline-start"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "inline-start"
+
+[[property]]
+name = "inset-inline-end"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "inline-end"
 
 [[property]]
 name = "color"
@@ -1045,6 +1131,8 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "left"
 
 [[property]]
 name = "justify-content"
@@ -1327,6 +1415,8 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "right"
 
 [[property]]
 name = "rotate"
@@ -1417,6 +1507,8 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "top"
 
 [[property]]
 name = "transform"
@@ -2162,22 +2254,6 @@ spec = "https://drafts.csswg.org/css-content/#propdef-quotes"
 
 # group: margin
 [[unimplemented]]
-name = "margin-block-end"
-group = "margin"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-block-end"
-
-[[unimplemented]]
-name = "margin-block-start"
-group = "margin"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-block-start"
-
-[[unimplemented]]
 name = "overflow-clip-margin"
 group = "margin"
 inherited = false
@@ -2248,14 +2324,6 @@ spec = "https://drafts.csswg.org/css-logical-props/#propdef-padding-inline-start
 
 # group: position
 [[unimplemented]]
-name = "block-size"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-block-size"
-
-[[unimplemented]]
 name = "grid-auto-columns"
 group = "position"
 inherited = false
@@ -2275,38 +2343,6 @@ group = "position"
 inherited = false
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-grid/#propdef-grid-template-areas"
-
-[[unimplemented]]
-name = "inset-block-end"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-block-end"
-
-[[unimplemented]]
-name = "inset-block-start"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-block-start"
-
-[[unimplemented]]
-name = "inset-inline-end"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-inline-end"
-
-[[unimplemented]]
-name = "inset-inline-start"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-inline-start"
 
 [[unimplemented]]
 name = "max-block-size"
