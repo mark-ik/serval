@@ -192,6 +192,13 @@ impl RenderCore {
         &self.renderer
     }
 
+    /// Retire one keyed surface's retained tile state after its content source
+    /// is replaced in place. The next [`rasterize_for`](Self::rasterize_for)
+    /// call rebuilds the surface from the complete current scene.
+    pub fn invalidate_surface(&self, surface: u64) -> bool {
+        self.renderer.invalidate_surface_tiles(surface)
+    }
+
     /// The shared wgpu device backing the renderer.
     pub fn device(&self) -> &wgpu::Device {
         &self.renderer.wgpu_device.core.device
