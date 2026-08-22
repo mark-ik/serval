@@ -50,6 +50,7 @@ fn length_percentage_and_calc_values_round_trip() {
         "0",
         "12px",
         "-2em",
+        "5ch",
         "1.5rem",
         "37.5%",
         "calc(100% - 16px + 2em - 0.5rem)",
@@ -57,6 +58,21 @@ fn length_percentage_and_calc_values_round_trip() {
     ] {
         assert_round_trip::<LengthPercentage>(value);
     }
+}
+
+#[test]
+fn ch_lengths_wait_for_the_resolved_font_advance() {
+    let viewport = ViewportSizes::uniform(800.0, 600.0);
+    let value = "calc(2ch + 1px)"
+        .parse::<LengthPercentage>()
+        .expect("ch calc");
+
+    assert_eq!(value.to_string(), "calc(1px + 2ch)");
+    let unresolved = value.resolve_relative(RelativeLengthEnvironment::viewport(viewport));
+    assert_eq!(unresolved.to_string(), "calc(1px + 2ch)");
+    let resolved = unresolved
+        .resolve_relative(RelativeLengthEnvironment::viewport(viewport).with_ch_advance(12.0));
+    assert!((resolved.to_px(16.0, 16.0, 0.0) - 25.0).abs() < 0.001);
 }
 
 #[test]

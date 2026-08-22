@@ -16,7 +16,7 @@ use livery::{
         parse_declaration_block,
     },
     custom::CustomProperties,
-    media::Device,
+    media::{Device, ViewportSizes},
     stylesheet::{
         ContainerSnapshot, CssomRule, Keyframes, RuleMutationError, StyleRule, Stylesheet,
         StylesheetDiagnostic,
@@ -836,6 +836,22 @@ where
         environment: livery::values::RelativeLengthEnvironment,
     ) {
         if let Some(computed) = self.values.get_mut(&id) {
+            resolve_relative_lengths(computed, environment);
+        }
+    }
+
+    /// Resolve `ch` after the retained text owner has the document's complete
+    /// font ledger. Earlier cascade passes deliberately leave this metric
+    /// deferred because `Device` does not own font resources.
+    pub(crate) fn resolve_ch_lengths(
+        &mut self,
+        text: &mut crate::TextSystem,
+        viewport: ViewportSizes,
+    ) {
+        for computed in self.values.values_mut() {
+            let environment = livery::values::RelativeLengthEnvironment::viewport(viewport)
+                .with_vertical_writing(computed.writing_mode.is_vertical())
+                .with_ch_advance(text.ch_advance(computed));
             resolve_relative_lengths(computed, environment);
         }
     }

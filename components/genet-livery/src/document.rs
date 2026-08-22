@@ -548,6 +548,7 @@ where
             &self.interactions,
             &self.image_sources,
         )?;
+        styles.resolve_ch_lengths(&mut self.text, self.device.viewport_sizes);
         // Animation ownership must be established before any retained
         // paint-only shortcut considers the style delta. Otherwise a
         // transitioning background-color looks like a static repaint and the

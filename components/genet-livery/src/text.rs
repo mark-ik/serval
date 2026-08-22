@@ -172,7 +172,16 @@ pub struct TextSystem {
     layout_context: LayoutContext<Brush>,
     fonts: HashMap<FontInstanceKey, FontResource>,
     font_keys: HashMap<(u64, u32), FontInstanceKey>,
+    ch_advances: HashMap<ChMetricKey, f32>,
     shape_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ChMetricKey {
+    family: String,
+    font_size: u32,
+    font_weight: u32,
+    font_style: u8,
 }
 
 impl Default for TextSystem {
@@ -188,6 +197,7 @@ impl TextSystem {
             layout_context: LayoutContext::new(),
             fonts: HashMap::new(),
             font_keys: HashMap::new(),
+            ch_advances: HashMap::new(),
             shape_count: 0,
         }
     }
@@ -207,6 +217,52 @@ impl TextSystem {
         self.font_context
             .collection
             .register_fonts(parley::fontique::Blob::new(Arc::new(bytes)), None);
+        self.ch_advances.clear();
+    }
+
+    /// Resolve one CSS `ch` unit from the same font collection and matching
+    /// inputs used by ordinary text shaping. CSS falls back to `0.5em` only
+    /// when no usable `0` advance is available.
+    pub(crate) fn ch_advance(&mut self, style: &ComputedValues) -> f32 {
+        let font_size = super::paint::used_font_size(style);
+        let key = ChMetricKey {
+            family: style.font_family.to_string(),
+            font_size: font_size.to_bits(),
+            font_weight: font_weight(style).to_bits(),
+            font_style: match style.font_style {
+                CssFontStyle::Normal => 0,
+                CssFontStyle::Italic => 1,
+                CssFontStyle::Oblique => 2,
+            },
+        };
+        if let Some(advance) = self.ch_advances.get(&key) {
+            return *advance;
+        }
+
+        let mut builder =
+            self.layout_context
+                .ranged_builder(&mut self.font_context, "0", 1.0, true);
+        builder.push_default(StyleProperty::FontSize(font_size));
+        builder.push_default(font_family(style));
+        builder.push_default(StyleProperty::FontWeight(FontWeight::new(font_weight(
+            style,
+        ))));
+        builder.push_default(StyleProperty::FontStyle(font_style(style)));
+        let mut layout = builder.build("0");
+        layout.break_all_lines(None);
+        let advance = layout
+            .lines()
+            .next()
+            .and_then(|line| {
+                line.items().find_map(|item| match item {
+                    PositionedLayoutItem::GlyphRun(run) => Some(run.advance()),
+                    PositionedLayoutItem::InlineBox(_) => None,
+                })
+            })
+            .filter(|advance| advance.is_finite() && *advance > 0.0)
+            .unwrap_or(font_size * 0.5);
+        self.ch_advances.insert(key, advance);
+        advance
     }
 
     /// Format one consecutive inline group for both layout and paint.
