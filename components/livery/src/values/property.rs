@@ -1170,6 +1170,66 @@ impl fmt::Display for Contain {
     }
 }
 
+/// The bounded physical substitute-size pair consumed by positioned size
+/// containment. CSS's remembered-size `auto` form remains outside this lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContainIntrinsicSize {
+    None,
+    Lengths { width: Length, height: Length },
+}
+
+impl ContainIntrinsicSize {
+    pub const NONE: Self = Self::None;
+
+    pub const fn physical_lengths(self) -> Option<(Length, Length)> {
+        match self {
+            Self::None => None,
+            Self::Lengths { width, height } => Some((width, height)),
+        }
+    }
+}
+
+impl FromStr for ContainIntrinsicSize {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
+        if input.eq_ignore_ascii_case("none") {
+            return Ok(Self::None);
+        }
+        let values = input.split_ascii_whitespace().collect::<Vec<_>>();
+        let (width, height) = match values.as_slice() {
+            [width] => {
+                let width = width.parse::<Length>()?;
+                (width, width)
+            },
+            [width, height] => (width.parse::<Length>()?, height.parse::<Length>()?),
+            _ => return Err(ParseError::expected("none or one or two non-negative lengths")),
+        };
+        if width.value < 0.0 || height.value < 0.0 {
+            return Err(ParseError::expected(
+                "none or one or two non-negative lengths",
+            ));
+        }
+        Ok(Self::Lengths { width, height })
+    }
+}
+
+impl fmt::Display for ContainIntrinsicSize {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => formatter.write_str("none"),
+            Self::Lengths { width, height } => {
+                width.fmt(formatter)?;
+                if height != width {
+                    write!(formatter, " {height}")?;
+                }
+                Ok(())
+            },
+        }
+    }
+}
+
 /// Names by which descendant `@container` rules can select this query
 /// container.
 #[derive(Clone, Debug, Eq, PartialEq)]

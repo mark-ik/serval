@@ -61,3 +61,20 @@ fn abspos_max_height_transfers_through_the_aspect_ratio_to_the_inline_size() {
     assert_rect(rects[0], [0.0, 0.0, 800.0, 100.0], "relative parent");
     assert_rect(rects[1], [0.0, 0.0, 100.0, 100.0], "aspect-ratio abspos");
 }
+
+#[test]
+fn size_contained_abspos_uses_its_contain_intrinsic_size_before_ratio_clamping() {
+    let html = "<html><body style=\"margin:0\">\
+         <div id=\"parent\" style=\"position:relative;height:100px\">\
+           <div id=\"abs\" style=\"position:absolute;aspect-ratio:1/1;max-height:100%;\
+                min-height:0;contain:size;contain-intrinsic-size:500px 500px\"></div>\
+         </div></body></html>";
+    let rects = document_rects(html, &["parent", "abs"]);
+
+    assert_rect(rects[0], [0.0, 0.0, 800.0, 100.0], "relative parent");
+    assert_rect(
+        rects[1],
+        [0.0, 0.0, 100.0, 100.0],
+        "size-contained aspect-ratio abspos",
+    );
+}

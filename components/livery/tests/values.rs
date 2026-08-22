@@ -4,13 +4,13 @@ use livery::media::{ViewportSize, ViewportSizes};
 use livery::values::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
     BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide,
-    Clear, Color, Contain, CssValue, Direction, Display, Duration, EmptyCells, FlexDirection,
-    FlexFactor, FlexWrap, Float, FontFamily, FontSize, FontStyle, FontWeight, Gap, Inset,
-    LengthPercentage, LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow,
-    Padding, PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate,
-    Scale, Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode,
-    TimingFunction, Transform, TransitionProperty, TreeCounts, VerticalAlign, Visibility,
-    WhiteSpaceCollapse, ZIndex,
+    Clear, Color, Contain, ContainIntrinsicSize, CssValue, Direction, Display, Duration,
+    EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontSize, FontStyle,
+    FontWeight, Gap, Inset, LengthPercentage, LengthUnit, LineHeight, ListStyleType, Margin,
+    Opacity, Order, Overflow, Padding, PointerEvents, Position, Radius, RelativeLengthEnvironment,
+    ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing, TextAlign,
+    TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty, TreeCounts,
+    VerticalAlign, Visibility, WhiteSpaceCollapse, ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
@@ -73,6 +73,31 @@ fn ch_lengths_wait_for_the_resolved_font_advance() {
     let resolved = unresolved
         .resolve_relative(RelativeLengthEnvironment::viewport(viewport).with_ch_advance(12.0));
     assert!((resolved.to_px(16.0, 16.0, 0.0) - 25.0).abs() < 0.001);
+}
+
+#[test]
+fn contain_intrinsic_size_round_trips_and_resolves_its_physical_pair() {
+    for value in ["none", "300px", "300px 150px"] {
+        assert_round_trip::<ContainIntrinsicSize>(value);
+    }
+    for invalid in ["auto", "-1px", "1px -2px", "1px 2px 3px"] {
+        assert!(
+            invalid.parse::<ContainIntrinsicSize>().is_err(),
+            "accepted {invalid}"
+        );
+    }
+
+    let value = "10vw 5vh"
+        .parse::<ContainIntrinsicSize>()
+        .expect("physical pair")
+        .resolve_relative_lengths(RelativeLengthEnvironment::uniform_viewport(800.0, 600.0));
+    let (width, height) = value.physical_lengths().expect("resolved pair");
+    assert_eq!((width.value, width.unit), (80.0, LengthUnit::Px));
+    assert_eq!((height.value, height.unit), (30.0, LengthUnit::Px));
+    assert_eq!(
+        canonicalize_specified_longhand("contain-intrinsic-size", "500px 500px").as_deref(),
+        Some("500px")
+    );
 }
 
 #[test]

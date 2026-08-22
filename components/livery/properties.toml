@@ -19,6 +19,9 @@ url = "https://www.w3.org/TR/css-fonts-4/"
 [sources.css_sizing_3]
 url = "https://www.w3.org/TR/css-sizing-3/"
 
+[sources.css_sizing_4]
+url = "https://www.w3.org/TR/css-sizing-4/"
+
 [sources.css_logical_properties_1]
 url = "https://www.w3.org/TR/css-logical-1/"
 
@@ -833,6 +836,17 @@ seed_values = ["none", "paint", "layout paint", "content", "strict"]
 animation = "none"
 source = "css_conditional_5"
 partial = "computed containment flags and the HTML body canvas-background propagation rule; containment effects on layout, sizing, style scoping, and paint clipping remain deferred"
+
+[[property]]
+name = "contain-intrinsic-size"
+value_type = "contain-intrinsic-size"
+inherited = false
+initial = "none"
+grammar = "none | <length>{1,2}"
+seed_values = ["none", "300px", "300px 150px"]
+animation = "discrete"
+source = "css_sizing_4"
+partial = "bounded physical substitute-size pair for positioned size containment; auto and general normal-flow substitution remain deferred"
 
 [[property]]
 name = "container-name"

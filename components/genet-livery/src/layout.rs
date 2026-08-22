@@ -5012,6 +5012,9 @@ where
                     height: containing_rect.height,
                 },
             );
+            let intrinsic_inline =
+                positioned_contain_intrinsic_inline(&computed, &style, font_size)
+                    .or_else(|| intrinsic_sizes.get(&box_id).copied());
             let geometry = buckram::solve_positioned_box(
                 style,
                 buckram::PositionedBoxInput {
@@ -5021,7 +5024,7 @@ where
                         width: current.width,
                         height: current.height,
                     }),
-                    intrinsic_inline: intrinsic_sizes.get(&box_id).copied(),
+                    intrinsic_inline,
                     replaced,
                 },
             );
@@ -5038,6 +5041,30 @@ where
             })
         })
         .collect()
+}
+
+/// Supply the explicit substitute intrinsic contribution for the positioned
+/// inline axis only when that physical axis is size-contained.
+fn positioned_contain_intrinsic_inline(
+    computed: &ComputedValues,
+    style: &BlockStyle,
+    font_size: f32,
+) -> Option<IntrinsicSizes> {
+    let (width, height) = computed.contain_intrinsic_size.physical_lengths()?;
+    let inline_is_contained = if style.containing_flow.is_horizontal() {
+        style.size_containment.width
+    } else {
+        style.size_containment.height
+    };
+    if !inline_is_contained {
+        return None;
+    }
+    let physical = PhysicalSize {
+        width: absolute_length(width, font_size, LIVE_ROOT_FONT_SIZE),
+        height: absolute_length(height, font_size, LIVE_ROOT_FONT_SIZE),
+    };
+    let inline = style.containing_flow.logical_size(physical).inline;
+    IntrinsicSizes::new(inline, inline)
 }
 
 /// Resolve the ordinary absolute/fixed containing-block rectangle from an

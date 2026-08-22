@@ -23,12 +23,12 @@ pub use logical::{LogicalAxis, LogicalSide, PhysicalAxis, PhysicalSide};
 pub use property::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
     BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue,
-    BoxSizing, CaptionSide, Clear, Contain, ContainerName, ContainerType, Direction, Display,
-    Duration, EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontSize,
-    FontStyle, FontWeight, Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, Inset,
-    LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, Padding, PointerEvents, Position,
-    Radius, Rotate, Scale, Size, Spacing, TableBorderSpacing, TableLayout, TextAlign,
-    TextDecorationColor, TextDecorationLine, TextWrapMode, TimingFunction, Transform,
+    BoxSizing, CaptionSide, Clear, Contain, ContainIntrinsicSize, ContainerName, ContainerType,
+    Direction, Display, Duration, EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float,
+    FontFamily, FontSize, FontStyle, FontWeight, Gap, GridAutoFlow, GridPlacement, GridTemplate,
+    GridTrack, Inset, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, Padding,
+    PointerEvents, Position, Radius, Rotate, Scale, Size, Spacing, TableBorderSpacing, TableLayout,
+    TextAlign, TextDecorationColor, TextDecorationLine, TextWrapMode, TimingFunction, Transform,
     TransformFunction, TransitionProperty, VerticalAlign, Visibility, WhiteSpaceCollapse,
     WritingMode, ZIndex,
 };
@@ -183,6 +183,18 @@ impl ResolveViewport for BackgroundPosition {
         Self {
             x: self.x.resolve_relative(environment),
             y: self.y.resolve_relative(environment),
+        }
+    }
+}
+
+impl ResolveViewport for ContainIntrinsicSize {
+    fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
+        match *self {
+            Self::None => Self::None,
+            Self::Lengths { width, height } => Self::Lengths {
+                width: width.resolve_relative(environment),
+                height: height.resolve_relative(environment),
+            },
         }
     }
 }
@@ -357,6 +369,7 @@ discrete_interpolation!(
     Clear,
     ColorSchemeList,
     Contain,
+    ContainIntrinsicSize,
     ContainerName,
     ContainerType,
     Direction,
