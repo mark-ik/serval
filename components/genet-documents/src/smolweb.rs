@@ -733,6 +733,55 @@ mod tests {
     }
 
     #[test]
+    fn streamed_replacement_scene_retains_prefix_runs_and_adds_tail_runs() {
+        let url = "gemini://x.test/streaming.gmi";
+        let prefix = "# Streaming prefix visible\nThis arrived before connection close.\n";
+        let complete = concat!(
+            "# Streaming prefix visible\n",
+            "This arrived before connection close.\n",
+            "## Streaming tail arrived\n",
+            "The terminal body is complete.\n",
+        );
+        let mut doc = SmolwebDocument::parse(url, prefix, SmolwebTheme::Plain);
+        let prefix_scene = doc.frame(614, 600);
+        let prefix_runs: Vec<_> = prefix_scene
+            .iter_glyph_runs()
+            .map(|run| {
+                (
+                    run.font_size.to_bits(),
+                    run.glyphs
+                        .iter()
+                        .map(|glyph| (glyph.id, glyph.x.to_bits(), glyph.y.to_bits()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
+        doc.replace_body(url, complete);
+        let complete_scene = doc.frame(614, 600);
+        let complete_runs: Vec<_> = complete_scene
+            .iter_glyph_runs()
+            .map(|run| {
+                (
+                    run.font_size.to_bits(),
+                    run.glyphs
+                        .iter()
+                        .map(|glyph| (glyph.id, glyph.x.to_bits(), glyph.y.to_bits()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
+        assert!(complete_runs.len() > prefix_runs.len());
+        assert!(
+            prefix_runs
+                .iter()
+                .all(|prefix_run| complete_runs.contains(prefix_run)),
+            "the full replacement scene must still carry every prefix glyph run"
+        );
+    }
+
+    #[test]
     fn long_document_scrolls_and_windows() {
         let body: String = (0..200).map(|i| format!("Line {i}\n\n")).collect();
         let mut doc = SmolwebDocument::parse("gemini://x.test/", &body, SmolwebTheme::Plain);

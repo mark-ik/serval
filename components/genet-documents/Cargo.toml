@@ -69,3 +69,4 @@ image = { workspace = true, optional = true }
 # Offline mock HTTP server for the netfetch integration test (moved with
 # net_fetch.rs from pelt); runs without a live network.
 mockito = "1"
+wgpu = { workspace = true }
