@@ -394,6 +394,22 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         }
     }
 
+    /// Supply a standards-resolved block size to a detached absolute/fixed
+    /// formatting root before its constrained second formatting pass.
+    pub fn set_positioned_block_size(&mut self, id: AlgorithmNodeId, size: f32) {
+        assert!(
+            size.is_finite() && size >= 0.0,
+            "a positioned formatting block size must be finite and non-negative"
+        );
+        let style = &mut self.nodes[id.index()].block_style;
+        let size = BlockSizeValue::Length(FlowLength::px(size));
+        if style.flow.is_horizontal() {
+            style.size.height = size;
+        } else {
+            style.size.width = size;
+        }
+    }
+
     /// Clear formatter state after a standards-owned used size changes a
     /// detached formatting root. The next tree walk must visit that root and
     /// its ancestors rather than reuse the pre-positioning layout cache.
@@ -541,7 +557,13 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         }
 
         let original_style = self.nodes[id.index()].block_style;
-        self.nodes[id.index()].block_style.position = crate::BlockPosition::Static;
+        {
+            let root_style = &mut self.nodes[id.index()].block_style;
+            root_style.position = crate::BlockPosition::Static;
+            // The intrinsic query measures the root's contents. K5d applies
+            // the root's preferred ratio to those contributions afterwards.
+            root_style.aspect_ratio = None;
+        }
         if !self.intrinsic_inline_subtree_is_admitted(id, true) {
             self.nodes[id.index()].block_style = original_style;
             return None;

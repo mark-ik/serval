@@ -4822,6 +4822,34 @@ impl PositionedPlacement {
             BlockBoxSizing::BorderBox => border_box,
         })
     }
+
+    /// Convert a standards-resolved block size back into the formatter's CSS
+    /// input for the constrained second pass.
+    fn formatter_block_size(self) -> Option<f32> {
+        if self.style.flow != self.style.containing_flow || !self.geometry.block_size_solved {
+            return None;
+        }
+        let measured = self
+            .containing_flow
+            .logical_size(PhysicalSize {
+                width: self.current.width,
+                height: self.current.height,
+            })
+            .block;
+        let border_box = self.geometry.logical_rect.block_size;
+        if (border_box - measured).abs() <= 0.01 {
+            return None;
+        }
+        let padding_border = self
+            .style
+            .logical_padding_border(self.containing_size.inline);
+        Some(match self.style.box_sizing {
+            BlockBoxSizing::ContentBox => {
+                (border_box - padding_border.block_start - padding_border.block_end).max(0.0)
+            },
+            BlockBoxSizing::BorderBox => border_box,
+        })
+    }
 }
 
 /// Resolve absolute and fixed used geometry from K5a/K5b inputs after a
@@ -5201,25 +5229,32 @@ fn apply_admitted_positioned_inline_sizes<Context, Source>(
 ) -> bool {
     let mut changed = false;
     for (box_id, node) in candidates {
-        if !intrinsic_sizes.contains_key(box_id) {
-            continue;
-        }
         let Some(placement) = placements
             .iter()
             .find(|placement| placement.box_id == *box_id)
         else {
             continue;
         };
-        let Some(size) = placement.formatter_inline_size() else {
-            continue;
-        };
-        if placement.style.flow.is_horizontal() {
-            tree.style_mut(*node).size.width = Dimension::length(size);
-        } else {
-            tree.style_mut(*node).size.height = Dimension::length(size);
+        if intrinsic_sizes.contains_key(box_id)
+            && let Some(size) = placement.formatter_inline_size()
+        {
+            if placement.style.flow.is_horizontal() {
+                tree.style_mut(*node).size.width = Dimension::length(size);
+            } else {
+                tree.style_mut(*node).size.height = Dimension::length(size);
+            }
+            tree.set_positioned_inline_size(*node, size);
+            changed = true;
         }
-        tree.set_positioned_inline_size(*node, size);
-        changed = true;
+        if let Some(size) = placement.formatter_block_size() {
+            if placement.style.flow.is_horizontal() {
+                tree.style_mut(*node).size.height = Dimension::length(size);
+            } else {
+                tree.style_mut(*node).size.width = Dimension::length(size);
+            }
+            tree.set_positioned_block_size(*node, size);
+            changed = true;
+        }
     }
     if changed {
         tree.clear_layout_cache();
