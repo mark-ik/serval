@@ -31,6 +31,11 @@ netrender = ["dep:netrender", "dep:paint_list_render"]
 [dependencies]
 inker = { workspace = true }
 parley = { workspace = true }
+# Parley disables ICU4X's default features and enables only baked tables.
+# Restore its automatic complex-script segmenter here, where document text
+# layout owns line breaking, so CJK and Southeast Asian text do not fall back
+# after emitting a missing-model data error.
+icu_segmenter = { workspace = true, features = ["auto"] }
 serde = { workspace = true }
 # Engine-facing PaintList vocabulary — portable (euclid + serde, no wgpu), so
 # the producer path (paint_list_from_packet) is unconditional. Workspace
