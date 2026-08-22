@@ -189,6 +189,24 @@ impl SmolwebDocument {
         &self.document
     }
 
+    /// Replace an in-flight document body without replacing its live session.
+    ///
+    /// Host-selected styling, viewport, and scroll position remain stable.
+    /// Lowered structure and inline-media requests are rebuilt from the exact
+    /// prefix now available; decoded images survive only while still named by
+    /// the replacement document.
+    pub fn replace_body(&mut self, url: &str, body: &str) {
+        let mut document = lower(url, body);
+        promote_inline_image_links(&mut document, self.inline_media);
+        self.images.retain(|url, _| {
+            document.blocks.iter().any(
+                |block| matches!(block, Block::Image { url: image_url, .. } if image_url == url),
+            )
+        });
+        self.document = document;
+        self.layout = None;
+    }
+
     /// Unresolved inline-image URLs for the host fetch actor.
     pub fn subresources(&self) -> Vec<String> {
         self.document
@@ -685,6 +703,33 @@ mod tests {
             Some(InteractionKind::Link { url })
                 if url == "gemini://x.test/posts/media/picture.png"
         ));
+    }
+
+    #[test]
+    fn replacing_a_streamed_body_rebuilds_structure_and_invalidates_layout() {
+        let mut doc = SmolwebDocument::parse_with_inline_media(
+            "gemini://x.test/live",
+            "# Prefix\n=> first.png First\n",
+            SmolwebTheme::Plain,
+            SmolwebInlineMediaPolicy::images(),
+        );
+        let _ = doc.frame(400, 300);
+        assert!(doc.layout.is_some());
+
+        doc.replace_body(
+            "gemini://x.test/live",
+            "# Complete\n=> second.png Second\nTail\n",
+        );
+
+        assert_eq!(doc.document().title.as_deref(), Some("Complete"));
+        assert_eq!(doc.subresources(), ["gemini://x.test/second.png"]);
+        assert!(doc.layout.is_none());
+        assert!(
+            doc.frame(400, 300)
+                .ops
+                .iter()
+                .any(|operation| matches!(operation, netrender::SceneOp::GlyphRun(_)))
+        );
     }
 
     #[test]

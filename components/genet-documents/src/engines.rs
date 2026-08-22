@@ -1154,6 +1154,12 @@ impl SmolwebDocumentSession {
     pub fn document_mut(&mut self) -> &mut crate::SmolwebDocument {
         &mut self.doc
     }
+
+    /// Replace an incrementally received body while retaining this session's
+    /// viewport and host-owned presentation policy.
+    pub fn replace_body(&mut self, url: &str, body: &str) {
+        self.doc.replace_body(url, body);
+    }
 }
 
 #[cfg(feature = "smolweb")]
