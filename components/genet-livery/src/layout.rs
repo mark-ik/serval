@@ -2996,11 +2996,11 @@ where
                 let computed = self.styles.get(node).cloned().unwrap_or_default();
                 // K4e1: the wrapper above this grid took the properties
                 // CSS 2.1 section 17.4 assigns to it; the grid sees them unset.
-                let computed =
+                let (computed, table_style) =
                     if self.boxes[box_id].display.internal_table == Some(InternalTableRole::Grid) {
-                        grid_style(&computed, containing_size)
+                        (grid_style(&computed, containing_size), Some(computed))
                     } else {
-                        computed
+                        (computed, None)
                     };
                 debug_assert!(
                     self.pending_table_handoff.is_none(),
@@ -3056,7 +3056,8 @@ where
                 if let Some((grid, cell_nodes, out_of_flow_parts)) = table_handoff {
                     self.pending_tables.push(PendingTable {
                         table: box_id,
-                        node: dom_node,
+                        node: Some(dom_node),
+                        table_style: table_style.unwrap_or_default(),
                         table_node: node,
                         wrapper: None,
                         captions: Vec::new(),
@@ -3101,16 +3102,19 @@ where
                     .map(Some)
             },
             BoxOrigin::Pseudo { .. } | BoxOrigin::Anonymous { .. } => {
-                if let Some(element) = (self.boxes[box_id].display.internal_table
+                if let Some(grid) = (self.boxes[box_id].display.internal_table
                     == Some(InternalTableRole::Wrapper))
-                .then(|| wrapped_table_element(self.boxes, box_id))
+                .then(|| wrapped_table_grid(self.boxes, box_id))
                 .flatten()
                 {
                     // K4e1: the wrapper is the box that participates in flow.
                     // Its children keep the *table's* inherited context, so
                     // they are built against the parent's font size and
                     // containing block, not the wrapper's.
-                    let table = self.styles.get(element).cloned().unwrap_or_default();
+                    let table = match legacy_origin_node(self.boxes, grid) {
+                        Some(element) => self.styles.get(element).cloned().unwrap_or_default(),
+                        None => anonymous_table_style(inherited),
+                    };
                     let computed = wrapper_style(&table);
                     let font_size = font_size_px(&computed.font_size, parent_font_size);
                     let mut caption_nodes = Vec::new();
@@ -3181,14 +3185,29 @@ where
                     if let Some(pending) = self
                         .pending_tables
                         .iter_mut()
-                        .find(|pending| pending.node == element)
+                        .find(|pending| pending.table == grid)
                     {
                         pending.wrapper = Some(node);
                         pending.captions = caption_nodes;
                     }
                     return Ok(Some(node));
                 }
+                if self.boxes[box_id].display.internal_table == Some(InternalTableRole::Grid) {
+                    return self.build_anonymous_table_grid(
+                        box_id,
+                        inherited,
+                        parent_font_size,
+                        containing_size,
+                    );
+                }
                 let computed = inherited.cloned().unwrap_or_default();
+                let computed = match computed.display {
+                    CssDisplay::Table | CssDisplay::InlineTable => ComputedValues {
+                        display: CssDisplay::Block,
+                        ..computed
+                    },
+                    _ => computed,
+                };
                 let children =
                     self.build_children(box_id, &computed, parent_font_size, containing_size)?;
                 let block_style = anonymous_block_style(self.boxes, box_id);
@@ -3349,7 +3368,8 @@ where
         let mut aggregate = std::mem::take(&mut self.table_shadow);
         for pending in &mut pendings {
             self.table_shadow = TableShadowLedger::default();
-            if let Some(computed) = self.styles.get(pending.node).cloned() {
+            {
+                let computed = pending.table_style.clone();
                 pending.collapsed_border_metrics = None;
                 pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse
                 {
@@ -3429,9 +3449,9 @@ where
         // width existed. Retire it here rather than leaving both in play - but
         // only where it was this route that put it there, never where the
         // author wrote `float` on the table and K4e1 migrated it.
-        let authored_float = self
-            .styles
-            .get(pending.node)
+        let authored_float = pending
+            .node
+            .and_then(|node| self.styles.get(node))
             .is_some_and(|computed| computed.float != CssFloat::None);
         let style = self.tree.style_mut(wrapper);
         style.size.width = Dimension::length(inline.used_grid_inline_size);
@@ -3463,9 +3483,7 @@ where
             let Some(inline) = pending.assigned.as_ref() else {
                 continue;
             };
-            let Some(computed) = styles.get(pending.node) else {
-                continue;
-            };
+            let computed = &pending.table_style;
             let Some(inputs) = table_block_inputs(
                 boxes,
                 styles,
@@ -3626,6 +3644,64 @@ where
             )?;
         }
         Ok(())
+    }
+
+    fn build_anonymous_table_grid(
+        &mut self,
+        box_id: BoxId,
+        inherited: Option<&ComputedValues>,
+        parent_font_size: f32,
+        containing_size: (Option<f32>, Option<f32>),
+    ) -> Result<Option<AlgorithmNodeId>, LayoutError> {
+        let table_style = anonymous_table_style(inherited);
+        let computed = grid_style(&table_style, containing_size);
+        debug_assert!(
+            self.pending_table_handoff.is_none(),
+            "a table handoff must be consumed by its own build_box call"
+        );
+        let font_size = font_size_px(&computed.font_size, parent_font_size);
+        let child_containing_size =
+            resolved_child_containing_size(&computed, font_size, containing_size);
+        let children = self.build_children(box_id, &computed, font_size, child_containing_size)?;
+        let table_handoff = self.pending_table_handoff.take();
+        let taffy_style = to_taffy_style(&computed, font_size);
+        let block_style = to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
+        let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
+        let node = self.tree.new_with_children_and_block_style(
+            kind,
+            block_style,
+            taffy_style,
+            &children,
+            vec![box_id],
+        );
+        enable_flex_grid_static_position_provider(
+            &mut self.tree,
+            self.styles,
+            self.boxes,
+            box_id,
+            node,
+        );
+        if let Some((grid, cell_nodes, out_of_flow_parts)) = table_handoff {
+            self.pending_tables.push(PendingTable {
+                table: box_id,
+                node: None,
+                table_style,
+                table_node: node,
+                wrapper: None,
+                captions: Vec::new(),
+                grid,
+                collapsed_borders: None,
+                collapsed_border_metrics: None,
+                cell_nodes,
+                out_of_flow_parts,
+                font_size,
+                containing_width: containing_size.0,
+                containing_height: containing_size.1,
+                assigned: None,
+                block: None,
+            });
+        }
+        Ok(Some(node))
     }
 
     fn build_children(
@@ -3909,6 +3985,83 @@ where
             .filter(|minimum| minimum.is_finite() && *minimum >= 0.0)
     }
 
+    fn build_anonymous_table_grid(
+        &mut self,
+        box_id: BoxId,
+        inherited: Option<&ComputedValues>,
+        parent_font_size: f32,
+        containing_size: (Option<f32>, Option<f32>),
+    ) -> Result<Option<AlgorithmNodeId>, LayoutError> {
+        let table_style = anonymous_table_style(inherited);
+        let computed = grid_style(&table_style, containing_size);
+        let font_size = font_size_px(&computed.font_size, parent_font_size);
+        let child_containing_size =
+            resolved_child_containing_size(&computed, font_size, containing_size);
+        let table = build_table_grid(self.boxes, self.dom, box_id);
+        let mut cell_nodes = Vec::with_capacity(table.cells.len());
+        let mut children = Vec::with_capacity(table.cells.len());
+        for cell in &table.cells {
+            let built = self.build_box(
+                cell.source,
+                Some(&computed),
+                font_size,
+                child_containing_size,
+            )?;
+            cell_nodes.push(built);
+            if let Some(node) = built {
+                children.push(node);
+            }
+        }
+        let mut out_of_flow_parts = Vec::with_capacity(table.out_of_flow_parts.len());
+        for part in &table.out_of_flow_parts {
+            let Some(node) =
+                self.build_box(*part, Some(&computed), font_size, child_containing_size)?
+            else {
+                continue;
+            };
+            out_of_flow_parts.push(DetachedTablePart {
+                box_id: *part,
+                node,
+            });
+        }
+        let taffy_style = to_taffy_style(&computed, font_size);
+        let block_style = to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
+        let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
+        let node = self.tree.new_with_children_and_block_style(
+            kind,
+            block_style,
+            taffy_style,
+            &children,
+            Some(box_id),
+        );
+        enable_flex_grid_static_position_provider(
+            &mut self.tree,
+            self.styles,
+            self.boxes,
+            box_id,
+            node,
+        );
+        self.pending_tables.push(PendingTable {
+            table: box_id,
+            node: None,
+            table_style,
+            table_node: node,
+            wrapper: None,
+            captions: Vec::new(),
+            grid: table,
+            collapsed_borders: None,
+            collapsed_border_metrics: None,
+            cell_nodes,
+            out_of_flow_parts,
+            font_size,
+            containing_width: containing_size.0,
+            containing_height: containing_size.1,
+            assigned: None,
+            block: None,
+        });
+        Ok(Some(node))
+    }
+
     /// K4c5b and K4d6b: compute Buckram's columns for every noted table and
     /// pin them as explicit grid tracks, then lay out the block axis. Runs
     /// after the tree is built and before the main layout pass; the queries
@@ -3918,7 +4071,8 @@ where
         let mut aggregate = std::mem::take(&mut self.table_shadow);
         for pending in &mut pendings {
             self.table_shadow = TableShadowLedger::default();
-            if let Some(computed) = self.styles.get(pending.node).cloned() {
+            {
+                let computed = pending.table_style.clone();
                 pending.collapsed_border_metrics = None;
                 pending.collapsed_borders = if computed.border_collapse == BorderCollapse::Collapse
                 {
@@ -3996,9 +4150,9 @@ where
         // width existed. Retire it here rather than leaving both in play - but
         // only where it was this route that put it there, never where the
         // author wrote `float` on the table and K4e1 migrated it.
-        let authored_float = self
-            .styles
-            .get(pending.node)
+        let authored_float = pending
+            .node
+            .and_then(|node| self.styles.get(node))
             .is_some_and(|computed| computed.float != CssFloat::None);
         let style = self.tree.style_mut(wrapper);
         style.size.width = Dimension::length(inline.used_grid_inline_size);
@@ -4021,9 +4175,7 @@ where
             let Some(inline) = pending.assigned.as_ref() else {
                 continue;
             };
-            let Some(computed) = styles.get(pending.node) else {
-                continue;
-            };
+            let computed = &pending.table_style;
             let Some(inputs) = table_block_inputs(
                 boxes,
                 styles,
@@ -4178,11 +4330,11 @@ where
                 let computed = self.styles.get(node).cloned().unwrap_or_default();
                 // K4e1: the wrapper above this grid took the properties
                 // CSS 2.1 section 17.4 assigns to it; the grid sees them unset.
-                let computed =
+                let (computed, table_style) =
                     if self.boxes[box_id].display.internal_table == Some(InternalTableRole::Grid) {
-                        grid_style(&computed, containing_size)
+                        (grid_style(&computed, containing_size), Some(computed))
                     } else {
-                        computed
+                        (computed, None)
                     };
                 let font_size = font_size_px(&computed.font_size, parent_font_size);
                 let mut child_containing_size =
@@ -4298,7 +4450,8 @@ where
                 if let Some(grid) = table {
                     self.pending_tables.push(PendingTable {
                         table: box_id,
-                        node: dom_node,
+                        node: Some(dom_node),
+                        table_style: table_style.unwrap_or_default(),
                         table_node: node,
                         wrapper: None,
                         captions: Vec::new(),
@@ -4389,13 +4542,16 @@ where
                 Ok(Some(node))
             },
             BoxOrigin::Pseudo { .. } | BoxOrigin::Anonymous { .. } => {
-                if let Some(element) = (self.boxes[box_id].display.internal_table
+                if let Some(grid) = (self.boxes[box_id].display.internal_table
                     == Some(InternalTableRole::Wrapper))
-                .then(|| wrapped_table_element(self.boxes, box_id))
+                .then(|| wrapped_table_grid(self.boxes, box_id))
                 .flatten()
                 {
                     // See InlineBuildState's corresponding K4e1 wrapper.
-                    let table = self.styles.get(element).cloned().unwrap_or_default();
+                    let table = match legacy_origin_node(self.boxes, grid) {
+                        Some(element) => self.styles.get(element).cloned().unwrap_or_default(),
+                        None => anonymous_table_style(inherited),
+                    };
                     let computed = wrapper_style(&table);
                     let font_size = font_size_px(&computed.font_size, parent_font_size);
                     let mut caption_nodes = Vec::new();
@@ -4466,12 +4622,20 @@ where
                     if let Some(pending) = self
                         .pending_tables
                         .iter_mut()
-                        .find(|pending| pending.node == element)
+                        .find(|pending| pending.table == grid)
                     {
                         pending.wrapper = Some(node);
                         pending.captions = caption_nodes;
                     }
                     return Ok(Some(node));
+                }
+                if self.boxes[box_id].display.internal_table == Some(InternalTableRole::Grid) {
+                    return self.build_anonymous_table_grid(
+                        box_id,
+                        inherited,
+                        parent_font_size,
+                        containing_size,
+                    );
                 }
                 let computed = inherited.cloned().unwrap_or_default();
                 let children = self.boxes[box_id]
@@ -5765,22 +5929,24 @@ fn algorithm_kind<Id>(css_box: &CssBox<Id>, leaf: bool) -> AlgorithmKind {
     }
 }
 
-/// The element a table wrapper box splits its computed values with.
-///
-/// A wrapper generated by fixup around stray table parts wraps an *anonymous*
-/// grid and owns no element of its own, so nothing migrates onto it and it
-/// stays an ordinary anonymous block. The wrapper's grid is its last child;
-/// captions are the earlier ones.
-fn wrapped_table_element<Id>(boxes: &GeneratedBoxTree<Id>, wrapper: BoxId) -> Option<Id>
+/// The grid box a table wrapper splits its computed values with.
+fn wrapped_table_grid<Id>(boxes: &GeneratedBoxTree<Id>, wrapper: BoxId) -> Option<BoxId>
 where
     Id: Copy + Eq + Hash,
 {
-    let grid = boxes[wrapper]
+    boxes[wrapper]
         .children()
         .iter()
         .copied()
-        .find(|child| boxes[*child].display.internal_table == Some(InternalTableRole::Grid))?;
-    legacy_origin_node(boxes, grid)
+        .find(|child| boxes[*child].display.internal_table == Some(InternalTableRole::Grid))
+}
+
+/// Anonymous tables inherit inheritable values from their parent and take
+/// initial values for everything else.
+fn anonymous_table_style(inherited: Option<&ComputedValues>) -> ComputedValues {
+    let mut style = inherited.map(ComputedValues::for_child).unwrap_or_default();
+    style.display = CssDisplay::Table;
+    style
 }
 
 /// The wrapper's width under CSS Tables 3 section 2.2.1: "the width of the
@@ -6271,12 +6437,8 @@ where
             .filter(|cell| table_cell_spans_collapsed_track(&visibility, cell))
             .map(|cell| cell.source)
             .collect();
-        let separated = styles
-            .get(pending.node)
-            .is_some_and(|style| style.border_collapse == BorderCollapse::Separate);
-        let collapsed = styles
-            .get(pending.node)
-            .is_some_and(|style| style.border_collapse == BorderCollapse::Collapse);
+        let separated = pending.table_style.border_collapse == BorderCollapse::Separate;
+        let collapsed = pending.table_style.border_collapse == BorderCollapse::Collapse;
         let collapsed_geometry = if !collapsed {
             None
         } else {

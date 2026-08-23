@@ -1902,6 +1902,15 @@ where
     if !matches!(style.position, Position::Absolute | Position::Fixed) {
         return false;
     }
+    // This shortcut exists only for overlapping positioned inline text runs.
+    // A table is a structural paint root: its text and column backgrounds must
+    // remain available for normal stacking and glyph-edge compositing.
+    if fragments.table_paint_for_node(child).is_some() {
+        return false;
+    }
+    if subtree_has_visible_box_decoration(dom, styles, child) {
+        return false;
+    }
     let Some(fragment) = fragments.get(child) else {
         return false;
     };
@@ -1920,6 +1929,30 @@ where
         };
         same_fragment(fragment, later_fragment)
     })
+}
+
+fn subtree_has_visible_box_decoration<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    id: D::NodeId,
+) -> bool
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if dom.kind(id) == NodeKind::Element {
+        let Some(style) = styles.get(id) else {
+            return false;
+        };
+        if style.display == Display::None || style.visibility != Visibility::Visible {
+            return false;
+        }
+        if has_visible_box_decoration(style) {
+            return true;
+        }
+    }
+    dom.dom_children(id)
+        .any(|child| subtree_has_visible_box_decoration(dom, styles, child))
 }
 
 fn has_text_descendant<D>(dom: &D, id: D::NodeId) -> bool

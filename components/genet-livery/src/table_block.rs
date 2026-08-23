@@ -236,9 +236,15 @@ where
     // the modeled behavior, not a gap, so nothing defers for them.
     let mut cells = Vec::with_capacity(grid.cells.len());
     for cell in &grid.cells {
-        let Some(style) = style_of(cell.source) else {
-            ledger.skip(table, TableBlockSkip::IncompleteCells);
-            return None;
+        let style = match boxes[cell.source].origin {
+            BoxOrigin::Anonymous { .. } => ComputedValues::default(),
+            _ => match style_of(cell.source) {
+                Some(style) => style,
+                None => {
+                    ledger.skip(table, TableBlockSkip::IncompleteCells);
+                    return None;
+                },
+            },
         };
         let lowered = match lower_cell(
             boxes,
