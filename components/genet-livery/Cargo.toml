@@ -6,9 +6,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/merely-made/genet"
 description = "Genet integration for the clean-room Livery CSS engine."
 readme = "README.md"
+publish = true
 
 [dependencies]
-buckram = { path = "../buckram" }
+buckram = { version = "0.0.1", path = "../buckram" }
 cssparser.workspace = true
 data-url = { workspace = true }
 genet-document-resources = { workspace = true }
@@ -24,7 +25,7 @@ taffy = { version = "0.13.0", default-features = false, features = ["std", "bloc
 
 [dev-dependencies]
 base64.workspace = true
-genet-scripted-dom = { path = "../genet-scripted-dom" }
+genet-scripted-dom = { version = "0.1.0", path = "../genet-scripted-dom" }
 genet-static-dom = { version = "0.1.0", path = "../genet-static-dom" }
 # examples/capture_paint_corpus.rs — same encoding netrender's paint-list
 # corpus stores fixtures in. Already in the lock via other members.
