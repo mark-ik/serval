@@ -88,7 +88,7 @@ fn partial_properties_declare_the_subset_they_build() {
 }
 
 #[test]
-fn the_consumed_set_is_the_audits_126_longhands() {
+fn the_consumed_set_is_the_current_128_longhands() {
     let consumed = consumed_set();
     let declared = {
         let table: toml::Table = CONSUMED.parse().expect("parses");
@@ -104,8 +104,8 @@ fn the_consumed_set_is_the_audits_126_longhands() {
     );
     assert_eq!(
         consumed.len(),
-        126,
-        "the audit's contract is 126 longhands; re-run the audit before changing this",
+        128,
+        "the original 126-name audit plus two live font-feature consumers is 128",
     );
     let unique: BTreeSet<&str> = consumed.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(unique.len(), consumed.len(), "duplicate consumed names");

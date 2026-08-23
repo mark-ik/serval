@@ -8,9 +8,9 @@ use crate::custom::{
 use crate::media::{Device, SystemPalette};
 use crate::values::{
     AnimationDelay, AnimationName, BackgroundImage, BorderStyle, BorderWidth, BoxShadow,
-    ColorScheme, ComputedColor, Duration, FontFamily, FontSize, FontStyle, FontWeight, Inset,
-    LineHeight, Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty,
-    UsedColorContext,
+    ColorScheme, ComputedColor, Duration, FontFamily, FontFeatureSettings, FontSize, FontStyle,
+    FontVariantLigatures, FontWeight, Inset, LineHeight, Margin, Padding, Radius, SystemColor,
+    TimingFunction, TransitionProperty, UsedColorContext,
 };
 use crate::{ComputedValues, PropertyId, PropertyValue, ShorthandId};
 
@@ -833,6 +833,10 @@ fn expand_font(block: &mut DeclarationBlock, value: &str, important: bool) {
     };
     for (property, value) in [
         (PropertyId::FontStyle, PropertyValue::FontStyle(style)),
+        (
+            PropertyId::FontVariantLigatures,
+            PropertyValue::FontVariantLigatures(FontVariantLigatures::NORMAL),
+        ),
         (PropertyId::FontWeight, PropertyValue::FontWeight(weight)),
         (PropertyId::FontSize, PropertyValue::FontSize(size)),
         (
@@ -840,6 +844,10 @@ fn expand_font(block: &mut DeclarationBlock, value: &str, important: bool) {
             PropertyValue::LineHeight(line_height),
         ),
         (PropertyId::FontFamily, PropertyValue::FontFamily(family)),
+        (
+            PropertyId::FontFeatureSettings,
+            PropertyValue::FontFeatureSettings(FontFeatureSettings::Normal),
+        ),
     ] {
         block.declarations.push(Declaration {
             property,

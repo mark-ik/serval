@@ -96,7 +96,7 @@ default-members = ["ports/pelt"]
 # Git history is the reference for the eventual scripting rebuild. See
 # docs/2026-05-20_stylo_taffy_adoption_plan.md (and the cut commit). The
 # remaining Stylo + genet-layout compatibility cone was deleted 2026-08-21.
-exclude = [".cargo"]
+exclude = [".cargo", "support/patches/parley"]
 
 [workspace.package]
 version = "0.2.0"
@@ -521,6 +521,13 @@ paint_list_api = { git = "https://github.com/merely-made/netrender.git", branch 
 # xml5ever = { path = "../html5ever/xml5ever" }
 # tendril = { path = "../html5ever/tendril" }
 gpu-allocator = { path = "support/patches/gpu-allocator" }
+# Parley 0.10 treats inherited-format join controls as requiring nominal glyph
+# coverage during fallback selection. Fonts commonly omit ZWNJ/ZWJ from cmap;
+# requiring coverage then splits the cluster onto a fallback face and imports
+# the fallback's line metrics. The vendored patch keeps both controls in the
+# HarfRust buffer while excluding them from font-coverage scoring. Retire when
+# upstream Parley carries the equivalent fix.
+parley = { path = "support/patches/parley" }
 # sonic-rs uses ahash with default features, whose `runtime-rng` pulled getrandom
 # 0.3 (hard-codes wasm32) onto the shared ahash. This vendored copy drops
 # runtime-rng on wasm (native keeps it), so the wasm graph carries no getrandom 0.3

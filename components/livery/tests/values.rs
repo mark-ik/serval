@@ -5,12 +5,13 @@ use livery::values::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
     BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide,
     Clear, Color, Contain, ContainIntrinsicSize, CssValue, Direction, Display, Duration,
-    EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontSize, FontStyle,
-    FontWeight, Gap, Inset, LengthPercentage, LengthUnit, LineHeight, ListStyleType, Margin,
-    Opacity, Order, Overflow, Padding, PointerEvents, Position, Radius, RelativeLengthEnvironment,
-    ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing, TextAlign,
-    TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty, TreeCounts,
-    VerticalAlign, Visibility, WhiteSpaceCollapse, ZIndex,
+    EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings,
+    FontSize, FontStyle, FontVariantLigatures, FontWeight, Gap, Inset, LengthPercentage,
+    LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, Padding,
+    PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate, Scale,
+    Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode, TimingFunction,
+    Transform, TransitionProperty, TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse,
+    ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
@@ -237,8 +238,14 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<Gap>("12px");
     assert_round_trip::<FontFamily>("system-ui");
     assert_round_trip::<FontFamily>("\"Atkinson Hyperlegible\"");
+    assert_round_trip::<FontFeatureSettings>("normal");
+    assert_round_trip::<FontFeatureSettings>("'liga' off, \"dlig\" 3");
     assert_round_trip::<FontSize>("1.5rem");
     assert_round_trip::<FontStyle>("italic");
+    assert_round_trip::<FontVariantLigatures>(
+        "common-ligatures no-discretionary-ligatures contextual",
+    );
+    assert_round_trip::<FontVariantLigatures>("none");
     assert_round_trip::<FontWeight>("700");
     assert_round_trip::<Size>("42rem");
     assert_round_trip::<Size>("fit-content(80%)");

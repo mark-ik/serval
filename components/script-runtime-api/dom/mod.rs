@@ -384,6 +384,7 @@ pub struct StyleSheetImportOwner {
 pub enum StyleSheetRuleKind {
     Style,
     Import,
+    FontFace,
     Media,
     Container,
     Keyframes,
@@ -585,6 +586,7 @@ fn rule_kind_name(kind: StyleSheetRuleKind) -> &'static str {
     match kind {
         StyleSheetRuleKind::Style => "style",
         StyleSheetRuleKind::Import => "import",
+        StyleSheetRuleKind::FontFace => "font-face",
         StyleSheetRuleKind::Media => "media",
         StyleSheetRuleKind::Container => "container",
         StyleSheetRuleKind::Keyframes => "keyframes",

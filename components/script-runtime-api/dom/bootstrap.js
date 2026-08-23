@@ -961,7 +961,7 @@
     return Number(detail);
   }
   function CSSRule() {}
-  CSSRule.STYLE_RULE = 1; CSSRule.IMPORT_RULE = 3; CSSRule.MEDIA_RULE = 4;
+  CSSRule.STYLE_RULE = 1; CSSRule.IMPORT_RULE = 3; CSSRule.MEDIA_RULE = 4; CSSRule.FONT_FACE_RULE = 5;
   CSSRule.KEYFRAMES_RULE = 7; CSSRule.KEYFRAME_RULE = 8; CSSRule.CONTAINER_RULE = 17;
   function MediaList(text) { this.__text = text || ''; }
   Object.defineProperty(MediaList.prototype, 'mediaText', {
@@ -974,6 +974,7 @@
   function cssomRuleType(kind) {
     if (kind === 'style') return CSSRule.STYLE_RULE;
     if (kind === 'import') return CSSRule.IMPORT_RULE;
+    if (kind === 'font-face') return CSSRule.FONT_FACE_RULE;
     if (kind === 'media') return CSSRule.MEDIA_RULE;
     if (kind === 'keyframes') return CSSRule.KEYFRAMES_RULE;
     if (kind === 'keyframe') return CSSRule.KEYFRAME_RULE;
@@ -1041,6 +1042,11 @@
     var value = __styleSheetRuleSelectorText(this.__sheetKey, cssomPath(this.__path)); return value === null ? '' : String(value);
   }});
   Object.defineProperty(CSSStyleRule.prototype, 'style', { configurable: true, get: function() {
+    var value = __styleSheetRuleStyleText(this.__sheetKey, cssomPath(this.__path)); return makeRuleStyleDecl(value === null ? '' : String(value));
+  }});
+  function CSSFontFaceRule(sheetKey, path, parentRule) { CSSRuleBase.call(this, sheetKey, path, parentRule); }
+  CSSFontFaceRule.prototype = Object.create(CSSRuleBase.prototype); CSSFontFaceRule.prototype.constructor = CSSFontFaceRule;
+  Object.defineProperty(CSSFontFaceRule.prototype, 'style', { configurable: true, get: function() {
     var value = __styleSheetRuleStyleText(this.__sheetKey, cssomPath(this.__path)); return makeRuleStyleDecl(value === null ? '' : String(value));
   }});
   function CSSGroupingRule(sheetKey, path, parentRule) {
@@ -1120,6 +1126,7 @@
     var cacheKey = String(sheetKey) + '\u0000' + encoded, rule = cssomRuleCache[cacheKey];
     if (rule) return rule;
     if (kind === 'style') rule = new CSSStyleRule(sheetKey, path, parentRule);
+    else if (kind === 'font-face') rule = new CSSFontFaceRule(sheetKey, path, parentRule);
     else if (kind === 'media') rule = new CSSMediaRule(sheetKey, path, parentRule);
     else if (kind === 'container') rule = new CSSContainerRule(sheetKey, path, parentRule);
     else if (kind === 'keyframes') rule = new CSSKeyframesRule(sheetKey, path, parentRule);
@@ -1147,6 +1154,7 @@
   globalThis.CSSRuleList = CSSRuleList;
   globalThis.CSSRule = CSSRule;
   globalThis.CSSImportRule = CSSImportRule;
+  globalThis.CSSFontFaceRule = CSSFontFaceRule;
   globalThis.CSSStyleRule = CSSStyleRule;
   globalThis.CSSGroupingRule = CSSGroupingRule;
   globalThis.CSSMediaRule = CSSMediaRule;

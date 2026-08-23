@@ -2,7 +2,7 @@
 
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
     ops::Range,
     sync::Arc,
@@ -16,7 +16,8 @@ use layout_dom_api::{LayoutDom, NodeKind};
 use livery::{
     ComputedValues,
     values::{
-        Display, FontFamily as CssFontFamily, FontStyle as CssFontStyle,
+        Display, FontFamily as CssFontFamily, FontFeatureSetting,
+        FontFeatureSettings as CssFontFeatureSettings, FontStyle as CssFontStyle,
         FontWeight as CssFontWeight, LineHeight as CssLineHeight, Margin, Position, Spacing,
         TextAlign, TextWrapMode, VerticalAlign,
     },
@@ -26,9 +27,9 @@ use paint_list_api::{
     LayoutPoint, PaintCmd, TextOptions, TextRunItem,
 };
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, GenericFamily,
-    InlineBox, InlineBoxKind, LayoutContext, PositionedLayoutItem, StyleProperty,
-    layout::YieldData,
+    Alignment, AlignmentOptions, FontContext, FontFamily, FontFeature, FontFeatures, FontStyle,
+    FontWeight, GenericFamily, InlineBox, InlineBoxKind, LayoutContext, PositionedLayoutItem,
+    StyleProperty, layout::YieldData,
 };
 
 use crate::{LiveryLayout, StylePlane, layout::Fragment, paint::resolve_color};
@@ -173,6 +174,7 @@ pub struct TextSystem {
     fonts: HashMap<FontInstanceKey, FontResource>,
     font_keys: HashMap<(u64, u32), FontInstanceKey>,
     ch_advances: HashMap<ChMetricKey, f32>,
+    font_face_features: HashMap<String, Box<[FontFeatureSetting]>>,
     shape_count: u64,
 }
 
@@ -198,6 +200,7 @@ impl TextSystem {
             fonts: HashMap::new(),
             font_keys: HashMap::new(),
             ch_advances: HashMap::new(),
+            font_face_features: HashMap::new(),
             shape_count: 0,
         }
     }
@@ -217,6 +220,28 @@ impl TextSystem {
         self.font_context
             .collection
             .register_fonts(parley::fontique::Blob::new(Arc::new(bytes)), None);
+        self.ch_advances.clear();
+    }
+
+    /// Register one host-resolved `@font-face` source under its authored CSS
+    /// family and retain the face-level OpenType defaults for shaping.
+    pub fn register_font_face_bytes(
+        &mut self,
+        bytes: Vec<u8>,
+        family: &str,
+        feature_settings: &CssFontFeatureSettings,
+    ) {
+        self.font_context.collection.register_fonts(
+            parley::fontique::Blob::new(Arc::new(bytes)),
+            Some(parley::fontique::FontInfoOverride {
+                family_name: Some(family),
+                ..Default::default()
+            }),
+        );
+        self.font_face_features.insert(
+            family.to_ascii_lowercase(),
+            feature_settings.settings().into(),
+        );
         self.ch_advances.clear();
     }
 
@@ -699,15 +724,24 @@ impl TextSystem {
         Id: Copy + Eq,
     {
         self.shape_count = self.shape_count.saturating_add(1);
+        let default_style = spans.first().map_or(root_style, |span| &span.style);
+        let default_features = effective_font_features(&self.font_face_features, default_style);
+        let span_features = spans
+            .iter()
+            .map(|span| effective_font_features(&self.font_face_features, &span.style))
+            .collect::<Vec<_>>();
         let mut builder =
             self.layout_context
                 .ranged_builder(&mut self.font_context, text, 1.0, true);
-        push_defaults(
-            &mut builder,
-            spans.first().map_or(root_style, |span| &span.style),
-        );
+        push_defaults(&mut builder, default_style, default_features);
         for (source_index, span) in spans.iter().enumerate() {
-            push_span(&mut builder, &span.style, span.range.clone(), source_index);
+            push_span(
+                &mut builder,
+                &span.style,
+                span.range.clone(),
+                source_index,
+                span_features[source_index].clone(),
+            );
         }
         for (index, inline_box) in inline_boxes.iter().enumerate() {
             if inline_box.marker {
@@ -2907,7 +2941,11 @@ fn collapse_css_whitespace(source: &str) -> String {
     output
 }
 
-fn push_defaults(builder: &mut parley::RangedBuilder<'_, Brush>, style: &ComputedValues) {
+fn push_defaults(
+    builder: &mut parley::RangedBuilder<'_, Brush>,
+    style: &ComputedValues,
+    features: Vec<FontFeature>,
+) {
     builder.push_default(StyleProperty::FontSize(super::paint::used_font_size(style)));
     builder.push_default(font_family(style));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(font_weight(
@@ -2916,6 +2954,9 @@ fn push_defaults(builder: &mut parley::RangedBuilder<'_, Brush>, style: &Compute
     builder.push_default(StyleProperty::FontStyle(font_style(style)));
     builder.push_default(StyleProperty::Brush(brush(style, 0)));
     builder.push_default(line_height(style));
+    builder.push_default(StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(
+        features,
+    ))));
     if let Some(letter_spacing) = spacing_px(style.letter_spacing) {
         builder.push_default(StyleProperty::LetterSpacing(letter_spacing));
     }
@@ -2929,6 +2970,7 @@ fn push_span(
     style: &ComputedValues,
     range: Range<usize>,
     source_index: usize,
+    features: Vec<FontFeature>,
 ) {
     builder.push(
         StyleProperty::FontSize(super::paint::used_font_size(style)),
@@ -2945,12 +2987,63 @@ fn push_span(
         range.clone(),
     );
     builder.push(line_height(style), range.clone());
+    builder.push(
+        StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(features))),
+        range.clone(),
+    );
     if let Some(letter_spacing) = spacing_px(style.letter_spacing) {
         builder.push(StyleProperty::LetterSpacing(letter_spacing), range.clone());
     }
     if let Some(word_spacing) = spacing_px(style.word_spacing) {
         builder.push(StyleProperty::WordSpacing(word_spacing), range);
     }
+}
+
+fn effective_font_features(
+    face_features: &HashMap<String, Box<[FontFeatureSetting]>>,
+    style: &ComputedValues,
+) -> Vec<FontFeature> {
+    let mut features = BTreeMap::<[u8; 4], u16>::new();
+    let mut set = |tag: [u8; 4], value: u16| {
+        features.insert(tag, value);
+    };
+
+    if let CssFontFamily::Named(family) = &style.font_family
+        && let Some(defaults) = face_features.get(&family.to_ascii_lowercase())
+    {
+        for setting in defaults.iter() {
+            set(setting.tag, setting.value);
+        }
+    }
+
+    if let Some(value) = style.font_variant_ligatures.common() {
+        set(*b"liga", u16::from(value));
+        set(*b"clig", u16::from(value));
+    }
+    if let Some(value) = style.font_variant_ligatures.discretionary() {
+        set(*b"dlig", u16::from(value));
+    }
+    if let Some(value) = style.font_variant_ligatures.historical() {
+        set(*b"hlig", u16::from(value));
+    }
+    if let Some(value) = style.font_variant_ligatures.contextual() {
+        set(*b"calt", u16::from(value));
+    }
+
+    if spacing_px(style.letter_spacing).is_some_and(|spacing| spacing.abs() > f32::EPSILON) {
+        for tag in [*b"liga", *b"clig", *b"dlig", *b"hlig", *b"calt"] {
+            set(tag, 0);
+        }
+    }
+
+    for setting in style.font_feature_settings.settings() {
+        set(setting.tag, setting.value);
+    }
+
+    features
+        .into_iter()
+        .map(|(tag, value)| FontFeature::new(parley::setting::Tag::from_bytes(tag), value))
+        .collect()
 }
 
 fn text_alignment(style: TextAlign) -> Alignment {

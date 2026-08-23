@@ -44,7 +44,7 @@ pub use layout::{
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
 pub use livery::selector::StatePseudoClass;
-pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
+pub use livery::stylesheet::{CssomRule, CssomRuleKind, FontFaceRule, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
 pub use paint::{
     LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system,

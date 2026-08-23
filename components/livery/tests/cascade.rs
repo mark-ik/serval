@@ -3,8 +3,9 @@ use livery::cascade::{
     CascadeLayer, MatchedDeclaration, Origin, Specificity, cascade, parse_declaration_block,
 };
 use livery::values::{
-    Color, FontFamily, FontSize, FontStyle, FontWeight, Length, LengthPercentage, LineHeight,
-    Margin, Overflow, Size, TransitionProperty, VerticalAlign,
+    Color, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
+    Length, LengthPercentage, LineHeight, Margin, Overflow, Size, TransitionProperty,
+    VerticalAlign,
 };
 
 fn matched(
@@ -24,6 +25,28 @@ fn matched(
         specificity: Specificity(specificity),
         source_order,
     }
+}
+
+#[test]
+fn font_feature_longhands_parse_as_independent_inherited_values() {
+    let block = parse_declaration_block(
+        "font-variant-ligatures: no-common-ligatures discretionary-ligatures; \
+         font-feature-settings: 'liga' on, 'dlig' off",
+    );
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 2);
+    assert!(matches!(
+        &block.declarations[0].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontVariantLigatures(
+            FontVariantLigatures { .. }
+        ))
+    ));
+    assert!(matches!(
+        &block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontFeatureSettings(
+            FontFeatureSettings::Settings(settings)
+        )) if settings.len() == 2
+    ));
 }
 
 #[test]
@@ -152,28 +175,40 @@ fn overflow_shorthand_expands_one_or_two_axis_values() {
 fn font_shorthand_expands_size_line_height_and_family() {
     let block = parse_declaration_block("font: italic bold 20px/1.5 Ahem");
     assert!(block.errors.is_empty(), "{:?}", block.errors);
-    assert_eq!(block.declarations.len(), 5);
+    assert_eq!(block.declarations.len(), 7);
     assert!(matches!(
         &block.declarations[0].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontStyle(FontStyle::Italic))
     ));
     assert!(matches!(
-        &block.declarations[1].value,
+        &block.declarations[2].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontWeight(FontWeight::Bold))
     ));
     assert!(matches!(
-        &block.declarations[2].value,
+        &block.declarations[3].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontSize(FontSize::Value(_)))
     ));
     assert!(matches!(
-        &block.declarations[3].value,
+        &block.declarations[4].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::LineHeight(LineHeight::Number(value)))
             if (*value - 1.5).abs() < f32::EPSILON
     ));
     assert!(matches!(
-        &block.declarations[4].value,
+        &block.declarations[5].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontFamily(FontFamily::Named(name)))
             if name.as_ref() == "Ahem"
+    ));
+    assert!(matches!(
+        &block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontVariantLigatures(
+            FontVariantLigatures { .. }
+        ))
+    ));
+    assert!(matches!(
+        &block.declarations[6].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontFeatureSettings(
+            FontFeatureSettings::Normal
+        ))
     ));
 }
 

@@ -1293,6 +1293,7 @@ impl StyleSheetHandler for LiveryStyleSheets {
         let kind = match rule.kind {
             CssomRuleKind::Style => StyleSheetRuleKind::Style,
             CssomRuleKind::Import => StyleSheetRuleKind::Import,
+            CssomRuleKind::FontFace => StyleSheetRuleKind::FontFace,
             CssomRuleKind::Media => StyleSheetRuleKind::Media,
             CssomRuleKind::Container => StyleSheetRuleKind::Container,
             CssomRuleKind::Keyframes => StyleSheetRuleKind::Keyframes,

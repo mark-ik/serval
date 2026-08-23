@@ -504,8 +504,29 @@ where
 
     fn rebuild_font_resources(&mut self) {
         self.text = TextSystem::new();
-        for bytes in self.font_sources.values().cloned() {
-            self.text.register_font_bytes(bytes);
+        let mut face_sources = HashSet::new();
+        for face in self.style_set.font_faces() {
+            if !face.is_host_loadable() {
+                continue;
+            }
+            let Some((source, bytes)) = face.sources().iter().find_map(|source| {
+                self.font_sources
+                    .get(source.as_ref())
+                    .map(|bytes| (source.as_ref(), bytes))
+            }) else {
+                continue;
+            };
+            face_sources.insert(source.to_owned());
+            self.text.register_font_face_bytes(
+                bytes.clone(),
+                face.family(),
+                face.feature_settings(),
+            );
+        }
+        for (source, bytes) in &self.font_sources {
+            if !face_sources.contains(source) {
+                self.text.register_font_bytes(bytes.clone());
+            }
         }
     }
 
@@ -881,6 +902,7 @@ where
         index: usize,
     ) -> Result<usize, livery::stylesheet::RuleMutationError> {
         let inserted = self.style_set.insert_author_rule(sheet, rule, index)?;
+        self.rebuild_font_resources();
         self.record_full_layout_damage(LayoutDamageKind::Stylesheet);
         self.retain_layout_identity();
         Ok(inserted)
@@ -893,6 +915,7 @@ where
         index: usize,
     ) -> Result<(), livery::stylesheet::RuleMutationError> {
         self.style_set.delete_author_rule(sheet, index)?;
+        self.rebuild_font_resources();
         self.record_full_layout_damage(LayoutDamageKind::Stylesheet);
         self.retain_layout_identity();
         Ok(())

@@ -204,8 +204,10 @@ fn value_type_path(value_type: &str) -> &'static str {
         "duration" => "crate::values::Duration",
         "empty-cells" => "crate::values::EmptyCells",
         "font-family" => "crate::values::FontFamily",
+        "font-feature-settings" => "crate::values::FontFeatureSettings",
         "font-size" => "crate::values::FontSize",
         "font-style" => "crate::values::FontStyle",
+        "font-variant-ligatures" => "crate::values::FontVariantLigatures",
         "font-weight" => "crate::values::FontWeight",
         "flex-direction" => "crate::values::FlexDirection",
         "flex-factor" => "crate::values::FlexFactor",
@@ -255,6 +257,7 @@ fn value_type_is_copy(value_type: &str) -> bool {
             | "color"
             | "container-name"
             | "font-family"
+            | "font-feature-settings"
             | "grid-template"
             | "transform"
     )
@@ -294,8 +297,10 @@ fn initial_expression(property: &Property) -> &'static str {
         ("duration", "0s") => "crate::values::Duration::ZERO",
         ("empty-cells", "show") => "crate::values::EmptyCells::Show",
         ("font-family", "depends-on-user-agent") => "crate::values::FontFamily::UserAgentDefault",
+        ("font-feature-settings", "normal") => "crate::values::FontFeatureSettings::Normal",
         ("font-size", "medium") => "crate::values::FontSize::Medium",
         ("font-style", "normal") => "crate::values::FontStyle::Normal",
+        ("font-variant-ligatures", "normal") => "crate::values::FontVariantLigatures::NORMAL",
         ("font-weight", "normal") => "crate::values::FontWeight::Normal",
         ("flex-direction", "row") => "crate::values::FlexDirection::Row",
         ("flex-factor", "0") => "crate::values::FlexFactor::ZERO",

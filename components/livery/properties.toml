@@ -169,7 +169,10 @@ seed_values = ["normal", "pre"]
 source = "css_text_4"
 
 [shorthands.font]
-longhands = ["font-style", "font-weight", "font-size", "line-height", "font-family"]
+longhands = [
+    "font-style", "font-variant-ligatures", "font-weight", "font-size",
+    "line-height", "font-family", "font-feature-settings",
+]
 grammar = "[ normal | italic | oblique ] || [ normal | bold | <number> ] || <font-size> [ / <line-height> ]? <font-family>"
 seed_values = ["20px/1 Ahem", "1em sans-serif"]
 source = "css_fonts_4"
@@ -955,6 +958,26 @@ inherited = true
 initial = "depends-on-user-agent"
 grammar = "[ <font-family-name> | <generic-font-family> ]#"
 seed_values = ["system-ui"]
+animation = "discrete"
+source = "css_fonts_4"
+
+[[property]]
+name = "font-feature-settings"
+value_type = "font-feature-settings"
+inherited = true
+initial = "normal"
+grammar = "normal | <feature-tag-value>#"
+seed_values = ["normal", "'liga' on", "'dlig' off"]
+animation = "discrete"
+source = "css_fonts_4"
+
+[[property]]
+name = "font-variant-ligatures"
+value_type = "font-variant-ligatures"
+inherited = true
+initial = "normal"
+grammar = "normal | none | [ common-ligatures | no-common-ligatures ] || [ discretionary-ligatures | no-discretionary-ligatures ] || [ historical-ligatures | no-historical-ligatures ] || [ contextual | no-contextual ]"
+seed_values = ["normal", "common-ligatures", "no-common-ligatures", "discretionary-ligatures"]
 animation = "discrete"
 source = "css_fonts_4"
 
@@ -2044,13 +2067,6 @@ animation = "none"
 spec = "Internal (not web-exposed)"
 
 [[unimplemented]]
-name = "font-feature-settings"
-group = "font"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-fonts/#propdef-font-feature-settings"
-
-[[unimplemented]]
 name = "font-kerning"
 group = "font"
 inherited = true
@@ -2098,13 +2114,6 @@ group = "font"
 inherited = true
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-east-asian"
-
-[[unimplemented]]
-name = "font-variant-ligatures"
-group = "font"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-ligatures"
 
 [[unimplemented]]
 name = "font-variant-numeric"
