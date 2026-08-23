@@ -23,9 +23,8 @@
 //! owned `FontResource` bytes, is the IPC-self-contained form — not the
 //! packet.
 //!
-//! Mirrors genet-layout's `FontCollector`: dedup by `parley::Blob::id()`
-//! (a stable per-allocation id), so a face shared across many runs is
-//! stored once.
+//! Faces deduplicate by `parley::Blob::id()` (a stable per-allocation id),
+//! so a face shared across many runs is stored once.
 
 use std::collections::HashMap;
 
@@ -110,8 +109,7 @@ mod tests {
     // `distinct_families_intern_distinct_faces`) and `paint_list.rs` —
     // `parley::FontData` can't be constructed synthetically without
     // pulling in `linebender_resource_handle` directly, and a real layout
-    // is the more honest exercise of the intern path (mirrors
-    // genet-layout's `FontCollector` tests).
+    // is the more honest exercise of the intern path.
 
     #[test]
     fn empty_table_get_is_none() {

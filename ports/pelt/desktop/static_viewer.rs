@@ -9,8 +9,8 @@
 //! the second instance of the orrery-host pattern (a window-agnostic content lib
 //! plus a thin shell that maps winit events onto the content's semantic input and
 //! rasterizes + composites its scene per frame). The document is the content;
-//! wheel scrolling is its only interaction in V1, fed through the shared
-//! default-action helper into the document's viewport.
+//! the shell translates pointer, keyboard, IME, focus, scroll, and navigation
+//! commands without learning its concrete session type.
 
 use crate::{DesktopHostProfile, WindowingMode};
 use genet_host_api::EngineProfile;
@@ -215,15 +215,8 @@ mod livery_route_tests {
     use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
     use netrender::{Scene, SceneOp};
 
-    fn node_by_id(
-        dom: &genet_static_dom::StaticDocument,
-        expected: &str,
-    ) -> genet_static_dom::StaticNodeId {
-        fn find(
-            dom: &genet_static_dom::StaticDocument,
-            node: genet_static_dom::StaticNodeId,
-            expected: &str,
-        ) -> Option<genet_static_dom::StaticNodeId> {
+    fn node_by_id<D: LayoutDom>(dom: &D, expected: &str) -> D::NodeId {
+        fn find<D: LayoutDom>(dom: &D, node: D::NodeId, expected: &str) -> Option<D::NodeId> {
             if dom.kind(node) == NodeKind::Element
                 && dom.attribute(node, &Namespace::default(), &LocalName::from("id"))
                     == Some(expected)
@@ -417,8 +410,9 @@ pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
 /// Run the owned Livery engine through its inker registry entry.
 #[cfg(feature = "livery")]
 pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
+    use crate::browser_session::BrowserSession;
     use genet_documents::LiverySessionEngine;
-    use inker::{SessionRegistry, SessionSpawnRequest};
+    use inker::SessionRegistry;
     use netrender::Scene;
 
     if matches!(config.profile.windowing, WindowingMode::Headless) {
@@ -434,17 +428,13 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     registry.register(Box::new(LiverySessionEngine::new(
         genet_documents::LocalFetcher,
     )));
-    let request = SessionSpawnRequest::new(&config.url).with_viewport(width, height);
-    let session = registry
-        .spawn(inker::routing::ENGINE_GENET_LIVERY, &request)
-        .map_err(|error| format!("could not spawn engine genet.livery: {error}"))?;
-    run_headed_with(
-        config,
-        SessionViewerContent {
-            session,
-            posture: None,
-        },
-    )
+    let browser = BrowserSession::new(
+        registry,
+        inker::routing::ENGINE_GENET_LIVERY,
+        &config.url,
+        (width, height),
+    )?;
+    run_headed_with(config, LiveryViewerContent { browser })
 }
 
 #[cfg(not(feature = "livery"))]
@@ -495,13 +485,18 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     run_headed_with(config, SessionViewerContent { session, posture })
 }
 
-#[cfg(any(feature = "livery", feature = "reader"))]
+#[cfg(feature = "reader")]
 struct SessionViewerContent {
     session: Box<dyn inker::DocumentSession<netrender::Scene>>,
     posture: Option<String>,
 }
 
-#[cfg(any(feature = "livery", feature = "reader"))]
+#[cfg(feature = "livery")]
+struct LiveryViewerContent {
+    browser: crate::browser_session::BrowserSession<netrender::Scene>,
+}
+
+#[cfg(feature = "reader")]
 impl windowed::ViewerContent for SessionViewerContent {
     fn title(&self) -> Option<String> {
         self.session.inspect().and_then(|report| report.title)
@@ -541,6 +536,50 @@ impl windowed::ViewerContent for SessionViewerContent {
     }
 }
 
+#[cfg(feature = "livery")]
+impl windowed::ViewerContent for LiveryViewerContent {
+    fn title(&self) -> Option<String> {
+        self.browser.title()
+    }
+
+    fn address(&self) -> Option<&str> {
+        Some(self.browser.address())
+    }
+
+    fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
+        self.browser.frame(width, height)
+    }
+
+    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
+        self.browser.scroll_by(dx, dy)
+    }
+
+    fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        self.browser.scroll_at(x, y, dx, dy)
+    }
+
+    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
+        let key = match key {
+            ViewerScrollKey::Up => inker::SessionScrollKey::LineUp,
+            ViewerScrollKey::Down => inker::SessionScrollKey::LineDown,
+            ViewerScrollKey::PageUp => inker::SessionScrollKey::PageUp,
+            ViewerScrollKey::PageDown => inker::SessionScrollKey::PageDown,
+            ViewerScrollKey::Home => inker::SessionScrollKey::Home,
+            ViewerScrollKey::End => inker::SessionScrollKey::End,
+            ViewerScrollKey::Left | ViewerScrollKey::Right => return false,
+        };
+        self.browser.scroll_for_key(key)
+    }
+
+    fn input(&mut self, input: inker::SessionInput) -> windowed::ViewerAction {
+        self.browser.input(input)
+    }
+
+    fn navigation(&mut self, command: inker::SessionNavigationCommand) -> windowed::ViewerAction {
+        self.browser.command(command)
+    }
+}
+
 /// Open a window and present `content` (any [`ViewerContent`](windowed::ViewerContent))
 /// through the shared winit shell until the window closes. The Livery viewer and the
 /// scripted viewer ([`crate::scripted`]) are the two callers — same shell, different
@@ -568,6 +607,10 @@ pub(crate) mod windowed {
     use std::time::Instant;
 
     use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
+    use inker::{
+        SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey, SessionModifiers,
+        SessionNavigationCommand, SessionPointerButton,
+    };
     use netrender::external_texture::ExternalTexturePlacement;
     use netrender::{ColorLoad, NetrenderOptions, Scene};
     use winit::application::ApplicationHandler;
@@ -578,8 +621,21 @@ pub(crate) mod windowed {
 
     use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
 
-    /// A document the viewer can present: render at a size, scroll, click, and (for
-    /// scripted content) advance time-based work. Livery-backed static and scripted
+    /// Presentation work requested after the content consumes an input or
+    /// navigation command. This is the only result the winit adapter reads.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct ViewerAction {
+        pub handled: bool,
+        pub redraw: bool,
+        pub cursor: Option<SessionCursor>,
+        pub capture: Option<bool>,
+        pub editable: bool,
+        pub navigated: bool,
+        pub error: Option<String>,
+    }
+
+    /// A document the viewer can present: render at a size, consume neutral input,
+    /// navigate, and (for scripted content) advance time-based work. Livery-backed and scripted
     /// documents implement it, so they share this one winit shell. The Pelt
     /// host-reconstruction lane replaces this private seam with a public host core.
     pub(crate) trait ViewerContent {
@@ -589,6 +645,10 @@ pub(crate) mod windowed {
         }
         /// Optional engine posture shown in native window chrome.
         fn posture(&self) -> Option<&str> {
+            None
+        }
+        /// Current addressed resource after any in-window navigation.
+        fn address(&self) -> Option<&str> {
             None
         }
         /// Render at `width`×`height` at the current scroll.
@@ -606,8 +666,35 @@ pub(crate) mod windowed {
         }
         /// Apply a keyboard scroll default; return whether the offset moved.
         fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool;
-        /// Handle a left click at a scene point; return whether the document scrolled.
-        fn click_at(&mut self, x: f32, y: f32) -> bool;
+        /// Compatibility click hook for content not yet backed by an Inker
+        /// session. The default input adapter below keeps those lanes usable.
+        fn click_at(&mut self, _x: f32, _y: f32) -> bool {
+            false
+        }
+        /// Consume host-neutral input. Session-backed content overrides this;
+        /// older content receives primary clicks through the compatibility hook.
+        fn input(&mut self, input: SessionInput) -> ViewerAction {
+            let SessionInput::PointerButton {
+                x,
+                y,
+                button: SessionPointerButton::Primary,
+                state: SessionButtonState::Pressed,
+                ..
+            } = input
+            else {
+                return ViewerAction::default();
+            };
+            let handled = self.click_at(x, y);
+            ViewerAction {
+                handled,
+                redraw: handled,
+                ..Default::default()
+            }
+        }
+        /// Consume host-owned history and loading commands.
+        fn navigation(&mut self, _command: SessionNavigationCommand) -> ViewerAction {
+            ViewerAction::default()
+        }
         /// Advance time-based work (script timers + GC) to `now_ms`; return whether
         /// more is pending, so the shell keeps requesting frames. Static content has
         /// none — the default returns `false` and the shell redraws only on input.
@@ -641,6 +728,54 @@ pub(crate) mod windowed {
         })
     }
 
+    fn session_key_from_winit(key: &Key) -> SessionKey {
+        match key {
+            Key::Character(text) => SessionKey::Character(text.to_string()),
+            Key::Named(NamedKey::Enter) => SessionKey::Enter,
+            Key::Named(NamedKey::Tab) => SessionKey::Tab,
+            Key::Named(NamedKey::Backspace) => SessionKey::Backspace,
+            Key::Named(NamedKey::Delete) => SessionKey::Delete,
+            Key::Named(NamedKey::Escape) => SessionKey::Escape,
+            Key::Named(NamedKey::Space) => SessionKey::Space,
+            Key::Named(NamedKey::ArrowLeft) => SessionKey::ArrowLeft,
+            Key::Named(NamedKey::ArrowRight) => SessionKey::ArrowRight,
+            Key::Named(NamedKey::ArrowUp) => SessionKey::ArrowUp,
+            Key::Named(NamedKey::ArrowDown) => SessionKey::ArrowDown,
+            Key::Named(NamedKey::Home) => SessionKey::Home,
+            Key::Named(NamedKey::End) => SessionKey::End,
+            Key::Named(NamedKey::PageUp) => SessionKey::PageUp,
+            Key::Named(NamedKey::PageDown) => SessionKey::PageDown,
+            _ => SessionKey::Unidentified,
+        }
+    }
+
+    fn pointer_button_from_winit(button: MouseButton) -> SessionPointerButton {
+        match button {
+            MouseButton::Left => SessionPointerButton::Primary,
+            MouseButton::Right => SessionPointerButton::Secondary,
+            MouseButton::Middle
+            | MouseButton::Back
+            | MouseButton::Forward
+            | MouseButton::Other(_) => SessionPointerButton::Auxiliary,
+        }
+    }
+
+    fn button_state_from_winit(state: ElementState) -> SessionButtonState {
+        match state {
+            ElementState::Pressed => SessionButtonState::Pressed,
+            ElementState::Released => SessionButtonState::Released,
+        }
+    }
+
+    fn ime_from_winit(ime: winit::event::Ime) -> SessionIme {
+        match ime {
+            winit::event::Ime::Enabled => SessionIme::Enabled,
+            winit::event::Ime::Preedit(text, selection) => SessionIme::Preedit { text, selection },
+            winit::event::Ime::Commit(text) => SessionIme::Commit(text),
+            winit::event::Ime::Disabled => SessionIme::Disabled,
+        }
+    }
+
     /// The viewer application: a [`ViewerContent`] document plus the window + shared
     /// present stack that drives it. Generic over the content so the static and
     /// scripted profiles share the shell.
@@ -658,11 +793,12 @@ pub(crate) mod windowed {
         /// Physical device pixels per logical CSS/layout pixel.
         scale_factor: f32,
         redraws: u32,
-        /// Shift state, tracked from `ModifiersChanged`, so `Shift+Space` pages up.
-        shift: bool,
+        /// Platform modifier state translated once at the winit boundary.
+        modifiers: SessionModifiers,
         /// Last cursor position in physical px (winit's `MouseInput` carries none),
         /// so a click can hit-test the document for in-page link navigation.
         cursor: (f32, f32),
+        pointer_captured: bool,
         /// Frame-loop clock origin, supplying the `now_ms` virtual clock that drives
         /// scripted content's timers (a no-op for static content).
         start: Instant,
@@ -679,15 +815,16 @@ pub(crate) mod windowed {
                 window: None,
                 host: None,
                 redraws: 0,
-                shift: false,
+                modifiers: SessionModifiers::default(),
                 cursor: (0.0, 0.0),
+                pointer_captured: false,
                 start: Instant::now(),
             }
         }
 
         pub(crate) fn outcome(&self) -> StaticViewerOutcome {
             StaticViewerOutcome {
-                url: self.config.url.clone(),
+                url: self.doc.address().unwrap_or(&self.config.url).to_owned(),
                 created_window: self.window.is_some(),
                 redraws: self.redraws,
                 size: if self.window.is_some() {
@@ -699,8 +836,10 @@ pub(crate) mod windowed {
         }
 
         fn window_title(&self) -> String {
-            let mut title =
-                super::pelt_window_title(self.doc.title().as_deref(), Some(&self.config.url));
+            let mut title = super::pelt_window_title(
+                self.doc.title().as_deref(),
+                self.doc.address().or(Some(&self.config.url)),
+            );
             if let Some(posture) = self.doc.posture() {
                 title.push_str(" — ");
                 title.push_str(posture);
@@ -770,6 +909,31 @@ pub(crate) mod windowed {
         fn request_redraw(&self) {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
+            }
+        }
+
+        fn apply_action(&mut self, action: ViewerAction) {
+            if let Some(error) = action.error {
+                eprintln!("[pelt-viewer] {error}");
+            }
+            if let Some(capture) = action.capture {
+                self.pointer_captured = capture;
+            }
+            if let Some(window) = self.window.as_ref() {
+                if let Some(cursor) = action.cursor {
+                    window.set_cursor(match cursor {
+                        SessionCursor::Default => winit::window::CursorIcon::Default,
+                        SessionCursor::Pointer => winit::window::CursorIcon::Pointer,
+                        SessionCursor::Text => winit::window::CursorIcon::Text,
+                    });
+                }
+                window.set_ime_allowed(action.editable);
+                if action.navigated {
+                    window.set_title(&self.window_title());
+                }
+            }
+            if action.redraw {
+                self.request_redraw();
             }
         }
     }
@@ -858,36 +1022,99 @@ pub(crate) mod windowed {
                     }
                 },
                 WindowEvent::ModifiersChanged(mods) => {
-                    self.shift = mods.state().shift_key();
+                    let state = mods.state();
+                    self.modifiers = SessionModifiers {
+                        shift: state.shift_key(),
+                        control: state.control_key(),
+                        alt: state.alt_key(),
+                        meta: state.super_key(),
+                    };
                 },
                 WindowEvent::CursorMoved { position, .. } => {
                     self.cursor = (
                         super::logical_position(position.x as f32, self.scale_factor),
                         super::logical_position(position.y as f32, self.scale_factor),
                     );
+                    let (x, y) = self.cursor;
+                    let action = self.doc.input(SessionInput::PointerMoved {
+                        x,
+                        y,
+                        modifiers: self.modifiers,
+                    });
+                    self.apply_action(action);
                 },
                 WindowEvent::MouseInput { state, button, .. } => {
-                    // A left click on an in-page link (`<a href="#id">`) scrolls its
-                    // target into view (anchor-fragment navigation, scope doc rule 5).
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        let (x, y) = self.cursor;
-                        if self.doc.click_at(x, y) {
-                            self.request_redraw();
-                        }
-                    }
+                    let (x, y) = self.cursor;
+                    let action = self.doc.input(SessionInput::PointerButton {
+                        x,
+                        y,
+                        button: pointer_button_from_winit(button),
+                        state: button_state_from_winit(state),
+                        modifiers: self.modifiers,
+                    });
+                    self.apply_action(action);
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
-                    // The keyboard scroll defaults (scope doc rule 5): map the key to
-                    // a `ScrollKey` and scroll the document viewport. (No editable
-                    // gate yet — pelt has no focusable fields in V1/V2; add the "focus
-                    // not in an editable" check when it gains them.)
-                    if event.state == ElementState::Pressed {
-                        if let Some(key) = scroll_key_from_winit(&event.logical_key, self.shift) {
-                            if self.doc.scroll_for_key(key) {
-                                self.request_redraw();
-                            }
+                    let navigation = if event.state == ElementState::Pressed {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::BrowserBack) => {
+                                Some(SessionNavigationCommand::Back)
+                            },
+                            Key::Named(NamedKey::BrowserForward) => {
+                                Some(SessionNavigationCommand::Forward)
+                            },
+                            Key::Named(NamedKey::BrowserRefresh) | Key::Named(NamedKey::F5) => {
+                                Some(SessionNavigationCommand::Reload)
+                            },
+                            Key::Named(NamedKey::ArrowLeft) if self.modifiers.alt => {
+                                Some(SessionNavigationCommand::Back)
+                            },
+                            Key::Named(NamedKey::ArrowRight) if self.modifiers.alt => {
+                                Some(SessionNavigationCommand::Forward)
+                            },
+                            Key::Character(text)
+                                if (self.modifiers.control || self.modifiers.meta)
+                                    && text.eq_ignore_ascii_case("r") =>
+                            {
+                                Some(SessionNavigationCommand::Reload)
+                            },
+                            _ => None,
                         }
+                    } else {
+                        None
+                    };
+                    if let Some(command) = navigation {
+                        let action = self.doc.navigation(command);
+                        self.apply_action(action);
+                        return;
                     }
+
+                    let action = self.doc.input(SessionInput::Key {
+                        key: session_key_from_winit(&event.logical_key),
+                        state: button_state_from_winit(event.state),
+                        modifiers: self.modifiers,
+                        repeat: event.repeat,
+                    });
+                    let handled = action.handled;
+                    let editable = action.editable;
+                    self.apply_action(action);
+                    if event.state == ElementState::Pressed
+                        && !handled
+                        && !editable
+                        && let Some(key) =
+                            scroll_key_from_winit(&event.logical_key, self.modifiers.shift)
+                        && self.doc.scroll_for_key(key)
+                    {
+                        self.request_redraw();
+                    }
+                },
+                WindowEvent::Ime(ime) => {
+                    let action = self.doc.input(SessionInput::Ime(ime_from_winit(ime)));
+                    self.apply_action(action);
+                },
+                WindowEvent::Focused(focused) => {
+                    let action = self.doc.input(SessionInput::Focus(focused));
+                    self.apply_action(action);
                 },
                 WindowEvent::RedrawRequested => self.render(event_loop),
                 _ => {},

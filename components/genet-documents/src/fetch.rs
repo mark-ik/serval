@@ -105,11 +105,13 @@ fn fetch_local_response(url: &str) -> Option<ResourceResponse> {
                 .map(|bytes| ResourceResponse::new(url, bytes));
         }
         if let Some(rest) = url.strip_prefix("file://") {
-            return std::fs::read(file_url_to_path(rest))
+            let path = rest.split_once('?').map_or(rest, |(path, _)| path);
+            return std::fs::read(file_url_to_path(path))
                 .ok()
                 .map(|bytes| ResourceResponse::new(url, bytes));
         }
-        std::fs::read(url).ok()?
+        let path = url.split_once('?').map_or(url, |(path, _)| path);
+        std::fs::read(path).ok()?
     };
     Some(ResourceResponse::new(url, bytes))
 }
@@ -132,6 +134,8 @@ fn file_url_to_path(after_scheme: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use genet_host_api::ResourceFetcher;
 
     use super::LocalFetcher;
@@ -139,5 +143,25 @@ mod tests {
     #[test]
     fn missing_local_resource_is_a_clean_miss() {
         assert!(LocalFetcher.fetch("/no/such/pelt/file.html").is_none());
+    }
+
+    #[test]
+    fn local_get_query_does_not_become_part_of_the_filename() {
+        let fixture = std::env::temp_dir().join(format!(
+            "pelt-local-form-{}-{}.html",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        ));
+        fs::write(&fixture, b"submitted").expect("write local form target");
+        let addressed = format!("{}?note=cedar", fixture.display());
+        let response = LocalFetcher
+            .fetch_response(&addressed)
+            .expect("query-addressed local target");
+        assert_eq!(response.final_url, addressed);
+        assert_eq!(response.bytes, b"submitted");
+        fs::remove_file(fixture).expect("remove local form target");
     }
 }

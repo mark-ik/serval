@@ -21,12 +21,15 @@ use genet_host_api::ResourceFetcher;
 #[cfg(feature = "livery")]
 use genet_host_api::ResourceResponse;
 use inker::session_engine::{
-    DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession, SessionClick,
-    SessionEngine, SessionError, SessionLink, SessionScrollKey, SessionSpawnRequest,
-    SessionTextTarget,
+    DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession,
+    SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine, SessionError,
+    SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme, SessionKey,
+    SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };
-use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
+use layout_dom_api::{LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
 use netrender::Scene;
+#[cfg(feature = "livery")]
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Map the host-neutral scroll-key vocabulary onto the owned scripted lane.
 #[cfg(feature = "scripted")]
@@ -118,7 +121,10 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessio
             .map_or(source_response.final_url.as_str(), |(resource, _)| resource)
             .to_owned();
         let source = String::from_utf8_lossy(&source_response.bytes).into_owned();
-        let dom = genet_static_dom::StaticDocument::parse(&source);
+        // Script-free HTML still uses the mutable DOM backing. Form controls
+        // need one retained value plane even when JavaScript is disabled;
+        // ScriptedDom supplies LayoutDomMut without constructing a JS runtime.
+        let dom = genet_scripted_dom::ScriptedDom::from_serialized_document(&source);
         self.spawn_livery_document(request, dom, base_resource, source_response)
     }
 }
@@ -128,7 +134,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
     fn spawn_livery_document(
         &self,
         request: &SessionSpawnRequest,
-        dom: genet_static_dom::StaticDocument,
+        dom: genet_scripted_dom::ScriptedDom,
         base_resource: String,
         source_response: ResourceResponse,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
@@ -184,6 +190,10 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
         Ok(Box::new(LiveryDocumentSession {
             doc,
             address: request.address.clone(),
+            focused_node: None,
+            editor: None,
+            active_form: None,
+            pressed_submit: None,
             last_error: None,
             resources,
             source_response,
@@ -195,17 +205,322 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
 /// fragment planes, so this adapter only translates the session contract.
 #[cfg(feature = "livery")]
 pub struct LiveryDocumentSession {
-    doc: genet_livery::LiveryDocument<genet_static_dom::StaticDocument>,
+    doc: genet_livery::LiveryDocument<genet_scripted_dom::ScriptedDom>,
     address: String,
+    focused_node: Option<genet_scripted_dom::NodeId>,
+    editor: Option<EditableControl>,
+    active_form: Option<genet_scripted_dom::NodeId>,
+    pressed_submit: Option<genet_scripted_dom::NodeId>,
     last_error: Option<String>,
     resources: ResolvedDocumentResources,
     source_response: ResourceResponse,
 }
 
 #[cfg(feature = "livery")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditableKind {
+    Input,
+    Textarea,
+}
+
+#[cfg(feature = "livery")]
+struct EditableControl {
+    node: genet_scripted_dom::NodeId,
+    kind: EditableKind,
+    value: String,
+    caret: usize,
+    composition: Option<String>,
+}
+
+#[cfg(feature = "livery")]
 impl LiveryDocumentSession {
-    pub fn document(&self) -> &genet_livery::LiveryDocument<genet_static_dom::StaticDocument> {
+    pub fn document(&self) -> &genet_livery::LiveryDocument<genet_scripted_dom::ScriptedDom> {
         &self.doc
+    }
+
+    fn attribute(&self, node: genet_scripted_dom::NodeId, name: &str) -> Option<&str> {
+        self.doc
+            .dom()
+            .attribute(node, &Namespace::default(), &LocalName::from(name))
+    }
+
+    fn tag(&self, node: genet_scripted_dom::NodeId) -> Option<&str> {
+        self.doc
+            .dom()
+            .element_name(node)
+            .map(|name| name.local.as_ref())
+    }
+
+    fn ancestor_matching(
+        &self,
+        mut node: genet_scripted_dom::NodeId,
+        predicate: impl Fn(genet_scripted_dom::NodeId, &str) -> bool,
+    ) -> Option<genet_scripted_dom::NodeId> {
+        loop {
+            if let Some(tag) = self.tag(node)
+                && predicate(node, tag)
+            {
+                return Some(node);
+            }
+            node = self.doc.dom().parent(node)?;
+        }
+    }
+
+    fn form_ancestor(
+        &self,
+        node: genet_scripted_dom::NodeId,
+    ) -> Option<genet_scripted_dom::NodeId> {
+        self.ancestor_matching(node, |_node, tag| tag.eq_ignore_ascii_case("form"))
+    }
+
+    fn editable_kind(&self, node: genet_scripted_dom::NodeId) -> Option<EditableKind> {
+        match self.tag(node)? {
+            tag if tag.eq_ignore_ascii_case("textarea") => Some(EditableKind::Textarea),
+            tag if tag.eq_ignore_ascii_case("input") => {
+                let kind = self.attribute(node, "type").unwrap_or("text");
+                (!matches!(
+                    kind.to_ascii_lowercase().as_str(),
+                    "button"
+                        | "checkbox"
+                        | "file"
+                        | "hidden"
+                        | "image"
+                        | "radio"
+                        | "reset"
+                        | "submit"
+                ))
+                .then_some(EditableKind::Input)
+            },
+            _ => None,
+        }
+    }
+
+    fn editable_ancestor(
+        &self,
+        node: genet_scripted_dom::NodeId,
+    ) -> Option<(genet_scripted_dom::NodeId, EditableKind)> {
+        let node = self.ancestor_matching(node, |node, _tag| self.editable_kind(node).is_some())?;
+        Some((node, self.editable_kind(node)?))
+    }
+
+    fn is_submit_control(&self, node: genet_scripted_dom::NodeId) -> bool {
+        match self.tag(node) {
+            Some(tag) if tag.eq_ignore_ascii_case("button") => {
+                !self.attribute(node, "type").is_some_and(|kind| {
+                    matches!(kind.to_ascii_lowercase().as_str(), "button" | "reset")
+                })
+            },
+            Some(tag) if tag.eq_ignore_ascii_case("input") => {
+                self.attribute(node, "type").is_some_and(|kind| {
+                    matches!(kind.to_ascii_lowercase().as_str(), "submit" | "image")
+                })
+            },
+            _ => false,
+        }
+    }
+
+    fn submit_ancestor(
+        &self,
+        node: genet_scripted_dom::NodeId,
+    ) -> Option<genet_scripted_dom::NodeId> {
+        self.ancestor_matching(node, |node, _tag| self.is_submit_control(node))
+    }
+
+    fn text_content(&self, node: genet_scripted_dom::NodeId) -> String {
+        fn append(
+            dom: &genet_scripted_dom::ScriptedDom,
+            node: genet_scripted_dom::NodeId,
+            out: &mut String,
+        ) {
+            if dom.kind(node) == NodeKind::Text
+                && let Some(text) = dom.text(node)
+            {
+                out.push_str(text);
+            }
+            for child in dom.dom_children(node) {
+                append(dom, child, out);
+            }
+        }
+
+        let mut value = String::new();
+        append(self.doc.dom(), node, &mut value);
+        value
+    }
+
+    fn activate_editable(&mut self, node: genet_scripted_dom::NodeId, kind: EditableKind) {
+        let value = match kind {
+            EditableKind::Input => self.attribute(node, "value").unwrap_or("").to_owned(),
+            EditableKind::Textarea => self.text_content(node),
+        };
+        let caret = value.len();
+        self.focused_node = Some(node);
+        self.active_form = self.form_ancestor(node);
+        self.editor = Some(EditableControl {
+            node,
+            kind,
+            value,
+            caret,
+            composition: None,
+        });
+    }
+
+    fn activate_hit(&mut self, x: f32, y: f32) {
+        let Some(hit) = self.doc.hit_test(x, y) else {
+            self.focused_node = None;
+            self.editor = None;
+            self.active_form = None;
+            return;
+        };
+        if let Some((node, kind)) = self.editable_ancestor(hit) {
+            self.activate_editable(node, kind);
+            return;
+        }
+        self.focused_node = self.ancestor_matching(hit, |node, tag| {
+            tag.eq_ignore_ascii_case("button")
+                || tag.eq_ignore_ascii_case("select")
+                || tag.eq_ignore_ascii_case("a") && self.attribute(node, "href").is_some()
+                || self.attribute(node, "tabindex").is_some()
+        });
+        self.editor = None;
+        self.active_form = self.focused_node.and_then(|node| self.form_ancestor(node));
+    }
+
+    fn submission_for_form(
+        &self,
+        form: genet_scripted_dom::NodeId,
+        fallback_action: &str,
+    ) -> SessionFormSubmission {
+        let action = self
+            .attribute(form, "action")
+            .filter(|action| !action.is_empty())
+            .unwrap_or(fallback_action)
+            .to_owned();
+        let method = if self
+            .attribute(form, "method")
+            .is_some_and(|method| method.eq_ignore_ascii_case("post"))
+        {
+            SessionFormMethod::Post
+        } else {
+            SessionFormMethod::Get
+        };
+        SessionFormSubmission {
+            action,
+            method,
+            fields: self.doc.dom().form_values(form),
+        }
+    }
+
+    fn submit_click(&mut self, submit: genet_scripted_dom::NodeId) -> SessionClick {
+        let Some(form) = self.form_ancestor(submit) else {
+            return SessionClick::Handled;
+        };
+        self.active_form = Some(form);
+        let action = self
+            .attribute(form, "action")
+            .unwrap_or(&self.address)
+            .to_owned();
+        SessionClick::Submit(action)
+    }
+
+    fn apply_editor(&mut self) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let (node, kind, value) = (editor.node, editor.kind, editor.value.clone());
+        let _ = self.doc.mutate_dom(|dom| match kind {
+            EditableKind::Input => dom.set_attribute(
+                node,
+                QualName::new(None, Namespace::default(), LocalName::from("value")),
+                &value,
+            ),
+            EditableKind::Textarea => dom.set_text_content(node, &value),
+        });
+    }
+
+    fn insert_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        editor.value.insert_str(editor.caret, text);
+        editor.caret += text.len();
+        editor.composition = None;
+        self.apply_editor();
+        true
+    }
+
+    fn delete_backward(&mut self) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        if editor.caret == 0 {
+            return true;
+        }
+        let previous = editor.value[..editor.caret]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(index, _)| index);
+        editor.value.replace_range(previous..editor.caret, "");
+        editor.caret = previous;
+        self.apply_editor();
+        true
+    }
+
+    fn delete_forward(&mut self) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        if editor.caret == editor.value.len() {
+            return true;
+        }
+        let next = editor.value[editor.caret..]
+            .grapheme_indices(true)
+            .nth(1)
+            .map_or(editor.value.len(), |(offset, _)| editor.caret + offset);
+        editor.value.replace_range(editor.caret..next, "");
+        self.apply_editor();
+        true
+    }
+
+    fn move_caret(&mut self, direction: i8) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        editor.caret = if direction < 0 {
+            editor.value[..editor.caret]
+                .grapheme_indices(true)
+                .next_back()
+                .map_or(0, |(index, _)| index)
+        } else if editor.caret == editor.value.len() {
+            editor.caret
+        } else {
+            editor.value[editor.caret..]
+                .grapheme_indices(true)
+                .nth(1)
+                .map_or(editor.value.len(), |(offset, _)| editor.caret + offset)
+        };
+        true
+    }
+
+    fn collect_focusable(
+        &self,
+        node: genet_scripted_dom::NodeId,
+        out: &mut Vec<genet_scripted_dom::NodeId>,
+    ) {
+        if let Some(tag) = self.tag(node)
+            && (matches!(
+                tag.to_ascii_lowercase().as_str(),
+                "button" | "input" | "select" | "textarea"
+            ) || tag.eq_ignore_ascii_case("a") && self.attribute(node, "href").is_some()
+                || self.attribute(node, "tabindex").is_some())
+        {
+            out.push(node);
+        }
+        for child in self.doc.dom().dom_children(node) {
+            self.collect_focusable(child, out);
+        }
     }
 
     /// The immutable host-owned inputs used to construct this Livery session.
@@ -323,20 +638,36 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
+        let hit = self.doc.hit_test(x, y);
+        let submit = hit.and_then(|node| self.submit_ancestor(node));
+        self.activate_hit(x, y);
         match self.doc.click_at(x, y) {
             genet_livery::ClickOutcome::None => SessionClick::Miss,
             genet_livery::ClickOutcome::Focused | genet_livery::ClickOutcome::Scrolled => {
-                SessionClick::Handled
+                submit.map_or(SessionClick::Handled, |submit| self.submit_click(submit))
             },
             genet_livery::ClickOutcome::Navigate(href) => SessionClick::Navigate(href),
         }
     }
 
     fn pointer_down(&mut self, x: f32, y: f32) -> SessionClick {
+        self.pressed_submit = self
+            .doc
+            .hit_test(x, y)
+            .and_then(|node| self.submit_ancestor(node));
+        self.activate_hit(x, y);
         if self.doc.begin_text_selection(x, y) {
             SessionClick::Handled
+        } else if self.editor.is_some() {
+            let _ = self.doc.click_at(x, y);
+            SessionClick::Handled
+        } else if self.pressed_submit.is_some() || self.focused_node.is_some() {
+            // Links and buttons activate on the matching release. Keeping the
+            // press handled starts the host's logical pointer capture without
+            // replacing the session before its release arrives.
+            SessionClick::Handled
         } else {
-            self.click_at(x, y)
+            SessionClick::Miss
         }
     }
 
@@ -346,10 +677,202 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
 
     fn pointer_up(&mut self, x: f32, y: f32) -> SessionClick {
         if self.doc.finish_text_selection(x, y) {
+            self.pressed_submit = None;
             SessionClick::Handled
         } else {
-            self.click_at(x, y)
+            let released_submit = self
+                .doc
+                .hit_test(x, y)
+                .and_then(|node| self.submit_ancestor(node));
+            let pressed_submit = self.pressed_submit.take();
+            if let Some(submit) = released_submit
+                && Some(submit) == pressed_submit
+            {
+                let _ = self.doc.click_at(x, y);
+                self.activate_hit(x, y);
+                self.submit_click(submit)
+            } else {
+                self.click_at(x, y)
+            }
         }
+    }
+
+    fn key_input(
+        &mut self,
+        key: SessionKey,
+        state: SessionButtonState,
+        modifiers: SessionModifiers,
+        _repeat: bool,
+    ) -> SessionEffect {
+        if state == SessionButtonState::Released {
+            return SessionEffect::Ignored;
+        }
+        match key {
+            SessionKey::Character(text)
+                if !modifiers.control && !modifiers.meta && !modifiers.alt =>
+            {
+                if self.insert_text(&text) {
+                    SessionEffect::Handled
+                } else {
+                    SessionEffect::Ignored
+                }
+            },
+            SessionKey::Space if self.insert_text(" ") => SessionEffect::Handled,
+            SessionKey::Backspace if self.delete_backward() => SessionEffect::Handled,
+            SessionKey::Delete if self.delete_forward() => SessionEffect::Handled,
+            SessionKey::ArrowLeft if self.move_caret(-1) => SessionEffect::Handled,
+            SessionKey::ArrowRight if self.move_caret(1) => SessionEffect::Handled,
+            SessionKey::Home if let Some(editor) = self.editor.as_mut() => {
+                editor.caret = 0;
+                SessionEffect::Handled
+            },
+            SessionKey::End if let Some(editor) = self.editor.as_mut() => {
+                editor.caret = editor.value.len();
+                SessionEffect::Handled
+            },
+            SessionKey::Enter => {
+                if self
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.kind == EditableKind::Textarea)
+                {
+                    if self.insert_text("\n") {
+                        SessionEffect::Handled
+                    } else {
+                        SessionEffect::Ignored
+                    }
+                } else if let Some(form) = self.active_form {
+                    SessionEffect::Submit(self.submission_for_form(form, &self.address))
+                } else {
+                    SessionEffect::Ignored
+                }
+            },
+            SessionKey::Tab => {
+                let direction = if modifiers.shift {
+                    SessionFocusDirection::Backward
+                } else {
+                    SessionFocusDirection::Forward
+                };
+                if self.focus_move(direction) {
+                    SessionEffect::Handled
+                } else {
+                    SessionEffect::Ignored
+                }
+            },
+            SessionKey::Escape => {
+                if self.cancel_input() {
+                    SessionEffect::Cancelled
+                } else {
+                    SessionEffect::Ignored
+                }
+            },
+            _ => SessionEffect::Ignored,
+        }
+    }
+
+    fn text_input(&mut self, text: &str) -> bool {
+        self.insert_text(text)
+    }
+
+    fn ime_input(&mut self, ime: SessionIme) -> bool {
+        match ime {
+            SessionIme::Enabled => self.editor.is_some(),
+            SessionIme::Preedit { text, .. } => {
+                let Some(editor) = self.editor.as_mut() else {
+                    return false;
+                };
+                editor.composition = Some(text);
+                true
+            },
+            SessionIme::Commit(text) => self.insert_text(&text),
+            SessionIme::Disabled => {
+                let Some(editor) = self.editor.as_mut() else {
+                    return false;
+                };
+                editor.composition = None;
+                true
+            },
+        }
+    }
+
+    fn focus_input(&mut self, focused: bool) {
+        if !focused {
+            self.focused_node = None;
+            self.editor = None;
+            self.active_form = None;
+        }
+    }
+
+    fn focus_move(&mut self, direction: SessionFocusDirection) -> bool {
+        let mut focusable = Vec::new();
+        self.collect_focusable(self.doc.dom().document(), &mut focusable);
+        if focusable.is_empty() {
+            return false;
+        }
+        let current = self
+            .focused_node
+            .and_then(|focused| focusable.iter().position(|node| *node == focused));
+        let next = match direction {
+            SessionFocusDirection::Forward => {
+                current.map_or(0, |index| (index + 1) % focusable.len())
+            },
+            SessionFocusDirection::Backward => current.map_or(focusable.len() - 1, |index| {
+                index.checked_sub(1).unwrap_or(focusable.len() - 1)
+            }),
+        };
+        let node = focusable[next];
+        let Some([x, y, width, height]) = self.doc.fragment_rect(node) else {
+            return false;
+        };
+        let _ = self.doc.click_at(x + width * 0.5, y + height * 0.5);
+        if let Some(kind) = self.editable_kind(node) {
+            self.activate_editable(node, kind);
+        } else {
+            self.focused_node = Some(node);
+            self.editor = None;
+            self.active_form = self.form_ancestor(node);
+        }
+        true
+    }
+
+    fn cancel_input(&mut self) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        editor.composition.take().is_some()
+    }
+
+    fn editable_focus(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    fn cursor_at(&self, x: f32, y: f32) -> SessionCursor {
+        let Some(hit) = self.doc.hit_test(x, y) else {
+            return SessionCursor::Default;
+        };
+        if self.editable_ancestor(hit).is_some() {
+            SessionCursor::Text
+        } else if self.submit_ancestor(hit).is_some()
+            || self
+                .ancestor_matching(hit, |node, tag| {
+                    tag.eq_ignore_ascii_case("a") && self.attribute(node, "href").is_some()
+                })
+                .is_some()
+        {
+            SessionCursor::Pointer
+        } else {
+            SessionCursor::Default
+        }
+    }
+
+    fn form_submission(&mut self, action: &str) -> SessionFormSubmission {
+        self.active_form.map_or_else(
+            || SessionFormSubmission {
+                action: action.to_owned(),
+                ..Default::default()
+            },
+            |form| self.submission_for_form(form, action),
+        )
     }
 
     fn text_target(&self, text: &str) -> Option<SessionTextTarget> {
@@ -1268,13 +1791,29 @@ mod tests {
                  <body><h1>Heading</h1><a href=\"/next\">next</a></body></html>",
             )
             .with_viewport(640, 480);
-        let session = engine.spawn(&request).expect("livery lane spawns");
+        let mut session = engine.spawn(&request).expect("livery lane spawns");
         let report = session
             .inspect()
             .expect("the livery lane has a structural read");
         assert_eq!(report.title.as_deref(), Some("The Page"));
         assert_eq!(report.headings, vec!["Heading"]);
         assert_eq!(report.links, vec!["/next"]);
+
+        let _scene = session.frame(640, 480);
+        let link = session.links().into_iter().next().expect("retained link");
+        let pointer = |state| inker::SessionInput::PointerButton {
+            x: link.rect[0] + 2.0,
+            y: link.rect[1] + 2.0,
+            button: inker::SessionPointerButton::Primary,
+            state,
+            modifiers: SessionModifiers::default(),
+        };
+        let pressed = session.input(pointer(SessionButtonState::Pressed));
+        assert_eq!(pressed.effect, SessionEffect::Handled);
+        assert_eq!(pressed.capture, Some(true));
+        let released = session.input(pointer(SessionButtonState::Released));
+        assert_eq!(released.effect, SessionEffect::Navigate("/next".to_owned()));
+        assert_eq!(released.capture, Some(false));
     }
 
     #[cfg(feature = "livery")]
@@ -1392,6 +1931,101 @@ mod tests {
         assert!(session.scroll_by(0.0, 100.0));
         assert!(session.scroll_for_key(SessionScrollKey::Home));
         assert!(session.scroll_at(10.0, 10.0, 0.0, 100.0));
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_edits_and_submits_a_retained_get_form() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("fixtures/form/index.html")
+            .with_body(
+                r#"<html><head><style>
+                    html, body { margin: 0; padding: 0; }
+                    textarea, button { display: block; width: 220px; min-height: 40px; margin: 8px; }
+                </style></head><body><form action="result.html" method="get">
+                    <textarea id="note" name="note">cedar</textarea>
+                    <button id="submit" type="submit">send</button>
+                </form></body></html>"#,
+            )
+            .with_viewport(400, 240);
+        let mut session = engine.spawn(&request).expect("form session spawns");
+        let initial = session.frame(400, 240);
+        let initial_glyphs = initial
+            .ops
+            .iter()
+            .filter_map(|operation| match operation {
+                netrender::SceneOp::GlyphRun(run) => Some(run.glyphs.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        let target = session
+            .text_target("cedar")
+            .expect("the textarea value has a retained text target");
+        let point = (target.anchor[0] + 2.0, target.anchor[1]);
+        let pointer = |state| inker::SessionInput::PointerButton {
+            x: point.0,
+            y: point.1,
+            button: inker::SessionPointerButton::Primary,
+            state,
+            modifiers: SessionModifiers::default(),
+        };
+        assert!(
+            session
+                .input(pointer(SessionButtonState::Pressed))
+                .effect
+                .is_handled()
+        );
+        let released = session.input(pointer(SessionButtonState::Released));
+        assert!(released.editable);
+        assert_eq!(released.cursor, Some(SessionCursor::Text));
+
+        let edited = session.input(inker::SessionInput::Text(" and ash".to_owned()));
+        assert_eq!(edited.effect, SessionEffect::Handled);
+        let edited_scene = session.frame(400, 240);
+        let edited_glyphs = edited_scene
+            .ops
+            .iter()
+            .filter_map(|operation| match operation {
+                netrender::SceneOp::GlyphRun(run) => Some(run.glyphs.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        assert!(
+            edited_glyphs > initial_glyphs,
+            "the textarea edit reaches paint"
+        );
+        assert!(
+            session
+                .inspect()
+                .expect("form remains inspectable")
+                .outline
+                .iter()
+                .any(|entry| entry.role == "textbox" && entry.name == "cedar and ash")
+        );
+
+        let tabbed = session.input(inker::SessionInput::Key {
+            key: SessionKey::Tab,
+            state: SessionButtonState::Pressed,
+            modifiers: SessionModifiers::default(),
+            repeat: false,
+        });
+        assert_eq!(tabbed.effect, SessionEffect::Handled);
+        assert!(!tabbed.editable, "Tab moves focus to the submit button");
+        let submitted = session.input(inker::SessionInput::Key {
+            key: SessionKey::Enter,
+            state: SessionButtonState::Pressed,
+            modifiers: SessionModifiers::default(),
+            repeat: false,
+        });
+        let SessionEffect::Submit(submission) = submitted.effect else {
+            panic!("Enter on the focused submit button must submit: {submitted:?}");
+        };
+        assert_eq!(submission.action, "result.html");
+        assert_eq!(submission.method, SessionFormMethod::Get);
+        assert_eq!(
+            submission.fields,
+            [("note".to_owned(), "cedar and ash".to_owned())]
+        );
     }
 
     #[cfg(feature = "livery")]

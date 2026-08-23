@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-22
 
-**Status:** active. P0 completed 2026-08-22. P1 is the next implementation
-lane.
+**Status:** active. P0 completed 2026-08-22. P1 completed 2026-08-23. P2 is
+the next implementation lane.
 
 ## Objective
 
@@ -110,6 +110,8 @@ Receipts:
 
 ### P1: restore the browser loop
 
+**Status:** complete 2026-08-23.
+
 Replace the private boolean input results with host effects. The host must
 consume `SessionClick::Navigate` and `SessionClick::Submit`, resolve relative
 URLs, spawn replacement sessions, and update per-content navigation state.
@@ -124,6 +126,47 @@ Add a host-neutral input vocabulary for:
 Done when one headed Livery document can follow links, edit and submit a local
 form, reload, and traverse back/forward without the winit adapter inspecting a
 concrete document type.
+
+Landed:
+
+- Inker now carries host-neutral pointer, keyboard, text, IME, focus, cursor,
+  form-submission, navigation, and session-effect values.
+- Script-free Livery sessions use the existing mutable DOM to retain editable
+  input and textarea values, caret and composition state, focus traversal, and
+  GET/POST form facts. Each edit travels through retained Livery restyle,
+  Buckram layout, and paint.
+- `pelt-desktop` owns a retained `BrowserSession` with relative navigation,
+  replacement-session safety, reload, back/forward history, address
+  navigation, and deterministic GET query encoding.
+- The winit adapter translates platform events to Inker input and consumes
+  typed host effects. It does not inspect or downcast a concrete document
+  session.
+- `ports/pelt/examples/browser-loop` is the deterministic local dogfood page
+  for links, editing, focus, submission, reload, and history.
+
+Receipts:
+
+- `cargo test -p inker --offline`: 96 passed.
+- `cargo test -p genet-documents --no-default-features --features livery
+  --offline`: 15 passed, including retained link activation, visible editing,
+  and structured GET submission.
+- `cargo test -p pelt-desktop --no-default-features --features livery
+  --offline`: 6 passed, covering relative links, reload, back/forward, forward
+  truncation, GET encoding, and Livery routing.
+- Default Pelt and the individual `scripted`, `livery-scripted`, and `smolweb`
+  feature routes compile.
+- Strict Clippy passes for Inker and for the owned Livery and Pelt desktop
+  changes with dependency linting excluded. Full dependency Clippy remains
+  blocked by pre-existing `genet-paint-types` `derivable_impls` findings.
+- Headed Pelt on the checked-in local fixture changed title from `Pelt browser
+  loop` to `Pelt relative navigation`, returned and advanced through history,
+  reloaded the retained route, visibly edited the textarea to `cedarx`, moved
+  focus with Tab, and submitted to `Pelt local form result`.
+
+POST submissions are exposed as typed form facts but remain an explicit
+unsupported transport result in this synchronous local controller. Stop is in
+the host vocabulary but becomes operative when P2 introduces cancellable host
+transport rather than synchronous session spawning.
 
 ### P2: extract the embeddable host core
 
@@ -217,7 +260,8 @@ terminal.
 
 ## Immediate next lane
 
-P1 should begin at `LiveryViewerContent::click_at` and `DocumentSession`. Define
-the smallest host-effect and input contracts that make link navigation, form
-editing, and history work in the present single-document adapter. That receipt
-then becomes the forcing consumer for extracting the P2 host core.
+P2 extracts the now-proven `BrowserSession` behavior from `pelt-desktop` into a
+public, window-independent Pelt controller. The first forcing receipt is a
+caller-owned target that drives the same session replacement, input effects,
+history, and frame production as standalone Pelt while creating neither a
+winit event loop nor a wgpu device.

@@ -18,11 +18,11 @@ bench = false
 default = ["livery", "reader", "netfetch"]
 # Engine-neutral headed presentation. Both engines can produce a `Scene`; this
 # feature owns only the winit/wgpu shell that presents one.
-present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
+present = ["dep:netrender", "dep:genet-winit-host", "dep:inker", "dep:wgpu"]
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
-    "dep:genet-static-dom", "dep:layout-dom-api",
+    "dep:layout-dom-api", "dep:url",
 ]
 # Shared fleece reader lane over the portable document canvas.
 reader = [
@@ -114,7 +114,6 @@ webgl_wgpu = { workspace = true, optional = true }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"], optional = true }
 winit = { workspace = true }
 
-genet-static-dom = { path = "../../../components/genet-static-dom", optional = true }
 # The render-free extraction lane: extract a PageExtract from the live post-JS DOM
 # (the headless-scripted-DOM scrape path for SPAs). Depends only on layout-dom-api.
 fleece = { path = "../../../components/fleece", optional = true }

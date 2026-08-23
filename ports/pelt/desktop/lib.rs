@@ -11,6 +11,9 @@
 mod profile;
 mod static_viewer;
 
+#[cfg(feature = "livery")]
+mod browser_session;
+
 /// The host of an absolute URL, without userinfo or port. `None` for anything
 /// without an authority, which includes every local filesystem path.
 ///
