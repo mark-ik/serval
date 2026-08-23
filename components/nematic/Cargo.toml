@@ -2,7 +2,7 @@
 name = "nematic"
 # Own version line (not workspace): published crate, 0.0.1 name-claim bumped to
 # 0.1.0 on first publish from this repo (inker-adoption plan, 2026-07-09).
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors = ["Mark AB (markik)"]
 # Not workspace: this crate is ours, not Servo-derived, so it keeps the founding
@@ -27,7 +27,7 @@ html-fragment = ["dep:genet-static-dom"]
 
 [dependencies]
 inker = { workspace = true }
-genet-static-dom = { path = "../genet-static-dom", optional = true }
+genet-static-dom = { version = "0.1.0", path = "../genet-static-dom", optional = true }
 # Smolweb parsers: the portable per-format ASTs the engines below lower into
 # `DocumentBlock`. The parse layer (gemtext/gopher/nex/feed) lives in errand
 # (transport + parse, one smolweb crate — a workspace sibling since the
