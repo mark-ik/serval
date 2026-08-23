@@ -16,7 +16,7 @@ genet-document-resources = { workspace = true }
 euclid.workspace = true
 image = { workspace = true }
 layout-dom-api = { version = "0.1.0", path = "../shared/layout-dom" }
-livery = { version = "0.0.2", path = "../livery" }
+livery = { version = "0.0.3", path = "../livery" }
 paint_list_api.workspace = true
 parley.workspace = true
 selectors = "0.39"

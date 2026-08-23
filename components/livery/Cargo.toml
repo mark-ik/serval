@@ -1,6 +1,6 @@
 [package]
 name = "livery"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/merely-made/genet"
