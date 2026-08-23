@@ -14,6 +14,7 @@ readme = "README.md"
 documentation = "https://docs.rs/knot-editor-host"
 keywords = ["djot", "editor", "syntax-highlighting", "injection"]
 categories = ["text-processing"]
+publish = true
 
 [lib]
 path = "src/lib.rs"
