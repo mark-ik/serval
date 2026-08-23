@@ -542,7 +542,7 @@ fn content_report<D: LayoutDom>(dom: &D) -> inker::ContentReport {
 
 fn semantic_clip_from_dom<D: LayoutDom>(address: &str, dom: &D) -> Option<DocumentClip> {
     let report = content_report(dom);
-    let text = genet_extract::extract_main_text(dom).unwrap_or_else(|| report.headings.join("\n"));
+    let text = fleece::extract_main_text(dom).unwrap_or_else(|| report.headings.join("\n"));
     let text = text.trim().to_string();
     (!text.is_empty()).then(|| DocumentClip {
         source_url: address.to_string(),

@@ -86,6 +86,50 @@ pub enum ScrollKey {
     End,
 }
 
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+    use script_engine_boa::BoaEngine;
+
+    #[test]
+    fn spa_article_is_available_only_over_the_post_js_dom() {
+        let source = "<body><script>\
+            var main = document.createElement('main');\
+            var h = document.createElement('h1');\
+            h.appendChild(document.createTextNode('Injected article'));\
+            main.appendChild(h);\
+            var p = document.createElement('p');\
+            p.appendChild(document.createTextNode('This substantial injected paragraph proves the article arrived only after the page script ran.'));\
+            main.appendChild(p);\
+            document.body.appendChild(main);\
+            </script></body>";
+        let static_dom = genet_static_dom::StaticDocument::parse(source);
+        assert!(fleece::extract_article(&static_dom).is_none());
+        assert!(fleece::carries_script(&static_dom));
+
+        let scripted = ScriptedDocument::<BoaEngine>::parse(source).expect("runtime inits");
+        assert_eq!(
+            scripted
+                .extract_article()
+                .expect("post-JS article")
+                .title
+                .as_deref(),
+            Some("Injected article")
+        );
+    }
+
+    #[test]
+    fn static_article_is_identical_under_static_and_scripted_profiles() {
+        let source = "<main><h1>Static article</h1><p>This substantial static paragraph is already readable without executing page script.</p></main>";
+        let expected = fleece::extract_article(&genet_static_dom::StaticDocument::parse(source));
+        let scripted = ScriptedDocument::<BoaEngine>::parse(source).expect("runtime inits");
+        assert_eq!(scripted.extract_article(), expected);
+        assert!(!fleece::carries_script(
+            &genet_static_dom::StaticDocument::parse(source)
+        ));
+    }
+}
+
 /// Shared handle to the most recently laid-out frame, so the `getComputedStyle`
 /// bridge can read computed values off it. `None` before the first frame.
 #[cfg(feature = "render")]
@@ -927,20 +971,26 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
     /// read from the same live DOM Livery lays out and paints.
     pub fn title(&self) -> Option<String> {
         let host = self.rt.host().borrow();
-        genet_extract::extract_title(&host.dom)
+        fleece::extract_title(&host.dom)
     }
 
     /// Render-free extraction of the **post-JS** document: a
-    /// [`PageExtract`](genet_extract::PageExtract) over the live `ScriptedDom` as the
+    /// [`PageExtract`](fleece::PageExtract) over the live `ScriptedDom` as the
     /// page's scripts have left it. This is the **headless-scripted-DOM scrape**: an
     /// SPA whose content is injected by JavaScript yields its real content here, where
     /// a static parse of the served HTML would find an empty shell. Same `extract()`
     /// the static lane runs, just over the mutated DOM — extraction is orthogonal to
     /// rendering, so no layout/paint is involved. Run after [`build`](Self::build) (and
     /// any [`pump`](Self::pump)s) so deferred / timer-driven mutations are in.
-    pub fn extract(&self) -> genet_extract::PageExtract {
+    pub fn extract(&self) -> fleece::PageExtract {
         let host = self.rt.host().borrow();
-        genet_extract::extract(&host.dom)
+        fleece::extract(&host.dom)
+    }
+
+    /// Render-free article extraction over the post-JS DOM.
+    pub fn extract_article(&self) -> Option<fleece::Article> {
+        let host = self.rt.host().borrow();
+        fleece::extract_article(&host.dom)
     }
 
     fn flush_dom_capture(&mut self) {
@@ -3055,7 +3105,7 @@ mod tests {
             </script></body>";
 
         // Control: a static parse of the same HTML sees the shell — no heading, no link.
-        let static_extract = genet_extract::extract(&StaticDocument::parse(html));
+        let static_extract = fleece::extract(&StaticDocument::parse(html));
         assert!(
             static_extract.headings.is_empty(),
             "static parse sees no JS-injected heading"
@@ -3070,7 +3120,7 @@ mod tests {
         let page = doc.extract();
         assert_eq!(
             page.headings,
-            vec![genet_extract::Heading {
+            vec![fleece::Heading {
                 level: 1,
                 text: "Injected Title".into()
             }],

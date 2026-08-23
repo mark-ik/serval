@@ -10,8 +10,32 @@ use genet_host_api::{DeferredShellEngine, EngineProfile, ShellEngine};
 
 use crate::VERSION;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SelectedEngine {
+    Livery,
+    Scripted,
+    Reader,
+}
+
+impl SelectedEngine {
+    fn profile(self) -> EngineProfile {
+        match self {
+            Self::Livery | Self::Reader => EngineProfile::Livery,
+            Self::Scripted => EngineProfile::Scripted,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Livery => "livery",
+            Self::Scripted => "scripted",
+            Self::Reader => "reader",
+        }
+    }
+}
+
 pub(crate) fn main() {
-    let mut engine_profile = EngineProfile::Livery;
+    let mut selected_engine = SelectedEngine::Livery;
     let mut url = None;
     // JS backend for `--engine scripted` (boa default; nova needs --features
     // scripted-nova). Parsed as a string so the flag exists even in builds without
@@ -49,13 +73,13 @@ pub(crate) fn main() {
             },
             "--engine" => {
                 let Some(value) = args.next() else {
-                    eprintln!("--engine requires livery or scripted");
+                    eprintln!("--engine requires livery, reader, or scripted");
                     std::process::exit(2);
                 };
-                engine_profile = parse_engine_profile(&value);
+                selected_engine = parse_engine(&value);
             },
             value if value.starts_with("--engine=") => {
-                engine_profile = parse_engine_profile(&value["--engine=".len()..]);
+                selected_engine = parse_engine(&value["--engine=".len()..]);
             },
             "--js" => {
                 let Some(value) = args.next() else {
@@ -127,12 +151,13 @@ pub(crate) fn main() {
         }
     }
 
+    let engine_profile = selected_engine.profile();
     let engine = DeferredShellEngine::new(engine_profile);
     let capabilities = engine.capabilities();
     let url = url.unwrap_or_else(|| "about:blank".to_owned());
     println!(
         "pelt host profile={} url={} javascript={} webdriver={} devtools={} webgpu={} webxr={}",
-        engine.profile(),
+        selected_engine.label(),
         url,
         capabilities.javascript,
         capabilities.webdriver,
@@ -189,8 +214,9 @@ pub(crate) fn main() {
         return;
     }
 
-    match engine_profile {
-        EngineProfile::Livery => {
+    match selected_engine {
+        SelectedEngine::Reader => run_reader_profile(url, size, frames),
+        SelectedEngine::Livery => {
             // Protocol-native content bypasses the HTML engine while retaining
             // the same headed host. P4 will move this choice into Inker routing.
             #[cfg(feature = "smolweb")]
@@ -209,12 +235,44 @@ pub(crate) fn main() {
                 std::process::exit(2);
             }
         },
-        EngineProfile::Scripted => {
+        SelectedEngine::Scripted => {
             // Runs inline scripts on the chosen backend and retains the mutated
             // document through the same owned Livery/Buckram route.
             run_scripted_profile(url, js_engine, size, frames);
         },
     }
+}
+
+/// Dispatch held HTML to the shared fleece reader lane.
+#[cfg(feature = "reader")]
+fn run_reader_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
+    let mut config = pelt_desktop::StaticViewerConfig::new(
+        EngineProfile::Livery,
+        pelt_desktop::WindowingMode::Headed,
+        url,
+    );
+    if let Some((width, height)) = size {
+        config = config.with_size(width, height);
+    }
+    if let Some(limit) = frames {
+        config = config.with_frame_limit(limit);
+    }
+    match pelt_desktop::run_reader_viewer(config) {
+        Ok(outcome) => println!(
+            "pelt reader viewer engine=genet.reader url={} window={} redraws={} size={}x{}",
+            outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
+        ),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        },
+    }
+}
+
+#[cfg(not(feature = "reader"))]
+fn run_reader_profile(_url: String, _size: Option<(u32, u32)>, _frames: Option<u32>) {
+    eprintln!("pelt has no registered engine 'genet.reader'; rebuild with `--features reader`");
+    std::process::exit(2);
 }
 
 /// Whether `url` is a smolweb scheme the native smolweb viewer handles.
@@ -562,9 +620,13 @@ fn run_optional_wayland_present_surfaces_smoke() {
     }
 }
 
-fn parse_engine_profile(value: &str) -> EngineProfile {
+fn parse_engine(value: &str) -> SelectedEngine {
+    if value.eq_ignore_ascii_case("reader") || value.eq_ignore_ascii_case("genet.reader") {
+        return SelectedEngine::Reader;
+    }
     match value.parse() {
-        Ok(profile) => profile,
+        Ok(EngineProfile::Livery) => SelectedEngine::Livery,
+        Ok(EngineProfile::Scripted) => SelectedEngine::Scripted,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(2);
@@ -586,7 +648,7 @@ runs a page's <script> through the same owned document route (needs
 remain accepted as input aliases. Smoke runners validate the present backends.
 
 Options:
-    --engine <livery|scripted>         (diagnostic override; legacy aliases accepted)
+    --engine <livery|reader|scripted>  (diagnostic override; legacy aliases accepted)
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)

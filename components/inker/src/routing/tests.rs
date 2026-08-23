@@ -179,6 +179,17 @@ fn route_filtered_lets_content_type_rule_fall_back_to_scheme() {
 }
 
 #[test]
+fn explicit_reader_pin_selects_reader_for_html() {
+    let policy = EngineRoutePolicy::default();
+    let mut request = request_with_content_type("https://example.test/story", "text/html");
+    request.pinned_engine = Some(ENGINE_GENET_READER.to_string());
+    let decision = policy.route_filtered(&request, |engine| {
+        matches!(engine, ENGINE_GENET_LIVERY | ENGINE_GENET_READER)
+    });
+    assert_eq!(decision.engine_id, ENGINE_GENET_READER);
+}
+
+#[test]
 fn host_from_address_strips_scheme_userinfo_and_port() {
     assert_eq!(
         host_from_address("https://example.com/path"),

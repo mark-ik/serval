@@ -438,7 +438,13 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     let session = registry
         .spawn(inker::routing::ENGINE_GENET_LIVERY, &request)
         .map_err(|error| format!("could not spawn engine genet.livery: {error}"))?;
-    run_headed_with(config, LiveryViewerContent { session })
+    run_headed_with(
+        config,
+        SessionViewerContent {
+            session,
+            posture: None,
+        },
+    )
 }
 
 #[cfg(not(feature = "livery"))]
@@ -446,13 +452,57 @@ pub fn run_livery_viewer(_config: StaticViewerConfig) -> Result<StaticViewerOutc
     Err("the document host requires the livery feature".to_string())
 }
 
-#[cfg(feature = "livery")]
-struct LiveryViewerContent {
-    session: Box<dyn inker::DocumentSession<netrender::Scene>>,
+/// Run held HTML through the shared fleece reader lane.
+#[cfg(feature = "reader")]
+pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
+    use genet_documents::{ReaderSessionEngine, ResourceFetcher, SmolwebTheme};
+    use inker::{SessionRegistry, SessionSpawnRequest};
+    use netrender::Scene;
+
+    if matches!(config.profile.windowing, WindowingMode::Headless) {
+        return Ok(StaticViewerOutcome {
+            url: config.url,
+            created_window: false,
+            redraws: 0,
+            size: (0, 0),
+        });
+    }
+    let source = ResourceFetcher::fetch(&genet_documents::LocalFetcher, &config.url)
+        .ok_or_else(|| format!("could not load held reader source {}", config.url))?;
+    let source = String::from_utf8_lossy(&source).into_owned();
+    let (width, height) = config.size.unwrap_or((800, 600));
+    let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+    registry.register(Box::new(ReaderSessionEngine::new(SmolwebTheme::System)));
+    let request = SessionSpawnRequest::new(&config.url)
+        .with_body(source)
+        .with_viewport(width, height);
+    let session = registry
+        .spawn(inker::routing::ENGINE_GENET_READER, &request)
+        .map_err(|error| format!("could not spawn engine genet.reader: {error}"))?;
+    let posture = session
+        .inspect()
+        .and_then(|report| report.lineage)
+        .map(|lineage| {
+            let score = lineage
+                .score
+                .map(|score| format!(" score {score}"))
+                .unwrap_or_default();
+            format!(
+                "Reader · {} {} · {}{} · {} blocks",
+                lineage.tool, lineage.version, lineage.selector, score, lineage.block_count
+            )
+        });
+    run_headed_with(config, SessionViewerContent { session, posture })
 }
 
-#[cfg(feature = "livery")]
-impl windowed::ViewerContent for LiveryViewerContent {
+#[cfg(any(feature = "livery", feature = "reader"))]
+struct SessionViewerContent {
+    session: Box<dyn inker::DocumentSession<netrender::Scene>>,
+    posture: Option<String>,
+}
+
+#[cfg(any(feature = "livery", feature = "reader"))]
+impl windowed::ViewerContent for SessionViewerContent {
     fn title(&self) -> Option<String> {
         self.session.inspect().and_then(|report| report.title)
     }
@@ -484,6 +534,10 @@ impl windowed::ViewerContent for LiveryViewerContent {
 
     fn click_at(&mut self, x: f32, y: f32) -> bool {
         matches!(self.session.click_at(x, y), inker::SessionClick::Handled)
+    }
+
+    fn posture(&self) -> Option<&str> {
+        self.posture.as_deref()
     }
 }
 
@@ -531,6 +585,10 @@ pub(crate) mod windowed {
     pub(crate) trait ViewerContent {
         /// The document title for native window chrome, when this content has one.
         fn title(&self) -> Option<String> {
+            None
+        }
+        /// Optional engine posture shown in native window chrome.
+        fn posture(&self) -> Option<&str> {
             None
         }
         /// Render at `width`×`height` at the current scroll.
@@ -641,7 +699,13 @@ pub(crate) mod windowed {
         }
 
         fn window_title(&self) -> String {
-            super::pelt_window_title(self.doc.title().as_deref(), Some(&self.config.url))
+            let mut title =
+                super::pelt_window_title(self.doc.title().as_deref(), Some(&self.config.url));
+            if let Some(posture) = self.doc.posture() {
+                title.push_str(" — ");
+                title.push_str(posture);
+            }
+            title
         }
 
         fn logical_size(&self) -> (u32, u32) {

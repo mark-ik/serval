@@ -33,6 +33,10 @@ pub const ENGINE_GENET_WEB: &str = "genet.web";
 /// Opt-in static rung rendered by the clean-room Livery CSS engine. This is a
 /// sibling implementation of [`ENGINE_GENET_WEB`], not the default route.
 pub const ENGINE_GENET_LIVERY: &str = "genet.livery";
+/// Render-free fleece extraction lowered into the portable document engine.
+/// Selectable for held HTML by explicit per-node pin; never the automatic HTML
+/// route, which remains the ordinary Genet renderer.
+pub const ENGINE_GENET_READER: &str = "genet.reader";
 /// The genet HTML rungs above static (the profile ladder; see [`GenetRung`]). A node
 /// pins one of these to escalate capability. Additive, and gated by host registration:
 /// until a rung is registered in the host's `EngineRegistry`, it is not `is_available`,

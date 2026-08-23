@@ -16,11 +16,12 @@ use document_canvas::{
     ColorVocabulary, DecodedImage, DocumentStyleSheet, InteractionKind, LaidOutDocument, Viewport,
     layout_document, netrender_backend::scene_from_packet_with_images,
 };
+#[cfg(feature = "smolweb")]
 use genet_host_api::ResourceFetcher;
 use image::GenericImageView;
-use inker::{
-    Block, Engine, EngineDocument, EngineInput, InlineSpan, SessionScrollKey, inline_text,
-};
+use inker::{Block, EngineDocument, SessionScrollKey};
+#[cfg(feature = "smolweb")]
+use inker::{Engine, EngineInput, InlineSpan, inline_text};
 use netrender::Scene;
 
 /// How an engine-native smolweb document is colored.
@@ -102,6 +103,7 @@ pub struct SmolwebDocument {
 
 impl SmolwebDocument {
     /// Fetch `url` through the host fetcher, then lower and retain the body.
+    #[cfg(feature = "smolweb")]
     pub fn load(
         fetcher: &impl ResourceFetcher,
         url: &str,
@@ -114,6 +116,7 @@ impl SmolwebDocument {
     }
 
     /// Fetch a document and apply the host's inline-media presentation policy.
+    #[cfg(feature = "smolweb")]
     pub fn load_with_inline_media(
         fetcher: &impl ResourceFetcher,
         url: &str,
@@ -132,6 +135,7 @@ impl SmolwebDocument {
     }
 
     /// Lower already-fetched content through the matching Nematic engine.
+    #[cfg(feature = "smolweb")]
     pub fn parse(url: &str, body: &str, theme: SmolwebTheme) -> Self {
         let document = lower(url, body);
         let (style, background) = style_for_theme(&theme, url, &document.content_type);
@@ -140,6 +144,7 @@ impl SmolwebDocument {
 
     /// Lower an already-fetched body and expose eligible linked images for the
     /// host to resolve through [`SmolwebDocument::subresources`].
+    #[cfg(feature = "smolweb")]
     pub fn parse_with_inline_media(
         url: &str,
         body: &str,
@@ -164,6 +169,14 @@ impl SmolwebDocument {
             background,
             SmolwebInlineMediaPolicy::default(),
         )
+    }
+
+    /// Retain a portable document using the same host-theme mapping as the
+    /// existing document lane.
+    pub fn from_document_with_theme(document: EngineDocument, theme: SmolwebTheme) -> Self {
+        let (style, background) =
+            style_for_theme(&theme, &document.address, &document.content_type);
+        Self::from_document(document, style, background)
     }
 
     fn from_document_with_media_policy(
@@ -195,6 +208,7 @@ impl SmolwebDocument {
     /// Lowered structure and inline-media requests are rebuilt from the exact
     /// prefix now available; decoded images survive only while still named by
     /// the replacement document.
+    #[cfg(feature = "smolweb")]
     pub fn replace_body(&mut self, url: &str, body: &str) {
         let mut document = lower(url, body);
         promote_inline_image_links(&mut document, self.inline_media);
@@ -370,6 +384,7 @@ impl SmolwebDocument {
     }
 }
 
+#[cfg(feature = "smolweb")]
 fn promote_inline_image_links(document: &mut EngineDocument, policy: SmolwebInlineMediaPolicy) {
     if !policy.enabled || !is_gemtext_document(document) {
         return;
@@ -393,6 +408,7 @@ fn promote_inline_image_links(document: &mut EngineDocument, policy: SmolwebInli
     }
 }
 
+#[cfg(feature = "smolweb")]
 fn is_gemtext_document(document: &EngineDocument) -> bool {
     document
         .content_type
@@ -401,6 +417,7 @@ fn is_gemtext_document(document: &EngineDocument) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/gemini"))
 }
 
+#[cfg(feature = "smolweb")]
 fn image_link(block: &Block) -> Option<(String, String)> {
     let Block::Paragraph { spans } = block else {
         return None;
@@ -411,6 +428,7 @@ fn image_link(block: &Block) -> Option<(String, String)> {
     Some((url.clone(), inline_text(spans)))
 }
 
+#[cfg(feature = "smolweb")]
 fn looks_like_image_url(url: &str) -> bool {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let extension = path.rsplit_once('.').map(|(_, extension)| extension);
@@ -446,6 +464,7 @@ fn decode_image(bytes: &[u8], policy: SmolwebInlineMediaPolicy) -> Option<Decode
     })
 }
 
+#[cfg(feature = "smolweb")]
 fn lower(url: &str, body: &str) -> EngineDocument {
     let scheme = url
         .split_once("://")
@@ -471,6 +490,7 @@ fn lower(url: &str, body: &str) -> EngineDocument {
     })
 }
 
+#[cfg(feature = "smolweb")]
 fn looks_like_feed(body: &str) -> bool {
     let body = body.trim_start();
     body.starts_with("<?xml") || body.starts_with("<rss") || body.starts_with("<feed")
@@ -633,7 +653,7 @@ fn parse_color(value: &str) -> Option<[f32; 4]> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "smolweb"))]
 mod tests {
     use super::*;
 

@@ -124,6 +124,18 @@ pub struct ContentReport {
     pub links: Vec<String>,
     /// Heading (`<h1>`..`<h6>`) text, in document order.
     pub headings: Vec<String>,
+    /// Derivation evidence when this session presents transformed source bytes.
+    pub lineage: Option<ContentLineage>,
+}
+
+/// Host-neutral derivation evidence for an inspected document session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentLineage {
+    pub tool: String,
+    pub version: String,
+    pub selector: String,
+    pub score: Option<i32>,
+    pub block_count: usize,
 }
 
 /// The relationship between retained bytes and the representation observed by
