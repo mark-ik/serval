@@ -92,6 +92,8 @@ pub use smoke_windows::{
 };
 #[cfg(feature = "livery")]
 pub use static_viewer::run_livery_viewer;
+#[cfg(feature = "reader")]
+pub use static_viewer::run_reader_viewer;
 pub use static_viewer::{StaticViewerConfig, StaticViewerOutcome, run_static_viewer};
 // `ScriptResourceFetcher` is `genet_scripted::ResourceFetcher` (the external-script
 // byte seam `ScriptedDocument::from_body` takes), distinct from `genet_host_api::
@@ -105,8 +107,8 @@ pub use scripted::{ScriptResourceFetcher, ScriptedDocument, ScriptedEngine};
 #[cfg(feature = "scripted")]
 pub use script_runtime_api::CookieProvider;
 // The headless-scripted-DOM scrape (`ScriptedDocument::extract`) returns these; re-export
-// so the host names the post-JS extract without a direct `genet-extract` dep. (Phase 4.)
+// so the host names the post-JS extract without exposing its scripted runtime. (Phase 4.)
 #[cfg(feature = "scripted")]
-pub use genet_extract::{Heading, Link, Metadata, PageExtract};
+pub use fleece::{Article, Block as ArticleBlock, Heading, Inline, Link, Metadata, PageExtract};
 #[cfg(all(feature = "present", feature = "scripted"))]
 pub use scripted_viewer::run_scripted_viewer;

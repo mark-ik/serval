@@ -25,13 +25,15 @@ bench = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }
 
 [features]
-default = ["livery", "netfetch"]
+default = ["livery", "reader", "netfetch"]
 # viewer-engine is the retained compatibility name for the desktop adapter:
 # smoke runners, winit, and present backends around the Pelt host.
 viewer-engine = ["dep:pelt-desktop"]
 viewer-netrender = ["livery", "pelt-desktop/netrender"]
 # Owned CSS/layout route and the default reference-browser engine.
 livery = ["viewer-engine", "pelt-desktop/livery"]
+# Render held HTML through fleece and the shared document engine.
+reader = ["viewer-engine", "pelt-desktop/reader"]
 # The scripted profile (V4): `pelt --engine scripted <file>` runs a page's inline
 # <script> on a JS engine and renders the mutated DOM. Pulls pelt-desktop's scripted
 # runtime on top of the present stack. Boa-only by default (a single engine links

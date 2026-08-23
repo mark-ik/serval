@@ -16,10 +16,12 @@ default = []
 livery = ["dep:genet-livery", "dep:paint_list_render", "dep:url"]
 # Remote http(s) loading for LocalFetcher via the netfetcher engine.
 netfetch = ["dep:netfetcher", "dep:tokio", "dep:bytes", "dep:url"]
+# Reader-mode HTML extraction lowered into the existing portable document canvas.
+reader = ["dep:document-canvas", "dep:image", "dep:url"]
 # The smolweb engine-native lane: errand transport, Nematic EngineDocument
 # lowering, and document-canvas layout/paint.
 smolweb = [
-    "dep:errand", "dep:nematic", "dep:document-canvas", "dep:image", "dep:tokio", "dep:url",
+    "reader", "dep:errand", "dep:nematic", "dep:tokio",
 ]
 # The scripted lane: a live LiveryScriptedDocument on Boa.
 scripted = [
@@ -38,7 +40,7 @@ inker = { workspace = true }
 genet-host-api = { workspace = true }
 genet-document-resources = { workspace = true }
 netrender = { workspace = true }
-genet-extract = { path = "../genet-extract" }
+fleece = { path = "../fleece" }
 genet-static-dom = { path = "../genet-static-dom" }
 layout_dom_api = { workspace = true }
 serde_json = { workspace = true }

@@ -23,10 +23,15 @@ pub mod href;
 #[cfg(any(feature = "netfetch", feature = "smolweb"))]
 pub(crate) mod net_fetch;
 
-#[cfg(feature = "smolweb")]
+#[cfg(any(feature = "reader", feature = "smolweb"))]
 pub mod smolweb;
-#[cfg(feature = "smolweb")]
+#[cfg(any(feature = "reader", feature = "smolweb"))]
 pub use smolweb::{SmolwebDocument, SmolwebInlineMediaPolicy, SmolwebPalette, SmolwebTheme};
+
+#[cfg(feature = "reader")]
+pub mod reader;
+#[cfg(feature = "reader")]
+pub use reader::{ReaderDocumentSession, ReaderSessionEngine, lower_article};
 
 #[cfg(feature = "scripted")]
 pub use genet_scripted::{

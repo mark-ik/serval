@@ -43,7 +43,7 @@ genet-livery = { path = "../genet-livery", optional = true }
 paint_list_api = { workspace = true, optional = true }
 paint_list_render = { workspace = true, optional = true }
 genet-static-dom = { path = "../genet-static-dom" }
-genet-extract = { path = "../genet-extract" }
+fleece = { path = "../fleece" }
 script-runtime-api = { path = "../script-runtime-api" }
 netrender = { workspace = true, optional = true }
 encoding_rs = { workspace = true }

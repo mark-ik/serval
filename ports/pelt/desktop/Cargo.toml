@@ -15,7 +15,7 @@ path = "lib.rs"
 bench = false
 
 [features]
-default = ["livery", "netfetch"]
+default = ["livery", "reader", "netfetch"]
 # Engine-neutral headed presentation. Both engines can produce a `Scene`; this
 # feature owns only the winit/wgpu shell that presents one.
 present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
@@ -23,6 +23,10 @@ present = ["dep:netrender", "dep:genet-winit-host", "dep:wgpu"]
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
     "dep:genet-static-dom", "dep:layout-dom-api",
+]
+# Shared fleece reader lane over the portable document canvas.
+reader = [
+    "present", "dep:genet-documents", "genet-documents/reader", "dep:inker",
 ]
 # The scripted profile (V4): a live `ScriptedDom` document whose inline `<script>`
 # runs through `script-runtime-api` on a JS engine, mutating the DOM, rendered each
@@ -35,7 +39,7 @@ scripted = [
     "dep:genet-scripted",
     "dep:script-runtime-api", "dep:script-engine-api",
     "dep:script-engine-boa",
-    "dep:genet-extract",
+    "dep:fleece",
 ]
 # Compatibility feature spelling; the scripted route is already Livery/Buckram.
 livery-scripted = ["scripted", "genet-documents/livery-scripted"]
@@ -113,7 +117,7 @@ winit = { workspace = true }
 genet-static-dom = { path = "../../../components/genet-static-dom", optional = true }
 # The render-free extraction lane: extract a PageExtract from the live post-JS DOM
 # (the headless-scripted-DOM scrape path for SPAs). Depends only on layout-dom-api.
-genet-extract = { path = "../../../components/genet-extract", optional = true }
+fleece = { path = "../../../components/fleece", optional = true }
 genet-winit-host = { path = "../../../components/genet-winit-host", optional = true }
 # Spec `data:` URL decoding for the LocalFetcher (percent-encoded + base64 bodies).
 
