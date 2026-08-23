@@ -257,7 +257,7 @@ scroll-protocol = { version = "=0.1.0" }
 finger-protocol = { version = "=0.1.1", default-features = false, features = [
     "client",
 ] }
-inker = { version = "=0.1.0", path = "components/inker" }
+inker = { version = "=0.1.1", path = "components/inker" }
 genet-documents = { version = "=0.1.0", path = "components/genet-documents", default-features = false }
 genet-document-resources = { version = "=0.2.0", path = "components/genet-document-resources" }
 nematic = { version = "=0.1.1", path = "components/nematic" }
