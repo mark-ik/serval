@@ -1,6 +1,6 @@
 [package]
 name = "knot-editor-host"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors = ["Mark AB (markik)"]
 # Not workspace: this crate is ours, not Servo-derived, so it keeps the founding
