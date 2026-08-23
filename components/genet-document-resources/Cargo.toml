@@ -4,7 +4,7 @@ version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 repository.workspace = true
 description = "Engine-neutral HTML document resource discovery and attribution for Genet."
@@ -17,4 +17,4 @@ genet-host-api = { workspace = true }
 layout_dom_api = { workspace = true }
 
 [dev-dependencies]
-genet-static-dom = { path = "../genet-static-dom" }
+genet-static-dom = { version = "0.1.0", path = "../genet-static-dom" }
