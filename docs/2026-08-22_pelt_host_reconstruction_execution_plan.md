@@ -3,7 +3,7 @@
 **Date:** 2026-08-22
 
 **Status:** active. P0 completed 2026-08-22. P1 was rebased and reverified on
-current `main` 2026-08-24. P2 completed 2026-08-24. P3 is the next
+current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4 is the next
 implementation lane.
 
 ## Objective
@@ -49,10 +49,12 @@ selection.
 - Inker surface contracts already distinguish composited textures, native
   overlays, embedded hosts, and headless surfaces.
 
-The present Pelt executable still owns one private winit event loop and one
-document session. Its click adapter reduces `SessionClick` to a boolean and
-therefore discards host-owned navigation and submission outcomes. No Pelt code
-currently consumes `TileTree`, Frisket, or a `SurfaceEngineRegistry`.
+`pelt-core` now exposes both a one-session controller and a recursive workspace
+of retained controllers. Standalone Pelt consumes `TileTree` and Frisket,
+routes complete host effects, and composites active document scenes through one
+desktop surface host. Pelt retains a surface registry per controller, but no
+surface engine is selected or composed yet. Shared long-lived registries and
+capability routing remain P4.
 
 ## Content tiers
 
@@ -236,6 +238,8 @@ P4. POST transport and cancellable Stop remain explicit transport seams.
 
 ### P3: restore recursive tiling and nesting
 
+**Status:** complete 2026-08-24.
+
 Build the Pelt workspace from `TileTree` and Frisket. Keep one navigation entry
 and one live content handle per tile. Use Frisket's `data-tile` content holes to
 place each active scene or surface. Recursive split nodes provide nesting;
@@ -251,6 +255,63 @@ Done when a headed receipt can:
 - tab, activate, resize, drag, and close tiles;
 - navigate each tile independently;
 - preserve scroll and history across tab activation.
+
+Landed:
+
+- `pelt-core::PeltWorkspace` owns the authoritative `TileTree`, one retained
+  `PeltController` per document tile, focused input and pointer capture, active
+  content-hole geometry, visibility, independent navigation, and generic
+  per-tile frame production. Non-document holes remain present for P4.
+- Inactive tabs receive `set_hidden(true)` while their controller, current
+  session, scroll, and navigation history remain live. Activation, divider
+  resize, drag, and close all apply through `TileTree::apply`; identity follows
+  `TileId`, not tree position.
+- Cambium Frisket now exposes close and content semantic targets alongside its
+  existing tab, divider, stack, and drop helpers. Its structural CSS uses
+  explicit flex longhands, which the owned Livery/Buckram lane sizes without a
+  shorthand compatibility dependency.
+- `pelt-desktop` renders the actual Frisket DOM through Livery/Buckram and reads
+  `data-tile` fragment rectangles from that retained layout. One `SurfaceHost`
+  rasterizes the pane frame and every active document scene, then composites
+  them into one target. The adapter routes pointer, wheel, keyboard, IME,
+  focus, resize, cursor, divider drag, tab drag/drop, activation, and close.
+- `pelt --tiles <url>...` opens the recursive workspace. The checked-in
+  `ports/pelt/examples/workspace` fixture supplies four tall, independently
+  navigable documents. `--tile-receipt` drives the bounded interaction sequence
+  through live Frisket coordinates.
+
+Receipts:
+
+- `cargo test -p pelt-core --offline`: 2 integration receipts passed. The
+  recursive receipt covers a tab stack beside a nested row/column split,
+  Frisket-sized frames, local pointer translation, independent navigation and
+  history, hidden visibility, scroll retention, divider resize, edge drag, and
+  close without respawning retained controllers.
+- Focused Cambium Frisket tests pass 8 semantic/view receipts, including close
+  and active content-hole target resolution.
+- `cargo test -p pelt-desktop --no-default-features --features livery
+  --offline`: 7 passed, including recursive Livery content-hole geometry,
+  semantic hits, the four-URL tree shape, and edge-drop geometry.
+- Default Pelt compiles and its package tests pass with Livery, Reader, and
+  netfetch joined.
+- Strict all-target Clippy passes for `pelt-core`, the Livery-only
+  `pelt-desktop` slice, and default Pelt with dependency linting excluded.
+  Cambium's focused Frisket tests are the component gate; full-crate Cambium
+  Clippy still reports pre-existing warnings outside this lane.
+- The bounded native command below created one 1000x700 window, presented nine
+  frames through the shared compositor, drove independent navigation, tab
+  hide/reactivation, root-divider resize, tab-to-edge split, and close, then
+  exited with `tiles=3 interaction_receipt=true`:
+
+  `cargo run -p pelt --offline -- --tiles --tile-receipt --size 1000x700
+  ports/pelt/examples/workspace/a/index.html
+  ports/pelt/examples/workspace/b/index.html
+  ports/pelt/examples/workspace/c/index.html
+  ports/pelt/examples/workspace/d/index.html`
+
+Deferred by gate: P3 constructs Livery document controllers. Per-tile engine
+selection, shared long-lived registries, smolweb/scripted/Reader routing, and
+external surface composition remain P4.
 
 ### P4: route by capability and compose surface engines
 
@@ -312,7 +373,7 @@ terminal.
 
 ## Immediate next lane
 
-P3 gives each tile its own `PeltController` and uses `TileTree` plus Frisket for
-recursive split/tab arrangement. The first forcing receipt is two independent
-documents whose history, scroll, session identity, and resize state survive tab
-activation and nested splits.
+P4 replaces P3's Livery-only controller factory with long-lived document and
+surface registries plus visible per-tile capability routing. Its forcing
+receipt mixes native smolweb, script-free and scripted Livery documents, and an
+external surface in this same workspace and compositor.
