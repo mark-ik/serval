@@ -4,7 +4,7 @@
 
 //! Profile-neutral DOM trait.
 //!
-//! `LayoutDom` is the ID-first surface that `genet-layout` (and other
+//! `LayoutDom` is the ID-first surface that Livery/Buckram (and other
 //! read-only DOM walkers — reader-mode, serialization, querySelector helpers)
 //! consume. It does not commit to a backing store: `genet-static-dom`'s
 //! `StaticDocument` and a future scripted-DOM provider both implement it.
@@ -41,8 +41,8 @@ pub trait LayoutDom {
     /// children are the roots: parsed HTML has exactly one (`<html>`), but a
     /// host-built synthetic DOM (an app chrome layer, a widget pool) may hang
     /// SEVERAL elements here with no wrapper — layout styles and paints every
-    /// one of them (genet-layout wraps them in a synthetic block root; see
-    /// its `multi_root_document_paints_every_root_element` test). Or an
+    /// one of them (the retained Livery host wraps them in a synthetic block
+    /// root). Or an
     /// element node (a re-rooted subtree view): that element is itself the
     /// root. Hosts do not need to invent an `<html>`/container element just
     /// to satisfy layout. Note the CSS root-background propagation
@@ -69,8 +69,8 @@ pub trait LayoutDom {
     }
 
     /// The document's quirks mode, as selected by the parser (presence/absence
-    /// of a `<!DOCTYPE>`). Drives quirk-gated cascade behaviour (Stylo's
-    /// `QuirksMode`-conditional UA rules, e.g. the table font-size quirk).
+    /// of a `<!DOCTYPE>`). Drives quirk-gated cascade behaviour, including
+    /// legacy table-font behavior.
     /// Defaults to standards mode; a backend that parses a real document
     /// overrides it.
     fn quirks_mode(&self) -> QuirksMode {
@@ -104,7 +104,7 @@ pub trait LayoutDom {
     fn kind(&self, id: Self::NodeId) -> NodeKind;
 
     /// Stable per-node identity as a `u64`. Used by foreign trait adapters
-    /// (Stylo's `OpaqueNode`, `selectors::OpaqueElement`) that need a
+    /// (`selectors::OpaqueElement`, host reflector maps) that need a
     /// pointer-shaped value for identity comparisons in the cascade.
     ///
     /// Must satisfy: distinct nodes within the same backing store return
@@ -205,8 +205,8 @@ pub trait LayoutDom {
 /// layout) implement only [`LayoutDom`]; `genet-scripted-dom` implements both.
 ///
 /// Mutators record *structural* change as [`DomMutation`] records — they carry no
-/// notion of dirty bits, style, or layout. genet-layout's scheduler drains the
-/// stream ([`Self::drain_mutations`]) and translates it into StylePlane/LayoutPlane
+/// notion of dirty bits, style, or layout. The retained Livery document drains
+/// the stream ([`Self::drain_mutations`]) and translates it into style/layout
 /// invalidation; the DOM provider itself stays render-state-free.
 pub trait LayoutDomMut: LayoutDom {
     /// Create a detached element node (no parent until appended).
@@ -256,8 +256,8 @@ pub trait LayoutDomMut: LayoutDom {
 
     /// Remove the attribute named `name` from `node` (no-op if absent). Records
     /// an [`DomMutation::AttributeChanged`] carrying the removed value as
-    /// `old_value` (the live DOM then reads as absent), so genet-layout builds
-    /// the Stylo snapshot the same way it does for a value change.
+    /// `old_value` (the live DOM then reads as absent), so the retained style
+    /// owner can classify removal the same way it classifies a value change.
     fn remove_attribute(&mut self, node: Self::NodeId, name: QualName);
 
     /// Replace a text/comment node's character data.
@@ -268,7 +268,7 @@ pub trait LayoutDomMut: LayoutDom {
     fn set_inner_html(&mut self, node: Self::NodeId, html: &str);
 
     /// Drain the structural mutations recorded since the last call into `out`.
-    /// The provider records WHAT changed; genet-layout decides what to invalidate.
+    /// The provider records WHAT changed; the retained host decides what to invalidate.
     fn drain_mutations(&mut self, out: &mut Vec<DomMutation<Self::NodeId>>);
 }
 
@@ -284,9 +284,9 @@ pub enum DomMutation<Id> {
     ///
     /// `old_value` is the attribute's value *before* this change (`None`
     /// if the attribute was newly added). It is plain pre-mutation DOM
-    /// data — not render state — and lets genet-layout reconstruct a
-    /// Stylo `ElementSnapshot` at restyle time (the old value is gone from
-    /// the live DOM by then). See
+    /// data — not render state — and lets the retained style owner classify a
+    /// post-mutation attribute change (the old value is gone from the live DOM
+    /// by then). See
     /// `docs/2026-05-25_fine_grained_restyle_plan.md`.
     AttributeChanged {
         node: Id,

@@ -12,7 +12,8 @@
 //!
 //! A view emits semantic elements with classes; [`stylesheet`] produces the CSS
 //! for those classes under a theme. The host applies it the way it applies any
-//! document stylesheet (genet-layout's `inline_stylesheets`).
+//! document stylesheet (the retained Livery scripted lane collects inline
+//! sheets before cascade).
 
 /// How a smolweb document is colored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

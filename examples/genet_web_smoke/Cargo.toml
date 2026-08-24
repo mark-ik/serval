@@ -67,8 +67,8 @@ console_error_panic_hook = "0.1"
 # graph needs (patches are per-workspace-root, and this example is its
 # own workspace). Same rationale comments as genet/Cargo.toml.
 [patch.crates-io]
-# Cambium's version-only edge otherwise pulls the published 0.1.0 graph,
-# which still selects the old Stylo 0.16 links crate beside genet-stylo 0.19.
+# Keep the standalone smoke on this checkout's current scripted-DOM and
+# render-neutral DOM contracts instead of a previously published graph.
 genet-scripted-dom = { path = "../../components/genet-scripted-dom" }
 layout-dom-api = { path = "../../components/shared/layout-dom" }
 # taffy fork re-vendored on 0.12.1 (float fixes + flex `order`).

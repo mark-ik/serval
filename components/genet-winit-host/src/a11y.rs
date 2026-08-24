@@ -4,8 +4,8 @@
 
 //! Platform AccessKit bridge for a genet-on-winit host.
 //!
-//! A host builds its accessibility tree however it likes (genet's
-//! [`genet_layout::build_subtree`] projects a laid-out DOM; a host may stitch
+//! A host builds its accessibility tree however it likes (Genet's
+//! [`genet_render::accesskit_tree`] projects a laid-out DOM; a host may stitch
 //! several such subtrees) and hands the resulting [`TreeUpdate`] to
 //! [`AccessKitBridge::update`]. The bridge owns the per-platform adapter
 //! (`accesskit_windows` / `accesskit_macos` / `accesskit_unix`), pushes the tree
@@ -22,7 +22,7 @@
 //! window. Calling only [`AccessKitBridge::new`] is not sufficient, and hidden
 //! winit windows may not receive the redraw that a deferred install expects.
 //!
-//! [`genet_layout::build_subtree`]: https://docs.rs/genet-layout
+//! [`genet_render::accesskit_tree`]: https://docs.rs/genet-render
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

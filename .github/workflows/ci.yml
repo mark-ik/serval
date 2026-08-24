@@ -33,5 +33,5 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: Workspace tests
         run: cargo test --workspace --all-targets
-      - name: Layout wasm witness
-        run: cargo check -p genet-layout --target wasm32-unknown-unknown
+      - name: Livery and Buckram wasm witness
+        run: cargo check -p livery -p buckram -p genet-livery --target wasm32-unknown-unknown

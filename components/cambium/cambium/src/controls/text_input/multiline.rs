@@ -9,7 +9,7 @@
 //! parley, which breaks at `\n`); a column is the grapheme offset within a line.
 //! Up/down keep a sticky goal column ([`TextInput::goal_col`](super::core::TextInput))
 //! across a run (Tier 2). These walk hard `\n` lines, not parley's soft-wrap visual
-//! rows — the soft-wrap caret (`genet_layout::caret_byte_vertical`) is a separate,
+//! rows — the retained-layout soft-wrap caret is a separate,
 //! layout-aware path a host can wire instead, where the goal would be an x-position
 //! not a column.
 

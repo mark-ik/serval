@@ -315,7 +315,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// The **input → event bridge**: dispatch a synthetic DOM event of `event_type`
     /// (`"click"`, `"keydown"`, …) at the node with raw id `raw_node_id`, running its
     /// registered listeners with full capture→target→bubble propagation. The host
-    /// supplies the target (e.g. from `genet-layout`'s `hit_test`); the runtime owns
+    /// supplies the target (e.g. from retained Livery hit testing); the runtime owns
     /// no layout, so it cannot hit-test itself.
     ///
     /// Returns `true` if the default action should proceed, `false` if a listener

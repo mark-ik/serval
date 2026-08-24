@@ -15,8 +15,8 @@
 //! nothing (an empty [`Selectors`]), rather than silently matching a prefix.
 //!
 //! This is a pragmatic subset, not `selectors`-crate-grade matching; the
-//! eventual `web-api` layer can swap in full selector matching (the crate
-//! genet-layout already uses) behind the same sink surface.
+//! eventual `web-api` layer can swap in full `selectors`-crate matching (already
+//! used by Livery's cascade) behind the same sink surface.
 
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 

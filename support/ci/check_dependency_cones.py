@@ -35,20 +35,20 @@ def is_beneath(path: pathlib.Path, parent: pathlib.Path) -> bool:
     return True
 
 
-def assert_genet_extract_cone() -> None:
-    manifest = load_toml(ROOT / "components" / "genet-extract" / "Cargo.toml")
+def assert_fleece_cone() -> None:
+    manifest = load_toml(ROOT / "components" / "fleece" / "Cargo.toml")
     deps = dependency_names(manifest.get("dependencies", {}))
     expected = {"layout_dom_api"}
     if deps != expected:
-        fail(f"genet-extract dependencies are {sorted(deps)}, expected {sorted(expected)}")
+        fail(f"fleece dependencies are {sorted(deps)}, expected {sorted(expected)}")
     build_deps = dependency_names(manifest.get("build-dependencies", {}))
     if build_deps:
-        fail(f"genet-extract build-dependencies must stay empty, found {sorted(build_deps)}")
+        fail(f"fleece build-dependencies must stay empty, found {sorted(build_deps)}")
     dev_deps = dependency_names(manifest.get("dev-dependencies", {}))
     allowed_dev_deps = {"genet-static-dom"}
     if dev_deps - allowed_dev_deps:
         fail(
-            "genet-extract dev-dependencies contain non-fixture deps: "
+            "fleece dev-dependencies contain non-fixture deps: "
             f"{sorted(dev_deps - allowed_dev_deps)}"
         )
 
@@ -61,7 +61,18 @@ def assert_genet_extract_cone() -> None:
         "wgpu",
     }
     if deps & forbidden:
-        fail(f"genet-extract pulled render deps directly: {sorted(deps & forbidden)}")
+        fail(f"fleece pulled render deps directly: {sorted(deps & forbidden)}")
+
+
+def assert_genet_extract_is_a_shim() -> None:
+    manifest = load_toml(ROOT / "components" / "genet-extract" / "Cargo.toml")
+    deps = dependency_names(manifest.get("dependencies", {}))
+    if deps != {"fleece"}:
+        fail(f"genet-extract dependencies are {sorted(deps)}, expected ['fleece']")
+    for table in ("build-dependencies", "dev-dependencies"):
+        names = dependency_names(manifest.get(table, {}))
+        if names:
+            fail(f"genet-extract {table} must stay empty, found {sorted(names)}")
 
 
 def cargo_metadata() -> dict:
@@ -78,9 +89,11 @@ def cargo_metadata() -> dict:
     return json.loads(result.stdout)
 
 
-def assert_cargo_metadata_sees_extract(metadata: dict) -> None:
-    if not any(package["name"] == "genet-extract" for package in metadata["packages"]):
-        fail("cargo metadata did not report the genet-extract workspace package")
+def assert_cargo_metadata_sees_extraction_packages(metadata: dict) -> None:
+    names = {package["name"] for package in metadata["packages"]}
+    missing = {"fleece", "genet-extract"} - names
+    if missing:
+        fail(f"cargo metadata did not report extraction packages {sorted(missing)}")
 
 
 def assert_ports_depend_inward(metadata: dict) -> None:
@@ -125,9 +138,10 @@ def assert_ports_depend_inward(metadata: dict) -> None:
 
 
 def main() -> None:
-    assert_genet_extract_cone()
+    assert_fleece_cone()
+    assert_genet_extract_is_a_shim()
     metadata = cargo_metadata()
-    assert_cargo_metadata_sees_extract(metadata)
+    assert_cargo_metadata_sees_extraction_packages(metadata)
     assert_ports_depend_inward(metadata)
     print("dependency-cone witnesses passed")
 

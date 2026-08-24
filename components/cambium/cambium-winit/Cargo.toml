@@ -9,8 +9,8 @@ repository = "https://github.com/merely-made/genet"
 publish = true
 
 # Two dependencies, and it stays that way. The a11y host moved to
-# `cambium-winit-a11y` on 2026-07-26 because its genet deps (`genet-layout`,
-# `genet-winit-host`) inherit `publish = false` and made this crate
+# `cambium-winit-a11y` on 2026-07-26 because its then-current Genet layout host
+# dependencies were unpublished and made this crate
 # unpublishable with them. Adding anything unpublishable here undoes that.
 [dependencies]
 cambium = { version = "0.3.3", path = "../cambium" }

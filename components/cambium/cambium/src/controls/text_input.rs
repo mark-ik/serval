@@ -12,8 +12,8 @@
 //! carries a `caret` (an extended grapheme-cluster index), and the handler
 //! inserts at the caret, deletes before/after it (Backspace/Delete), and moves
 //! it (←/→ and Home/End). The field renders the **clean** buffer; the
-//! host paints the caret as a thin bar at the cursor via
-//! `genet_layout::caret_rect` overlaid on the scene (see `pelt-desktop`'s render
+//! host paints the caret as a thin bar at the cursor via its retained Livery
+//! caret geometry overlaid on the scene (see `cambium-rootstock`'s frame
 //! path). [`TextInput::display`] — the buffer with a `|` at the caret — is a
 //! *textual* representation for headless tests / debug, not what the field
 //! renders on screen.

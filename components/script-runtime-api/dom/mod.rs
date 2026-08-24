@@ -182,7 +182,7 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     Ok(())
 }
 
-/// An HTML-namespaced element name (matches genet-layout's cascade keying).
+/// An HTML-namespaced element name matching the retained Livery cascade key.
 fn html_qual(local: &str) -> QualName {
     QualName::new(
         None,

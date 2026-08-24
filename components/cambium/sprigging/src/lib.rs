@@ -127,8 +127,8 @@ impl<'a> PaintCx<'a> {
         self.cmds.push(PaintCmd::PopClip);
     }
 
-    /// Convenience: fill a local rect with a solid color. Mirrors genet-layout
-    /// `paint_emit`'s own `DrawRect` construction so the produced command is
+    /// Convenience: fill a local rect with a solid color. Mirrors Genet's
+    /// retained paint-list `DrawRect` construction so the produced command is
     /// byte-identical to a native background fill.
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: ColorF) {
         self.cmds.push(PaintCmd::DrawRect(RectItem {
@@ -224,8 +224,8 @@ pub trait Leaf: std::any::Any {
         None
     }
 
-    /// Fill this node's accesskit node during genet-layout's `accesskit_tree`
-    /// walk (a knob still announces as a slider). Default: no semantics.
+    /// Fill this node's AccessKit node during the host's retained-tree walk (a
+    /// knob still announces as a slider). Default: no semantics.
     fn accessibility(&mut self, _node: &mut accesskit::Node) {}
 
     /// Retention gate: has paint output changed since last frame?

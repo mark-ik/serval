@@ -50,7 +50,7 @@ fn dom_construction_works<E: ScriptEngine>() {
         assert_eq!(dom.text(div_kids[0]), Some("world"));
     }
 
-    // The structural + attribute changes were recorded for genet-layout:
+    // The structural + attribute changes were recorded for the retained host:
     // setAttribute, two appendChilds, textContent replacement → 4 mutations.
     // (createElement / createTextNode record nothing until parented.)
     let mut muts = Vec::new();
