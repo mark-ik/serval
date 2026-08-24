@@ -311,6 +311,63 @@ fn relative_caption_moves_by_its_inset() {
     );
 }
 
+#[test]
+fn relative_table_parts_move_their_positioned_descendants() {
+    for (label, part_markup, axis) in [
+        (
+            "row group inline offset",
+            "<tbody id=part style='position:relative;left:50px'>\
+               <tr><td id=cell style='padding:0'><div id=abs style='position:absolute;left:50px;width:50px;height:50px'></div></td></tr>\
+             </tbody>",
+            0,
+        ),
+        (
+            "row group block offset",
+            "<thead id=part style='position:relative;top:50px'>\
+               <tr><td id=cell style='padding:0'><div id=abs style='position:absolute;top:50px;width:50px;height:50px'></div></td></tr>\
+             </thead>\
+             <tbody><tr><td style='padding:0'><div style='width:50px;height:50px'></div></td></tr></tbody>",
+            1,
+        ),
+        (
+            "row inline offset",
+            "<tbody><tr id=part style='position:relative;left:50px'>\
+               <td id=cell style='padding:0'><div id=abs style='position:absolute;left:50px;width:50px;height:50px'></div></td>\
+             </tr></tbody>",
+            0,
+        ),
+        (
+            "row block offset",
+            "<tbody><tr id=part style='position:relative;top:50px'>\
+               <td id=cell style='padding:0'><div id=abs style='position:absolute;top:50px;width:50px;height:50px'></div></td>\
+             </tr>\
+             <tr><td style='padding:0'><div style='width:50px;height:50px'></div></td></tr></tbody>",
+            1,
+        ),
+    ] {
+        let html = format!(
+            "<html><body style=\"margin:0\">\
+             <table id=table style=\"border-collapse:collapse\">{part_markup}</table>\
+             </body></html>"
+        );
+        let got = document_rects(&html, &["table", "part", "cell", "abs"]);
+        let (table, part, cell, absolute) = (got[0], got[1], got[2], got[3]);
+        let part_start = if axis == 0 { part.0 } else { part.1 };
+        let part_size = if axis == 0 { part.2 } else { part.3 };
+        let absolute_start = if axis == 0 { absolute.0 } else { absolute.1 };
+
+        assert_eq!(
+            part_size, 0.0,
+            "{label}: an out-of-flow child does not size its table part; table={table:?}, part={part:?}, cell={cell:?}, absolute={absolute:?}"
+        );
+        assert_eq!(
+            absolute_start - part_start,
+            50.0,
+            "{label}: the positioned descendant resolves from the translated table part; part={part:?}, absolute={absolute:?}"
+        );
+    }
+}
+
 /// Which block algorithm a page with an ordinary in-flow table runs on.
 /// Recorded as evidence, not as an assertion: it explains why the
 /// absolute-box flow-space defect only showed up with table content.

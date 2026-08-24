@@ -804,25 +804,27 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             let children = self.nodes[index].children.clone();
             let first = children.iter().copied().find_map(|child| {
                 let child_node = &self.nodes[child.index()];
-                (child_node.block_style.float == FloatSide::None)
-                    .then(|| {
-                        child_node
-                            .baselines
-                            .first
-                            .map(|baseline| child_node.final_layout.location.y + baseline)
-                    })
-                    .flatten()
+                (child_node.block_style.float == FloatSide::None
+                    && !child_node.block_style.is_out_of_flow())
+                .then(|| {
+                    child_node
+                        .baselines
+                        .first
+                        .map(|baseline| child_node.final_layout.location.y + baseline)
+                })
+                .flatten()
             });
             let last = children.iter().rev().copied().find_map(|child| {
                 let child_node = &self.nodes[child.index()];
-                (child_node.block_style.float == FloatSide::None)
-                    .then(|| {
-                        child_node
-                            .baselines
-                            .last
-                            .map(|baseline| child_node.final_layout.location.y + baseline)
-                    })
-                    .flatten()
+                (child_node.block_style.float == FloatSide::None
+                    && !child_node.block_style.is_out_of_flow())
+                .then(|| {
+                    child_node
+                        .baselines
+                        .last
+                        .map(|baseline| child_node.final_layout.location.y + baseline)
+                })
+                .flatten()
             });
             if first.is_some() || last.is_some() {
                 self.nodes[index].baselines = Baselines::new(first, last)
@@ -846,6 +848,49 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source>
 where
     S: AlgorithmStyle,
 {
+    /// Run scratch layout with the root's renderer-owned positioned children
+    /// presented to Taffy as out of flow.
+    ///
+    /// Buckram retains their CSS position and final geometry separately. This
+    /// adapter role only prevents a direct absolute or fixed child from
+    /// contributing to an intrinsic or table-cell measurement while preserving
+    /// the backend node for later formatting and fragment collection.
+    pub fn compute_layout_with_measure_excluding_out_of_flow_children<Measure>(
+        &mut self,
+        root: AlgorithmNodeId,
+        available: AlgorithmSize<AlgorithmAvailableSpace>,
+        measure: Measure,
+    ) where
+        Measure: FnMut(
+            AlgorithmSize<Option<f32>>,
+            AlgorithmSize<AlgorithmAvailableSpace>,
+            AlgorithmNodeId,
+            Option<&mut Context>,
+            Option<&FloatLineConstraints>,
+        ) -> AlgorithmSize<f32>,
+    {
+        let children = self.nodes[root.index()].children.clone();
+        let mut flipped = Vec::new();
+        for child in children {
+            if !self.nodes[child.index()].block_style.is_out_of_flow() {
+                continue;
+            }
+            let style =
+                sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[child.index()].style);
+            flipped.push((child, style.position));
+            style.position = taffy::Position::Absolute;
+        }
+        self.clear_layout_cache();
+        self.compute_layout_with_measure(root, available, measure);
+        for (child, previous) in flipped {
+            sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[child.index()].style)
+                .position = previous;
+        }
+        // The next ordinary run must not reuse a cache entry made while those
+        // private backend roles were temporarily different.
+        self.clear_layout_cache();
+    }
+
     pub fn compute_layout_with_measure<Measure>(
         &mut self,
         root: AlgorithmNodeId,
@@ -5075,6 +5120,24 @@ mod tests {
     #[test]
     fn adapter_propagates_declared_bfc_baselines_without_backend_child_walks() {
         let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let absolute = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                size: taffy::Size {
+                    width: Dimension::length(80.0),
+                    height: Dimension::length(5.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            3,
+        );
         let flex = tree.new_with_children_and_block_style(
             AlgorithmKind::Flex,
             BlockStyle {
@@ -5109,6 +5172,24 @@ mod tests {
             &[],
             2,
         );
+        let fixed = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                position: crate::BlockPosition::Fixed,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                size: taffy::Size {
+                    width: Dimension::length(80.0),
+                    height: Dimension::length(5.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            4,
+        );
         let root = tree.new_with_children_and_block_style(
             AlgorithmKind::Block,
             BlockStyle {
@@ -5123,7 +5204,7 @@ mod tests {
                 },
                 ..Style::default()
             },
-            &[flex, grid],
+            &[absolute, flex, grid, fixed],
             0,
         );
 
@@ -5135,6 +5216,14 @@ mod tests {
         tree.set_baselines(
             grid,
             Baselines::new(Some(11.0), Some(13.0)).expect("grid baselines"),
+        );
+        tree.set_baselines(
+            absolute,
+            Baselines::new(Some(1.0), Some(2.0)).expect("absolute baselines"),
+        );
+        tree.set_baselines(
+            fixed,
+            Baselines::new(Some(40.0), Some(50.0)).expect("fixed baselines"),
         );
         tree.propagate_declared_baselines();
 

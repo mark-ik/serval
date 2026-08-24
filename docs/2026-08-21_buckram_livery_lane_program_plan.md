@@ -1,9 +1,10 @@
 # Buckram and Livery lane program
 
 **Date:** 2026-08-21
-**Status:** Reconstituted 2026-08-24 from accepted main. Lane 8 and the
-anonymous-table continuation are complete. Wave 2 is unblocked. Every other
-row remains an inventory item until its current-main receipt is named below.
+**Status:** Reconstituted 2026-08-24 from accepted main. Lane 8, the
+anonymous-table continuation, and K5 row 1+2+7 are complete. Wave 2 is
+unblocked. Every other row remains an inventory item until its current-main
+receipt is named below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md)
 and the [Livery fullweb cutover plan](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md).
@@ -47,7 +48,7 @@ in [their recovery plan](2026-08-23_buckram_anonymous_table_recovery_plan.md).
 | # | Lane | State on 2026-08-24 | Done condition or next proof |
 |---|---|---|---|
 | 8 | Block-formatter admission | **Complete** | Independent tables and flow roots stay opaque to the containing block formatter; CSS-facing Taffy block runs are zero, backend scratch sizing is counted separately, and CSS2 tables plus css-position are byte-identical to baseline. See the [lane plan](2026-08-23_buckram_block_formatter_admission_execution_plan.md). |
-| 1+2+7 | K5 positioning closure, Livery side | Inventory required | Re-run the named relative-table, static-position, inline-block, and fixed-table files on current main; close each residual with a live fixture or a named owner. |
+| 1+2+7 | K5 positioning closure, Livery side | **Complete** | The named inventory is 26 pass / 0 fail, with 10 full-directory gains and no loss across css-position, CSS2 abspos, and CSS2 tables. See the [lane plan](2026-08-24_k5_positioning_closure_execution_plan.md). |
 | 3 | K5h retained text frame | Inventory required | Prove retained positioned-subtree translation and leaf resize with current fixtures. Do not rely on the archived dirty `translate_subtree` overlay. |
 | 4 | K5b grid static rectangle | Inventory required | Both `tests/grid_abspos.rs` receipts pass and the responsible current code path is named. |
 | 5+6 | K5d sizing and vertical-mode insets | Inventory required | Re-run aspect-ratio, ruby, font-feature, pre-wrap, and the 33 shapes references from current main; separate solved font/contain work from remaining logical-inset work. |

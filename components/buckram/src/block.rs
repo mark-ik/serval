@@ -1101,10 +1101,11 @@ impl BlockFormattingContext {
         let outer_block_size = margin_block_start + border_size.block + margin_block_end;
         let hypothetical_block_start =
             self.block_cursor + self.active_margin.resolve() + margin_block_start;
-        let clear_block_start = self.clearance_block_end(style.clear) + margin_block_start;
-        let mut margin_box_block_start = (hypothetical_block_start - margin_block_start)
-            .max(clear_block_start - margin_block_start)
-            .max(self.latest_float_block_start);
+        let mut margin_box_block_start = hypothetical_block_start - margin_block_start;
+        if let Some(clear_block_end) = self.clearance_block_end(style.clear) {
+            margin_box_block_start = margin_box_block_start.max(clear_block_end);
+        }
+        margin_box_block_start = margin_box_block_start.max(self.latest_float_block_start);
         let at_inline_start = self.float_is_at_inline_start(style.float);
 
         let margin_box_inline_start = loop {
@@ -1270,8 +1271,9 @@ impl BlockFormattingContext {
         style: BlockStyle,
         margin_state: BlockMarginState,
     ) -> f32 {
-        self.normal_in_flow_block_start(margin_state)
-            .max(self.clearance_block_end(style.clear))
+        let normal = self.normal_in_flow_block_start(margin_state);
+        self.clearance_block_end(style.clear)
+            .map_or(normal, |clearance| normal.max(clearance))
     }
 
     fn normal_in_flow_block_start(&self, margin_state: BlockMarginState) -> f32 {
@@ -1372,10 +1374,11 @@ impl BlockFormattingContext {
     ) -> BlockPlacement {
         let adjoining = self.active_margin.collapse_with(margin_state.block_start);
         let normal_block_start = self.normal_in_flow_block_start(margin_state);
-        let clear_block_end = self.clearance_block_end(style.clear);
-        let block_start = normal_block_start
-            .max(clear_block_end)
-            .max(minimum_block_start.unwrap_or(normal_block_start));
+        let mut block_start =
+            normal_block_start.max(minimum_block_start.unwrap_or(normal_block_start));
+        if let Some(clear_block_end) = self.clearance_block_end(style.clear) {
+            block_start = block_start.max(clear_block_end);
+        }
         let has_clearance = block_start > normal_block_start;
         let child_size = self.containing_block.flow.logical_size(border_box_size);
         let logical = LogicalRect {
@@ -1487,7 +1490,7 @@ impl BlockFormattingContext {
         )
     }
 
-    fn clearance_block_end(&self, clear: ClearSide) -> f32 {
+    fn clearance_block_end(&self, clear: ClearSide) -> Option<f32> {
         self.float_exclusions
             .iter()
             .filter(|exclusion| match clear {
@@ -1498,7 +1501,7 @@ impl BlockFormattingContext {
             })
             .filter(|exclusion| exclusion.is_valid_exclusion())
             .map(|exclusion| exclusion.block_end())
-            .fold(0.0, f32::max)
+            .reduce(f32::max)
     }
 
     fn lowest_float_block_end(&self) -> f32 {
@@ -1727,6 +1730,37 @@ mod tests {
                 .resolve(),
             13.0
         );
+    }
+
+    #[test]
+    fn negative_sibling_margin_can_move_a_block_before_the_parent_start() {
+        let containing = BlockContainingBlock {
+            flow: FlowAxes::HORIZONTAL_LTR,
+            content_box: PhysicalSize {
+                width: 200.0,
+                height: 0.0,
+            },
+        };
+        let child = fixed_width(200.0);
+        let mut context = BlockFormattingContext::new(containing);
+        context.place_in_flow_with_margins(
+            child,
+            PhysicalSize {
+                width: 200.0,
+                height: 50.0,
+            },
+            margin_state(0.0, 0.0, false),
+        );
+        let pulled_up = context.place_in_flow_with_margins(
+            child,
+            PhysicalSize {
+                width: 200.0,
+                height: 100.0,
+            },
+            margin_state(-100.0, 0.0, false),
+        );
+
+        assert_eq!(pulled_up.rect.y, -50.0);
     }
 
     fn margin_state(start: f32, end: f32, collapses_through: bool) -> BlockMarginState {

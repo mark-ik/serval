@@ -208,6 +208,7 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
             );
         }
     }
+    block_size_solved |= (block.size - input.measured_size.block).abs() > 0.01;
 
     PositionedBoxGeometry {
         logical_rect: LogicalRect {
@@ -638,6 +639,17 @@ mod tests {
         assert_eq!(geometry.logical_rect.inline_size, 100.0);
         assert_eq!(geometry.margin.inline_start, 50.0);
         assert_eq!(geometry.margin.inline_end, 50.0);
+    }
+
+    #[test]
+    fn definite_block_size_marks_a_changed_formatter_size_as_solved() {
+        let mut style = positioned();
+        style.size.height = BlockSizeValue::Length(FlowLength::percent(0.5));
+
+        let geometry = solve_positioned_box(style, input());
+
+        assert_eq!(geometry.logical_rect.block_size, 50.0);
+        assert!(geometry.block_size_solved);
     }
 
     #[test]

@@ -1223,7 +1223,7 @@ fn format_table_cell<Context, Source>(
             Dimension::length(cell_content_block_size(cell_block_size, offsets))
         },
     };
-    tree.compute_layout_with_measure(
+    tree.compute_layout_with_measure_excluding_out_of_flow_children(
         node,
         AlgorithmSize::new(
             AlgorithmAvailableSpace::Definite(request.content_inline_size),
@@ -3302,44 +3302,45 @@ where
         style.min_size.width = Dimension::auto();
         style.max_size.width = Dimension::auto();
         let mut measure = |available| {
-            self.tree.compute_layout_with_measure(
-                cell_node,
-                AlgorithmSize::new(available, AlgorithmAvailableSpace::MaxContent),
-                |known, available, _, context, _| {
-                    let Some(context) = context else {
-                        return AlgorithmSize::new(0.0, 0.0);
-                    };
-                    let (width, intrinsic_kind) = match available.width {
-                        AlgorithmAvailableSpace::Definite(width) => (width, None),
-                        // A nearly-zero line breaks at every opportunity; an
-                        // infinite one suppresses wrapping, as in the main
-                        // measure closure.
-                        AlgorithmAvailableSpace::MinContent => {
-                            (0.01, Some(IntrinsicSizeKind::MinContent))
-                        },
-                        AlgorithmAvailableSpace::MaxContent => {
-                            (f32::INFINITY, Some(IntrinsicSizeKind::MaxContent))
-                        },
-                    };
-                    let (measured_width, measured_height) = measure_inline_context(
-                        text,
-                        dom,
-                        styles,
-                        boxes,
-                        atomic,
-                        context,
-                        InlineMeasureGeometry {
-                            width: known.width.unwrap_or(width),
-                            intrinsic_kind,
-                            line_constraints: None,
-                        },
-                    );
-                    AlgorithmSize::new(
-                        known.width.unwrap_or(measured_width),
-                        known.height.unwrap_or(measured_height),
-                    )
-                },
-            );
+            self.tree
+                .compute_layout_with_measure_excluding_out_of_flow_children(
+                    cell_node,
+                    AlgorithmSize::new(available, AlgorithmAvailableSpace::MaxContent),
+                    |known, available, _, context, _| {
+                        let Some(context) = context else {
+                            return AlgorithmSize::new(0.0, 0.0);
+                        };
+                        let (width, intrinsic_kind) = match available.width {
+                            AlgorithmAvailableSpace::Definite(width) => (width, None),
+                            // A nearly-zero line breaks at every opportunity; an
+                            // infinite one suppresses wrapping, as in the main
+                            // measure closure.
+                            AlgorithmAvailableSpace::MinContent => {
+                                (0.01, Some(IntrinsicSizeKind::MinContent))
+                            },
+                            AlgorithmAvailableSpace::MaxContent => {
+                                (f32::INFINITY, Some(IntrinsicSizeKind::MaxContent))
+                            },
+                        };
+                        let (measured_width, measured_height) = measure_inline_context(
+                            text,
+                            dom,
+                            styles,
+                            boxes,
+                            atomic,
+                            context,
+                            InlineMeasureGeometry {
+                                width: known.width.unwrap_or(width),
+                                intrinsic_kind,
+                                line_constraints: None,
+                            },
+                        );
+                        AlgorithmSize::new(
+                            known.width.unwrap_or(measured_width),
+                            known.height.unwrap_or(measured_height),
+                        )
+                    },
+                );
             // A block child with a definite width contains its own sizing
             // contribution even when one of its descendants overflows it.
             // Taffy's intrinsic cell box expands to that overflow here, but
@@ -3349,6 +3350,7 @@ where
             self.tree
                 .children(cell_node)
                 .iter()
+                .filter(|child| !self.tree.block_style(**child).is_out_of_flow())
                 .map(|child| self.tree.unrounded_layout(*child).width)
                 .reduce(f32::max)
                 .unwrap_or_else(|| self.tree.unrounded_layout(cell_node).width)
@@ -3982,26 +3984,27 @@ where
         node: AlgorithmNodeId,
         available: AlgorithmAvailableSpace,
     ) -> f32 {
-        self.tree.compute_layout_with_measure(
-            node,
-            AlgorithmSize::new(available, AlgorithmAvailableSpace::MaxContent),
-            |known, available, _, context, _| {
-                let Some(context) = context else {
-                    return AlgorithmSize::new(0.0, 0.0);
-                };
-                let available_width = match available.width {
-                    AlgorithmAvailableSpace::Definite(width) => width,
-                    AlgorithmAvailableSpace::MinContent => context.min_width,
-                    AlgorithmAvailableSpace::MaxContent => context.max_width,
-                };
-                AlgorithmSize::new(
-                    known
-                        .width
-                        .unwrap_or(context.max_width.min(available_width.max(0.0))),
-                    known.height.unwrap_or(context.height),
-                )
-            },
-        );
+        self.tree
+            .compute_layout_with_measure_excluding_out_of_flow_children(
+                node,
+                AlgorithmSize::new(available, AlgorithmAvailableSpace::MaxContent),
+                |known, available, _, context, _| {
+                    let Some(context) = context else {
+                        return AlgorithmSize::new(0.0, 0.0);
+                    };
+                    let available_width = match available.width {
+                        AlgorithmAvailableSpace::Definite(width) => width,
+                        AlgorithmAvailableSpace::MinContent => context.min_width,
+                        AlgorithmAvailableSpace::MaxContent => context.max_width,
+                    };
+                    AlgorithmSize::new(
+                        known
+                            .width
+                            .unwrap_or(context.max_width.min(available_width.max(0.0))),
+                        known.height.unwrap_or(context.height),
+                    )
+                },
+            );
         self.tree.layout(node).width
     }
 
@@ -4018,6 +4021,7 @@ where
         let direct_child_width = |tree: &AlgorithmTree<Style, TextMeasure, Option<BoxId>>| {
             tree.children(cell_node)
                 .iter()
+                .filter(|child| !tree.block_style(**child).is_out_of_flow())
                 .map(|child| tree.unrounded_layout(*child).width)
                 .reduce(f32::max)
                 .unwrap_or_else(|| tree.unrounded_layout(cell_node).width)
@@ -6501,21 +6505,7 @@ fn apply_relative_table_part_offsets<Id>(
         }
     }
     let offsets = block.fragments.apply_relative_offsets(|box_id| {
-        // The table grid remains in the ordinary tree, where its own
-        // relative position is handled at the containing-block boundary.
-        if box_id == table {
-            return (0.0, 0.0);
-        }
-        let BoxOrigin::Element(node) = boxes[box_id].origin else {
-            return (0.0, 0.0);
-        };
-        let Some(computed) = styles.get(node) else {
-            return (0.0, 0.0);
-        };
-        let font_size = font_size_px(&computed.font_size, table_font_size);
-        let block_basis =
-            specified_table_block_basis(boxes, styles, box_id, table, table_font_size);
-        relative_table_part_offset(computed, font_size, inline_basis, block_basis)
+        table_part_relative_offset(box_id, table, boxes, styles, table_font_size, inline_basis)
     });
 
     for placement in &mut block.alignment.cells {
@@ -6528,6 +6518,33 @@ fn apply_relative_table_part_offsets<Id>(
         placement.rect.inline_start += inline;
         placement.rect.block_start += block;
     }
+}
+
+fn table_part_relative_offset<Id>(
+    box_id: BoxId,
+    table: BoxId,
+    boxes: &GeneratedBoxTree<Id>,
+    styles: &StylePlane<Id>,
+    table_font_size: f32,
+    inline_basis: f32,
+) -> (f32, f32)
+where
+    Id: Copy + Eq + Hash,
+{
+    // The table grid remains in the ordinary tree, where its own relative
+    // position is handled at the containing-block boundary.
+    if box_id == table {
+        return (0.0, 0.0);
+    }
+    let BoxOrigin::Element(node) = boxes[box_id].origin else {
+        return (0.0, 0.0);
+    };
+    let Some(computed) = styles.get(node) else {
+        return (0.0, 0.0);
+    };
+    let font_size = font_size_px(&computed.font_size, table_font_size);
+    let block_basis = specified_table_block_basis(boxes, styles, box_id, table, table_font_size);
+    relative_table_part_offset(computed, font_size, inline_basis, block_basis)
 }
 
 fn table_paint_plane<Id>(
@@ -6559,7 +6576,26 @@ where
             let winners = pending.collapsed_borders.as_ref().expect(
                 "a K4g4 collapsed table with emitted fragments retains its resolved winner grid",
             );
-            let lines = TableGridLines::from_fragments(&block.fragments)
+            // Relative table parts move only at paint time. Collapsed-border
+            // tracks still belong to the unshifted table grid; deriving lines
+            // from translated rows can make an otherwise ordered grid appear
+            // decreasing when an early row moves past a later one.
+            let mut grid_fragments = block.fragments.clone();
+            let inline_basis = grid_fragments
+                .grid()
+                .map_or(0.0, |grid| grid.rect.inline_size);
+            grid_fragments.apply_relative_offsets(|box_id| {
+                let (inline, block) = table_part_relative_offset(
+                    box_id,
+                    pending.table,
+                    boxes,
+                    styles,
+                    pending.font_size,
+                    inline_basis,
+                );
+                (-inline, -block)
+            });
+            let lines = TableGridLines::from_fragments(&grid_fragments)
                 .expect("K4d6 table fragments provide finite final lines for K4g5");
             Some(
                 resolve_collapsed_border_geometry(pending.table, &lines, winners)
@@ -8511,6 +8547,34 @@ mod tests {
     }
 
     #[test]
+    fn absolute_non_leaf_percentage_block_size_uses_the_initial_containing_block() {
+        let dom = StaticDocument::parse("<body id=positioned><div></div></body>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #positioned { position: absolute; left: 50px; top: 50px; width: 50%; height: 50%; border: 10px solid; }"]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 800.0, 600.0).expect("layout");
+        let positioned = layout
+            .get(node_by_id(&dom, dom.document(), "positioned").expect("positioned node"))
+            .expect("positioned fragment")
+            .physical_rect();
+
+        assert_eq!(
+            positioned,
+            PhysicalRect {
+                x: 50.0,
+                y: 50.0,
+                width: 420.0,
+                height: 320.0,
+            }
+        );
+    }
+
+    #[test]
     fn ordinary_block_flow_keeps_an_absolute_subtree_out_of_its_cursor() {
         let dom = StaticDocument::parse(
             "<div id=host><div id=before></div><div id=positioned><div id=inside></div></div><div id=after></div></div>",
@@ -9490,6 +9554,41 @@ mod tests {
     }
 
     #[test]
+    fn absolute_static_position_in_a_block_split_from_inline_includes_margins() {
+        let dom = StaticDocument::parse(
+            "<div id=before></div><div id=wrapper><span><div id=block><div id=positioned></div></div></span></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
+                 #before { height: 50px; } \
+                 #wrapper { display: flow-root; margin-top: -100px; } \
+                 #block { margin-top: 100px; } \
+                 #positioned { position: absolute; width: 100px; height: 100px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+
+        let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+        let rect = |id| {
+            layout
+                .get(node_by_id(&dom, dom.document(), id).expect("node"))
+                .expect("fragment")
+                .physical_rect()
+        };
+        let positioned = rect("positioned");
+
+        assert_eq!(
+            positioned.y,
+            50.0,
+            "before={:?}, wrapper={:?}, block={:?}, positioned={positioned:?}",
+            rect("before"),
+            rect("wrapper"),
+            rect("block"),
+        );
+    }
+
+    #[test]
     fn absolute_siblings_in_one_inline_keep_an_empty_first_fragment() {
         let dom = StaticDocument::parse(
             "<div id=container><span id=prefix>BBBBBB</span> <span id=containing><div id=first></div>AA A AA AAAA<div id=second></div></span></div>",
@@ -9806,14 +9905,18 @@ mod tests {
     #[test]
     fn relative_table_parts_move_their_retained_fragment_subtree() {
         let dom = StaticDocument::parse(
-            "<table id=table><tbody id=group><tr id=row><td id=cell>one</td></tr></tbody></table>",
+            "<table id=table><tbody id=group><tr id=row><td id=cell>one</td></tr></tbody>\
+             <tbody><tr><td>two</td></tr></tbody></table>",
         );
         let styles = resolve_styles(
             &dom,
-            &StyleSet::cambium(&["table { display: table; border-spacing: 0; } \
-                 tbody { display: table-row-group; position: relative; left: 12px; top: 8px; } \
-                 tr { display: table-row; position: relative; left: 7px; top: 3px; } \
-                 td { display: table-cell; width: 40px; height: 20px; }"]),
+            &StyleSet::cambium(&[
+                "table { display: table; border-collapse: collapse; border-spacing: 0; } \
+                 tbody { display: table-row-group; } tr { display: table-row; } \
+                 #group { position: relative; left: 12px; top: 8px; } \
+                 #row { position: relative; left: 7px; top: 100px; } \
+                 td { display: table-cell; width: 40px; height: 20px; }",
+            ]),
             &Device::screen(320.0, 240.0),
             &InteractionStates::default(),
         );
@@ -9824,7 +9927,7 @@ mod tests {
         let row = layout.get(by_id("row")).expect("row fragment");
         let cell = layout.get(by_id("cell")).expect("cell fragment");
 
-        assert_eq!((row.x - group.x, row.y - group.y), (7.0, 3.0));
+        assert_eq!((row.x - group.x, row.y - group.y), (7.0, 100.0));
         assert_eq!((cell.x, cell.y), (row.x, row.y));
         assert!(
             group.x > layout.principal_fragment(by_id("table")).expect("grid").x,
