@@ -22,7 +22,7 @@ webxr = ["dep:webxr", "dep:webxr-api"]
 
 [dev-dependencies]
 euclid = { workspace = true }
-pollster = { workspace = true }
+pollster = "0.4"
 webgl_wgpu = { workspace = true }
 
 [lints.clippy]
