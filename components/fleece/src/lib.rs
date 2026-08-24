@@ -370,16 +370,14 @@ fn walk_metadata<D: LayoutDom>(dom: &D, id: D::NodeId, md: &mut Metadata) {
                         md.open_graph.push((key.to_string(), content));
                     }
                 }
-            } else if attr(dom, id, "name").as_deref() == Some("description") {
-                if md.description.is_none() {
-                    md.description = attr(dom, id, "content").filter(|c| !c.is_empty());
-                }
+            } else if attr(dom, id, "name").as_deref() == Some("description")
+                && md.description.is_none()
+            {
+                md.description = attr(dom, id, "content").filter(|c| !c.is_empty());
             }
         },
-        Some("link") => {
-            if md.canonical.is_none() && rel_has(dom, id, "canonical") {
-                md.canonical = attr(dom, id, "href").filter(|h| !h.is_empty());
-            }
+        Some("link") if md.canonical.is_none() && rel_has(dom, id, "canonical") => {
+            md.canonical = attr(dom, id, "href").filter(|h| !h.is_empty());
         },
         _ => {},
     }
@@ -1035,7 +1033,11 @@ fn collapse_inline_text(text: &str) -> String {
     let trailing = text.chars().next_back().is_some_and(char::is_whitespace);
     let core = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if core.is_empty() {
-        return leading.then_some(" ".to_string()).unwrap_or_default();
+        return if leading {
+            " ".to_string()
+        } else {
+            String::new()
+        };
     }
     format!(
         "{}{}{}",
