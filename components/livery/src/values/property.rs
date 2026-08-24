@@ -2321,6 +2321,7 @@ pub enum FontFamily {
     UserAgentDefault,
     SystemUi,
     Named(Box<str>),
+    List(Box<str>),
 }
 
 impl FromStr for FontFamily {
@@ -2334,12 +2335,30 @@ impl FromStr for FontFamily {
         if input.eq_ignore_ascii_case("depends-on-user-agent") {
             return Ok(Self::UserAgentDefault);
         }
-        if input.is_empty() || input.contains(',') {
-            return Err(ParseError::expected("one seed font family"));
+        if input.is_empty() {
+            return Err(ParseError::expected("a font family list"));
+        }
+        // Parley accepts a CSS font-family source string and performs ordered
+        // lookup itself. Retain a list as CSS source so its commas and quoted
+        // multi-word names arrive intact; keep the established compact value
+        // for one family.
+        if input.contains(',') {
+            if split_top_level_commas(input)
+                .iter()
+                .any(|family| family.trim().is_empty())
+            {
+                return Err(ParseError::expected("a nonempty font family list"));
+            }
+            return Ok(Self::List(input.into()));
         }
         let unquoted = input
             .strip_prefix('"')
             .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| {
+                input
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+            })
             .unwrap_or(input);
         Ok(Self::Named(unquoted.into()))
     }
@@ -2354,6 +2373,7 @@ impl fmt::Display for FontFamily {
                 write!(formatter, "\"{name}\"")
             },
             Self::Named(name) => formatter.write_str(name),
+            Self::List(source) => formatter.write_str(source),
         }
     }
 }

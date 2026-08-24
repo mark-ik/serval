@@ -226,6 +226,9 @@ impl TextSystem {
     /// document owner rebuilds the system when its complete resource ledger
     /// changes, so removed faces cannot remain reachable.
     pub fn register_font_bytes(&mut self, bytes: Vec<u8>) {
+        let Some(bytes) = normalized_font_bytes(bytes) else {
+            return;
+        };
         self.font_context
             .collection
             .register_fonts(parley::fontique::Blob::new(Arc::new(bytes)), None);
@@ -241,6 +244,9 @@ impl TextSystem {
         family: &str,
         feature_settings: &CssFontFeatureSettings,
     ) {
+        let Some(bytes) = normalized_font_bytes(bytes) else {
+            return;
+        };
         self.font_context.collection.register_fonts(
             parley::fontique::Blob::new(Arc::new(bytes)),
             Some(parley::fontique::FontInfoOverride {
@@ -1316,6 +1322,18 @@ impl TextSystem {
         });
         self.font_keys.insert(identity, key);
         key
+    }
+}
+
+/// Turn a supported webfont container into the SFNT bytes consumed by
+/// Fontique. OTS owns both WOFF2 validation and decompression, so inputs it
+/// rejects never enter the retained font collection. Ordinary SFNT bytes stay
+/// byte-identical and keep their existing registration path.
+fn normalized_font_bytes(bytes: Vec<u8>) -> Option<Vec<u8>> {
+    if bytes.starts_with(b"wOF2") {
+        fontsan::process(&bytes).ok()
+    } else {
+        Some(bytes)
     }
 }
 
@@ -3577,7 +3595,9 @@ fn font_family(style: &ComputedValues) -> StyleProperty<'_, Brush> {
     let family = match &style.font_family {
         CssFontFamily::UserAgentDefault => FontFamily::from(GenericFamily::SansSerif),
         CssFontFamily::SystemUi => FontFamily::from(GenericFamily::SystemUi),
-        CssFontFamily::Named(name) => FontFamily::Source(Cow::Borrowed(name)),
+        CssFontFamily::Named(name) | CssFontFamily::List(name) => {
+            FontFamily::Source(Cow::Borrowed(name))
+        },
     };
     StyleProperty::FontFamily(family)
 }
@@ -3635,6 +3655,17 @@ fn content_key(bytes: &[u8], index: u32) -> FontInstanceKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_woff2_is_rejected_before_font_registration() {
+        assert!(normalized_font_bytes(b"wOF2not-a-font".to_vec()).is_none());
+    }
+
+    #[test]
+    fn sfnt_font_bytes_keep_their_existing_identity() {
+        let bytes = b"\0\x01\0\0existing-sfnt".to_vec();
+        assert_eq!(normalized_font_bytes(bytes.clone()), Some(bytes));
+    }
 
     #[test]
     fn adjacent_inline_text_nodes_do_not_create_a_collapsed_space() {

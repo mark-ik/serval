@@ -307,6 +307,7 @@ speexdsp-resampler = "0.1.0"
 # Font enumeration + family resolution, the same stack parley uses (so the
 # cascade's font-metrics provider resolves fonts identically to text layout).
 fontique = "0.10.0"
+fontsan = "0.7.0"
 skrifa = "0.42.1"
 smallvec = { version = "1.15", features = ["serde", "union"] }
 string_cache = "0.9"

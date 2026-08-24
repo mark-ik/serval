@@ -284,6 +284,28 @@ fn font_shorthand_expands_size_line_height_and_family() {
 }
 
 #[test]
+fn font_family_retains_an_ordered_css_family_list() {
+    let block = parse_declaration_block("font-family: \"WOFF Test\", \"WOFF Test CFF Fallback\"");
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    let livery::cascade::DeclaredValue::Value(value) = &block.declarations[0].value else {
+        panic!("expected a concrete font-family value");
+    };
+    assert!(matches!(
+        value,
+        PropertyValue::FontFamily(FontFamily::List(source))
+            if source.as_ref() == "\"WOFF Test\", \"WOFF Test CFF Fallback\""
+    ));
+    assert_eq!(
+        value.to_css_string(),
+        "\"WOFF Test\", \"WOFF Test CFF Fallback\""
+    );
+
+    let malformed = parse_declaration_block("font-family: primary,, fallback");
+    assert!(malformed.declarations.is_empty());
+    assert_eq!(malformed.errors.len(), 1);
+}
+
+#[test]
 fn vertical_align_accepts_keyword_and_offset_forms() {
     let keyword = parse_declaration_block("vertical-align: text-bottom");
     assert!(keyword.errors.is_empty(), "{:?}", keyword.errors);
