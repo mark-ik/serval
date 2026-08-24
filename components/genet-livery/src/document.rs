@@ -3352,7 +3352,11 @@ mod tests {
             .get(sticky_cell)
             .map(|fragment| fragment.physical_rect())
             .expect("active table cell fragment");
-        assert_eq!(group_rect.y - document.element_scroll()[&scroller].1, 60.0);
+        assert_eq!(
+            group_rect.y - document.element_scroll()[&scroller].1,
+            80.0 - group_rect.height,
+            "the footer group's subpixel height stays flush with the scrollport end",
+        );
         assert_eq!(row_rect.y, group_rect.y);
         assert_eq!(cell_rect.y, group_rect.y);
         assert_eq!(generated_ids(&document, sticky_group), group_ids_before);

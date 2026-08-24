@@ -1227,7 +1227,7 @@ fn format_table_cell<Context, Source>(
             )
         },
     );
-    let border_box = tree.layout(node).height;
+    let border_box = tree.unrounded_layout(node).height;
     let baselines = tree.baselines(node);
     let style = tree.style_mut(node);
     (style.size, style.min_size, style.max_size, style.box_sizing) = saved;
@@ -3291,9 +3291,9 @@ where
             self.tree
                 .children(cell_node)
                 .iter()
-                .map(|child| self.tree.layout(*child).width)
+                .map(|child| self.tree.unrounded_layout(*child).width)
                 .reduce(f32::max)
-                .unwrap_or_else(|| self.tree.layout(cell_node).width)
+                .unwrap_or_else(|| self.tree.unrounded_layout(cell_node).width)
         };
         let min = measure(AlgorithmAvailableSpace::MinContent);
         let max = measure(AlgorithmAvailableSpace::MaxContent);
@@ -3953,9 +3953,9 @@ where
         let direct_child_width = |tree: &AlgorithmTree<Style, TextMeasure, Option<BoxId>>| {
             tree.children(cell_node)
                 .iter()
-                .map(|child| tree.layout(*child).width)
+                .map(|child| tree.unrounded_layout(*child).width)
                 .reduce(f32::max)
-                .unwrap_or_else(|| tree.layout(cell_node).width)
+                .unwrap_or_else(|| tree.unrounded_layout(cell_node).width)
         };
         self.measure_intrinsic_width(cell_node, AlgorithmAvailableSpace::MinContent);
         let min = direct_child_width(&self.tree);
@@ -6665,21 +6665,40 @@ where
 {
     let computed = tree.layout(node);
     let static_computed = tree.static_layout(node);
-    let origin = Point {
+    let rounded_rect = Fragment {
         x: cursor.origin.x + computed.x,
         y: cursor.origin.y + computed.y,
+        width: computed.width,
+        height: computed.height,
+    };
+    // K4d's structural table fragments retain Buckram's subpixel cell
+    // positions. Taffy's final rounding is still the ordinary algorithm-tree
+    // geometry, but using it as the origin for cell descendants accumulates a
+    // pixel of text drift across sibling columns. Descendants of an emitted
+    // cell therefore start from the authoritative structural rectangle that
+    // already exists in the fragment tree.
+    let rect = tree
+        .source(node)
+        .iter()
+        .find(|box_id| boxes[**box_id].display.internal_table == Some(InternalTableRole::Cell))
+        .and_then(|box_id| {
+            output
+                .fragments
+                .fragment_ids_for_box(*box_id)
+                .last()
+                .and_then(|id| output.fragments.get(*id))
+                .map(TreeFragment::physical_rect)
+        })
+        .unwrap_or(rounded_rect);
+    let origin = Point {
+        x: rect.x,
+        y: rect.y,
     };
     let relative_rect = Fragment {
-        x: computed.x,
-        y: computed.y,
-        width: computed.width,
-        height: computed.height,
-    };
-    let rect = Fragment {
-        x: origin.x,
-        y: origin.y,
-        width: computed.width,
-        height: computed.height,
+        x: rect.x - cursor.origin.x,
+        y: rect.y - cursor.origin.y,
+        width: rect.width,
+        height: rect.height,
     };
     let placement = if let Some(context) = tree.context(node)
         && let Some(layout) = context.layout_for_width(computed.width)

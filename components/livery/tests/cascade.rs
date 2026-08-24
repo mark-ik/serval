@@ -4,8 +4,8 @@ use livery::cascade::{
 };
 use livery::values::{
     Color, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
-    Length, LengthPercentage, LineHeight, Margin, Overflow, Size, TransitionProperty,
-    VerticalAlign,
+    Length, LengthPercentage, LineHeight, Margin, Overflow, Size, TextWrapMode, TransitionProperty,
+    VerticalAlign, WhiteSpaceCollapse,
 };
 
 fn matched(
@@ -67,6 +67,23 @@ fn declaration_parser_expands_the_lane_shorthands_and_recovers() {
         block.declarations[3].property.metadata().name,
         "margin-left"
     );
+}
+
+#[test]
+fn white_space_nowrap_expands_to_collapsing_unwrapped_text() {
+    let block = parse_declaration_block("white-space: nowrap");
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 2);
+    assert!(matches!(
+        block.declarations[0].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::WhiteSpaceCollapse(
+            WhiteSpaceCollapse::Collapse
+        ))
+    ));
+    assert!(matches!(
+        block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::TextWrapMode(TextWrapMode::Nowrap))
+    ));
 }
 
 #[test]

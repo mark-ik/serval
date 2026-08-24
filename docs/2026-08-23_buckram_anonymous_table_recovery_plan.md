@@ -125,6 +125,84 @@ The CSS Tables gains are `anonymous-table-cell-margin-collapsing.html`,
 `percent-height-table-cell-child.html`, and both
 `percentages-grandchildren-quirks-mode` cases.
 
+## Sibling-table continuation
+
+**Status:** implemented and verified on `recovery/table-sibling-block-v2`
+from accepted main `f23d8eab215`.
+
+The 079-080 seam request proved three coupled defects rather than another
+table-fixup rule:
+
+- Livery advertised `white-space: nowrap` but its shorthand expander rejected
+  that value, so inherited table-cell text still wrapped.
+- Genet-Livery rounded intrinsic cell widths, formatted cell heights, and the
+  descendant origin recovered from the algorithm tree. Repeated sibling rows
+  accumulated those losses even though Buckram's structural fragments already
+  retained the subpixel geometry.
+- Once `nowrap` made the spanning-cell intrinsic minimum real,
+  `table-colspan-percent-auto.html` exposed a K4c3/K4c4 handoff defect. The
+  provisional span increase was applied before a percentage column could
+  satisfy it, and percentage tracks used the outer table width rather than the
+  assignable grid width after collapsed borders.
+
+The repair accepts `nowrap`, reads unrounded cell measures, places cell
+descendants from the committed structural fragment, and records the intrinsic
+minimum required by a spanning cell. Used-width selection removes the
+provisional span shares, resolves percentages against assignable width, then
+reapplies only the unsatisfied span deficit. Focused model and live receipts
+cover the percentage/colspan case, three sibling tables in ordinary and
+shrink-to-fit block flow, exact table-versus-block glyph positions, and the
+subpixel height of a sticky footer group.
+
+### Continuation result
+
+Ledger:
+`testing/genet/wpt-ledger/2026-08-23_table_sibling_block_v2` outside the
+worktree.
+
+Final runner SHA-256:
+`840F44878FA6F1AA09484F571C6CC61C84EA5193A09CA025F4541ACF4AA85B18`.
+
+The exact 059-098 family is now 30 passed and 10 failed. Files 087-090 pass;
+the continued slice gained four family tests without losing any accepted
+pass. The remaining files and current receipts are:
+
+| Files | Receipt | Owner |
+| --- | --- | --- |
+| 079-084 | Geometry is visually equal; only glyph-edge pixels differ (`diff=1%`, `max delta=64`). | Generic text antialias composition or a separately ruled harness tolerance. |
+| 085-086 | Inferred cells containing block children retain a small text-edge difference (`diff=1%`, `max delta=138`); the WPT notes unresolved first-row wording. | Generic block formatting inside table cells plus WPT/spec ruling. |
+| 091-092 | Nested `table` and `inline-table` roles still duplicate or displace text (`diff=2-3%`, `max delta=255`). | Nested table handoff and sizing, K4c/K4d. |
+
+No harness threshold changed. The ordinary sibling-table geometry owner for
+079-080 is closed even though the exact reftests remain red under the existing
+pixel comparator.
+
+Against the accepted `f23d8eab215` maps:
+
+| Directory | Accepted main | Continuation | Status changes |
+| --- | --- | --- | --- |
+| `css/CSS2/tables` | 185 pass, 77 fail, 877 skip | 190 pass, 72 fail, 877 skip | `caption-side-applies-to-017` and anonymous-table 087-090 pass; zero losses. |
+| `css/css-tables` | 65 pass, 65 fail, 198 skip | 66 pass, 64 fail, 198 skip | `rules-groups.html` passes; zero losses. |
+
+`table-colspan-percent-auto.html` passes under both frozen runners after the
+focused correction. It is not a status change and is an explicit regression
+control.
+
+### Continuation verification
+
+- `CARGO_PROFILE_TEST_DEBUG=0 cargo test --offline -p buckram --all-targets
+  --no-fail-fast`: 230 passed.
+- `CARGO_PROFILE_TEST_DEBUG=0 cargo test --offline -p livery --all-targets
+  --no-fail-fast`: passed.
+- `CARGO_PROFILE_TEST_DEBUG=0 cargo test --offline -p genet-livery
+  --all-targets --no-fail-fast`: every unit, integration, and example target
+  passed, including all three sibling-table receipts.
+- `cargo clippy --offline -p buckram -p livery -p genet-livery --all-targets
+  --no-deps`: passed with pre-existing warnings outside the owned diff.
+- `cargo build --offline -p genet-wpt --release`: passed from the isolated
+  target.
+- `git diff --check`: passed.
+
 ## Verification
 
 - `CARGO_PROFILE_TEST_DEBUG=0 cargo test -p buckram --all-targets --offline

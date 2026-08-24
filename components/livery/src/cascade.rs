@@ -738,6 +738,7 @@ fn expand_background(block: &mut DeclarationBlock, value: &str, important: bool)
 fn expand_white_space(block: &mut DeclarationBlock, value: &str, important: bool) {
     let (collapse, wrap) = match value.trim().to_ascii_lowercase().as_str() {
         "normal" => ("collapse", "wrap"),
+        "nowrap" => ("collapse", "nowrap"),
         "pre" => ("preserve", "nowrap"),
         "pre-wrap" => ("preserve", "wrap"),
         "pre-line" => ("preserve-breaks", "wrap"),
