@@ -146,7 +146,7 @@ fn border_side_list_shorthands_expand_to_four_longhands() {
 fn background_color_shorthand_accepts_the_bounded_color_form() {
     let block = parse_declaration_block("background: black");
     assert!(block.errors.is_empty(), "{:?}", block.errors);
-    assert_eq!(block.declarations.len(), 1);
+    assert_eq!(block.declarations.len(), 8);
     assert_eq!(
         block.declarations[0].property.metadata().name,
         "background-color"
@@ -157,6 +157,54 @@ fn background_color_shorthand_accepts_the_bounded_color_form() {
         panic!("background-color did not parse as a color");
     };
     assert_eq!(color.to_srgb8(), Some((0, 0, 0, 255)));
+}
+
+#[test]
+fn background_shorthand_resets_and_expands_the_retained_image_layer() {
+    let block = parse_declaration_block(
+        "background: url(support/tile.png) right 10px bottom 20% / 40px auto space no-repeat content-box border-box fixed #123456",
+    );
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 8);
+    let names = block
+        .declarations
+        .iter()
+        .map(|declaration| declaration.property.metadata().name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            "background-color",
+            "background-image",
+            "background-position",
+            "background-size",
+            "background-repeat",
+            "background-attachment",
+            "background-origin",
+            "background-clip",
+        ]
+    );
+    let values = block
+        .declarations
+        .iter()
+        .map(|declaration| match &declaration.value {
+            livery::cascade::DeclaredValue::Value(value) => value.to_css_string(),
+            _ => panic!("background shorthand emitted a non-value declaration"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        vec![
+            "rgb(18, 52, 86)",
+            "url(support/tile.png)",
+            "calc(100% - 10px) 80%",
+            "40px auto",
+            "space no-repeat",
+            "fixed",
+            "content-box",
+            "border-box",
+        ]
+    );
 }
 
 #[test]
@@ -180,11 +228,17 @@ fn overflow_shorthand_expands_one_or_two_axis_values() {
 
     assert_eq!(
         values("overflow: hidden"),
-        vec![("overflow-x", Overflow::Hidden), ("overflow-y", Overflow::Hidden)]
+        vec![
+            ("overflow-x", Overflow::Hidden),
+            ("overflow-y", Overflow::Hidden)
+        ]
     );
     assert_eq!(
         values("overflow: clip auto"),
-        vec![("overflow-x", Overflow::Clip), ("overflow-y", Overflow::Auto)]
+        vec![
+            ("overflow-x", Overflow::Clip),
+            ("overflow-y", Overflow::Auto)
+        ]
     );
 }
 

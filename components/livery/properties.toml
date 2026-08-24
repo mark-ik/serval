@@ -104,9 +104,12 @@ seed_values = ["px", "rem", "zero"]
 source = "css_box_4"
 
 [shorthands.background]
-longhands = ["background-color"]
-grammar = "<color>"
-seed_values = ["hex", "named"]
+longhands = [
+    "background-color", "background-image", "background-position", "background-size",
+    "background-repeat", "background-attachment", "background-origin", "background-clip",
+]
+grammar = "<bg-image> || <bg-position> [ / <bg-size> ]? || <repeat-style> || <attachment> || <visual-box> || <visual-box> || <color>"
+seed_values = ["hex", "named", "url(support/a.png) top left / 100% auto no-repeat", "none"]
 source = "css_backgrounds_3"
 
 [shorthands.border]
@@ -298,8 +301,8 @@ name = "background-position"
 value_type = "background-position"
 inherited = false
 initial = "0% 0%"
-grammar = "[ left | center | right | <length-percentage> ] [ top | center | bottom | <length-percentage> ]?"
-seed_values = ["0% 0%", "center center", "px percentage"]
+grammar = "[ left | center | right | top | bottom | <length-percentage> ] | [ left | center | right | <length-percentage> ] [ top | center | bottom | <length-percentage> ] | [ center | [ left | right ] <length-percentage>? ] && [ center | [ top | bottom ] <length-percentage>? ]"
+seed_values = ["0% 0%", "center center", "px percentage", "right 10px bottom 20%"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
 
@@ -308,8 +311,49 @@ name = "background-repeat"
 value_type = "background-repeat"
 inherited = false
 initial = "repeat"
-grammar = "repeat | no-repeat | repeat-x | repeat-y"
-seed_values = ["repeat", "no-repeat"]
+grammar = "repeat-x | repeat-y | [ repeat | space | round | no-repeat ]{1,2}"
+seed_values = ["repeat", "no-repeat", "space round", "repeat-x"]
+animation = "discrete"
+source = "css_backgrounds_3"
+
+[[property]]
+name = "background-size"
+value_type = "background-size"
+inherited = false
+initial = "auto"
+grammar = "[ <length-percentage [0,inf]> | auto ]{1,2} | cover | contain"
+seed_values = ["auto", "cover", "contain", "50% auto", "10px 20px"]
+animation = "by-computed-value"
+source = "css_backgrounds_3"
+
+[[property]]
+name = "background-origin"
+value_type = "background-box"
+inherited = false
+initial = "padding-box"
+grammar = "border-box | padding-box | content-box"
+seed_values = ["padding-box", "content-box"]
+animation = "discrete"
+source = "css_backgrounds_3"
+
+[[property]]
+name = "background-clip"
+value_type = "background-box"
+inherited = false
+initial = "border-box"
+grammar = "[ border-box | padding-box | content-box | text ]#"
+seed_values = ["border-box", "padding-box", "content-box", "text"]
+animation = "discrete"
+source = "css_backgrounds_3"
+partial = "single box and a conservative innermost projection of box lists; text clips suppress background paint until glyph masks land"
+
+[[property]]
+name = "background-attachment"
+value_type = "background-attachment"
+inherited = false
+initial = "scroll"
+grammar = "scroll | fixed | local"
+seed_values = ["scroll", "fixed"]
 animation = "discrete"
 source = "css_backgrounds_3"
 
@@ -1800,32 +1844,11 @@ source = "css_position_3"
 
 # group: background
 [[unimplemented]]
-name = "background-attachment"
-group = "background"
-inherited = false
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-attachment"
-
-[[unimplemented]]
 name = "background-blend-mode"
 group = "background"
 inherited = false
 animation = "discrete"
 spec = "https://drafts.fxtf.org/compositing/#background-blend-mode"
-
-[[unimplemented]]
-name = "background-clip"
-group = "background"
-inherited = false
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-clip"
-
-[[unimplemented]]
-name = "background-origin"
-group = "background"
-inherited = false
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-origin"
 
 [[unimplemented]]
 name = "background-position-x"
@@ -1840,13 +1863,6 @@ group = "background"
 inherited = false
 animation = "by-computed-value"
 spec = "https://drafts.csswg.org/css-backgrounds-4/#propdef-background-position-y"
-
-[[unimplemented]]
-name = "background-size"
-group = "background"
-inherited = false
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-size"
 
 # group: border
 [[unimplemented]]

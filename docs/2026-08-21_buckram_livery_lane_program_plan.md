@@ -2,9 +2,10 @@
 
 **Date:** 2026-08-21
 **Status:** Reconstituted 2026-08-24 from accepted main. Lane 8, the
-anonymous-table continuation, K5 rows 1+2+7, 3, 4, and 5+6, K6 row 13, and
-css-text row 14 are complete. Wave 2 is unblocked. Every other row remains an
-inventory item until its current-main receipt is named below.
+anonymous-table continuation, K5 rows 1+2+7, 3, 4, and 5+6, K6 row 13,
+css-text row 14, and paint row 15 are complete. Wave 2 is unblocked. Every
+other row remains an inventory item until its current-main receipt is named
+below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md)
 and the [Livery fullweb cutover plan](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md).
@@ -55,7 +56,7 @@ in [their recovery plan](2026-08-23_buckram_anonymous_table_recovery_plan.md).
 | 11 | Anonymous-table construction and sibling tables | **Complete** | The 059-098 family is 32 pass / 8 explained compositor residuals; column backgrounds, nested tables, block children, and sibling geometry have live receipts, with zero directory losses. |
 | 13 | K6 corpus census | **Complete** | Exact current-main maps classify all 230 direct fragmentation passes as unverified and 20 more in guard directories. Six ignored block, inline, and table continuation contracts compile and Clippy clean. See the [current-main reconciliation](2026-08-24_buckram_k6_corpus_census_reconciliation.md). |
 | 14 | css-text | **Complete** | The exact 1,964-file directory moved from 663 pass / 723 fail to 979 pass / 407 fail, with 316 fail-to-pass changes and zero pass-to-fail changes. All remaining failures are assigned by family and 16 focused native receipts are green. See the [current-main reconciliation](2026-08-24_livery_css_text_reconciliation.md). |
-| 15 | Backgrounds, masking, images | Open | Attribute css-backgrounds, css-masking, and css-images; prove document and base-URL resource ownership. |
+| 15 | Backgrounds, masking, images | **Complete** | The exact 1,981-file baseline had 786 failures. This lane repairs 77, assigns the 709 historical residuals, and explains 16 newly exposed false passes in the still-unimplemented embedded-object seam. Document and stylesheet-relative resources retain authored and resolved identities through the host boundary. See the [current-main reconciliation](2026-08-24_livery_paint_reconciliation.md). |
 | 16 | Fonts and WOFF2 | Open | Move WOFF2 off its zero-pass historical baseline and attribute css-fonts against the current text/font stack. |
 | 19+20+21 | Harness and ledger | Open | Report unverified references honestly, honor WPT fuzzy metadata, remove the concurrent read race, and retain a checked-in expectation diff. |
 

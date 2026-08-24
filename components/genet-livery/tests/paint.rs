@@ -300,6 +300,66 @@ fn linear_gradient_background_reaches_neutral_primitive() {
 }
 
 #[test]
+fn four_inset_absolute_background_fills_its_containing_block() {
+    let list = render(
+        r#"<html><body><div class="fill"></div></body></html>"#,
+        "html, body { margin: 0; } .fill { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: linear-gradient(red, blue); }",
+        1,
+    );
+    let gradient = list
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            PaintCmd::DrawLinearGradient(gradient) => Some(gradient.placement.bounds),
+            _ => None,
+        })
+        .expect("four-inset absolute box paints its background");
+    assert_eq!(gradient.min, paint_list_api::LayoutPoint::zero());
+    assert_eq!(
+        gradient.size(),
+        paint_list_api::LayoutSize::new(320.0, 240.0)
+    );
+}
+
+#[test]
+fn text_background_clip_projects_a_flat_color_into_glyph_paint() {
+    let list = render(
+        r#"<html><body><div class="clip">XXXXX</div></body></html>"#,
+        ".clip { color: transparent; background-color: green; background-clip: text; font-size: 40px; }",
+        1,
+    );
+    let green = ColorF::new(0.0, 128.0 / 255.0, 0.0, 1.0);
+    assert!(
+        !list
+            .commands()
+            .iter()
+            .any(|command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == green))
+    );
+    assert!(
+        list.commands()
+            .iter()
+            .any(|command| matches!(command, PaintCmd::DrawText(run) if run.color == green))
+    );
+}
+
+#[test]
+fn root_text_background_clip_is_ignored_for_canvas_propagation() {
+    let list = render(
+        r#"<html><body>transparent text</body></html>"#,
+        "html { color: transparent; background-color: green; background-clip: text; }",
+        1,
+    );
+    let green = ColorF::new(0.0, 128.0 / 255.0, 0.0, 1.0);
+    assert!(list.commands().iter().any(|command| matches!(
+        command,
+        PaintCmd::DrawRect(rect)
+            if rect.color == green
+                && rect.placement.bounds.size()
+                    == paint_list_api::LayoutSize::new(320.0, 240.0)
+    )));
+}
+
+#[test]
 fn data_uri_background_image_reaches_neutral_image_side_table() {
     use base64::Engine as _;
 
@@ -387,6 +447,128 @@ fn background_position_and_no_repeat_place_the_intrinsic_image() {
             .count(),
         1
     );
+}
+
+#[test]
+fn background_size_preserves_ratio_and_cover_uses_the_positioning_area() {
+    use base64::Engine as _;
+
+    let blue = image::RgbaImage::from_pixel(2, 3, image::Rgba([0, 0, 255, 255]));
+    let mut png = Vec::new();
+    blue.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode test PNG");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let image_size = |size: &str| {
+        let css = format!(
+            "body {{ margin: 0; }} .card {{ width: 80px; height: 40px; background: url({data_uri}) left top / {size} no-repeat; }}"
+        );
+        let list = render(
+            r#"<html><body><div class="card"></div></body></html>"#,
+            &css,
+            1,
+        );
+        list.commands()
+            .iter()
+            .find_map(|command| match command {
+                PaintCmd::DrawImage(image) => Some(image.placement.bounds.size()),
+                _ => None,
+            })
+            .expect("sized background image")
+    };
+
+    assert_eq!(
+        image_size("20px auto"),
+        paint_list_api::LayoutSize::new(20.0, 30.0)
+    );
+    assert_eq!(
+        image_size("cover"),
+        paint_list_api::LayoutSize::new(80.0, 120.0)
+    );
+}
+
+#[test]
+fn background_origin_and_clip_use_the_requested_css_boxes() {
+    use base64::Engine as _;
+
+    let blue = image::RgbaImage::from_pixel(2, 3, image::Rgba([0, 0, 255, 255]));
+    let mut png = Vec::new();
+    blue.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode test PNG");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let css = format!(
+        "body {{ margin: 0; }} .card {{ width: 80px; height: 40px; padding: 10px; border: 5px solid black; background: url({data_uri}) right bottom no-repeat content-box; background-color: red; }}"
+    );
+    let list = render(
+        r#"<html><body><div class="card"></div></body></html>"#,
+        &css,
+        1,
+    );
+    let color = list
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            PaintCmd::DrawRect(rect) if rect.color == ColorF::new(1.0, 0.0, 0.0, 1.0) => {
+                Some(rect.placement.bounds)
+            },
+            _ => None,
+        })
+        .expect("content-box background color");
+    assert_eq!(color.min, paint_list_api::LayoutPoint::new(15.0, 15.0));
+    assert_eq!(color.max, paint_list_api::LayoutPoint::new(95.0, 55.0));
+
+    let image = list
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            PaintCmd::DrawImage(image) => Some(image.placement.bounds),
+            _ => None,
+        })
+        .expect("content-box positioned image");
+    assert_eq!(image.min, paint_list_api::LayoutPoint::new(93.0, 52.0));
+}
+
+#[test]
+fn background_round_and_space_have_distinct_axis_tiling() {
+    use base64::Engine as _;
+
+    let blue = image::RgbaImage::from_pixel(30, 10, image::Rgba([0, 0, 255, 255]));
+    let mut png = Vec::new();
+    blue.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode test PNG");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let images = |repeat: &str| {
+        let css = format!(
+            "body {{ margin: 0; }} .card {{ width: 80px; height: 20px; background: url({data_uri}) left top / 30px 10px {repeat} no-repeat; }}"
+        );
+        render(
+            r#"<html><body><div class="card"></div></body></html>"#,
+            &css,
+            1,
+        )
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            PaintCmd::DrawImage(image) => Some(image.placement.bounds),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+    };
+
+    let round = images("round");
+    assert_eq!(round.len(), 3);
+    assert!((round[0].width() - 80.0 / 3.0).abs() < 0.001);
+    let space = images("space");
+    assert_eq!(space.len(), 2);
+    assert_eq!((space[0].min.x, space[1].min.x), (0.0, 50.0));
 }
 
 #[test]

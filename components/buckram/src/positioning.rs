@@ -321,6 +321,23 @@ fn solve_axis(
                             .min(intrinsic.max_content)
                             + padding_border
                     }
+                } else if matches!(preferred, BlockSizeValue::Auto)
+                    && resolved_start.is_some()
+                    && resolved_end.is_some()
+                {
+                    // CSS2 10.6.4 gives a non-replaced absolutely positioned
+                    // box with an automatic block size and two definite block
+                    // insets the remaining containing-block space. The inline
+                    // axis reaches the same equation through its intrinsic
+                    // branch; the block axis has no intrinsic contribution.
+                    (containing
+                        - resolved_start.unwrap_or(0.0)
+                        - resolved_end.unwrap_or(0.0)
+                        - margin_start
+                        - margin_end
+                        - padding_border)
+                        .max(0.0)
+                        + padding_border
                 } else {
                     measured_size.max(padding_border)
                 }
@@ -689,6 +706,19 @@ mod tests {
 
         assert_eq!(geometry.logical_rect.inline_size, 170.0);
         assert_eq!(geometry.logical_rect.inline_start, 10.0);
+    }
+
+    #[test]
+    fn automatic_block_size_fills_between_definite_insets() {
+        let mut style = positioned();
+        style.inset.top = FlowLengthAuto::Value(FlowLength::px(10.0));
+        style.inset.bottom = FlowLengthAuto::Value(FlowLength::px(20.0));
+
+        let geometry = solve_positioned_box(style, input());
+
+        assert_eq!(geometry.logical_rect.block_size, 70.0);
+        assert_eq!(geometry.logical_rect.block_start, 10.0);
+        assert!(geometry.block_size_solved);
     }
 
     #[test]

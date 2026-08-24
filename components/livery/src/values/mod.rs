@@ -21,14 +21,15 @@ pub use length::{
 };
 pub use logical::{LogicalAxis, LogicalSide, PhysicalAxis, PhysicalSide};
 pub use property::{
-    Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
-    BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue,
-    BoxSizing, CaptionSide, Clear, Contain, ContainIntrinsicSize, ContainerName, ContainerType,
-    Direction, Display, Duration, EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float,
-    FontFamily, FontFeatureSetting, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures,
-    FontWeight, Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, HangingPunctuation,
-    Hyphens, Inset, LineBreak, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow,
-    OverflowWrap, Padding, PointerEvents, Position, Radius, Rotate, Scale, Size, Spacing, TabSize,
+    Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
+    BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BackgroundSizeComponent,
+    BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue, BoxSizing, CaptionSide,
+    Clear, Contain, ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display,
+    Duration, EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily,
+    FontFeatureSetting, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
+    Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset,
+    LineBreak, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, OverflowWrap, Padding,
+    PointerEvents, Position, Radius, RepeatStyle, Rotate, Scale, Size, Spacing, TabSize,
     TableBorderSpacing, TableLayout, TextAlign, TextAlignLast, TextDecorationColor,
     TextDecorationLine, TextIndent, TextJustify, TextTransform, TextTransformCase, TextWrapMode,
     TimingFunction, Transform, TransformFunction, TransitionProperty, VerticalAlign, Visibility,
@@ -99,6 +100,8 @@ unchanged_viewport_resolution!(
     AnimationDelay,
     AnimationName,
     AspectRatio,
+    BackgroundAttachment,
+    BackgroundBox,
     BackgroundImage,
     BackgroundRepeat,
     BorderCollapse,
@@ -196,6 +199,12 @@ impl ResolveViewport for BackgroundPosition {
             x: self.x.resolve_relative(environment),
             y: self.y.resolve_relative(environment),
         }
+    }
+}
+
+impl ResolveViewport for BackgroundSize {
+    fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
+        self.resolve_relative(environment)
     }
 }
 
@@ -393,6 +402,8 @@ discrete_interpolation!(
     AnimationDelay,
     AnimationName,
     AspectRatio,
+    BackgroundAttachment,
+    BackgroundBox,
     BorderCollapse,
     BoxSizing,
     CaptionSide,
@@ -504,6 +515,12 @@ impl Interpolate for BackgroundPosition {
 }
 
 impl Interpolate for BackgroundRepeat {
+    fn interpolate_value(&self, other: &Self, progress: f32) -> Self {
+        Self::interpolate(*self, *other, progress)
+    }
+}
+
+impl Interpolate for BackgroundSize {
     fn interpolate_value(&self, other: &Self, progress: f32) -> Self {
         Self::interpolate(*self, *other, progress)
     }

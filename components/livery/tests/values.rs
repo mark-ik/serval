@@ -2,16 +2,16 @@ use std::fmt::Debug;
 
 use livery::media::{ViewportSize, ViewportSizes};
 use livery::values::{
-    Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
-    BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide,
-    Clear, Color, Contain, ContainIntrinsicSize, CssValue, Direction, Display, Duration,
-    EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings,
-    FontSize, FontStyle, FontVariantLigatures, FontWeight, Gap, Inset, LengthPercentage,
-    LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, Padding,
-    PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate, Scale,
-    Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode, TimingFunction,
-    Transform, TransitionProperty, TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse,
-    ZIndex,
+    Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
+    BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
+    BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide, Clear, Color, Contain,
+    ContainIntrinsicSize, CssValue, Direction, Display, Duration, EmptyCells, FlexDirection,
+    FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize, FontStyle,
+    FontVariantLigatures, FontWeight, Gap, Inset, LengthPercentage, LengthUnit, LineHeight,
+    ListStyleType, Margin, Opacity, Order, Overflow, Padding, PointerEvents, Position, Radius,
+    RelativeLengthEnvironment, ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing,
+    TextAlign, TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty,
+    TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse, ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
@@ -27,6 +27,26 @@ where
     let reparsed = T::parse_css(&serialized)
         .unwrap_or_else(|error| panic!("{css} serialized as {serialized}: {error}"));
     assert_eq!(parsed, reparsed, "{css} serialized as {serialized}");
+}
+
+#[test]
+fn background_positions_and_single_candidate_image_set_round_trip() {
+    for value in [
+        "50% 50%",
+        "top right",
+        "top 25% left 25%",
+        "bottom 1px right 2px",
+    ] {
+        assert_round_trip::<BackgroundPosition>(value);
+    }
+    assert_eq!(
+        "image-set(linear-gradient(green, lightgreen) 1x)"
+            .parse::<BackgroundImage>()
+            .expect("single-candidate image-set selects its image"),
+        "linear-gradient(green, lightgreen)"
+            .parse::<BackgroundImage>()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -200,6 +220,11 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<BackgroundImage>("url(data:image/png;base64,seed)");
     assert_round_trip::<BackgroundPosition>("center 10px");
     assert_round_trip::<BackgroundRepeat>("no-repeat");
+    assert_round_trip::<BackgroundRepeat>("space round");
+    assert_round_trip::<BackgroundSize>("40px auto");
+    assert_round_trip::<BackgroundSize>("cover");
+    assert_round_trip::<BackgroundBox>("content-box");
+    assert_round_trip::<BackgroundAttachment>("fixed");
     assert_round_trip::<Duration>("100ms");
     assert_round_trip::<AnimationName>("fade");
     assert_round_trip::<TimingFunction>("ease-in-out");

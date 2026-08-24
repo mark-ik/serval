@@ -9,10 +9,11 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
     ComputedValues,
     values::{
-        BackgroundImage, BackgroundRepeat, BorderCollapse, BorderStyle as CssBorderStyle,
+        BackgroundAttachment, BackgroundBox, BackgroundImage, BackgroundSize,
+        BackgroundSizeComponent, BorderCollapse, BorderStyle as CssBorderStyle,
         BoxShadow as CssBoxShadow, ComputedColor, Display, EmptyCells, FontSize, Length,
         LengthPercentage, LengthUnit, Matrix2D, Overflow as CssOverflow, Position, Radius,
-        Visibility,
+        RepeatStyle, Visibility,
     },
 };
 use paint_list_api::{
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     LiveryLayout, StylePlane,
     layout::{
-        Fragment, TablePaintModel, border_width_px, order_modified_children,
+        Fragment, TablePaintModel, border_width_px, length_percentage_px, order_modified_children,
         z_index_stacking_level,
     },
     text::{TextFrame, TextSystem},
@@ -582,18 +583,33 @@ where
             Some(style)
         },
         NodeKind::Text => {
-            if let (Some(style), Some(value)) = (scope.inherited, dom.text(id))
-                && !text.frame.drain(
+            if let (Some(style), Some(value)) = (scope.inherited, dom.text(id)) {
+                let first_command = list.commands.len();
+                let drained = text.frame.drain(
                     id,
                     scope.inline_owner,
                     scope.stacking_roots,
                     &mut list.commands,
-                )
-                && let Some(fragment) = fragments.get(id)
-                && paintable_fragment(fragment)
-            {
-                text.system
-                    .emit_single(text.frame, value, style, fragment, &mut list.commands);
+                );
+                if !drained
+                    && let Some(fragment) = fragments.get(id)
+                    && paintable_fragment(fragment)
+                {
+                    text.system
+                        .emit_single(text.frame, value, style, fragment, &mut list.commands);
+                }
+                if style.background_clip == BackgroundBox::Text
+                    && matches!(style.background_image, BackgroundImage::None)
+                {
+                    let color = resolve_color(&style.background_color);
+                    if color.a > 0.0 {
+                        for command in &mut list.commands[first_command..] {
+                            if let PaintCmd::DrawText(run) = command {
+                                run.color = color;
+                            }
+                        }
+                    }
+                }
             }
             scope.inherited
         },
@@ -2450,6 +2466,13 @@ where
         .get(root)
         .map(|fragment| fragment.physical_rect())
         .unwrap_or(canvas);
+    let canvas_rect = bounds(&canvas);
+    let positioning = bounds(&positioning);
+    let positioning = if source_style.background_attachment == BackgroundAttachment::Fixed {
+        canvas_rect
+    } else {
+        background_box_rect(source_style, positioning, source_style.background_origin)
+    };
     let color = resolve_color(&source_style.background_color);
     if color.a > 0.0 {
         list.commands.push(PaintCmd::DrawRect(RectItem {
@@ -2457,7 +2480,7 @@ where
             color,
         }));
     }
-    emit_background_image_in(list, source_style, bounds(&positioning), bounds(&canvas));
+    emit_background_image_in(list, source_style, positioning, canvas_rect);
     Some(source)
 }
 
@@ -2472,6 +2495,9 @@ fn has_background(style: &ComputedValues) -> bool {
 }
 
 fn emit_background(list: &mut LiveryPaintList, style: &ComputedValues, fragment: &Fragment) {
+    if style.background_clip == BackgroundBox::Text {
+        return;
+    }
     let color = resolve_color(&style.background_color);
     let radius = border_radius(style, fragment);
     let has_image = !matches!(&style.background_image, BackgroundImage::None);
@@ -2487,21 +2513,37 @@ fn emit_background(list: &mut LiveryPaintList, style: &ComputedValues, fragment:
             },
         }));
     }
-    if color.a > 0.0 {
+    let painting_rect = background_box_rect(style, bounds(fragment), style.background_clip);
+    if style.background_clip != BackgroundBox::BorderBox {
+        list.commands.push(PaintCmd::PushClip(ClipSpec {
+            kind: ClipKind::Rect(painting_rect),
+        }));
+    }
+    if color.a > 0.0 && !painting_rect.is_empty() {
         list.commands.push(PaintCmd::DrawRect(RectItem {
-            placement: CommonPlacement::new(bounds(fragment)),
+            placement: CommonPlacement::new(painting_rect),
             color,
         }));
     }
-    emit_background_image(list, style, fragment);
+    emit_background_image_in(
+        list,
+        style,
+        if style.background_attachment == BackgroundAttachment::Fixed {
+            LayoutRect::new(
+                LayoutPoint::zero(),
+                LayoutPoint::new(list.viewport.width as f32, list.viewport.height as f32),
+            )
+        } else {
+            background_box_rect(style, bounds(fragment), style.background_origin)
+        },
+        painting_rect,
+    );
+    if style.background_clip != BackgroundBox::BorderBox {
+        list.commands.push(PaintCmd::PopClip);
+    }
     if !radius.is_zero() {
         list.commands.push(PaintCmd::PopClip);
     }
-}
-
-fn emit_background_image(list: &mut LiveryPaintList, style: &ComputedValues, fragment: &Fragment) {
-    let rect = bounds(fragment);
-    emit_background_image_in(list, style, rect, rect);
 }
 
 fn emit_background_image_in(
@@ -2513,35 +2555,79 @@ fn emit_background_image_in(
     match &style.background_image {
         BackgroundImage::None => {},
         BackgroundImage::LinearGradient { from, to } => {
-            let start_point = LayoutPoint::new(
-                (positioning_rect.min.x + positioning_rect.max.x) * 0.5,
+            let em = used_font_size(style);
+            let (mut tile_width, mut tile_height) =
+                used_gradient_size(style.background_size, positioning_rect.size(), em);
+            if tile_width <= 0.0 || tile_height <= 0.0 {
+                return;
+            }
+            if style.background_repeat.x == RepeatStyle::Round {
+                tile_width = rounded_tile_size(positioning_rect.width(), tile_width);
+            }
+            if style.background_repeat.y == RepeatStyle::Round {
+                tile_height = rounded_tile_size(positioning_rect.height(), tile_height);
+            }
+            let offset_x = resolve_length_percentage(
+                style.background_position.x,
+                positioning_rect.width() - tile_width,
+                em,
+            );
+            let offset_y = resolve_length_percentage(
+                style.background_position.y,
+                positioning_rect.height() - tile_height,
+                em,
+            );
+            let xs = background_axis_tiles(
+                positioning_rect.min.x,
+                positioning_rect.width(),
+                painting_rect.min.x,
+                painting_rect.max.x,
+                tile_width,
+                offset_x,
+                style.background_repeat.x,
+            );
+            let ys = background_axis_tiles(
                 positioning_rect.min.y,
+                positioning_rect.height(),
+                painting_rect.min.y,
+                painting_rect.max.y,
+                tile_height,
+                offset_y,
+                style.background_repeat.y,
             );
-            let end_point = LayoutPoint::new(
-                (positioning_rect.min.x + positioning_rect.max.x) * 0.5,
-                positioning_rect.max.y,
-            );
-            list.commands
-                .push(PaintCmd::DrawLinearGradient(LinearGradientItem {
-                    placement: CommonPlacement::new(painting_rect),
-                    gradient: LinearGradientPayload {
-                        start_point,
-                        end_point,
-                        extend_mode: ExtendMode::Clamp,
-                        stops: vec![
-                            GradientStop {
-                                offset: 0.0,
-                                color: resolve_color(from),
+            list.commands.push(PaintCmd::PushClip(ClipSpec {
+                kind: ClipKind::Rect(painting_rect),
+            }));
+            for x in xs {
+                for &y in &ys {
+                    let tile = LayoutRect::new(
+                        LayoutPoint::new(x, y),
+                        LayoutPoint::new(x + tile_width, y + tile_height),
+                    );
+                    list.commands
+                        .push(PaintCmd::DrawLinearGradient(LinearGradientItem {
+                            placement: CommonPlacement::new(tile),
+                            gradient: LinearGradientPayload {
+                                start_point: LayoutPoint::new(x + tile_width * 0.5, y),
+                                end_point: LayoutPoint::new(x + tile_width * 0.5, y + tile_height),
+                                extend_mode: ExtendMode::Clamp,
+                                stops: vec![
+                                    GradientStop {
+                                        offset: 0.0,
+                                        color: resolve_color(from),
+                                    },
+                                    GradientStop {
+                                        offset: 1.0,
+                                        color: resolve_color(to),
+                                    },
+                                ],
                             },
-                            GradientStop {
-                                offset: 1.0,
-                                color: resolve_color(to),
-                            },
-                        ],
-                    },
-                    tile_size: positioning_rect.size(),
-                    tile_spacing: LayoutSize::zero(),
-                }));
+                            tile_size: tile.size(),
+                            tile_spacing: LayoutSize::zero(),
+                        }));
+                }
+            }
+            list.commands.push(PaintCmd::PopClip);
         },
         BackgroundImage::Url(url) => {
             let Some(image_key) = list.image_key_for(url) else {
@@ -2551,50 +2637,58 @@ fn emit_background_image_in(
                 return;
             };
             let em = used_font_size(style);
+            let (mut tile_width, mut tile_height) = used_background_size(
+                style.background_size,
+                positioning_rect.size(),
+                image_width,
+                image_height,
+                em,
+            );
+            if tile_width <= 0.0 || tile_height <= 0.0 {
+                return;
+            }
+            if style.background_repeat.x == RepeatStyle::Round {
+                tile_width = rounded_tile_size(positioning_rect.width(), tile_width);
+            }
+            if style.background_repeat.y == RepeatStyle::Round {
+                tile_height = rounded_tile_size(positioning_rect.height(), tile_height);
+            }
             let offset_x = resolve_length_percentage(
                 style.background_position.x,
-                positioning_rect.size().width - image_width,
+                positioning_rect.size().width - tile_width,
                 em,
             );
             let offset_y = resolve_length_percentage(
                 style.background_position.y,
-                positioning_rect.size().height - image_height,
+                positioning_rect.size().height - tile_height,
                 em,
             );
-            let repeat_x = matches!(
-                style.background_repeat,
-                BackgroundRepeat::Repeat | BackgroundRepeat::RepeatX
-            );
-            let repeat_y = matches!(
-                style.background_repeat,
-                BackgroundRepeat::Repeat | BackgroundRepeat::RepeatY
-            );
-            let first_x = tile_origin(
-                positioning_rect.min.x + offset_x,
+            let xs = background_axis_tiles(
+                positioning_rect.min.x,
+                positioning_rect.width(),
                 painting_rect.min.x,
-                image_width,
-                repeat_x,
+                painting_rect.max.x,
+                tile_width,
+                offset_x,
+                style.background_repeat.x,
             );
-            let first_y = tile_origin(
-                positioning_rect.min.y + offset_y,
+            let ys = background_axis_tiles(
+                positioning_rect.min.y,
+                positioning_rect.height(),
                 painting_rect.min.y,
-                image_height,
-                repeat_y,
+                painting_rect.max.y,
+                tile_height,
+                offset_y,
+                style.background_repeat.y,
             );
-            let x_count = tile_count(first_x, painting_rect.max.x, image_width, repeat_x);
-            let y_count = tile_count(first_y, painting_rect.max.y, image_height, repeat_y);
-            if repeat_x || repeat_y {
-                list.commands.push(PaintCmd::PushClip(ClipSpec {
-                    kind: ClipKind::Rect(painting_rect),
-                }));
-            }
-            for x_index in 0..x_count {
-                let x = first_x + x_index as f32 * image_width;
-                for y_index in 0..y_count {
-                    let y = first_y + y_index as f32 * image_height;
+            list.commands.push(PaintCmd::PushClip(ClipSpec {
+                kind: ClipKind::Rect(painting_rect),
+            }));
+            for x in xs {
+                for &y in &ys {
                     let placement = LayoutRect::new(
                         LayoutPoint::new(x, y),
-                        LayoutPoint::new(x + image_width, y + image_height),
+                        LayoutPoint::new(x + tile_width, y + tile_height),
                     );
                     list.commands.push(PaintCmd::DrawImage(ImageItem {
                         placement: CommonPlacement::new(placement),
@@ -2605,9 +2699,136 @@ fn emit_background_image_in(
                     }));
                 }
             }
-            if repeat_x || repeat_y {
-                list.commands.push(PaintCmd::PopClip);
+            list.commands.push(PaintCmd::PopClip);
+        },
+    }
+}
+
+fn background_box_rect(
+    style: &ComputedValues,
+    border_rect: LayoutRect,
+    background_box: BackgroundBox,
+) -> LayoutRect {
+    if background_box == BackgroundBox::BorderBox {
+        return border_rect;
+    }
+    let em = used_font_size(style);
+    let border_left = border_width_px(style.border_left_style, style.border_left_width, em);
+    let border_right = border_width_px(style.border_right_style, style.border_right_width, em);
+    let border_top = border_width_px(style.border_top_style, style.border_top_width, em);
+    let border_bottom = border_width_px(style.border_bottom_style, style.border_bottom_width, em);
+    let mut left = border_left;
+    let mut right = border_right;
+    let mut top = border_top;
+    let mut bottom = border_bottom;
+    if background_box == BackgroundBox::ContentBox {
+        let basis = border_rect.width();
+        left += length_percentage_px(style.padding_left.0, em, basis);
+        right += length_percentage_px(style.padding_right.0, em, basis);
+        top += length_percentage_px(style.padding_top.0, em, basis);
+        bottom += length_percentage_px(style.padding_bottom.0, em, basis);
+    }
+    inset_rect(border_rect, left, top, right, bottom)
+}
+
+fn inset_rect(rect: LayoutRect, left: f32, top: f32, right: f32, bottom: f32) -> LayoutRect {
+    let min = LayoutPoint::new(rect.min.x + left.max(0.0), rect.min.y + top.max(0.0));
+    let max = LayoutPoint::new(
+        (rect.max.x - right.max(0.0)).max(min.x),
+        (rect.max.y - bottom.max(0.0)).max(min.y),
+    );
+    LayoutRect::new(min, max)
+}
+
+fn used_background_size(
+    size: BackgroundSize,
+    area: LayoutSize,
+    intrinsic_width: f32,
+    intrinsic_height: f32,
+    em: f32,
+) -> (f32, f32) {
+    let intrinsic_width = intrinsic_width.max(f32::EPSILON);
+    let intrinsic_height = intrinsic_height.max(f32::EPSILON);
+    match size {
+        BackgroundSize::Cover | BackgroundSize::Contain => {
+            let x = area.width / intrinsic_width;
+            let y = area.height / intrinsic_height;
+            let scale = if size == BackgroundSize::Cover {
+                x.max(y)
+            } else {
+                x.min(y)
+            };
+            (intrinsic_width * scale, intrinsic_height * scale)
+        },
+        BackgroundSize::Explicit { width, height } => {
+            let width = used_background_size_component(width, area.width, em);
+            let height = used_background_size_component(height, area.height, em);
+            match (width, height) {
+                (Some(width), Some(height)) => (width, height),
+                (Some(width), None) => (width, intrinsic_height * width / intrinsic_width),
+                (None, Some(height)) => (intrinsic_width * height / intrinsic_height, height),
+                (None, None) => (intrinsic_width, intrinsic_height),
             }
+        },
+    }
+}
+
+fn used_gradient_size(size: BackgroundSize, area: LayoutSize, em: f32) -> (f32, f32) {
+    match size {
+        BackgroundSize::Cover | BackgroundSize::Contain => (area.width, area.height),
+        BackgroundSize::Explicit { width, height } => (
+            used_background_size_component(width, area.width, em).unwrap_or(area.width),
+            used_background_size_component(height, area.height, em).unwrap_or(area.height),
+        ),
+    }
+}
+
+fn used_background_size_component(
+    component: BackgroundSizeComponent,
+    basis: f32,
+    em: f32,
+) -> Option<f32> {
+    match component {
+        BackgroundSizeComponent::Auto => None,
+        BackgroundSizeComponent::Value(value) => {
+            Some(resolve_length_percentage(value, basis, em).max(0.0))
+        },
+    }
+}
+
+fn rounded_tile_size(area: f32, tile: f32) -> f32 {
+    let count = (area / tile).round().max(1.0);
+    area / count
+}
+
+fn background_axis_tiles(
+    positioning_min: f32,
+    positioning_size: f32,
+    painting_min: f32,
+    painting_max: f32,
+    tile: f32,
+    offset: f32,
+    repeat: RepeatStyle,
+) -> Vec<f32> {
+    let positioned = positioning_min + offset;
+    match repeat {
+        RepeatStyle::NoRepeat => vec![positioned],
+        RepeatStyle::Repeat | RepeatStyle::Round => {
+            let first = tile_origin(positioned, painting_min, tile, true);
+            let count = tile_count(first, painting_max, tile, true);
+            (0..count)
+                .map(|index| first + index as f32 * tile)
+                .collect()
+        },
+        RepeatStyle::Space => {
+            let count = (positioning_size / tile).floor() as usize;
+            if count < 2 {
+                return vec![positioned];
+            }
+            let spacing = (positioning_size - count as f32 * tile) / (count - 1) as f32;
+            (0..count)
+                .map(|index| positioning_min + index as f32 * (tile + spacing))
+                .collect()
         },
     }
 }
@@ -2636,7 +2857,7 @@ fn tile_count(first: f32, max: f32, tile: f32, repeated: bool) -> usize {
     if !repeated || tile <= 0.0 {
         return 1;
     }
-    (((max - first) / tile).ceil().max(0.0) as usize).saturating_add(1)
+    ((max - first) / tile).ceil().max(0.0) as usize
 }
 
 fn emit_shadow(list: &mut LiveryPaintList, style: &ComputedValues, fragment: &Fragment) {
