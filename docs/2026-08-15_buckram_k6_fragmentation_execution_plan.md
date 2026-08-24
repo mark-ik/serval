@@ -2,10 +2,10 @@
 
 **Date:** 2026-08-15
 
-**Status:** Planning complete. Engine implementation is blocked on accepted K5h
-closure on `main`. The active K5 branch integrated current `main` at
-`27c2c87828f`, but K5h remains in progress. Documentation and corpus census may
-proceed while K5 runs.
+**Status:** Planning and the current-main corpus census are complete. Accepted
+main now contains the K5 positioning, retained text-frame, grid static-rectangle,
+and K5d residual receipts. K6a may begin from the frozen 2026-08-24 baseline;
+the census itself adds contracts and documentation, not engine behavior.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K6.
@@ -35,14 +35,21 @@ Stylo comparison remains an interoperability ledger. It is not K6 acceptance.
 ## Handoff state
 
 This plan was prepared against the moving `buckram-k5-positioning` worktree on
-2026-08-15. That branch integrated current `main` at `27c2c87828f`. The merge
-keeps Livery and K5 development coherent, but it does not make an interim K5
-commit a K6 base. The executor records the accepted K5h closure commit after it
-lands on `main` and regenerates this inventory before K6a code begins.
+2026-08-15. That historical branch is not a K6 base. Current accepted main
+closes the K5 seams required by K6a through `e8db57141f1`, `7eaaaf724a5`,
+`67c041d0cda`, and `ed288ef1c3e`. The 2026-08-24 current-main census is the
+pre-K6 baseline; see the
+[census reconciliation](2026-08-24_buckram_k6_corpus_census_reconciliation.md).
 
 K4 is closed by the accepted K4h bridge deletion at `610df0981a8`. The master
 plan now records that closure. K6 consumes the accepted K4 table model and does
 not reopen K4.
+
+The old K6a blocker list is retired. K5h retained text movement, K5b grid
+static rectangles, the named K5 positioning regressions, relative captions,
+and the eight K5d sizing/text files are green on accepted main. The 36 red
+shape files are assigned to lane 12's absent `shape-outside` exclusions; they
+do not block the K6 continuation model.
 
 The current K5 shape is still specific enough to fix ownership:
 
@@ -79,36 +86,37 @@ the existing K5 runner. These are inventory counts, not pass counts.
 | `css/css-flexbox` | 1,358 | 935 | 3 | 358 | 25 | 37 |
 | `css/css-grid` | 1,891 | 1,257 | 1 | 606 | 24 | 3 |
 
-The last checked-in absolute multicol number in the parent plan is 96 passing
-reftests. It predates K5 closure and is not the K6 baseline. The K6 executor
-must freeze a new K5-closed Livery result before changing fragmentation code.
+The manifest kinds remain unchanged. The frozen current-main Livery results
+below replace the old 96-pass note and the archived overlay-backed census.
 
-A routing sample with the existing 2026-08-12 K5 runner produced:
+A routing sample with the current-main runner produces:
 
 - `multicol-fill-auto-001.xht`: fail;
-- `multicol-basic-005.xht`: pass;
-- `multicol-break-000.xht`: pass; and
+- `multicol-basic-005.xht`: pass, unverified;
+- `multicol-break-000.xht`: pass, unverified; and
 - `multicol-height-002-print.xht`: skip.
 
 The two passes receive no capability credit because the route does not consume
 multicol computed values. The print skip confirms the pagination harness gate.
-The executable predates the moving K5 head, so these samples are not a frozen
-regression baseline.
 
-Before K6a implementation, write exact manifest-backed result files for:
+The current exact maps are:
 
-```text
-css/css-multicol
-css/css-break
-css/css-position
-css/css-tables
-css/css-flexbox
-css/css-grid
-```
+| Family | Pass | Fail | Skip | Unverified pass |
+|---|---:|---:|---:|---:|
+| `css/css-multicol` | 105 | 292 | 311 | 105 |
+| `css/css-break` | 125 | 790 | 255 | 125 |
+| `css/css-position` | 56 | 62 | 226 | 5 |
+| `css/css-tables` | 66 | 64 | 198 | 0 |
+| `css/css-flexbox` | 395 | 489 | 474 | 11 |
+| `css/css-grid` | 438 | 705 | 748 | 4 |
+| `css/css-page` | 0 | 0 | 278 | 0 |
 
-The first three are direct fragmentation/positioning evidence. The latter
-three protect the K4/K5 formatting-context integrations. Add `css/css-page`
-only after print reftests are runnable.
+All 230 passes in the two direct fragmentation directories are unverified;
+20 more unverified passes sit in the guard directories. Exact per-file
+classification and the named family ratchets are in the
+[current-main census reconciliation](2026-08-24_buckram_k6_corpus_census_reconciliation.md).
+These maps are the frozen K6 baseline. Refresh them if accepted source changes
+before K6a begins.
 
 ## Serialized execution
 
