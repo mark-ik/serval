@@ -7,14 +7,14 @@ use std::{
 
 use buckram::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmNodeId, AlgorithmSize, AlgorithmTree,
-    Baselines, BlockBoxSizing, BlockDimensions, BlockPosition as BuckramBlockPosition,
-    BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide, CollapsedBorderGeometry,
-    ContainingBlock, CssBox, DisplayInside, DisplayOutside, FloatContextProvenance,
-    FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto, FormattingContextKind,
-    Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree, InternalTableRole,
-    IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes, LayoutResult,
-    LogicalAxis, LogicalRect, OverconstrainedInlineAlignment, PhysicalOffset, PhysicalRect,
-    PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
+    Baselines, BlockBoxSizing, BlockDeferral, BlockDimensions,
+    BlockPosition as BuckramBlockPosition, BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide,
+    CollapsedBorderGeometry, ContainingBlock, CssBox, DisplayInside, DisplayOutside,
+    FloatContextProvenance, FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto,
+    FormattingContextKind, Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree,
+    InternalTableRole, IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes,
+    LayoutResult, LogicalAxis, LogicalRect, OverconstrainedInlineAlignment, PhysicalOffset,
+    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
     StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
     TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
     TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
@@ -207,8 +207,17 @@ pub(crate) enum RetainedRootFormatting<Id> {
 pub struct BlockAlgorithmCounts {
     pub buckram: usize,
     pub taffy: usize,
+    /// Taffy block runs used only for intrinsic/backend scratch sizing.
+    pub backend_sizing: usize,
 }
 
+impl BlockAlgorithmCounts {
+    /// Taffy block runs caused by a CSS-facing deferral rather than scratch
+    /// measurement. This is the admission metric for ancestor fallback.
+    pub fn css_facing_taffy(self) -> usize {
+        self.taffy.saturating_sub(self.backend_sizing)
+    }
+}
 impl<Id> LiveryLayout<Id>
 where
     Id: Copy + Eq + Hash,
@@ -1590,6 +1599,9 @@ where
     );
     populate_inline_baselines(&mut state.tree);
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
+    let backend_sizing_blocks = state
+        .tree
+        .block_deferral_count(BlockDeferral::BackendSizingMode);
     let mut fragments = FragmentTree::default();
     let mut text_frame = TextFrame::default();
     let mut output = FragmentOutput {
@@ -1655,6 +1667,7 @@ where
             BlockAlgorithmCounts {
                 buckram: buckram_blocks,
                 taffy: taffy_blocks,
+                backend_sizing: backend_sizing_blocks,
             },
             table_paint,
             table_shadow,
@@ -2203,6 +2216,9 @@ where
         |known, available, _, context, _| measure_text_algorithm_node(known, available, context),
     );
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
+    let backend_sizing_blocks = state
+        .tree
+        .block_deferral_count(BlockDeferral::BackendSizingMode);
     let table_paint = state.table_paint_plane();
     let tables = table_paint.fragments();
     let mut fragments = FragmentTree::default();
@@ -2333,6 +2349,7 @@ where
         BlockAlgorithmCounts {
             buckram: buckram_blocks,
             taffy: taffy_blocks,
+            backend_sizing: backend_sizing_blocks,
         },
         table_paint,
         table_shadow,
@@ -2810,6 +2827,9 @@ where
     );
     populate_inline_baselines(&mut state.tree);
     let (buckram_blocks, taffy_blocks) = state.tree.block_algorithm_counts();
+    let backend_sizing_blocks = state
+        .tree
+        .block_deferral_count(BlockDeferral::BackendSizingMode);
     let mut table_paint = state.table_paint_plane();
     let tables = table_paint.fragments();
     let mut text_frame = TextFrame::default();
@@ -3001,6 +3021,7 @@ where
         BlockAlgorithmCounts {
             buckram: buckram_blocks,
             taffy: taffy_blocks,
+            backend_sizing: backend_sizing_blocks,
         },
         table_paint,
         table_shadow,
@@ -3183,10 +3204,11 @@ where
                     if wrapper_needs_float_fallback(self.boxes, box_id, &taffy_style) {
                         taffy_style.float = TaffyFloat::Left;
                     }
-                    if let Some(width) = wrapper_width_from_grid(&to_taffy_style(
+                    let wrapper_grid_width = wrapper_width_from_grid(&to_taffy_style(
                         &grid_style(&table, containing_size),
                         font_size,
-                    )) {
+                    ));
+                    if let Some(width) = wrapper_grid_width {
                         taffy_style.size.width = width;
                     }
                     let block_style =
@@ -3203,6 +3225,9 @@ where
                         &children,
                         vec![box_id],
                     );
+                    if let Some(width) = wrapper_grid_width.and_then(Dimension::into_option) {
+                        self.tree.set_table_wrapper_inline_size(node, width);
+                    }
                     enable_flex_grid_static_position_provider(
                         &mut self.tree,
                         self.styles,
@@ -3496,6 +3521,8 @@ where
         if !authored_float {
             style.float = TaffyFloat::None;
         }
+        self.tree
+            .set_table_wrapper_inline_size(wrapper, inline.used_grid_inline_size);
     }
 
     /// Run Buckram's block pipeline for every table whose columns it assigned.
@@ -4197,6 +4224,8 @@ where
         if !authored_float {
             style.float = TaffyFloat::None;
         }
+        self.tree
+            .set_table_wrapper_inline_size(wrapper, inline.used_grid_inline_size);
     }
 
     /// Run Buckram's block pipeline for every table whose columns it assigned.
@@ -4673,10 +4702,11 @@ where
                     if wrapper_needs_float_fallback(self.boxes, box_id, &taffy_style) {
                         taffy_style.float = TaffyFloat::Left;
                     }
-                    if let Some(width) = wrapper_width_from_grid(&to_taffy_style(
+                    let wrapper_grid_width = wrapper_width_from_grid(&to_taffy_style(
                         &grid_style(&table, containing_size),
                         font_size,
-                    )) {
+                    ));
+                    if let Some(width) = wrapper_grid_width {
                         taffy_style.size.width = width;
                     }
                     let block_style =
@@ -4693,6 +4723,9 @@ where
                         &children,
                         Some(box_id),
                     );
+                    if let Some(width) = wrapper_grid_width.and_then(Dimension::into_option) {
+                        self.tree.set_table_wrapper_inline_size(node, width);
+                    }
                     enable_flex_grid_static_position_provider(
                         &mut self.tree,
                         self.styles,

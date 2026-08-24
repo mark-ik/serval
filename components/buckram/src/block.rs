@@ -562,13 +562,44 @@ pub fn solve_in_flow_inline_size_for_available(
     containing_inline_size: f32,
     available_inline_size: f32,
 ) -> UsedInlineSize {
+    solve_in_flow_inline_size_inner(style, containing_inline_size, available_inline_size, None)
+}
+
+/// Solve the block-width equation for a box whose border-box inline size is
+/// an algorithm output rather than a `width` value.
+///
+/// A table wrapper box takes the grid's border-edge inline size (CSS Tables 3
+/// section 2.2.1); only its margins remain to be distributed, exactly as for
+/// a definite-width block, and its own minimum and maximum constraints still
+/// apply.
+pub(crate) fn solve_in_flow_inline_size_for_border_box(
+    style: BlockStyle,
+    containing_inline_size: f32,
+    border_box: f32,
+) -> UsedInlineSize {
+    solve_in_flow_inline_size_inner(
+        style,
+        containing_inline_size,
+        containing_inline_size,
+        Some(border_box),
+    )
+}
+
+fn solve_in_flow_inline_size_inner(
+    style: BlockStyle,
+    containing_inline_size: f32,
+    available_inline_size: f32,
+    algorithm_border_box: Option<f32>,
+) -> UsedInlineSize {
     let margins = style.logical_margin(containing_inline_size);
     let padding_border = style.logical_padding_border(containing_inline_size);
     let padding_border_sum = padding_border.inline_start + padding_border.inline_end;
-    let preferred = logical_dimension(style.containing_flow, style.size)
-        .inline
-        .resolve_definite(Some(containing_inline_size))
-        .map(|size| border_box_size(style.box_sizing, size, padding_border_sum));
+    let preferred = algorithm_border_box.or_else(|| {
+        logical_dimension(style.containing_flow, style.size)
+            .inline
+            .resolve_definite(Some(containing_inline_size))
+            .map(|size| border_box_size(style.box_sizing, size, padding_border_sum))
+    });
     let minimum = logical_dimension(style.containing_flow, style.min_size)
         .inline
         .resolve_definite(Some(containing_inline_size))
@@ -1288,6 +1319,19 @@ impl BlockFormattingContext {
             .logical_size(self.containing_block.content_box)
             .inline;
         let used_inline = solve_in_flow_inline_size(style, containing_inline);
+        self.place_in_flow_with_used_inline(style, border_box_size, margin_state, used_inline)
+    }
+
+    /// Place an in-flow child whose inline equation the caller has already
+    /// solved, for example a table wrapper box whose border box came from its
+    /// grid rather than from `width`.
+    pub fn place_in_flow_with_used_inline(
+        &mut self,
+        style: BlockStyle,
+        border_box_size: PhysicalSize,
+        margin_state: BlockMarginState,
+        used_inline: UsedInlineSize,
+    ) -> BlockPlacement {
         self.place_in_flow_at(
             style,
             border_box_size,
