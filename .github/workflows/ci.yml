@@ -7,6 +7,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   rust:
@@ -37,5 +39,14 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: Workspace tests
         run: cargo test --workspace --all-targets
-      - name: Livery and Buckram wasm witness
+
+  wasm:
+    name: Livery and Buckram wasm witness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Check wasm composition
         run: cargo check -p livery -p buckram -p genet-livery --target wasm32-unknown-unknown
