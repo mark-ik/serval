@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-21
 **Status:** Reconstituted 2026-08-24 from accepted main. Lane 8, the
-anonymous-table continuation, and K5 row 1+2+7 are complete. Wave 2 is
+anonymous-table continuation, and K5 rows 1+2+7 and 3 are complete. Wave 2 is
 unblocked. Every other row remains an inventory item until its current-main
 receipt is named below.
 
@@ -49,7 +49,7 @@ in [their recovery plan](2026-08-23_buckram_anonymous_table_recovery_plan.md).
 |---|---|---|---|
 | 8 | Block-formatter admission | **Complete** | Independent tables and flow roots stay opaque to the containing block formatter; CSS-facing Taffy block runs are zero, backend scratch sizing is counted separately, and CSS2 tables plus css-position are byte-identical to baseline. See the [lane plan](2026-08-23_buckram_block_formatter_admission_execution_plan.md). |
 | 1+2+7 | K5 positioning closure, Livery side | **Complete** | The named inventory is 26 pass / 0 fail, with 10 full-directory gains and no loss across css-position, CSS2 abspos, and CSS2 tables. See the [lane plan](2026-08-24_k5_positioning_closure_execution_plan.md). |
-| 3 | K5h retained text frame | Inventory required | Prove retained positioned-subtree translation and leaf resize with current fixtures. Do not rely on the archived dirty `translate_subtree` overlay. |
+| 3 | K5h retained text frame | **Complete** | Accepted main pairs retained positioned-fragment translation with retained shaped text, rejects text-bearing leaf resize, and proves geometry-only leaf resize plus scroll exports against fresh final layouts. See the [current-main reconciliation](2026-08-24_k5h_retained_text_frame_reconciliation.md). |
 | 4 | K5b grid static rectangle | Inventory required | Both `tests/grid_abspos.rs` receipts pass and the responsible current code path is named. |
 | 5+6 | K5d sizing and vertical-mode insets | Inventory required | Re-run aspect-ratio, ruby, font-feature, pre-wrap, and the 33 shapes references from current main; separate solved font/contain work from remaining logical-inset work. |
 | 11 | Anonymous-table construction and sibling tables | **Complete** | The 059-098 family is 32 pass / 8 explained compositor residuals; column backgrounds, nested tables, block children, and sibling geometry have live receipts, with zero directory losses. |

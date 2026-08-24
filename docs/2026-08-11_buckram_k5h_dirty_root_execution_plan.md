@@ -17,6 +17,13 @@ and 193/193. This integration does not close K5h.
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.
 
+**Current-main reconciliation, 2026-08-24:** the retained positioned-text and
+leaf-resize sublane is complete on accepted main. Its translated-text,
+text-bearing resize refusal, geometry-only leaf resize, and scroll-export
+receipts are recorded in the
+[current-main reconciliation](2026-08-24_k5h_retained_text_frame_reconciliation.md).
+This closes row 3 of the lane program, not the broader K5h damage-class matrix.
+
 ## Current boundary
 
 HTML `width` and `height` attributes have one sizing authority after the
