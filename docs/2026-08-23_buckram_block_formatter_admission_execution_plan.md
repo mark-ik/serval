@@ -2,12 +2,16 @@
 
 **Date:** 2026-08-23
 
-**Status:** active on `recovery/k5-regression-repair-v2`.
+**Status:** complete on source commit `ac73b07badb`, rebased onto
+`55ec948b0f4`.
 
-**Pre-rebase receipt:** Buckram 225/225; live `block_admission` 4/4;
-percentage-table regression focused test 1/1; strict scoped Clippy, Rust 2024
-format check, and `git diff --check` clean. Current-main rebase and WPT ratchet
-remain before closure.
+**Receipt:** Buckram 234/234; Genet-Livery 200/200 unit tests and every
+integration target; live `block_admission` 4/4; strict scoped Clippy, Rust 2024
+format check, and `git diff --check` clean. The release `genet-wpt` runner is
+SHA-256 `B888A987A2091762A64A436FAABB3464EEBDBB4FEC60C14B7DE0442F4AAD9CB7`.
+Against the frozen current-main runner, `css/CSS2/tables` remains
+192/70/877 pass/fail/skip and `css/css-position` remains 47/71/226; both result
+logs are byte-identical to baseline.
 
 **Parent:** [Buckram and Livery lane program](2026-08-21_buckram_livery_lane_program_plan.md), lane 8.
 
