@@ -13,6 +13,14 @@ rules remain open.
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5b. **Prerequisite:** [K5a containing-block graph](2026-08-10_buckram_k5a_containing_blocks_execution_plan.md).
 
+**Current-main reconciliation, 2026-08-24:** the grid static-rectangle sublane
+is complete on accepted main. Both `grid_abspos` receipts, the K5a-selected
+content-box versus grid-area path, and its Buckram and Livery provider tests
+are recorded in the
+[current-main reconciliation](2026-08-24_k5b_grid_static_rectangle_reconciliation.md).
+This closes row 4 of the lane program, not the broader K5b source-context
+matrix or private-provider replacement.
+
 ## Question
 
 An out-of-flow box can be placed against a containing block different from its
