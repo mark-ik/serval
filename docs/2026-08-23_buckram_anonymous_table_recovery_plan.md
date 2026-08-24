@@ -203,6 +203,73 @@ control.
   target.
 - `git diff --check`: passed.
 
+## Nested inline-table continuation and final ruling
+
+**Status:** implemented and verified on `recovery/table-sibling-block-v2`
+from frozen WPT baseline `9b99b661a23`. Unrelated current main `5ec8274ed21`
+was fast-forwarded into the branch before commit.
+
+The 091-092 defect was in the atomic subtree handoff. Nested inline tables
+advertised the viewport-sized atomic fragment to their enclosing table cell,
+while anonymous text leaves still estimated intrinsic width as `0.6em` per
+character. Their structural fragments were also copied from rounded algorithm
+geometry. The repair exports the table grid's intrinsic pair, shapes anonymous
+text with the live `TextSystem` during atomic construction, threads intrinsic
+query kind through inline measurement, and publishes unrounded atomic
+fragments. Table sizing, structural fragments, and paint now consume the same
+geometry.
+
+Focused receipts compare glyph coordinates as multisets because atomic subtree
+paint order is not DOM vector order. They cover the exact 091 nested-table
+fixture and the 085 inferred-cell block-child fixture. Both structural receipts
+pass. The existing three sibling-table receipts also pass.
+
+### Standards ruling for 085-086
+
+The current CSS Tables fixup rule requires one anonymous table cell around each
+consecutive sequence of non-cell children of a table row. Buckram does that,
+and the exact 085 geometry receipt proves the inferred cell and its block child
+match the equivalent authored HTML table. The remaining `diff=1%`,
+`max delta=138` is a glyph-edge/compositor residual, not an anonymous-box
+construction defect. The implementation follows the current
+[CSS Tables fixup algorithm](https://drafts.csswg.org/css-tables/#table-fixup).
+
+The final 059-098 family is 32 passed and 8 failed. Files 091-092 are new exact
+passes. The eight residuals are 079-084 at `diff=1%`, `max delta=64` and
+085-086 at `diff=1%`, `max delta=138`; all have executable geometry receipts
+and a compositor/reftest owner. No harness threshold changed.
+
+Against the frozen accepted runner:
+
+| Directory | Accepted runner | Final runner | Status changes |
+| --- | --- | --- | --- |
+| `css/CSS2/tables` | 190 pass, 72 fail, 877 skip | 192 pass, 70 fail, 877 skip | Only anonymous-table 091-092 changed, both fail to pass. |
+| `css/css-tables` | 66 pass, 64 fail, 198 skip | 66 pass, 64 fail, 198 skip | Exact status map unchanged. |
+
+Ledger:
+`testing/genet/wpt-ledger/2026-08-23_anonymous_table_remaining_v1` outside the
+worktree.
+
+Baseline runner SHA-256:
+`840F44878FA6F1AA09484F571C6CC61C84EA5193A09CA025F4541ACF4AA85B18`.
+
+Final runner SHA-256:
+`AB9EC0E6A4636F1FC8933FD05E9C655B72C8CDBD2130C92AC5F485D3E1593D46`.
+
+### Final continuation verification
+
+- `CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline -p buckram -p
+  livery --all-targets --no-fail-fast`: passed; Buckram has 230 unit tests.
+- `CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline -p genet-livery
+  --all-targets --no-fail-fast`: every unit, integration, and example target
+  passed, including all five sibling-table receipts.
+- `cargo clippy --locked --offline -p buckram -p livery -p genet-livery
+  --all-targets --no-deps`: passed with pre-existing warnings outside the
+  owned diff.
+- `cargo build --locked --offline -p genet-wpt --release`: passed from the
+  isolated target.
+- `git diff --check`: passed.
+
 ## Verification
 
 - `CARGO_PROFILE_TEST_DEBUG=0 cargo test -p buckram --all-targets --offline

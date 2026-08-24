@@ -76,9 +76,9 @@ fn table(row: &str) -> String {
     )
 }
 
-fn render(position: &str, content: &str) -> Rendered {
+fn render_with_body_style(position: &str, body_style: &str, content: &str) -> Rendered {
     let document = StaticDocument::parse(&format!(
-        "<body style='margin:0;white-space:nowrap;font-family:monospace'>\
+        "<body style='margin:0;font-family:monospace;{body_style}'>\
          <div style='position:relative;width:784px;height:300px'>\
          <div id=layer style='position:{position};top:0;left:0;padding:1px;font-size:2em'>\
          {content}</div></div></body>",
@@ -112,6 +112,29 @@ fn render(position: &str, content: &str) -> Rendered {
         document,
         layout,
         paint,
+    }
+}
+
+fn render(position: &str, content: &str) -> Rendered {
+    render_with_body_style(position, "white-space:nowrap", content)
+}
+
+fn assert_glyph_points_match(left: Rendered, right: Rendered) {
+    let mut left = left.normalized_glyph_points();
+    let mut right = right.normalized_glyph_points();
+    let by_position = |left: &(f32, f32), right: &(f32, f32)| {
+        left.1
+            .total_cmp(&right.1)
+            .then_with(|| left.0.total_cmp(&right.0))
+    };
+    left.sort_by(by_position);
+    right.sort_by(by_position);
+    assert_eq!(left.len(), right.len(), "rendered glyph counts");
+    for (index, (left, right)) in left.into_iter().zip(right).enumerate() {
+        assert!(
+            (left.0 - right.0).abs() <= 0.5 && (left.1 - right.1).abs() <= 0.5,
+            "glyph {index}: left={left:?}, right={right:?}"
+        );
     }
 }
 
@@ -167,6 +190,61 @@ fn inherited_nowrap_aligns_sibling_table_glyphs_with_block_rows() {
             "glyph {index}: table={table:?}, block={row:?}"
         );
     }
+}
+
+#[test]
+fn inferred_cells_with_nested_tables_match_html_table_glyphs() {
+    let generated = render_with_body_style(
+        "relative",
+        "",
+        "<span style='display:table-row'>\
+           <span>Row 1, </span><span>Col 1</span>\
+           <span style='display:table-cell'>Row 1, Col 2</span>\
+           <span style='display:table'>Row 1, Col 3</span>\
+         </span>\
+         <span style='display:table-row'>\
+           <span style='display:table-cell'>Row 22, Col 1</span>\
+           <span>Row </span><span>22, </span><span>Col </span><span>2</span>\
+           <span style='display:table-cell'>Row 22, Col 3</span>\
+         </span>\
+         <span style='display:table-row'>\
+           <span style='display:inline-table'>Row 333, Col 1</span>\
+           <span style='display:table-cell'>Row 333, Col 2</span>\
+           <span>Row </span><span>333, </span><span>Col </span><span>3</span>\
+         </span>",
+    );
+    let html = render_with_body_style(
+        "relative",
+        "",
+        "<table cellpadding=0 cellspacing=0 style='margin:0;padding:0;border:none'>\
+           <tr><td>Row 1, Col 1</td><td>Row 1, Col 2</td><td>Row 1, Col 3</td></tr>\
+           <tr><td>Row 22, Col 1</td><td>Row 22, Col 2</td><td>Row 22, Col 3</td></tr>\
+           <tr><td>Row 333, Col 1</td><td>Row 333, Col 2</td><td>Row 333, Col 3</td></tr>\
+         </table>",
+    );
+    assert_glyph_points_match(generated, html);
+}
+
+#[test]
+fn inferred_cell_block_child_matches_sibling_html_table_glyphs() {
+    let generated = render(
+        "relative",
+        "<span style='display:table-row'>\
+           <span>Row 1, </span><span>Col 1Row 1, </span>\
+           <span>Col 2Row 1, </span><span>Col 3</span>\
+         </span>\
+         <span style='display:table-row'>\
+           <span style='display:block'>Row 22, Col 1Row 22, Col 2Row 22, Col 3</span>\
+         </span>\
+         <span style='display:table-row'>\
+           <span>Row 333, Col 1</span><span>Row 333, Col 2</span><span>Row 333, Col 3</span>\
+         </span>",
+    );
+    let html = render(
+        "relative",
+        &format!("{}{}{}", table("1"), table("22"), table("333")),
+    );
+    assert_glyph_points_match(generated, html);
 }
 
 #[test]

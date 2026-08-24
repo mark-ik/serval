@@ -139,6 +139,10 @@ struct AtomicFragment {
 #[derive(Clone, Debug, Default)]
 struct AtomicLayoutPlane {
     fragments: HashMap<BoxId, Fragment>,
+    // An inline table participates in an ancestor intrinsic query with the
+    // table grid's intrinsic pair, not the viewport-sized atomic fragment
+    // produced for ordinary placement.
+    intrinsic_inline: HashMap<BoxId, IntrinsicSizes>,
     // K4d5 table-grid first baselines, expressed from their inline-table
     // wrapper's margin-box block-start. Only inline-table wrappers populate
     // this map; other atomic boxes retain the existing block-end fallback.
@@ -169,6 +173,10 @@ where
 
     fn atomic_box_rect(&self, box_id: BoxId) -> Option<&Fragment> {
         self.get(box_id)
+    }
+
+    fn atomic_box_intrinsic_inline(&self, box_id: BoxId) -> Option<IntrinsicSizes> {
+        self.intrinsic_inline.get(&box_id).copied()
     }
 
     fn atomic_box_baseline(&self, box_id: BoxId) -> Option<f32> {
@@ -924,6 +932,7 @@ struct BuildState<'a, D: LayoutDom> {
     boxes: &'a GeneratedBoxTree<D::NodeId>,
     tree: AlgorithmTree<Style, TextMeasure, Option<BoxId>>,
     image_sources: &'a ImageSources,
+    text: Option<&'a mut TextSystem>,
     table_shadow: TableShadowLedger,
     pending_tables: Vec<PendingTable<D::NodeId>>,
 }
@@ -947,6 +956,7 @@ struct InlineLayoutEntry {
 #[derive(Clone, Copy)]
 struct InlineMeasureGeometry<'a> {
     width: f32,
+    intrinsic_kind: Option<IntrinsicSizeKind>,
     line_constraints: Option<&'a FloatLineConstraints>,
 }
 
@@ -1007,6 +1017,7 @@ where
 {
     let InlineMeasureGeometry {
         width,
+        intrinsic_kind,
         line_constraints: constraints,
     } = geometry;
     if let Some(constraints) = constraints {
@@ -1022,6 +1033,7 @@ where
                 roots: &context.roots,
                 parent_style: &context.style,
                 width,
+                intrinsic_kind,
                 line_constraints: constraints,
             },
         );
@@ -1077,6 +1089,7 @@ where
                 context,
                 InlineMeasureGeometry {
                     width: 0.01,
+                    intrinsic_kind: Some(IntrinsicSizeKind::MinContent),
                     line_constraints: None,
                 },
             )
@@ -1090,6 +1103,7 @@ where
                 context,
                 InlineMeasureGeometry {
                     width: f32::INFINITY,
+                    intrinsic_kind: Some(IntrinsicSizeKind::MaxContent),
                     line_constraints: None,
                 },
             )
@@ -1110,6 +1124,7 @@ where
         context,
         InlineMeasureGeometry {
             width: requested_width,
+            intrinsic_kind,
             line_constraints: intrinsic_kind
                 .is_none()
                 .then_some(line_constraints)
@@ -1209,15 +1224,18 @@ fn format_table_cell<Context, Source>(
             let Some(context) = context else {
                 return AlgorithmSize::new(0.0, 0.0);
             };
-            let width = match available.width {
-                AlgorithmAvailableSpace::Definite(width) => width,
-                AlgorithmAvailableSpace::MinContent => 0.01,
-                AlgorithmAvailableSpace::MaxContent => f32::INFINITY,
+            let (width, intrinsic_kind) = match available.width {
+                AlgorithmAvailableSpace::Definite(width) => (width, None),
+                AlgorithmAvailableSpace::MinContent => (0.01, Some(IntrinsicSizeKind::MinContent)),
+                AlgorithmAvailableSpace::MaxContent => {
+                    (f32::INFINITY, Some(IntrinsicSizeKind::MaxContent))
+                },
             };
             let (measured_width, measured_height) = measure(
                 context,
                 InlineMeasureGeometry {
                     width: known.width.unwrap_or(width),
+                    intrinsic_kind,
                     line_constraints: None,
                 },
             );
@@ -1421,6 +1439,7 @@ where
         &boxes,
         viewport_width,
         viewport_height,
+        text,
         image_sources,
     )?;
     let fragments = layout_inline_groups(
@@ -2131,6 +2150,7 @@ where
         boxes: &boxes,
         tree: AlgorithmTree::new(),
         image_sources,
+        text: None,
         table_shadow: TableShadowLedger::default(),
         pending_tables: Vec::new(),
     };
@@ -2325,6 +2345,7 @@ fn layout_atomic_subtrees<D>(
     boxes: &GeneratedBoxTree<D::NodeId>,
     viewport_width: f32,
     viewport_height: f32,
+    text: &mut TextSystem,
     image_sources: &ImageSources,
 ) -> Result<AtomicLayoutPlane, LayoutError>
 where
@@ -2368,6 +2389,7 @@ where
             boxes,
             tree: AlgorithmTree::new(),
             image_sources,
+            text: Some(&mut *text),
             table_shadow: TableShadowLedger::default(),
             pending_tables: Vec::new(),
         };
@@ -2420,6 +2442,12 @@ where
             atomic_root
         };
         state.apply_buckram_table_layout();
+        if let Some(intrinsic) = state.pending_tables.iter().find_map(|pending| {
+            (pending.grid.wrapper == Some(box_id))
+                .then_some(pending.assigned.as_ref()?.intrinsic_sizes)
+        }) {
+            plane.intrinsic_inline.insert(box_id, intrinsic);
+        }
         state.tree.compute_layout_with_measure(
             root,
             AlgorithmSize::new(
@@ -2519,7 +2547,7 @@ fn collect_atomic_fragments(
     parent_origin: Point<f32>,
     output: &mut Vec<AtomicFragment>,
 ) {
-    let computed = tree.layout(node);
+    let computed = tree.unrounded_layout(node);
     let static_computed = tree.static_layout(node);
     let origin = Point {
         x: parent_origin.x + computed.x,
@@ -3256,13 +3284,17 @@ where
                     let Some(context) = context else {
                         return AlgorithmSize::new(0.0, 0.0);
                     };
-                    let width = match available.width {
-                        AlgorithmAvailableSpace::Definite(width) => width,
+                    let (width, intrinsic_kind) = match available.width {
+                        AlgorithmAvailableSpace::Definite(width) => (width, None),
                         // A nearly-zero line breaks at every opportunity; an
                         // infinite one suppresses wrapping, as in the main
                         // measure closure.
-                        AlgorithmAvailableSpace::MinContent => 0.01,
-                        AlgorithmAvailableSpace::MaxContent => f32::INFINITY,
+                        AlgorithmAvailableSpace::MinContent => {
+                            (0.01, Some(IntrinsicSizeKind::MinContent))
+                        },
+                        AlgorithmAvailableSpace::MaxContent => {
+                            (f32::INFINITY, Some(IntrinsicSizeKind::MaxContent))
+                        },
                     };
                     let (measured_width, measured_height) = measure_inline_context(
                         text,
@@ -3273,6 +3305,7 @@ where
                         context,
                         InlineMeasureGeometry {
                             width: known.width.unwrap_or(width),
+                            intrinsic_kind,
                             line_constraints: None,
                         },
                     );
@@ -3329,10 +3362,14 @@ where
                         let Some(context) = context else {
                             return AlgorithmSize::new(0.0, 0.0);
                         };
-                        let width = match available.width {
-                            AlgorithmAvailableSpace::Definite(width) => width,
-                            AlgorithmAvailableSpace::MinContent => 0.01,
-                            AlgorithmAvailableSpace::MaxContent => f32::INFINITY,
+                        let (width, intrinsic_kind) = match available.width {
+                            AlgorithmAvailableSpace::Definite(width) => (width, None),
+                            AlgorithmAvailableSpace::MinContent => {
+                                (0.01, Some(IntrinsicSizeKind::MinContent))
+                            },
+                            AlgorithmAvailableSpace::MaxContent => {
+                                (f32::INFINITY, Some(IntrinsicSizeKind::MaxContent))
+                            },
                         };
                         let (measured_width, measured_height) = measure_inline_context(
                             text,
@@ -3343,6 +3380,7 @@ where
                             context,
                             InlineMeasureGeometry {
                                 width: known.width.unwrap_or(width),
+                                intrinsic_kind,
                                 line_constraints: None,
                             },
                         );
@@ -4505,7 +4543,7 @@ where
                 let line_height = inherited
                     .map(|style| line_height_px(&style.line_height, font_size))
                     .unwrap_or(font_size * 1.2);
-                let min_width = if preserves_whitespace {
+                let mut min_width = if preserves_whitespace {
                     text.lines()
                         .map(|line| line.chars().count())
                         .max()
@@ -4515,7 +4553,7 @@ where
                 } as f32
                     * font_size
                     * 0.6;
-                let max_width = if preserves_whitespace {
+                let mut max_width = if preserves_whitespace {
                     min_width
                 } else {
                     collapsed_text_width(text) as f32 * font_size * 0.6
@@ -4525,7 +4563,50 @@ where
                 } else {
                     1
                 };
-                let height = line_count as f32 * line_height;
+                let mut height = line_count as f32 * line_height;
+                if let Some(text_system) = self.text.as_deref_mut()
+                    && let Some(parent_style) = inherited
+                {
+                    let fragments = AtomicLayoutPlane::default();
+                    let roots = [box_id];
+                    let minimum = text_system
+                        .format_inline_group(
+                            self.dom,
+                            self.styles,
+                            self.boxes,
+                            &fragments,
+                            InlineRequest {
+                                roots: &roots,
+                                parent_style,
+                                width: 0.01,
+                                intrinsic_kind: Some(IntrinsicSizeKind::MinContent),
+                                line_constraints: None,
+                            },
+                        )
+                        .map(|layout| layout.size());
+                    let maximum = text_system
+                        .format_inline_group(
+                            self.dom,
+                            self.styles,
+                            self.boxes,
+                            &fragments,
+                            InlineRequest {
+                                roots: &roots,
+                                parent_style,
+                                width: f32::INFINITY,
+                                intrinsic_kind: Some(IntrinsicSizeKind::MaxContent),
+                                line_constraints: None,
+                            },
+                        )
+                        .map(|layout| layout.size());
+                    if let Some((minimum, _)) = minimum {
+                        min_width = minimum;
+                    }
+                    if let Some((maximum, maximum_height)) = maximum {
+                        max_width = maximum.max(min_width);
+                        height = maximum_height;
+                    }
+                }
                 let node = self.tree.new_leaf_with_context_and_block_style(
                     anonymous_block_style(self.boxes, box_id),
                     Style {
@@ -13346,7 +13427,7 @@ mod tests {
 
         assert_eq!(atomic_inline_width(30.0), 30.0);
         assert_eq!(atomic_inline_width(80.0), 80.0);
-        assert_eq!(atomic_inline_width(200.0), 114.0);
+        assert!((atomic_inline_width(200.0) - 104.462_89).abs() <= 0.01);
     }
 
     #[test]

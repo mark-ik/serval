@@ -10,7 +10,7 @@ use std::{
 
 use buckram::{
     BoxId, BoxOrigin, CssBoxTree, DisplayInside, DisplayOutside, FloatLineConstraints,
-    FormattingContextKind, InternalTableRole,
+    FormattingContextKind, InternalTableRole, IntrinsicSizeKind, IntrinsicSizes,
 };
 use layout_dom_api::{LayoutDom, NodeKind};
 use livery::{
@@ -42,6 +42,10 @@ pub(crate) trait FragmentLookup<Id> {
     }
 
     fn atomic_box_rect(&self, _box_id: BoxId) -> Option<&Fragment> {
+        None
+    }
+
+    fn atomic_box_intrinsic_inline(&self, _box_id: BoxId) -> Option<IntrinsicSizes> {
         None
     }
 
@@ -320,6 +324,7 @@ impl TextSystem {
                 spans: &mut spans,
                 inline_boxes: &mut inline_boxes,
                 percentage_basis: request.width,
+                intrinsic_kind: request.intrinsic_kind,
             };
             for root in request.roots {
                 collector.collect(*root, parent_style);
@@ -1135,6 +1140,7 @@ pub(crate) struct InlineRequest<'a> {
     pub(crate) roots: &'a [BoxId],
     pub(crate) parent_style: &'a ComputedValues,
     pub(crate) width: f32,
+    pub(crate) intrinsic_kind: Option<IntrinsicSizeKind>,
     pub(crate) line_constraints: Option<&'a FloatLineConstraints>,
 }
 
@@ -2205,6 +2211,7 @@ where
     spans: &'a mut Vec<SourceSpan<BoxId>>,
     inline_boxes: &'a mut Vec<InlineAtom<BoxId>>,
     percentage_basis: f32,
+    intrinsic_kind: Option<IntrinsicSizeKind>,
 }
 
 impl<D, F> BoxInlineCollector<'_, D, F>
@@ -2307,9 +2314,14 @@ where
     /// One atomic inline box: its whole subtree was laid out separately and
     /// its rectangle occupies line space as a unit.
     fn push_atomic_box(&mut self, box_id: BoxId, style: &ComputedValues) {
-        let Some(fragment) = self.fragments.atomic_box_rect(box_id).copied() else {
+        let Some(mut fragment) = self.fragments.atomic_box_rect(box_id).copied() else {
             return;
         };
+        if let Some(kind) = self.intrinsic_kind
+            && let Some(intrinsic) = self.fragments.atomic_box_intrinsic_inline(box_id)
+        {
+            fragment.width = intrinsic.get(kind);
+        }
         let font_size = super::paint::used_font_size(style);
         let (line_width, line_box_height, margin_left, margin_top) =
             inline_margin_box(style, fragment, font_size, self.percentage_basis);
