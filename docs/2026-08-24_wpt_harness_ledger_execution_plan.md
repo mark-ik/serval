@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 
-**Status:** Complete on the candidate based at `b9bc926966c`.
+**Status:** Complete at `f9d5174b68d`, based at `b9bc926966c`.
 
 **Parent:** [Buckram and Livery lane program](2026-08-21_buckram_livery_lane_program_plan.md),
 rows 19 through 21.
@@ -52,6 +52,8 @@ not reopen synchronized readback, failure bucketing, or the expectation guard.
    semantics and verify their exact guard.
 
 ## Result
+
+The implementation and checked ledgers are accepted at `f9d5174b68d`.
 
 The frozen current-main runner is the final fonts-lane binary, SHA-256
 `EAE886FF5CE3EF51B004078700415E26D2D8546F5E36F9CF289A003BF7152725`.

@@ -117,6 +117,7 @@ session consumer. They no longer claim K5h is blocking K6.
 
 ## Receipts
 
+- Corrected harness source commit: `f9d5174b68d`.
 - Manifest SHA-256:
   `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`.
 - Frozen runner SHA-256:
