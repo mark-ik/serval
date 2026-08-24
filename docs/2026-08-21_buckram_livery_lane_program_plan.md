@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-21
 **Status:** Reconstituted 2026-08-24 from accepted main. Lane 8, the
-anonymous-table continuation, and K5 rows 1+2+7, 3, and 4 are complete. Wave 2
-is unblocked. Every other row remains an inventory item until its current-main
-receipt is named below.
+anonymous-table continuation, and K5 rows 1+2+7, 3, 4, and 5+6 are complete.
+Wave 2 is unblocked. Every other row remains an inventory item until its
+current-main receipt is named below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md)
 and the [Livery fullweb cutover plan](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md).
@@ -51,7 +51,7 @@ in [their recovery plan](2026-08-23_buckram_anonymous_table_recovery_plan.md).
 | 1+2+7 | K5 positioning closure, Livery side | **Complete** | The named inventory is 26 pass / 0 fail, with 10 full-directory gains and no loss across css-position, CSS2 abspos, and CSS2 tables. See the [lane plan](2026-08-24_k5_positioning_closure_execution_plan.md). |
 | 3 | K5h retained text frame | **Complete** | Accepted main pairs retained positioned-fragment translation with retained shaped text, rejects text-bearing leaf resize, and proves geometry-only leaf resize plus scroll exports against fresh final layouts. See the [current-main reconciliation](2026-08-24_k5h_retained_text_frame_reconciliation.md). |
 | 4 | K5b grid static rectangle | **Complete** | Both `tests/grid_abspos.rs` receipts pass. Livery selects the K5a relationship, Buckram owns the narrow provider switch, and the grid callback chooses content box versus finalized grid area. See the [current-main reconciliation](2026-08-24_k5b_grid_static_rectangle_reconciliation.md). |
-| 5+6 | K5d sizing and vertical-mode insets | Inventory required | Re-run aspect-ratio, ruby, font-feature, pre-wrap, and the 33 shapes references from current main; separate solved font/contain work from remaining logical-inset work. |
+| 5+6 | K5d sizing and vertical-mode insets | **Complete** | All eight named files pass on current main and all nine native logical-inset receipts are green. The stale 33-shape count resolves to 36 honest failures owned by absent `shape-outside` exclusions in lane 12. See the [current-main reconciliation](2026-08-24_k5d_sizing_logical_insets_reconciliation.md). |
 | 11 | Anonymous-table construction and sibling tables | **Complete** | The 059-098 family is 32 pass / 8 explained compositor residuals; column backgrounds, nested tables, block children, and sibling geometry have live receipts, with zero directory losses. |
 | 13 | K6 corpus census | Open | Regenerate the fragmentation inventory from the current ledger and add ignored continuation-contract fixtures for block, inline, and table roots. |
 | 14 | css-text | Open | Attribute every current css-text failure by family and land focused line-breaking, white-space, justification, and overflow-wrap receipts. |
