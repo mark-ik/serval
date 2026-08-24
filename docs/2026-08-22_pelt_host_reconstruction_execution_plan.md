@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-22
 
-**Status:** active. P0 completed 2026-08-22. P1 completed 2026-08-23. P2 is
-the next implementation lane.
+**Status:** active. P0 completed 2026-08-22. P1 was rebased and reverified on
+current `main` 2026-08-24. P2 is the next implementation lane.
 
 ## Objective
 
@@ -110,7 +110,7 @@ Receipts:
 
 ### P1: restore the browser loop
 
-**Status:** complete 2026-08-23.
+**Status:** complete 2026-08-24 after integration with the Fleece Reader lane.
 
 Replace the private boolean input results with host effects. The host must
 consume `SessionClick::Navigate` and `SessionClick::Submit`, resolve relative
@@ -146,18 +146,23 @@ Landed:
 
 Receipts:
 
-- `cargo test -p inker --offline`: 96 passed.
+- `cargo test -p inker --offline`: 97 passed.
 - `cargo test -p genet-documents --no-default-features --features livery
   --offline`: 15 passed, including retained link activation, visible editing,
   and structured GET submission.
 - `cargo test -p pelt-desktop --no-default-features --features livery
   --offline`: 6 passed, covering relative links, reload, back/forward, forward
   truncation, GET encoding, and Livery routing.
-- Default Pelt and the individual `scripted`, `livery-scripted`, and `smolweb`
-  feature routes compile.
-- Strict Clippy passes for Inker and for the owned Livery and Pelt desktop
-  changes with dependency linting excluded. Full dependency Clippy remains
-  blocked by pre-existing `genet-paint-types` `derivable_impls` findings.
+- The Fleece route remains independent: Reader-only `genet-documents` passes
+  7 tests and Reader-only `pelt-desktop` passes 2. The Reader adapter retains
+  held source bytes and extraction posture while Livery uses `BrowserSession`.
+- Default `pelt-desktop` passes 6 tests with Livery, Reader, and netfetch joined.
+- Strict all-targets Clippy passes for Inker, `genet-documents`, and
+  `pelt-desktop` with dependency linting excluded. The Fleece static outcome's
+  article payload is boxed so the public three-way result stays pointer-sized.
+- Bounded headed Livery and Reader commands each created an 800x600 window,
+  presented one frame from `ports/pelt/examples/browser-loop/index.html`, and
+  exited with `redraws=1`.
 - Headed Pelt on the checked-in local fixture changed title from `Pelt browser
   loop` to `Pelt relative navigation`, returned and advanced through history,
   reloaded the retained route, visibly edited the textarea to `cedarx`, moved
