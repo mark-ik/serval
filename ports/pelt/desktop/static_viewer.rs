@@ -158,6 +158,23 @@ pub(crate) fn logical_position(physical: f32, scale_factor: f32) -> f32 {
     physical / scale_factor.max(1.0)
 }
 
+#[cfg(any(feature = "livery", feature = "reader"))]
+struct ViewerClock(std::time::Instant);
+
+#[cfg(any(feature = "livery", feature = "reader"))]
+impl ViewerClock {
+    fn new() -> Self {
+        Self(std::time::Instant::now())
+    }
+}
+
+#[cfg(any(feature = "livery", feature = "reader"))]
+impl pelt_core::PeltClock for ViewerClock {
+    fn now_ms(&self) -> f64 {
+        self.0.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
 #[cfg(test)]
 mod dpi_tests {
     use super::{logical_extent, logical_position};
@@ -410,10 +427,10 @@ pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
 /// Run the owned Livery engine through its inker registry entry.
 #[cfg(feature = "livery")]
 pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
-    use crate::browser_session::BrowserSession;
     use genet_documents::LiverySessionEngine;
-    use inker::SessionRegistry;
+    use inker::{SessionRegistry, SurfaceEngineRegistry};
     use netrender::Scene;
+    use pelt_core::{PeltController, PeltControllerConfig};
 
     if matches!(config.profile.windowing, WindowingMode::Headless) {
         return Ok(StaticViewerOutcome {
@@ -428,13 +445,23 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     registry.register(Box::new(LiverySessionEngine::new(
         genet_documents::LocalFetcher,
     )));
-    let browser = BrowserSession::new(
+    let controller = PeltController::new(
         registry,
-        inker::routing::ENGINE_GENET_LIVERY,
-        &config.url,
-        (width, height),
+        SurfaceEngineRegistry::new(),
+        PeltControllerConfig::new(
+            inker::routing::ENGINE_GENET_LIVERY,
+            &config.url,
+            (width, height),
+        ),
+        ViewerClock::new(),
     )?;
-    run_headed_with(config, LiveryViewerContent { browser })
+    run_headed_with(
+        config,
+        ControllerViewerContent {
+            controller,
+            posture: None,
+        },
+    )
 }
 
 #[cfg(not(feature = "livery"))]
@@ -446,8 +473,9 @@ pub fn run_livery_viewer(_config: StaticViewerConfig) -> Result<StaticViewerOutc
 #[cfg(feature = "reader")]
 pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
     use genet_documents::{ReaderSessionEngine, ResourceFetcher, SmolwebTheme};
-    use inker::{SessionRegistry, SessionSpawnRequest};
+    use inker::{SessionRegistry, SessionSpawnRequest, SurfaceEngineRegistry};
     use netrender::Scene;
+    use pelt_core::{PeltController, PeltControllerConfig};
 
     if matches!(config.profile.windowing, WindowingMode::Headless) {
         return Ok(StaticViewerOutcome {
@@ -466,10 +494,13 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     let request = SessionSpawnRequest::new(&config.url)
         .with_body(source)
         .with_viewport(width, height);
-    let session = registry
-        .spawn(inker::routing::ENGINE_GENET_READER, &request)
-        .map_err(|error| format!("could not spawn engine genet.reader: {error}"))?;
-    let posture = session
+    let controller = PeltController::new(
+        registry,
+        SurfaceEngineRegistry::new(),
+        PeltControllerConfig::from_request(inker::routing::ENGINE_GENET_READER, request),
+        ViewerClock::new(),
+    )?;
+    let posture = controller
         .inspect()
         .and_then(|report| report.lineage)
         .map(|lineage| {
@@ -482,80 +513,45 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
                 lineage.tool, lineage.version, lineage.selector, score, lineage.block_count
             )
         });
-    run_headed_with(config, SessionViewerContent { session, posture })
+    run_headed_with(
+        config,
+        ControllerViewerContent {
+            controller,
+            posture,
+        },
+    )
 }
 
-#[cfg(feature = "reader")]
-struct SessionViewerContent {
-    session: Box<dyn inker::DocumentSession<netrender::Scene>>,
+#[cfg(any(feature = "livery", feature = "reader"))]
+struct ControllerViewerContent {
+    controller: pelt_core::PeltController<netrender::Scene>,
     posture: Option<String>,
 }
 
-#[cfg(feature = "livery")]
-struct LiveryViewerContent {
-    browser: crate::browser_session::BrowserSession<netrender::Scene>,
-}
-
-#[cfg(feature = "reader")]
-impl windowed::ViewerContent for SessionViewerContent {
+#[cfg(any(feature = "livery", feature = "reader"))]
+impl windowed::ViewerContent for ControllerViewerContent {
     fn title(&self) -> Option<String> {
-        self.session.inspect().and_then(|report| report.title)
-    }
-
-    fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
-        self.session.frame(width, height)
-    }
-
-    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-        self.session.scroll_by(dx, dy)
-    }
-
-    fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        self.session.scroll_at(x, y, dx, dy)
-    }
-
-    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
-        let key = match key {
-            ViewerScrollKey::Up => inker::SessionScrollKey::LineUp,
-            ViewerScrollKey::Down => inker::SessionScrollKey::LineDown,
-            ViewerScrollKey::PageUp => inker::SessionScrollKey::PageUp,
-            ViewerScrollKey::PageDown => inker::SessionScrollKey::PageDown,
-            ViewerScrollKey::Home => inker::SessionScrollKey::Home,
-            ViewerScrollKey::End => inker::SessionScrollKey::End,
-            ViewerScrollKey::Left | ViewerScrollKey::Right => return false,
-        };
-        self.session.scroll_for_key(key)
-    }
-
-    fn click_at(&mut self, x: f32, y: f32) -> bool {
-        matches!(self.session.click_at(x, y), inker::SessionClick::Handled)
+        self.controller.title()
     }
 
     fn posture(&self) -> Option<&str> {
         self.posture.as_deref()
     }
-}
-
-#[cfg(feature = "livery")]
-impl windowed::ViewerContent for LiveryViewerContent {
-    fn title(&self) -> Option<String> {
-        self.browser.title()
-    }
 
     fn address(&self) -> Option<&str> {
-        Some(self.browser.address())
+        Some(self.controller.address())
     }
 
     fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
-        self.browser.frame(width, height)
+        self.controller.frame(width, height)
     }
 
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-        self.browser.scroll_by(dx, dy)
+        self.controller.scroll_by(dx, dy)
     }
 
     fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        self.browser.scroll_at(x, y, dx, dy)
+        self.controller.scroll_at(x, y, dx, dy)
     }
 
     fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
@@ -568,15 +564,19 @@ impl windowed::ViewerContent for LiveryViewerContent {
             ViewerScrollKey::End => inker::SessionScrollKey::End,
             ViewerScrollKey::Left | ViewerScrollKey::Right => return false,
         };
-        self.browser.scroll_for_key(key)
+        self.controller.scroll_for_key(key)
     }
 
     fn input(&mut self, input: inker::SessionInput) -> windowed::ViewerAction {
-        self.browser.input(input)
+        self.controller.input(input)
     }
 
     fn navigation(&mut self, command: inker::SessionNavigationCommand) -> windowed::ViewerAction {
-        self.browser.command(command)
+        self.controller.command(command)
+    }
+
+    fn pump(&mut self, _now_ms: f64) -> bool {
+        self.controller.pump()
     }
 }
 
@@ -621,18 +621,9 @@ pub(crate) mod windowed {
 
     use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
 
-    /// Presentation work requested after the content consumes an input or
-    /// navigation command. This is the only result the winit adapter reads.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub(crate) struct ViewerAction {
-        pub handled: bool,
-        pub redraw: bool,
-        pub cursor: Option<SessionCursor>,
-        pub capture: Option<bool>,
-        pub editable: bool,
-        pub navigated: bool,
-        pub error: Option<String>,
-    }
+    /// Presentation work requested by the public Pelt controller. The winit
+    /// adapter reads the same host-neutral result as every other embedder.
+    pub(crate) type ViewerAction = pelt_core::PeltHostEffect;
 
     /// A document the viewer can present: render at a size, consume neutral input,
     /// navigate, and (for scripted content) advance time-based work. Livery-backed and scripted
@@ -916,7 +907,7 @@ pub(crate) mod windowed {
             if let Some(error) = action.error {
                 eprintln!("[pelt-viewer] {error}");
             }
-            if let Some(capture) = action.capture {
+            if let Some(capture) = action.pointer_capture {
                 self.pointer_captured = capture;
             }
             if let Some(window) = self.window.as_ref() {

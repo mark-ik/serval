@@ -108,6 +108,7 @@ paint = { workspace = true, optional = true }
 genet-host-api = { workspace = true }
 genet-documents = { workspace = true, optional = true, default-features = false }
 inker = { workspace = true, optional = true }
+pelt-core = { workspace = true }
 pollster = { version = "0.4", optional = true }
 raw-window-handle = { workspace = true, optional = true }
 webgl_wgpu = { workspace = true, optional = true }

@@ -11,8 +11,11 @@
 use std::fmt;
 use std::str::FromStr;
 
+pub mod navigation;
 pub mod settings;
 pub mod tile;
+
+pub use navigation::resolve_href;
 
 /// Coarse engine selection for diagnostic hosts such as standalone Pelt.
 ///
@@ -20,20 +23,15 @@ pub mod tile;
 /// deliberately names only the two HTML capabilities that still need a CLI
 /// override; windowing mode, protocol, and historical implementation names are
 /// separate concerns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EngineProfile {
     /// Script-free HTML through the owned Livery/Buckram engine. Its Inker
     /// identity is `genet.livery`.
+    #[default]
     Livery,
     /// Live HTML whose scripts mutate the DOM while Livery/Buckram retain style,
     /// layout, and paint state.
     Scripted,
-}
-
-impl Default for EngineProfile {
-    fn default() -> Self {
-        Self::Livery
-    }
 }
 
 impl fmt::Display for EngineProfile {

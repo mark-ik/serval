@@ -11,9 +11,6 @@
 mod profile;
 mod static_viewer;
 
-#[cfg(feature = "livery")]
-mod browser_session;
-
 /// The host of an absolute URL, without userinfo or port. `None` for anything
 /// without an authority, which includes every local filesystem path.
 ///
@@ -75,6 +72,7 @@ mod smoke_windows;
 
 #[cfg(any(feature = "scripted", feature = "smolweb"))]
 pub use href::resolve_href;
+pub use pelt_core::{PeltClock, PeltController, PeltControllerConfig, PeltHostEffect};
 pub use profile::{DesktopHostProfile, WindowingMode};
 #[cfg(feature = "macos-present")]
 pub use smoke_macos::{

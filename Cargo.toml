@@ -79,6 +79,7 @@ members = [
     # consumers, and it must stay genet-side to keep mere's dependency direction
     # one-way.
     "components/netfetcher",
+    "ports/pelt/core",
     "ports/pelt/desktop",
     "ports/pelt",
     "ports/genet-wpt",
@@ -268,6 +269,7 @@ graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engi
 weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
 genet-host-api = { version = "=0.1.0", path = "components/genet-host-api" }
 genet-render-host = { path = "components/genet-render-host" }
+pelt-core = { version = "=0.2.0", path = "ports/pelt/core" }
 pelt-desktop = { version = "=0.2.0", path = "ports/pelt/desktop", default-features = false }
 netrender = { git = "https://github.com/merely-made/netrender.git", branch = "main", version = "0.1.0" }
 netrender_device = { git = "https://github.com/merely-made/netrender.git", branch = "main", version = "0.1.0" }
