@@ -503,7 +503,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                                 inline_box_index: item.index,
                                 advance: self.state.line.x,
                             }));
-                        }
+                        },
                     };
 
                     // Compute the x position of the content being currently processed
@@ -518,8 +518,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
 
                     // If the box fits on the current line (or we are at the start of the current line)
                     // then simply move on to the next item
-                    if next_x <= max_advance || self.state.line.text_wrap_mode != TextWrapMode::Wrap
-                    {
+                    if next_x <= max_advance {
                         // println!("BOX FITS");
 
                         self.state.item_idx += 1;
@@ -546,34 +545,33 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             }
                         }
                     }
-                }
+                },
                 LayoutItemKind::TextRun => {
                     let run_idx = item.index;
-                    let run_data = &self.layout.data.runs[run_idx];
-
-                    let run = Run::new(self.layout, 0, 0, run_data, None);
-                    let cluster_start = run_data.cluster_range.start;
+                    let run_data = self.layout.data.runs[run_idx].clone();
                     let cluster_end = run_data.cluster_range.end;
+                    let line_height = run_data.metrics.line_height;
 
                     // println!("TextRun ({:?})", &run_data.text_range);
 
                     // Iterate over remaining clusters in the Run
                     while self.state.cluster_idx < cluster_end {
-                        let cluster = run.get(self.state.cluster_idx - cluster_start).unwrap();
+                        let cluster = self.layout.data.clusters[self.state.cluster_idx];
 
                         // Retrieve metadata about the cluster
-                        let is_ligature_continuation = cluster.is_ligature_continuation();
-                        let whitespace = cluster.info().whitespace();
+                        let is_ligature_continuation = cluster.is_ligature_component();
+                        let whitespace = cluster.info.whitespace();
                         let is_newline = whitespace == Whitespace::Newline;
                         let is_space = whitespace.is_space_or_nbsp();
-                        let boundary = cluster.info().boundary();
-                        let line_height = run.metrics().line_height;
+                        let boundary = cluster.info.boundary();
                         let max_height_exceeded = self.state.line.max_height_exceeded;
-                        let style = &self.layout.data.styles[cluster.data.style_index as usize];
+                        let style = &self.layout.data.styles[cluster.style_index as usize];
+                        let (overflow_wrap, next_text_wrap_mode, tab_size) =
+                            (style.overflow_wrap, style.text_wrap_mode, style.tab_size);
 
                         // Lag text_wrap_mode style by one cluster
                         let text_wrap_mode = self.state.line.text_wrap_mode;
-                        self.state.line.text_wrap_mode = style.text_wrap_mode;
+                        self.state.line.text_wrap_mode = next_text_wrap_mode;
 
                         if boundary == Boundary::Line && text_wrap_mode == TextWrapMode::Wrap {
                             // We do not currently handle breaking within a ligature, so we ignore boundaries in such a position.
@@ -597,7 +595,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             }
                         } else if
                         // This text can contribute "emergency" line breaks.
-                        style.overflow_wrap != OverflowWrap::Normal && !is_ligature_continuation
+                        overflow_wrap != OverflowWrap::Normal && !is_ligature_continuation
                         && text_wrap_mode == TextWrapMode::Wrap
                         // If we're at the start of the line, this particular cluster will never fit, so it's not a valid emergency break opportunity.
                         && self.state.line.x != 0.0
@@ -607,13 +605,28 @@ impl<'a, B: Brush> BreakLines<'a, B> {
 
                         // If current cluster is the start of a ligature, then advance state to include
                         // the remaining clusters that make up the ligature
-                        let mut advance = cluster.advance();
+                        let mut advance = cluster.advance;
+                        if whitespace == Whitespace::Tab && tab_size.is_finite() && tab_size > 0.0 {
+                            advance = tab_size - self.state.line.x.rem_euclid(tab_size);
+                            self.layout.data.clusters[self.state.cluster_idx].advance = advance;
+                            if cluster.glyph_len != 0xFF && cluster.glyph_len != 0 {
+                                let last = run_data.glyph_start
+                                    + cluster.glyph_offset as usize
+                                    + cluster.glyph_len as usize
+                                    - 1;
+                                if let Some(glyph) = self.layout.data.glyphs.get_mut(last) {
+                                    glyph.advance += advance - cluster.advance;
+                                }
+                            }
+                        }
                         if cluster.is_ligature_start() {
-                            while let Some(cluster) = run.get(self.state.cluster_idx + 1) {
-                                if !cluster.is_ligature_continuation() {
+                            while let Some(cluster) =
+                                self.layout.data.clusters.get(self.state.cluster_idx + 1)
+                            {
+                                if !cluster.is_ligature_component() {
                                     break;
                                 } else {
-                                    advance += cluster.advance();
+                                    advance += cluster.advance;
                                     self.state.cluster_idx += 1;
                                 }
                             }
@@ -646,7 +659,9 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             // Case: cluster is a space character (and wrapping is enabled)
                             //
                             // We hang any overflowing whitespace and then line-break.
-                            if is_space && text_wrap_mode == TextWrapMode::Wrap {
+                            if whitespace.hangs_at_line_end()
+                                && text_wrap_mode == TextWrapMode::Wrap
+                            {
                                 if max_height_exceeded {
                                     return self.max_height_break_data(line_height);
                                 }
@@ -710,7 +725,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     }
                     self.state.run_idx += 1;
                     self.state.item_idx += 1;
-                }
+                },
             }
         }
 
@@ -808,16 +823,15 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             return Some(());
                         }
                     }
-                }
+                },
                 LayoutItemKind::TextRun => {
                     let run_idx = item.index;
-                    let run_data = &self.layout.data.runs[run_idx];
-                    let run = Run::new(self.layout, 0, 0, run_data, None);
-                    let cluster_start = run_data.cluster_range.start;
+                    let run_data = self.layout.data.runs[run_idx].clone();
                     let cluster_end = run_data.cluster_range.end;
+                    let line_height = run_data.metrics.line_height;
 
                     while self.state.cluster_idx < cluster_end {
-                        let cluster = run.get(self.state.cluster_idx - cluster_start).unwrap();
+                        let cluster = self.layout.data.clusters[self.state.cluster_idx];
 
                         // Check if we should break before this cluster
                         if char_count >= max_chars
@@ -828,10 +842,27 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             return Some(());
                         }
 
-                        let whitespace = cluster.info().whitespace();
+                        let whitespace = cluster.info.whitespace();
                         let is_newline = whitespace == Whitespace::Newline;
                         let is_space = whitespace.is_space_or_nbsp();
-                        let advance = cluster.advance();
+                        let mut advance = cluster.advance;
+                        if whitespace == Whitespace::Tab {
+                            let style = &self.layout.data.styles[cluster.style_index as usize];
+                            if style.tab_size.is_finite() && style.tab_size > 0.0 {
+                                advance =
+                                    style.tab_size - self.state.line.x.rem_euclid(style.tab_size);
+                                self.layout.data.clusters[self.state.cluster_idx].advance = advance;
+                                if cluster.glyph_len != 0xFF && cluster.glyph_len != 0 {
+                                    let last = run_data.glyph_start
+                                        + cluster.glyph_offset as usize
+                                        + cluster.glyph_len as usize
+                                        - 1;
+                                    if let Some(glyph) = self.layout.data.glyphs.get_mut(last) {
+                                        glyph.advance += advance - cluster.advance;
+                                    }
+                                }
+                            }
+                        }
 
                         // Compute the x position.
                         // Newlines don't contribute to line width (matching break_next behavior).
@@ -840,7 +871,6 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         } else {
                             self.state.line.x + advance
                         };
-                        let line_height = run.metrics().line_height;
                         self.state.append_cluster_to_line(next_x, line_height);
                         self.state.cluster_idx += 1;
                         char_count += 1;
@@ -877,7 +907,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     }
                     self.state.run_idx += 1;
                     self.state.item_idx += 1;
-                }
+                },
             }
         }
 
@@ -984,7 +1014,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // Mark us as having seen non-whitespace content on this line
                         have_metrics = true;
                     }
-                }
+                },
                 LayoutItemKind::TextRun => {
                     line_item.compute_whitespace_properties(&self.layout.data);
 
@@ -1018,7 +1048,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
 
                     // Mark us as having seen non-whitespace content on this line
                     have_metrics = true;
-                }
+                },
             }
         }
 
@@ -1304,7 +1334,7 @@ fn try_commit_line<B: Brush>(
                 });
 
                 last_item_kind = item.kind;
-            }
+            },
             LayoutItemKind::TextRun => {
                 let run_data = &layout.data.runs[item.index];
 
@@ -1352,7 +1382,7 @@ fn try_commit_line<B: Brush>(
                     cluster_range,
                     text_range,
                 });
-            }
+            },
         }
     }
     // let end_run_idx = lines.line_items.last().map(|item| item.index).unwrap_or(0);

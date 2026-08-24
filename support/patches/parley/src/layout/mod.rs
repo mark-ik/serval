@@ -62,6 +62,8 @@ pub struct Style<B: Brush> {
     pub(crate) overflow_wrap: OverflowWrap,
     /// Per-cluster text-wrap-mode setting
     pub(crate) text_wrap_mode: TextWrapMode,
+    /// Distance between horizontal tab stops in layout units.
+    pub(crate) tab_size: f32,
     #[cfg(feature = "accesskit")]
     /// Locale if any, so we can set the corresponding AccessKit property
     pub(crate) locale: Option<fontique::Language>,

@@ -66,16 +66,24 @@ pub(crate) enum Whitespace {
     Space = 1,
     /// Non-breaking space (U+00A0).
     NoBreakSpace = 2,
+    /// Ideographic space (U+3000), which hangs at a line edge.
+    IdeographicSpace = 3,
     /// Horizontal tab.
-    Tab = 3,
+    Tab = 4,
     /// Newline (CR, LF, CRLF, LS, or PS).
-    Newline = 4,
+    Newline = 5,
 }
 
 impl Whitespace {
     /// Returns true for space or no break space.
     pub(crate) fn is_space_or_nbsp(self) -> bool {
         matches!(self, Self::Space | Self::NoBreakSpace)
+    }
+
+    /// Returns true for spaces that hang rather than forcing an emergency
+    /// break before their glyph.
+    pub(crate) fn hangs_at_line_end(self) -> bool {
+        matches!(self, Self::Space | Self::IdeographicSpace)
     }
 }
 
@@ -137,7 +145,7 @@ impl CharCluster {
                 match decomp {
                     Decomposed::Default | Decomposed::Singleton(_) => {
                         return None;
-                    }
+                    },
                     Decomposed::Expansion(a, b) => {
                         let mut copy = self.chars[0];
                         copy.ch = a;
@@ -151,13 +159,13 @@ impl CharCluster {
                         self.decomp.chars[1] = copy;
 
                         self.decomp.len = 2;
-                    }
+                    },
                 }
 
                 self.decomp.state = FormState::Valid;
                 self.decomp.setup();
                 Some(self.decomp.chars())
-            }
+            },
             FormState::Valid => Some(self.decomp.chars()),
         }
     }
@@ -176,7 +184,7 @@ impl CharCluster {
                 let composer = analysis_data_sources.composing_normalizer();
                 let comp = composer.compose(self.chars[0].ch, self.chars[1].ch);
                 match comp {
-                    None => {}
+                    None => {},
                     Some(ch) => {
                         let mut copy = self.chars[0];
                         copy.ch = ch;
@@ -184,13 +192,13 @@ impl CharCluster {
                             Self::contributes_to_shaping(ch, analysis_data_sources);
                         self.comp.chars[0] = copy;
                         self.comp.len = 1;
-                    }
+                    },
                 }
 
                 self.comp.state = FormState::Valid;
                 self.comp.setup();
                 Some(self.comp.chars())
-            }
+            },
             FormState::Valid => Some(self.comp.chars()),
         }
     }

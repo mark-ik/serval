@@ -252,6 +252,7 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
         line_height: LineHeight::Absolute(30.),
         word_spacing: 2.,
         letter_spacing: 1.5,
+        tab_size: 64.0,
         word_break: WordBreak::BreakAll,
         overflow_wrap: OverflowWrap::Anywhere,
         text_wrap_mode: TextWrapMode::Wrap,

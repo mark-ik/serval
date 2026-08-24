@@ -1360,6 +1360,354 @@ keyword_value! {
         Right => "right",
         Center => "center",
         Justify => "justify",
+        JustifyAll => "justify-all",
+    }
+}
+
+keyword_value! {
+    /// `text-align-last` keywords.
+    pub enum TextAlignLast {
+        Auto => "auto",
+        Start => "start",
+        End => "end",
+        Left => "left",
+        Right => "right",
+        Center => "center",
+        Justify => "justify",
+    }
+}
+
+keyword_value! {
+    /// `text-justify` keywords.
+    pub enum TextJustify {
+        Auto => "auto",
+        None => "none",
+        InterWord => "inter-word",
+        InterCharacter => "inter-character",
+        Distribute => "distribute",
+    }
+}
+
+keyword_value! {
+    /// `overflow-wrap` keywords.
+    pub enum OverflowWrap {
+        Normal => "normal",
+        BreakWord => "break-word",
+        Anywhere => "anywhere",
+    }
+}
+
+keyword_value! {
+    /// `word-break` keywords.
+    pub enum WordBreak {
+        Normal => "normal",
+        KeepAll => "keep-all",
+        BreakAll => "break-all",
+        BreakWord => "break-word",
+    }
+}
+
+keyword_value! {
+    /// `line-break` keywords.
+    pub enum LineBreak {
+        Auto => "auto",
+        Loose => "loose",
+        Normal => "normal",
+        Strict => "strict",
+        Anywhere => "anywhere",
+    }
+}
+
+keyword_value! {
+    /// `hyphens` keywords.
+    pub enum Hyphens {
+        None => "none",
+        Manual => "manual",
+        Auto => "auto",
+    }
+}
+
+keyword_value! {
+    /// The case-mapping component of `text-transform`.
+    pub enum TextTransformCase {
+        None => "none",
+        Capitalize => "capitalize",
+        Uppercase => "uppercase",
+        Lowercase => "lowercase",
+        MathAuto => "math-auto",
+    }
+}
+
+/// CSS `text-transform` as its orthogonal case, width, and kana flags.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TextTransform {
+    pub case: TextTransformCase,
+    pub full_width: bool,
+    pub full_size_kana: bool,
+}
+
+impl TextTransform {
+    pub const NONE: Self = Self {
+        case: TextTransformCase::None,
+        full_width: false,
+        full_size_kana: false,
+    };
+
+    pub const fn is_none(self) -> bool {
+        matches!(
+            self.case,
+            TextTransformCase::None | TextTransformCase::MathAuto
+        ) && !self.full_width
+            && !self.full_size_kana
+    }
+}
+
+impl FromStr for TextTransform {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        const EXPECTED: ParseError = ParseError::expected(
+            "none | [ capitalize | uppercase | lowercase ] || full-width || full-size-kana | math-auto",
+        );
+        let tokens = input
+            .split_ascii_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        if tokens.is_empty() {
+            return Err(EXPECTED);
+        }
+        if tokens.len() == 1
+            && let Ok(sole) = tokens[0].parse::<TextTransformCase>()
+            && matches!(sole, TextTransformCase::None | TextTransformCase::MathAuto)
+        {
+            return Ok(Self {
+                case: sole,
+                ..Self::NONE
+            });
+        }
+        let mut value = Self::NONE;
+        let mut seen_case = false;
+        for token in &tokens {
+            match token.as_str() {
+                "capitalize" | "uppercase" | "lowercase" if !seen_case => {
+                    seen_case = true;
+                    value.case = token.parse().map_err(|_| EXPECTED)?;
+                },
+                "full-width" if !value.full_width => value.full_width = true,
+                "full-size-kana" if !value.full_size_kana => value.full_size_kana = true,
+                _ => return Err(EXPECTED),
+            }
+        }
+        Ok(value)
+    }
+}
+
+impl fmt::Display for TextTransform {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_none() {
+            return self.case.fmt(formatter);
+        }
+        let mut parts = Vec::with_capacity(3);
+        if !matches!(self.case, TextTransformCase::None) {
+            parts.push(self.case.to_string());
+        }
+        if self.full_width {
+            parts.push("full-width".to_owned());
+        }
+        if self.full_size_kana {
+            parts.push("full-size-kana".to_owned());
+        }
+        formatter.write_str(&parts.join(" "))
+    }
+}
+
+/// Split on top-level whitespace while keeping function arguments intact.
+fn split_top_level(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = None;
+    for (index, character) in input.char_indices() {
+        match character {
+            '(' => {
+                depth += 1;
+                start.get_or_insert(index);
+            },
+            ')' => {
+                depth = depth.saturating_sub(1);
+                start.get_or_insert(index);
+            },
+            character if character.is_ascii_whitespace() && depth == 0 => {
+                if let Some(begin) = start.take() {
+                    parts.push(&input[begin..index]);
+                }
+            },
+            _ => {
+                start.get_or_insert(index);
+            },
+        }
+    }
+    if let Some(begin) = start {
+        parts.push(&input[begin..]);
+    }
+    parts
+}
+
+/// CSS `hanging-punctuation`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HangingPunctuation {
+    pub first: bool,
+    pub force_end: bool,
+    pub allow_end: bool,
+    pub last: bool,
+}
+
+impl HangingPunctuation {
+    pub const NONE: Self = Self {
+        first: false,
+        force_end: false,
+        allow_end: false,
+        last: false,
+    };
+}
+
+impl FromStr for HangingPunctuation {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        const EXPECTED: ParseError =
+            ParseError::expected("none or first || [ force-end | allow-end ] || last");
+        if input.trim().eq_ignore_ascii_case("none") {
+            return Ok(Self::NONE);
+        }
+        let mut value = Self::NONE;
+        for token in input.split_ascii_whitespace() {
+            match token.to_ascii_lowercase().as_str() {
+                "first" if !value.first => value.first = true,
+                "force-end" if !value.force_end && !value.allow_end => value.force_end = true,
+                "allow-end" if !value.allow_end && !value.force_end => value.allow_end = true,
+                "last" if !value.last => value.last = true,
+                _ => return Err(EXPECTED),
+            }
+        }
+        if value == Self::NONE {
+            return Err(EXPECTED);
+        }
+        Ok(value)
+    }
+}
+
+impl fmt::Display for HangingPunctuation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if *self == Self::NONE {
+            return formatter.write_str("none");
+        }
+        let mut parts = Vec::new();
+        if self.first {
+            parts.push("first");
+        }
+        if self.force_end {
+            parts.push("force-end");
+        }
+        if self.allow_end {
+            parts.push("allow-end");
+        }
+        if self.last {
+            parts.push("last");
+        }
+        formatter.write_str(&parts.join(" "))
+    }
+}
+
+/// CSS `text-indent`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextIndent {
+    pub length: LengthPercentage,
+    pub hanging: bool,
+    pub each_line: bool,
+}
+
+impl TextIndent {
+    pub const ZERO: Self = Self {
+        length: LengthPercentage::ZERO,
+        hanging: false,
+        each_line: false,
+    };
+}
+
+impl FromStr for TextIndent {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        const EXPECTED: ParseError =
+            ParseError::expected("[ <length-percentage> ] && hanging? && each-line?");
+        let mut value = Self::ZERO;
+        let mut length = None;
+        for token in split_top_level(input) {
+            match token.to_ascii_lowercase().as_str() {
+                "hanging" if !value.hanging => value.hanging = true,
+                "each-line" if !value.each_line => value.each_line = true,
+                _ if length.is_none() => {
+                    length = Some(token.parse::<LengthPercentage>().map_err(|_| EXPECTED)?);
+                },
+                _ => return Err(EXPECTED),
+            }
+        }
+        value.length = length.ok_or(EXPECTED)?;
+        Ok(value)
+    }
+}
+
+impl fmt::Display for TextIndent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.length.fmt(formatter)?;
+        if self.hanging {
+            formatter.write_str(" hanging")?;
+        }
+        if self.each_line {
+            formatter.write_str(" each-line")?;
+        }
+        Ok(())
+    }
+}
+
+/// CSS `tab-size`: either a space advance multiplier or an absolute length.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TabSize {
+    Number(f32),
+    Length(Length),
+}
+
+impl TabSize {
+    pub const DEFAULT: Self = Self::Number(8.0);
+}
+
+impl FromStr for TabSize {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        const EXPECTED: ParseError = ParseError::expected("a non-negative number or length");
+        let input = input.trim();
+        if let Ok(number) = input.parse::<f32>() {
+            return if number.is_finite() && number >= 0.0 {
+                Ok(Self::Number(number))
+            } else {
+                Err(EXPECTED)
+            };
+        }
+        let length = input.parse::<Length>().map_err(|_| EXPECTED)?;
+        if length.value < 0.0 {
+            return Err(EXPECTED);
+        }
+        Ok(Self::Length(length))
+    }
+}
+
+impl fmt::Display for TabSize {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Number(number) => formatter.write_str(&format_number(*number)),
+            Self::Length(length) => length.fmt(formatter),
+        }
     }
 }
 

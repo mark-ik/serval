@@ -60,6 +60,10 @@ struct Property {
     /// semantics.
     #[serde(default)]
     partial: Option<String>,
+    /// Legacy names that parse as this property (`word-wrap` for
+    /// `overflow-wrap`). Aliases are parse-time spellings only.
+    #[serde(default)]
+    aliases: Vec<String>,
     /// Stylo's logical-property override group. A logical property and all
     /// physical targets it can resolve to share this identifier.
     #[serde(default)]
@@ -217,6 +221,7 @@ fn value_type_path(value_type: &str) -> &'static str {
         "grid-auto-flow" => "crate::values::GridAutoFlow",
         "grid-placement" => "crate::values::GridPlacement",
         "grid-template" => "crate::values::GridTemplate",
+        "hanging-punctuation" => "crate::values::HangingPunctuation",
         "inset" => "crate::values::Inset",
         "line-height" => "crate::values::LineHeight",
         "list-style-type" => "crate::values::ListStyleType",
@@ -233,9 +238,18 @@ fn value_type_path(value_type: &str) -> &'static str {
         "size" => "crate::values::Size",
         "spacing" => "crate::values::Spacing",
         "text-align" => "crate::values::TextAlign",
+        "text-align-last" => "crate::values::TextAlignLast",
         "text-decoration-color" => "crate::values::Color",
         "text-decoration-line" => "crate::values::TextDecorationLine",
+        "text-indent" => "crate::values::TextIndent",
+        "text-justify" => "crate::values::TextJustify",
+        "text-transform" => "crate::values::TextTransform",
         "text-wrap-mode" => "crate::values::TextWrapMode",
+        "overflow-wrap" => "crate::values::OverflowWrap",
+        "word-break" => "crate::values::WordBreak",
+        "line-break" => "crate::values::LineBreak",
+        "hyphens" => "crate::values::Hyphens",
+        "tab-size" => "crate::values::TabSize",
         "transform" => "crate::values::Transform",
         "transition-property" => "crate::values::TransitionProperty",
         "visibility" => "crate::values::Visibility",
@@ -311,6 +325,7 @@ fn initial_expression(property: &Property) -> &'static str {
         ("grid-auto-flow", "row") => "crate::values::GridAutoFlow::Row",
         ("grid-placement", "auto") => "crate::values::GridPlacement::Auto",
         ("grid-template", "none") => "crate::values::GridTemplate::None",
+        ("hanging-punctuation", "none") => "crate::values::HangingPunctuation::NONE",
         ("inset", "auto") => "crate::values::Inset::Auto",
         ("line-height", "normal") => "crate::values::LineHeight::Normal",
         ("list-style-type", "disc") => "crate::values::ListStyleType::Disc",
@@ -328,9 +343,18 @@ fn initial_expression(property: &Property) -> &'static str {
         ("size", "none") => "crate::values::Size::None",
         ("spacing", "normal") => "crate::values::Spacing::Normal",
         ("text-align", "start") => "crate::values::TextAlign::Start",
+        ("text-align-last", "auto") => "crate::values::TextAlignLast::Auto",
         ("text-decoration-color", "currentcolor") => "crate::values::ComputedColor::CURRENT_COLOR",
         ("text-decoration-line", "none") => "crate::values::TextDecorationLine::NONE",
+        ("text-indent", "0") => "crate::values::TextIndent::ZERO",
+        ("text-justify", "auto") => "crate::values::TextJustify::Auto",
+        ("text-transform", "none") => "crate::values::TextTransform::NONE",
         ("text-wrap-mode", "wrap") => "crate::values::TextWrapMode::Wrap",
+        ("overflow-wrap", "normal") => "crate::values::OverflowWrap::Normal",
+        ("word-break", "normal") => "crate::values::WordBreak::Normal",
+        ("line-break", "auto") => "crate::values::LineBreak::Auto",
+        ("hyphens", "manual") => "crate::values::Hyphens::Manual",
+        ("tab-size", "8") => "crate::values::TabSize::DEFAULT",
         ("transform", "none") => "crate::values::Transform::None",
         ("transition-property", "all") => "crate::values::TransitionProperty::All",
         ("visibility", "visible") => "crate::values::Visibility::Visible",
@@ -498,6 +522,20 @@ fn validate(db: &Database) {
         })
         .collect();
     let mut known = BTreeSet::new();
+    for property in &db.property {
+        for alias in &property.aliases {
+            assert!(
+                !names.contains(alias.as_str()) && !shorthand_names.contains(alias),
+                "alias {alias} of {} collides with a catalog name",
+                property.name
+            );
+            assert!(
+                known.insert(alias.clone()),
+                "duplicate alias {alias} on {}",
+                property.name
+            );
+        }
+    }
     for entry in &db.unimplemented {
         assert!(
             !names.contains(entry.name.as_str()) && !shorthand_names.contains(&entry.name),
@@ -646,6 +684,13 @@ fn generate(db: &Database) -> String {
             literal(&property.name),
             rust_name(&property.name)
         ));
+        for alias in &property.aliases {
+            out.push_str(&format!(
+                "            {} => Some(Self::{}),\n",
+                literal(alias),
+                rust_name(&property.name)
+            ));
+        }
     }
     out.push_str("            _ => None,\n        }\n    }\n\n    pub const fn metadata(self) -> PropertyMetadata {\n        match self {\n");
     for property in &db.property {

@@ -157,12 +157,13 @@ impl ResolveContext {
             StyleProperty::Strikethrough(value) => Strikethrough(*value),
             StyleProperty::StrikethroughOffset(value) => {
                 StrikethroughOffset(value.map(|x| x * scale))
-            }
+            },
             StyleProperty::StrikethroughSize(value) => StrikethroughSize(value.map(|x| x * scale)),
             StyleProperty::StrikethroughBrush(value) => StrikethroughBrush(value.clone()),
             StyleProperty::LineHeight(value) => LineHeight(value.scale(scale)),
             StyleProperty::WordSpacing(value) => WordSpacing(*value * scale),
             StyleProperty::LetterSpacing(value) => LetterSpacing(*value * scale),
+            StyleProperty::TabSize(value) => TabSize(*value * scale),
             StyleProperty::WordBreak(value) => WordBreak(*value),
             StyleProperty::OverflowWrap(value) => OverflowWrap(*value),
             StyleProperty::TextWrapMode(value) => TextWrapMode(*value),
@@ -200,6 +201,7 @@ impl ResolveContext {
             line_height: raw_style.line_height.scale(scale),
             word_spacing: raw_style.word_spacing * scale,
             letter_spacing: raw_style.letter_spacing * scale,
+            tab_size: raw_style.tab_size * scale,
             word_break: raw_style.word_break,
             overflow_wrap: raw_style.overflow_wrap,
             text_wrap_mode: raw_style.text_wrap_mode,
@@ -221,24 +223,24 @@ impl ResolveContext {
                             if let Some(family) = fcx.collection.family_by_name(&name) {
                                 self.tmp_families.push(family.id());
                             }
-                        }
+                        },
                         FontFamilyName::Generic(family) => {
                             self.tmp_families
                                 .extend(fcx.collection.generic_families(family));
-                        }
+                        },
                     }
                 }
-            }
+            },
             FontFamily::Single(family) => match family {
                 FontFamilyName::Named(name) => {
                     if let Some(family) = fcx.collection.family_by_name(name) {
                         self.tmp_families.push(family.id());
                     }
-                }
+                },
                 FontFamilyName::Generic(family) => {
                     self.tmp_families
                         .extend(fcx.collection.generic_families(*family));
-                }
+                },
             },
             FontFamily::List(families) => {
                 let families: &[FontFamilyName<'_>] = families.borrow();
@@ -248,14 +250,14 @@ impl ResolveContext {
                             if let Some(family) = fcx.collection.family_by_name(name) {
                                 self.tmp_families.push(family.id());
                             }
-                        }
+                        },
                         FontFamilyName::Generic(family) => {
                             self.tmp_families
                                 .extend(fcx.collection.generic_families(*family));
-                        }
+                        },
                     }
                 }
-            }
+            },
         }
         let resolved = self.families.insert(&self.tmp_families);
         self.tmp_families.clear();
@@ -272,11 +274,11 @@ impl ResolveContext {
                 self.tmp_variations.clear();
                 self.tmp_variations
                     .extend(FontVariation::parse_css_list(source).map_while(Result::ok));
-            }
+            },
             FontVariations::List(settings) => {
                 self.tmp_variations.clear();
                 self.tmp_variations.extend_from_slice(settings);
-            }
+            },
         }
         if self.tmp_variations.is_empty() {
             return Resolved::default();
@@ -297,11 +299,11 @@ impl ResolveContext {
                 self.tmp_features.clear();
                 self.tmp_features
                     .extend(FontFeature::parse_css_list(source).map_while(Result::ok));
-            }
+            },
             FontFeatures::List(settings) => {
                 self.tmp_features.clear();
                 self.tmp_features.extend_from_slice(settings);
-            }
+            },
         }
         if self.tmp_features.is_empty() {
             return Resolved::default();
@@ -381,6 +383,8 @@ pub(crate) enum ResolvedProperty<B: Brush> {
     WordSpacing(f32),
     /// Extra spacing between letters.
     LetterSpacing(f32),
+    /// Distance between horizontal tab stops.
+    TabSize(f32),
     /// Control over where words can wrap.
     WordBreak(WordBreak),
     /// Control over "emergency" line-breaking.
@@ -420,6 +424,8 @@ pub(crate) struct ResolvedStyle<B: Brush> {
     pub(crate) word_spacing: f32,
     /// Extra spacing between letters.
     pub(crate) letter_spacing: f32,
+    /// Distance between horizontal tab stops.
+    pub(crate) tab_size: f32,
     /// Control over where words can wrap.
     pub(crate) word_break: WordBreak,
     /// Control over "emergency" line-breaking.
@@ -453,6 +459,7 @@ impl<B: Brush> ResolvedStyle<B> {
             LineHeight(value) => self.line_height = value,
             WordSpacing(value) => self.word_spacing = value,
             LetterSpacing(value) => self.letter_spacing = value,
+            TabSize(value) => self.tab_size = value,
             WordBreak(value) => self.word_break = value,
             OverflowWrap(value) => self.overflow_wrap = value,
             TextWrapMode(value) => self.text_wrap_mode = value,
@@ -482,6 +489,7 @@ impl<B: Brush> ResolvedStyle<B> {
             LineHeight(value) => self.line_height.nearly_eq(*value),
             WordSpacing(value) => nearly_eq(self.word_spacing, *value),
             LetterSpacing(value) => nearly_eq(self.letter_spacing, *value),
+            TabSize(value) => nearly_eq(self.tab_size, *value),
             WordBreak(value) => self.word_break == *value,
             OverflowWrap(value) => self.overflow_wrap == *value,
             TextWrapMode(value) => self.text_wrap_mode == *value,
@@ -496,6 +504,7 @@ impl<B: Brush> ResolvedStyle<B> {
             line_height: self.line_height,
             overflow_wrap: self.overflow_wrap,
             text_wrap_mode: self.text_wrap_mode,
+            tab_size: self.tab_size,
             #[cfg(feature = "accesskit")]
             locale: self.locale,
         }

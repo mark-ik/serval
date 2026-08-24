@@ -1506,7 +1506,7 @@ name = "text-align"
 value_type = "text-align"
 inherited = true
 initial = "start"
-grammar = "start | end | left | right | center | justify"
+grammar = "start | end | left | right | center | justify | justify-all"
 seed_values = ["start", "left", "center"]
 animation = "discrete"
 source = "css_box_alignment_3"
@@ -1539,6 +1539,112 @@ initial = "wrap"
 grammar = "wrap | nowrap"
 seed_values = ["wrap", "nowrap"]
 animation = "discrete"
+source = "css_text_4"
+
+[[property]]
+name = "text-align-last"
+value_type = "text-align-last"
+inherited = true
+initial = "auto"
+grammar = "auto | start | end | left | right | center | justify"
+seed_values = ["auto", "center", "justify"]
+animation = "discrete"
+source = "css_text_4"
+
+[[property]]
+name = "text-justify"
+value_type = "text-justify"
+inherited = true
+initial = "auto"
+grammar = "auto | none | inter-word | inter-character | distribute"
+seed_values = ["auto", "none"]
+animation = "discrete"
+partial = "auto, none, and inter-word; inter-character and distribute justify between words"
+source = "css_text_4"
+
+[[property]]
+name = "hanging-punctuation"
+value_type = "hanging-punctuation"
+inherited = true
+initial = "none"
+grammar = "none | [ first || [ force-end | allow-end ] || last ]"
+seed_values = ["none", "first", "allow-end", "last"]
+animation = "discrete"
+partial = "first is applied; end-edge hanging is parsed and retained for the next line-edge slice"
+source = "css_text_4"
+
+[[property]]
+name = "text-indent"
+value_type = "text-indent"
+inherited = true
+initial = "0"
+grammar = "[ <length-percentage> ] && hanging? && each-line?"
+seed_values = ["0", "px", "percentage", "hanging"]
+animation = "by-computed-value"
+source = "css_text_4"
+
+[[property]]
+name = "text-transform"
+value_type = "text-transform"
+inherited = true
+initial = "none"
+grammar = "none | [ capitalize | uppercase | lowercase ] || full-width || full-size-kana | math-auto"
+seed_values = ["none", "uppercase", "capitalize"]
+animation = "discrete"
+partial = "case mapping is the Unicode default; language tailoring and math-auto are not built"
+source = "css_text_4"
+
+[[property]]
+name = "overflow-wrap"
+value_type = "overflow-wrap"
+inherited = true
+initial = "normal"
+grammar = "normal | break-word | anywhere"
+seed_values = ["normal", "break-word", "anywhere"]
+animation = "discrete"
+aliases = ["word-wrap"]
+source = "css_text_4"
+
+[[property]]
+name = "word-break"
+value_type = "word-break"
+inherited = true
+initial = "normal"
+grammar = "normal | keep-all | break-all | break-word"
+seed_values = ["normal", "break-all", "keep-all"]
+animation = "discrete"
+source = "css_text_4"
+
+[[property]]
+name = "line-break"
+value_type = "line-break"
+inherited = true
+initial = "auto"
+grammar = "auto | loose | normal | strict | anywhere"
+seed_values = ["auto", "anywhere"]
+animation = "discrete"
+partial = "anywhere; loose, normal, and strict use the shaper's default UAX14 segmentation"
+source = "css_text_4"
+
+[[property]]
+name = "hyphens"
+value_type = "hyphens"
+inherited = true
+initial = "manual"
+grammar = "none | manual | auto"
+seed_values = ["manual", "none"]
+animation = "discrete"
+partial = "none suppresses soft-hyphen opportunities; manual and auto break at soft hyphens without a hyphenate character"
+source = "css_text_4"
+
+[[property]]
+name = "tab-size"
+value_type = "tab-size"
+inherited = true
+initial = "8"
+grammar = "<number [0,∞]> | <length [0,∞]>"
+seed_values = ["8", "4", "px"]
+animation = "by-computed-value"
 source = "css_text_4"
 
 [[property]]
@@ -2164,49 +2270,6 @@ animation = "discrete"
 spec = "https://drafts.csswg.org/css-text/#MISSING"
 
 [[unimplemented]]
-name = "line-break"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text-3/#line-break-property"
-
-[[unimplemented]]
-name = "overflow-wrap"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-aliases = ["word-wrap"]
-spec = "https://drafts.csswg.org/css-text/#propdef-overflow-wrap"
-
-[[unimplemented]]
-name = "tab-size"
-group = "inherited_text"
-inherited = true
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-text-3/#tab-size-property"
-
-[[unimplemented]]
-name = "text-align-last"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-align-last"
-
-[[unimplemented]]
-name = "text-indent"
-group = "inherited_text"
-inherited = true
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-indent"
-
-[[unimplemented]]
-name = "text-justify"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-justify"
-
-[[unimplemented]]
 name = "text-rendering"
 group = "inherited_text"
 inherited = true
@@ -2219,20 +2282,6 @@ group = "inherited_text"
 inherited = true
 animation = "by-computed-value"
 spec = "https://drafts.csswg.org/css-text-decor-3/#text-shadow-property"
-
-[[unimplemented]]
-name = "text-transform"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-transform"
-
-[[unimplemented]]
-name = "word-break"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-word-break"
 
 # group: inherited_ui
 [[unimplemented]]

@@ -5,7 +5,10 @@ use crate::inline_box::InlineBox;
 use crate::layout::{ContentWidths, Glyph, LineMetrics, RunMetrics, Style};
 use crate::style::Brush;
 use crate::util::nearly_zero;
-use crate::{FontData, IndentOptions, InlineBoxKind, LineHeight, OverflowWrap, TextWrapMode};
+use crate::{
+    Alignment, AlignmentOptions, FontData, IndentOptions, InlineBoxKind, LineHeight, OverflowWrap,
+    TextWrapMode,
+};
 use core::ops::Range;
 
 use alloc::vec::Vec;
@@ -110,6 +113,7 @@ const fn to_whitespace(c: char) -> Whitespace {
         '\t' => Whitespace::Tab,
         '\n' | '\r' | LINE_SEPARATOR | PARAGRAPH_SEPARATOR => Whitespace::Newline,
         '\u{00A0}' => Whitespace::NoBreakSpace,
+        '\u{3000}' => Whitespace::IdeographicSpace,
         _ => Whitespace::None,
     }
 }
@@ -308,6 +312,10 @@ pub(crate) struct LayoutData<B: Brush> {
     pub(crate) alignment: Option<super::Alignment>,
     /// Whether the layout is aligned with [`crate::Alignment::Justify`].
     pub(crate) is_aligned_justified: bool,
+    /// Main alignment used by the last justification pass.
+    pub(crate) justification_alignment: Alignment,
+    /// Options used by the last justification pass.
+    pub(crate) alignment_options: AlignmentOptions,
     /// The text-indent amount in layout units.
     pub(crate) indent_amount: f32,
     /// Options controlling text-indent behavior (each-line, hanging).
@@ -337,6 +345,8 @@ impl<B: Brush> Default for LayoutData<B> {
             #[cfg(feature = "accesskit")]
             alignment: None,
             is_aligned_justified: false,
+            justification_alignment: Alignment::Start,
+            alignment_options: AlignmentOptions::default(),
             layout_max_advance: 0.0,
             indent_amount: 0.0,
             indent_options: IndentOptions::default(),
@@ -438,7 +448,7 @@ impl<B: Brush> LayoutData<B> {
                 LineHeight::FontSizeRelative(value) => value * font_size,
                 LineHeight::MetricsRelative(value) => {
                     (metrics.ascent - metrics.descent + metrics.leading) * value
-                }
+                },
             };
 
             RunMetrics {
@@ -606,7 +616,7 @@ impl<B: Brush> LayoutData<B> {
                     }
                     let trailing_whitespace = whitespace_advance(prev_cluster);
                     min_width = min_width.max(running_min_width - trailing_whitespace);
-                }
+                },
                 LayoutItemKind::InlineBox => {
                     let ibox = &self.inline_boxes[item.index];
                     if ibox.kind == InlineBoxKind::InFlow {
@@ -621,7 +631,7 @@ impl<B: Brush> LayoutData<B> {
                         }
                     }
                     prev_cluster = None;
-                }
+                },
             }
             let trailing_whitespace = whitespace_advance(prev_cluster);
             max_width = max_width.max(running_max_width - trailing_whitespace);
@@ -873,13 +883,13 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
                             inline_glyph_id = Some(pending.id);
                         }
                     }
-                }
+                },
                 _ => {
                     if let Some(pending) = pending_inline_glyph.take() {
                         glyphs.push(pending);
                         total_glyphs += 1;
                     }
-                }
+                },
             }
             push_cluster(
                 clusters,
@@ -937,22 +947,22 @@ fn push_cluster(
             // Ligature components have no glyphs, only advance.
             debug_assert_eq!(glyph_len, 0);
             (0_u8, 0_u32, advance)
-        }
+        },
         ClusterType::Newline => {
             // Newline clusters are stripped of their glyph contribution.
             debug_assert_eq!(glyph_len, 1);
             (0_u8, 0_u32, 0.0)
-        }
+        },
         _ if inline_glyph_id.is_some() => {
             // Inline glyphs are stored inline within `ClusterData`
             debug_assert_eq!(glyph_len, 0);
             (0xFF_u8, inline_glyph_id.unwrap(), advance)
-        }
+        },
         ClusterType::Regular | ClusterType::LigatureStart => {
             // Regular and ligature start clusters maintain their glyphs and advance.
             debug_assert_ne!(glyph_len, 0);
             (glyph_len, glyph_offset, advance)
-        }
+        },
     };
 
     clusters.push(ClusterData {

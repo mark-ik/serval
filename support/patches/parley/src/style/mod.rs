@@ -111,6 +111,8 @@ pub enum StyleProperty<'a, B: Brush> {
     WordSpacing(f32),
     /// Extra spacing between letters.
     LetterSpacing(f32),
+    /// Distance between horizontal tab stops in layout units.
+    TabSize(f32),
     /// Control over where words can wrap.
     WordBreak(WordBreak),
     /// Control over "emergency" line-breaking.
@@ -162,6 +164,8 @@ pub struct TextStyle<'family, 'settings, B: Brush> {
     pub word_spacing: f32,
     /// Extra spacing between letters.
     pub letter_spacing: f32,
+    /// Distance between horizontal tab stops in layout units.
+    pub tab_size: f32,
     /// Control over where words can wrap.
     pub word_break: WordBreak,
     /// Control over "emergency" line-breaking.
@@ -193,6 +197,7 @@ impl<B: Brush> Default for TextStyle<'static, 'static, B> {
             line_height: LineHeight::default(),
             word_spacing: 0.0,
             letter_spacing: 0.0,
+            tab_size: 64.0,
             word_break: WordBreak::default(),
             overflow_wrap: OverflowWrap::default(),
             text_wrap_mode: TextWrapMode::default(),

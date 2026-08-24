@@ -16,10 +16,12 @@ use layout_dom_api::{LayoutDom, NodeKind};
 use livery::{
     ComputedValues,
     values::{
-        Display, FontFamily as CssFontFamily, FontFeatureSetting,
+        Direction, Display, FontFamily as CssFontFamily, FontFeatureSetting,
         FontFeatureSettings as CssFontFeatureSettings, FontStyle as CssFontStyle,
-        FontWeight as CssFontWeight, LineHeight as CssLineHeight, Margin, Position, Spacing,
-        TextAlign, TextWrapMode, VerticalAlign,
+        FontWeight as CssFontWeight, Hyphens, LineBreak as CssLineBreak,
+        LineHeight as CssLineHeight, Margin, OverflowWrap as CssOverflowWrap, Position, Spacing,
+        TabSize, TextAlign, TextAlignLast, TextJustify, TextTransformCase, TextWrapMode,
+        VerticalAlign, WordBreak as CssWordBreak,
     },
 };
 use paint_list_api::{
@@ -28,8 +30,9 @@ use paint_list_api::{
 };
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, FontFeature, FontFeatures, FontStyle,
-    FontWeight, GenericFamily, InlineBox, InlineBoxKind, LayoutContext, PositionedLayoutItem,
-    StyleProperty, layout::YieldData,
+    FontWeight, GenericFamily, IndentOptions, InlineBox, InlineBoxKind, LayoutContext,
+    OverflowWrap as ParleyOverflowWrap, PositionedLayoutItem, StyleProperty,
+    TextWrapMode as ParleyTextWrapMode, WordBreak as ParleyWordBreak, layout::YieldData,
 };
 
 use crate::{LiveryLayout, StylePlane, layout::Fragment, paint::resolve_color};
@@ -178,6 +181,7 @@ pub struct TextSystem {
     fonts: HashMap<FontInstanceKey, FontResource>,
     font_keys: HashMap<(u64, u32), FontInstanceKey>,
     ch_advances: HashMap<ChMetricKey, f32>,
+    space_advances: HashMap<ChMetricKey, f32>,
     font_face_features: HashMap<String, Box<[FontFeatureSetting]>>,
     shape_count: u64,
 }
@@ -204,6 +208,7 @@ impl TextSystem {
             fonts: HashMap::new(),
             font_keys: HashMap::new(),
             ch_advances: HashMap::new(),
+            space_advances: HashMap::new(),
             font_face_features: HashMap::new(),
             shape_count: 0,
         }
@@ -225,6 +230,7 @@ impl TextSystem {
             .collection
             .register_fonts(parley::fontique::Blob::new(Arc::new(bytes)), None);
         self.ch_advances.clear();
+        self.space_advances.clear();
     }
 
     /// Register one host-resolved `@font-face` source under its authored CSS
@@ -247,6 +253,7 @@ impl TextSystem {
             feature_settings.settings().into(),
         );
         self.ch_advances.clear();
+        self.space_advances.clear();
     }
 
     /// Resolve one CSS `ch` unit from the same font collection and matching
@@ -292,6 +299,112 @@ impl TextSystem {
             .unwrap_or(font_size * 0.5);
         self.ch_advances.insert(key, advance);
         advance
+    }
+
+    fn space_advance(&mut self, style: &ComputedValues) -> f32 {
+        let font_size = super::paint::used_font_size(style);
+        let key = ChMetricKey {
+            family: style.font_family.to_string(),
+            font_size: font_size.to_bits(),
+            font_weight: font_weight(style).to_bits(),
+            font_style: match style.font_style {
+                CssFontStyle::Normal => 0,
+                CssFontStyle::Italic => 1,
+                CssFontStyle::Oblique => 2,
+            },
+        };
+        if let Some(advance) = self.space_advances.get(&key) {
+            return *advance;
+        }
+        // Shape the space between two zeroes so font fallback cannot assign
+        // an isolated whitespace run to a different face.
+        let mut builder =
+            self.layout_context
+                .ranged_builder(&mut self.font_context, "0 0", 1.0, true);
+        builder.push_default(StyleProperty::FontSize(font_size));
+        builder.push_default(font_family(style));
+        builder.push_default(StyleProperty::FontWeight(FontWeight::new(font_weight(
+            style,
+        ))));
+        builder.push_default(StyleProperty::FontStyle(font_style(style)));
+        let mut layout = builder.build("0 0");
+        layout.break_all_lines(None);
+        let advance = layout
+            .lines()
+            .next()
+            .and_then(|line| {
+                line.items().find_map(|item| match item {
+                    PositionedLayoutItem::GlyphRun(run) => run
+                        .run()
+                        .clusters()
+                        .find(|cluster| cluster.text_range() == (1..2))
+                        .map(|cluster| cluster.advance()),
+                    PositionedLayoutItem::InlineBox(_) => None,
+                })
+            })
+            .filter(|advance| advance.is_finite() && *advance > 0.0)
+            .unwrap_or(font_size * 0.5);
+        self.space_advances.insert(key, advance);
+        advance
+    }
+
+    fn character_advance(&mut self, character: char, style: &ComputedValues) -> f32 {
+        let text = character.to_string();
+        let font_size = super::paint::used_font_size(style);
+        let features = effective_font_features(&self.font_face_features, style);
+        let mut builder =
+            self.layout_context
+                .ranged_builder(&mut self.font_context, &text, 1.0, true);
+        builder.push_default(StyleProperty::FontSize(font_size));
+        builder.push_default(font_family(style));
+        builder.push_default(StyleProperty::FontWeight(FontWeight::new(font_weight(
+            style,
+        ))));
+        builder.push_default(StyleProperty::FontStyle(font_style(style)));
+        builder.push_default(StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(
+            features,
+        ))));
+        if let Some(letter_spacing) = spacing_px(style.letter_spacing, font_size) {
+            builder.push_default(StyleProperty::LetterSpacing(letter_spacing));
+        }
+        let mut layout = builder.build(&text);
+        layout.break_all_lines(None);
+        layout
+            .lines()
+            .next()
+            .and_then(|line| {
+                line.items().find_map(|item| match item {
+                    PositionedLayoutItem::GlyphRun(run) => Some(run.advance()),
+                    PositionedLayoutItem::InlineBox(_) => None,
+                })
+            })
+            .filter(|advance| advance.is_finite() && *advance > 0.0)
+            .unwrap_or(0.0)
+    }
+
+    fn tab_stop(&mut self, style: &ComputedValues) -> f32 {
+        let font_size = super::paint::used_font_size(style);
+        match style.tab_size {
+            TabSize::Number(number) => {
+                let letter = spacing_px(style.letter_spacing, font_size).unwrap_or(0.0);
+                let word = spacing_px(style.word_spacing, font_size).unwrap_or(0.0);
+                let space = if style
+                    .font_family
+                    .to_string()
+                    .eq_ignore_ascii_case("monospace")
+                {
+                    // CSS generic monospace guarantees equal advances;
+                    // use the retained `ch` metric so tab stops and `ch`
+                    // lengths share that invariant even if fallback gave
+                    // an isolated space a different face.
+                    self.ch_advance(style)
+                } else {
+                    self.space_advance(style)
+                };
+                number.max(0.0) * (space + letter + word).max(0.0)
+            },
+            TabSize::Length(length) => length.unit.to_px(length.value, font_size, 16.0).max(0.0),
+        }
     }
 
     /// Format one consecutive inline group for both layout and paint.
@@ -341,6 +454,7 @@ impl TextSystem {
             request.width,
             parent_style,
             request.line_constraints,
+            request.intrinsic_kind,
         );
         let text_sources = spans
             .iter()
@@ -376,6 +490,7 @@ impl TextSystem {
                 &[],
                 request.width,
                 parent_style,
+                None,
                 None,
             );
             strut_items.into_iter().find_map(|item| match item {
@@ -534,7 +649,15 @@ impl TextSystem {
             style: style.clone(),
             range: 0..text.len(),
         }];
-        for item in self.shape(text.as_ref(), &mut spans, &[], fragment.width, style, None) {
+        for item in self.shape(
+            text.as_ref(),
+            &mut spans,
+            &[],
+            fragment.width,
+            style,
+            None,
+            None,
+        ) {
             let ShapedItem::Text(mut run) = item else {
                 continue;
             };
@@ -618,6 +741,7 @@ impl TextSystem {
             parent_fragment.width,
             parent_style,
             None,
+            None,
         ) {
             match item {
                 ShapedItem::Text(mut run) => {
@@ -680,6 +804,7 @@ impl TextSystem {
                     paint,
                     mut line_y,
                 } => {
+                    frame.prepared_sources.insert(source);
                     translate_fragment(&mut fragment, origin);
                     line_y += origin.1;
                     if paint {
@@ -716,6 +841,10 @@ impl TextSystem {
         frame.record_prepared_group(prepared_sources, visual_commands);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one shaping transaction carries the text, source spans, inline atoms, width, root policy, and optional line constraints"
+    )]
     fn shape<Id>(
         &mut self,
         text: &str,
@@ -724,6 +853,7 @@ impl TextSystem {
         width: f32,
         root_style: &ComputedValues,
         line_constraints: Option<&FloatLineConstraints>,
+        intrinsic_kind: Option<IntrinsicSizeKind>,
     ) -> Vec<ShapedItem<Id>>
     where
         Id: Copy + Eq,
@@ -735,10 +865,40 @@ impl TextSystem {
             .iter()
             .map(|span| effective_font_features(&self.font_face_features, &span.style))
             .collect::<Vec<_>>();
+        let default_tab_stop = self.tab_stop(default_style);
+        let span_tab_stops = spans
+            .iter()
+            .map(|span| self.tab_stop(&span.style))
+            .collect::<Vec<_>>();
+        let first_hanging_advance = if root_style.hanging_punctuation.first {
+            text.char_indices()
+                .find(|(_, character)| !character.is_whitespace())
+                .and_then(|(index, character)| {
+                    let blocked = inline_boxes.iter().any(|inline_box| {
+                        inline_box.index <= index && inline_box.line_width.abs() > f32::EPSILON
+                    });
+                    (!blocked && is_opening_hanging_punctuation(character)).then(|| {
+                        let style = spans
+                            .iter()
+                            .find(|span| span.range.contains(&index))
+                            .map_or(root_style, |span| &span.style);
+                        self.character_advance(character, style)
+                    })
+                })
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let mut builder =
             self.layout_context
                 .ranged_builder(&mut self.font_context, text, 1.0, true);
-        push_defaults(&mut builder, default_style, default_features);
+        push_defaults(
+            &mut builder,
+            default_style,
+            default_features,
+            intrinsic_kind,
+            default_tab_stop,
+        );
         for (source_index, span) in spans.iter().enumerate() {
             push_span(
                 &mut builder,
@@ -746,6 +906,8 @@ impl TextSystem {
                 span.range.clone(),
                 source_index,
                 span_features[source_index].clone(),
+                intrinsic_kind,
+                span_tab_stops[source_index],
             );
         }
         for (index, inline_box) in inline_boxes.iter().enumerate() {
@@ -765,15 +927,36 @@ impl TextSystem {
             });
         }
         let mut layout = builder.build(text);
+        let font_size = super::paint::used_font_size(root_style);
+        let text_indent = root_style
+            .text_indent
+            .length
+            .to_px(font_size, font_size, width)
+            - first_hanging_advance;
+        layout.set_text_indent(
+            text_indent,
+            IndentOptions {
+                each_line: root_style.text_indent.each_line,
+                hanging: root_style.text_indent.hanging,
+            },
+        );
         break_inline_lines(
             &mut layout,
             width,
             root_style.text_wrap_mode == TextWrapMode::Wrap,
             line_constraints,
         );
+        let alignment = text_alignment(
+            root_style.text_align,
+            root_style.direction,
+            root_style.text_justify,
+        );
         layout.align(
-            text_alignment(root_style.text_align),
-            AlignmentOptions::default(),
+            alignment,
+            AlignmentOptions {
+                last_line_alignment: last_line_alignment(root_style, alignment),
+                ..AlignmentOptions::default()
+            },
         );
 
         let mut result = Vec::new();
@@ -1340,6 +1523,9 @@ where
                     translate_fragment(&mut fragment, origin);
                     let line_y = *line_y + origin.1;
                     let source_node = node_for(*source);
+                    if let Some(node) = source_node {
+                        frame.prepared_sources.insert(node);
+                    }
                     if *paint {
                         let source_fragment = if *edge {
                             source_node.map_or(fragment, |node| {
@@ -1494,16 +1680,14 @@ where
         }
     }
 
-    fn append_prepared_from(
-        &mut self,
-        source_frame: &Self,
-        mut includes: impl FnMut(Id) -> bool,
-    ) {
+    fn append_prepared_from(&mut self, source_frame: &Self, mut includes: impl FnMut(Id) -> bool) {
         for (old_group, commands) in source_frame.prepared_groups.iter().enumerate() {
             let sources = source_frame
                 .source_groups
                 .iter()
-                .filter_map(|(source, group)| (*group == old_group && includes(*source)).then_some(*source))
+                .filter_map(|(source, group)| {
+                    (*group == old_group && includes(*source)).then_some(*source)
+                })
                 .collect::<Vec<_>>();
             if sources.is_empty() {
                 continue;
@@ -1517,11 +1701,7 @@ where
         }
     }
 
-    fn copy_geometry_from(
-        &mut self,
-        source_frame: &Self,
-        mut includes: impl FnMut(Id) -> bool,
-    ) {
+    fn copy_geometry_from(&mut self, source_frame: &Self, mut includes: impl FnMut(Id) -> bool) {
         for (source, fragments) in &source_frame.inline_fragments {
             if includes(*source) {
                 self.inline_fragments.insert(*source, fragments.clone());
@@ -1556,16 +1736,18 @@ where
         for (source, value) in &source_frame.text_values {
             if includes(*source) {
                 self.text_values.insert(*source, value.clone());
-                let group = source_frame.text_groups.get(source).copied().unwrap_or_default();
+                let group = source_frame
+                    .text_groups
+                    .get(source)
+                    .copied()
+                    .unwrap_or_default();
                 self.text_groups
                     .insert(*source, group.saturating_add(group_offset));
             }
         }
-        self.next_text_group = self.next_text_group.max(
-            source_frame
-                .next_text_group
-                .saturating_add(group_offset),
-        );
+        self.next_text_group = self
+            .next_text_group
+            .max(source_frame.next_text_group.saturating_add(group_offset));
     }
 
     pub(crate) fn mark_decoration_painted(&mut self, source: Id) -> bool {
@@ -2051,18 +2233,25 @@ fn append_positioned_inline_start_markers<Id>(
     Id: Copy + Eq,
 {
     for marker in inline_boxes.iter().filter(|inline_box| inline_box.marker) {
-        let Some((first_index, first_line)) = items.iter().enumerate().find_map(|(index, item)| match item {
-            ShapedItem::Text(run) if run.owners.contains(&marker.source) => {
-                Some((index, run.line_y))
-            },
-            ShapedItem::InlineBox {
-                source,
-                owners,
-                line_y,
-                ..
-            } if *source == marker.source || owners.contains(&marker.source) => Some((index, *line_y)),
-            ShapedItem::Text(_) | ShapedItem::InlineBox { .. } => None,
-        }) else {
+        let Some((first_index, first_line)) =
+            items
+                .iter()
+                .enumerate()
+                .find_map(|(index, item)| match item {
+                    ShapedItem::Text(run) if run.owners.contains(&marker.source) => {
+                        Some((index, run.line_y))
+                    },
+                    ShapedItem::InlineBox {
+                        source,
+                        owners,
+                        line_y,
+                        ..
+                    } if *source == marker.source || owners.contains(&marker.source) => {
+                        Some((index, *line_y))
+                    },
+                    ShapedItem::Text(_) | ShapedItem::InlineBox { .. } => None,
+                })
+        else {
             continue;
         };
         let Some(previous_line) = items
@@ -2081,23 +2270,26 @@ fn append_positioned_inline_start_markers<Id>(
         else {
             continue;
         };
-        items.insert(first_index, ShapedItem::InlineBox {
-            source: marker.source,
-            owners: marker.owners.clone(),
-            fragment: Fragment {
-                x: content_end,
-                y: previous_line,
-                ..Fragment::default()
+        items.insert(
+            first_index,
+            ShapedItem::InlineBox {
+                source: marker.source,
+                owners: marker.owners.clone(),
+                fragment: Fragment {
+                    x: content_end,
+                    y: previous_line,
+                    ..Fragment::default()
+                },
+                line_fragment: Fragment {
+                    x: content_end,
+                    y: previous_line,
+                    ..Fragment::default()
+                },
+                edge: false,
+                paint: true,
+                line_y: previous_line,
             },
-            line_fragment: Fragment {
-                x: content_end,
-                y: previous_line,
-                ..Fragment::default()
-            },
-            edge: false,
-            paint: true,
-            line_y: previous_line,
-        });
+        );
     }
 }
 
@@ -2469,27 +2661,8 @@ where
         });
     }
 
-    fn push_forced_line_break(&mut self, source: BoxId, style: &ComputedValues) {
-        let index = append_forced_line_break(self.text);
-        let font_size = super::paint::used_font_size(style);
-        self.inline_boxes.push(InlineAtom {
-            source,
-            owners: self.owners.clone(),
-            index,
-            fragment: Fragment::default(),
-            line_width: 0.0,
-            line_box_height: super::layout::line_height_px(&style.line_height, font_size),
-            baseline: super::layout::line_height_px(&style.line_height, font_size),
-            exported_baseline: false,
-            margin_left: 0.0,
-            margin_top: 0.0,
-            edge: false,
-            paint: false,
-            marker: false,
-            vertical_align: style.vertical_align,
-            font_size,
-            line_height: super::layout::line_height_px(&style.line_height, font_size),
-        });
+    fn push_forced_line_break(&mut self, _source: BoxId, _style: &ComputedValues) {
+        append_forced_line_break(self.text);
     }
 }
 
@@ -2534,6 +2707,9 @@ where
                 });
             },
             NodeKind::Element => {
+                if self.already_prepared.contains(&id) {
+                    return;
+                }
                 let Some(style) = self.styles.get(id).cloned() else {
                     return;
                 };
@@ -2745,27 +2921,8 @@ where
         });
     }
 
-    fn push_forced_line_break(&mut self, source: D::NodeId, style: &ComputedValues) {
-        let index = append_forced_line_break(self.text);
-        let font_size = super::paint::used_font_size(style);
-        self.inline_boxes.push(InlineAtom {
-            source,
-            owners: self.owners.clone(),
-            index,
-            fragment: Fragment::default(),
-            line_width: 0.0,
-            line_box_height: super::layout::line_height_px(&style.line_height, font_size),
-            baseline: super::layout::line_height_px(&style.line_height, font_size),
-            exported_baseline: false,
-            margin_left: 0.0,
-            margin_top: 0.0,
-            edge: false,
-            paint: false,
-            marker: false,
-            vertical_align: style.vertical_align,
-            font_size,
-            line_height: super::layout::line_height_px(&style.line_height, font_size),
-        });
+    fn push_forced_line_break(&mut self, _source: D::NodeId, _style: &ComputedValues) {
+        append_forced_line_break(self.text);
     }
 }
 
@@ -2883,16 +3040,91 @@ where
     fragment
 }
 
+fn is_opening_hanging_punctuation(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0022}'
+            | '\u{0027}'
+            | '\u{0028}'
+            | '\u{005b}'
+            | '\u{007b}'
+            | '\u{00ab}'
+            | '\u{2018}'
+            | '\u{201b}'
+            | '\u{201c}'
+            | '\u{201f}'
+            | '\u{2039}'
+            | '\u{2045}'
+            | '\u{207d}'
+            | '\u{208d}'
+            | '\u{2308}'
+            | '\u{230a}'
+            | '\u{2329}'
+            | '\u{2768}'..='\u{2775}'
+            | '\u{27c5}'
+            | '\u{27e6}'..='\u{27ef}'
+            | '\u{2983}'..='\u{2998}'
+            | '\u{29d8}'..='\u{29db}'
+            | '\u{29fc}'
+            | '\u{2e02}'
+            | '\u{2e04}'
+            | '\u{2e09}'
+            | '\u{2e0c}'
+            | '\u{2e1c}'
+            | '\u{2e20}'
+            | '\u{2e22}'
+            | '\u{2e24}'
+            | '\u{2e26}'
+            | '\u{2e28}'
+            | '\u{2e42}'
+            | '\u{3008}'
+            | '\u{300a}'
+            | '\u{300c}'
+            | '\u{300e}'
+            | '\u{3010}'
+            | '\u{3014}'
+            | '\u{3016}'
+            | '\u{3018}'
+            | '\u{301a}'
+            | '\u{301d}'
+            | '\u{fd3e}'
+            | '\u{fe17}'
+            | '\u{fe35}'
+            | '\u{fe37}'
+            | '\u{fe39}'
+            | '\u{fe3b}'
+            | '\u{fe3d}'
+            | '\u{fe3f}'
+            | '\u{fe41}'
+            | '\u{fe43}'
+            | '\u{fe47}'
+            | '\u{fe59}'
+            | '\u{fe5b}'
+            | '\u{fe5d}'
+            | '\u{ff08}'
+            | '\u{ff3b}'
+            | '\u{ff5b}'
+            | '\u{ff5f}'
+            | '\u{ff62}'
+    )
+}
+
 fn normalized_text<'a>(source: &'a str, style: &ComputedValues) -> Cow<'a, str> {
     use livery::values::WhiteSpaceCollapse;
 
-    if matches!(
+    let normalized = if matches!(
         style.white_space_collapse,
         WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces
     ) {
-        return Cow::Borrowed(source);
-    }
-    Cow::Owned(collapse_css_whitespace(source))
+        source.to_owned()
+    } else if style.white_space_collapse == WhiteSpaceCollapse::PreserveBreaks {
+        let mut output = String::new();
+        append_preserving_breaks(&mut output, source);
+        output
+    } else {
+        collapse_css_whitespace(source)
+    };
+    Cow::Owned(transform_text(&normalized, style))
 }
 
 fn append_inline_text(target: &mut String, source: &str, style: &ComputedValues) {
@@ -2902,20 +3134,150 @@ fn append_inline_text(target: &mut String, source: &str, style: &ComputedValues)
         style.white_space_collapse,
         WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces
     ) {
-        target.push_str(source);
+        target.push_str(&transform_text(source, style));
+        return;
+    }
+    if style.white_space_collapse == WhiteSpaceCollapse::PreserveBreaks {
+        let start = target.len();
+        append_preserving_breaks(target, source);
+        let normalized = target[start..].to_owned();
+        target.truncate(start);
+        target.push_str(&transform_text(&normalized, style));
         return;
     }
 
     let leading = source.chars().next().is_some_and(is_css_whitespace);
     let trailing = source.chars().next_back().is_some_and(is_css_whitespace);
+    let mut normalized = String::new();
     if leading && !target.is_empty() && !target.ends_with(char::is_whitespace) {
-        target.push(' ');
+        normalized.push(' ');
     }
     let collapsed = collapse_css_whitespace(source);
     if !collapsed.is_empty() {
-        target.push_str(&collapsed);
+        normalized.push_str(&collapsed);
     }
-    if trailing && !target.is_empty() && !target.ends_with(char::is_whitespace) {
+    if trailing
+        && (!target.is_empty() || !normalized.is_empty())
+        && !normalized.ends_with(char::is_whitespace)
+        && !(normalized.is_empty() && target.ends_with(char::is_whitespace))
+    {
+        normalized.push(' ');
+    }
+    target.push_str(&transform_text(&normalized, style));
+}
+
+fn transform_text(source: &str, style: &ComputedValues) -> String {
+    let without_soft_hyphens = if style.hyphens == Hyphens::None {
+        Cow::Owned(
+            source
+                .chars()
+                .filter(|character| *character != '\u{00ad}')
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(source)
+    };
+    let mut transformed = match style.text_transform.case {
+        TextTransformCase::None | TextTransformCase::MathAuto => without_soft_hyphens.into_owned(),
+        TextTransformCase::Uppercase => without_soft_hyphens.to_uppercase(),
+        TextTransformCase::Lowercase => without_soft_hyphens.to_lowercase(),
+        TextTransformCase::Capitalize => capitalize_text(&without_soft_hyphens),
+    };
+    if style.text_transform.full_width {
+        transformed = transformed.chars().map(full_width_character).collect();
+    }
+    if style.text_transform.full_size_kana {
+        transformed = transformed.chars().map(full_size_kana_character).collect();
+    }
+    transformed
+}
+
+fn capitalize_text(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut at_word_start = true;
+    for character in source.chars() {
+        let enclosed_alphanumeric = matches!(character, '\u{2460}'..='\u{24ff}');
+        if character.is_alphanumeric() && !enclosed_alphanumeric {
+            if at_word_start {
+                output.extend(character.to_uppercase());
+            } else {
+                output.push(character);
+            }
+            at_word_start = false;
+        } else {
+            output.push(character);
+            if character != '\'' && character != '\u{2019}' {
+                at_word_start = true;
+            }
+        }
+    }
+    output
+}
+
+fn full_width_character(character: char) -> char {
+    match character {
+        ' ' => '\u{3000}',
+        '!'..='~' => char::from_u32(character as u32 + 0xfee0).unwrap_or(character),
+        _ => character,
+    }
+}
+
+fn full_size_kana_character(character: char) -> char {
+    match character {
+        '\u{3041}' => '\u{3042}',
+        '\u{3043}' => '\u{3044}',
+        '\u{3045}' => '\u{3046}',
+        '\u{3047}' => '\u{3048}',
+        '\u{3049}' => '\u{304a}',
+        '\u{3063}' => '\u{3064}',
+        '\u{3083}' => '\u{3084}',
+        '\u{3085}' => '\u{3086}',
+        '\u{3087}' => '\u{3088}',
+        '\u{308e}' => '\u{308f}',
+        '\u{30a1}' => '\u{30a2}',
+        '\u{30a3}' => '\u{30a4}',
+        '\u{30a5}' => '\u{30a6}',
+        '\u{30a7}' => '\u{30a8}',
+        '\u{30a9}' => '\u{30aa}',
+        '\u{30c3}' => '\u{30c4}',
+        '\u{30e3}' => '\u{30e4}',
+        '\u{30e5}' => '\u{30e6}',
+        '\u{30e7}' => '\u{30e8}',
+        '\u{30ee}' => '\u{30ef}',
+        '\u{31f0}'..='\u{31ff}' => character,
+        _ => character,
+    }
+}
+
+fn append_preserving_breaks(target: &mut String, source: &str) {
+    let mut pending_space = false;
+    let mut previous_was_cr = false;
+    for character in source.chars() {
+        if character == '\n' && previous_was_cr {
+            previous_was_cr = false;
+            continue;
+        }
+        previous_was_cr = false;
+        match character {
+            '\n' | '\r' | '\u{000c}' => {
+                while target.ends_with(' ') {
+                    target.pop();
+                }
+                target.push('\n');
+                pending_space = false;
+                previous_was_cr = character == '\r';
+            },
+            '\t' | ' ' => pending_space = true,
+            _ => {
+                if pending_space && !target.is_empty() && !target.ends_with('\n') {
+                    target.push(' ');
+                }
+                pending_space = false;
+                target.push(character);
+            },
+        }
+    }
+    if pending_space && !target.is_empty() && !target.ends_with('\n') {
         target.push(' ');
     }
 }
@@ -2957,8 +3319,11 @@ fn push_defaults(
     builder: &mut parley::RangedBuilder<'_, Brush>,
     style: &ComputedValues,
     features: Vec<FontFeature>,
+    intrinsic_kind: Option<IntrinsicSizeKind>,
+    tab_stop: f32,
 ) {
-    builder.push_default(StyleProperty::FontSize(super::paint::used_font_size(style)));
+    let font_size = super::paint::used_font_size(style);
+    builder.push_default(StyleProperty::FontSize(font_size));
     builder.push_default(font_family(style));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(font_weight(
         style,
@@ -2969,10 +3334,17 @@ fn push_defaults(
     builder.push_default(StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(
         features,
     ))));
-    if let Some(letter_spacing) = spacing_px(style.letter_spacing) {
+    builder.push_default(StyleProperty::WordBreak(word_break(style)));
+    builder.push_default(StyleProperty::OverflowWrap(overflow_wrap(
+        style,
+        intrinsic_kind,
+    )));
+    builder.push_default(StyleProperty::TextWrapMode(text_wrap_mode(style)));
+    builder.push_default(StyleProperty::TabSize(tab_stop));
+    if let Some(letter_spacing) = spacing_px(style.letter_spacing, font_size) {
         builder.push_default(StyleProperty::LetterSpacing(letter_spacing));
     }
-    if let Some(word_spacing) = spacing_px(style.word_spacing) {
+    if let Some(word_spacing) = spacing_px(style.word_spacing, font_size) {
         builder.push_default(StyleProperty::WordSpacing(word_spacing));
     }
 }
@@ -2983,11 +3355,11 @@ fn push_span(
     range: Range<usize>,
     source_index: usize,
     features: Vec<FontFeature>,
+    intrinsic_kind: Option<IntrinsicSizeKind>,
+    tab_stop: f32,
 ) {
-    builder.push(
-        StyleProperty::FontSize(super::paint::used_font_size(style)),
-        range.clone(),
-    );
+    let font_size = super::paint::used_font_size(style);
+    builder.push(StyleProperty::FontSize(font_size), range.clone());
     builder.push(font_family(style), range.clone());
     builder.push(
         StyleProperty::FontWeight(FontWeight::new(font_weight(style))),
@@ -3003,10 +3375,20 @@ fn push_span(
         StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(features))),
         range.clone(),
     );
-    if let Some(letter_spacing) = spacing_px(style.letter_spacing) {
+    builder.push(StyleProperty::WordBreak(word_break(style)), range.clone());
+    builder.push(
+        StyleProperty::OverflowWrap(overflow_wrap(style, intrinsic_kind)),
+        range.clone(),
+    );
+    builder.push(
+        StyleProperty::TextWrapMode(text_wrap_mode(style)),
+        range.clone(),
+    );
+    builder.push(StyleProperty::TabSize(tab_stop), range.clone());
+    if let Some(letter_spacing) = spacing_px(style.letter_spacing, font_size) {
         builder.push(StyleProperty::LetterSpacing(letter_spacing), range.clone());
     }
-    if let Some(word_spacing) = spacing_px(style.word_spacing) {
+    if let Some(word_spacing) = spacing_px(style.word_spacing, font_size) {
         builder.push(StyleProperty::WordSpacing(word_spacing), range);
     }
 }
@@ -3042,7 +3424,9 @@ fn effective_font_features(
         set(*b"calt", u16::from(value));
     }
 
-    if spacing_px(style.letter_spacing).is_some_and(|spacing| spacing.abs() > f32::EPSILON) {
+    if spacing_px(style.letter_spacing, super::paint::used_font_size(style))
+        .is_some_and(|spacing| spacing.abs() > f32::EPSILON)
+    {
         for tag in [*b"liga", *b"clig", *b"dlig", *b"hlig", *b"calt"] {
             set(tag, 0);
         }
@@ -3058,14 +3442,82 @@ fn effective_font_features(
         .collect()
 }
 
-fn text_alignment(style: TextAlign) -> Alignment {
+fn text_alignment(style: TextAlign, direction: Direction, justify: TextJustify) -> Alignment {
+    if style == TextAlign::Justify && justify == TextJustify::None {
+        return directional_alignment(TextAlign::Start, direction);
+    }
     match style {
-        TextAlign::Start => Alignment::Start,
-        TextAlign::End => Alignment::End,
+        TextAlign::Start | TextAlign::End => directional_alignment(style, direction),
         TextAlign::Left => Alignment::Left,
         TextAlign::Right => Alignment::Right,
         TextAlign::Center => Alignment::Center,
         TextAlign::Justify => Alignment::Justify,
+        TextAlign::JustifyAll => Alignment::Justify,
+    }
+}
+
+fn directional_alignment(style: TextAlign, direction: Direction) -> Alignment {
+    match (style, direction) {
+        (TextAlign::Start, Direction::Ltr) | (TextAlign::End, Direction::Rtl) => Alignment::Left,
+        (TextAlign::Start, Direction::Rtl) | (TextAlign::End, Direction::Ltr) => Alignment::Right,
+        _ => Alignment::Start,
+    }
+}
+
+fn last_line_alignment(style: &ComputedValues, primary: Alignment) -> Option<Alignment> {
+    if style.text_align == TextAlign::JustifyAll && style.text_justify != TextJustify::None {
+        return Some(Alignment::Justify);
+    }
+    match style.text_align_last {
+        TextAlignLast::Auto => None,
+        TextAlignLast::Start => Some(directional_alignment(TextAlign::Start, style.direction)),
+        TextAlignLast::End => Some(directional_alignment(TextAlign::End, style.direction)),
+        TextAlignLast::Left => Some(Alignment::Left),
+        TextAlignLast::Right => Some(Alignment::Right),
+        TextAlignLast::Center => Some(Alignment::Center),
+        TextAlignLast::Justify if style.text_justify == TextJustify::None => Some(primary),
+        TextAlignLast::Justify => Some(Alignment::Justify),
+    }
+}
+
+fn word_break(style: &ComputedValues) -> ParleyWordBreak {
+    if style.line_break == CssLineBreak::Anywhere {
+        return ParleyWordBreak::BreakAll;
+    }
+    match style.word_break {
+        CssWordBreak::Normal | CssWordBreak::BreakWord => ParleyWordBreak::Normal,
+        CssWordBreak::KeepAll => ParleyWordBreak::KeepAll,
+        CssWordBreak::BreakAll => ParleyWordBreak::BreakAll,
+    }
+}
+
+fn overflow_wrap(
+    style: &ComputedValues,
+    intrinsic_kind: Option<IntrinsicSizeKind>,
+) -> ParleyOverflowWrap {
+    // The legacy `word-break: break-word` value has the min-content
+    // behavior of `overflow-wrap: anywhere`, unlike
+    // `overflow-wrap: break-word` itself.
+    if style.word_break == CssWordBreak::BreakWord {
+        return ParleyOverflowWrap::Anywhere;
+    }
+    if intrinsic_kind == Some(IntrinsicSizeKind::MinContent)
+        && style.overflow_wrap == CssOverflowWrap::BreakWord
+    {
+        return ParleyOverflowWrap::Normal;
+    }
+    match (style.word_break, style.overflow_wrap) {
+        (CssWordBreak::BreakWord, _) => unreachable!("handled above"),
+        (_, CssOverflowWrap::Normal) => ParleyOverflowWrap::Normal,
+        (_, CssOverflowWrap::BreakWord) => ParleyOverflowWrap::BreakWord,
+        (_, CssOverflowWrap::Anywhere) => ParleyOverflowWrap::Anywhere,
+    }
+}
+
+fn text_wrap_mode(style: &ComputedValues) -> ParleyTextWrapMode {
+    match style.text_wrap_mode {
+        TextWrapMode::Wrap => ParleyTextWrapMode::Wrap,
+        TextWrapMode::Nowrap => ParleyTextWrapMode::NoWrap,
     }
 }
 
@@ -3106,10 +3558,10 @@ fn vertical_align_shift(
     }
 }
 
-fn spacing_px(spacing: Spacing) -> Option<f32> {
+fn spacing_px(spacing: Spacing, font_size: f32) -> Option<f32> {
     match spacing {
         Spacing::Normal => None,
-        Spacing::Length(length) => Some(length.to_px(16.0, 16.0, 0.0)),
+        Spacing::Length(length) => Some(length.to_px(font_size, 16.0, font_size)),
     }
 }
 
