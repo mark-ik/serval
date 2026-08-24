@@ -7,11 +7,14 @@
 property and layout ledgers below remain useful Livery/Buckram defect maps,
 but their parity bars and flip gates are historical.
 
-**Current truth.** Product-route R0-R4 and R5a-R5d are landed. Pelt's static
-and scripted document routes are owned by Livery and Buckram. The former
-incumbent feature routes are gone, and `genet-wpt` is Livery-only. Buckram's
-later K-stage work continues on its own plan. The recorded F0/F3 figures below
-are the final differential snapshot, not a current gate.
+**Current truth, reverified 2026-08-24.** Product-route R0-R4 and R5a-R5d
+are landed. Pelt's static and scripted document routes are owned by Livery
+and Buckram. The Stylo/genet-layout cone and its feature routes are gone,
+and `genet-wpt` is Livery-only. That is the completed narrow fork-deletion
+lane. The broader F6 package retirement is still open: live Cargo metadata
+contains **44 `servo-*` workspace packages**. Buckram's later K-stage work
+continues on its own plan. The recorded F3 figures below are the final
+differential snapshot, not a current gate; F0 remains a live catalog ratchet.
 
 **Where the two lanes stand.**
 
@@ -20,7 +23,7 @@ are the final differential snapshot, not a current gate.
 | testharness (F3) | subtests vs Stylo | +3,499 | **+3,555** |
 | reftest (F3b) | files vs Stylo | -241 | **-149** |
 | reftest (F3b) | **S-only, the F4 bar** | **1,055** | **916** |
-| F0 | consumed longhands missing | 38 | **35** |
+| F0 | consumed longhands missing | 38 | **31** |
 
 S-only is the count of files Stylo renders and Livery does not, which is the
 F4 regression count and the only reftest number the flip depends on. Net
@@ -67,8 +70,9 @@ and collapsed borders, positioned parts, and compatibility-bridge deletion.
 19 CSS2 files, one slice paid twice), contextual color computation
 (`currentcolor`, system colors, element `color-scheme`, and paint), `order`
 with grid auto-placement, and the css-flexbox long tail, which is measured
-as genuinely flat and stays ranked last. Everything after F4 is gated on
-receipts, not dates.
+as genuinely flat and stays ranked last. The historical differential order
+is retained below. Current work is gated by dogfooding receipts and the
+explicit F0 and F6 inventories.
 
 **A standing correction to how this plan reasons.** Several entries were
 written as "the incumbent does X, so X is on-target". That is a valid
@@ -771,6 +775,12 @@ reviewed; the direction holds and the grind is accepted. Two riders:
   then absent from the tree; no `stylo` path remains a build input.
 - **F6 - the servo-* teardown** (sequenced here by Mark's ruling).
 
+  **Current recount, 2026-08-24.** F5 removed the Stylo/genet-layout cone,
+  but it did not satisfy F6. `cargo metadata --offline --no-deps` reports
+  **44 `servo-` prefixed workspace packages**. The 48-package figures below
+  remain the pre-F5 baseline; the 44-package live set is the current F6
+  denominator.
+
   **Pre-F5 baseline, verified 2026-07-25.** The workspace carries **48
   `servo-` prefixed packages**. That is the number F6's receipt drives to
   zero, and the denominator for everything below: 15 media, 2 orphans, 31
@@ -817,8 +827,8 @@ reviewed; the direction holds and the grind is accepted. Two riders:
     knockout. The webgl/webxr/webgpu trait family is a capability ruling for
     Mark here, not a naming exercise, and it is the largest single decision
     left in F6.
-  - Receipt: zero `servo-` prefixed workspace members (48 today); genet
-    workspace green; product smokes green.
+  - Receipt: zero `servo-` prefixed workspace members (44 on 2026-08-24);
+    genet workspace green; product smokes green.
 
 ## The two ledgers, permanently split
 
@@ -1128,9 +1138,11 @@ doc.
 
 ## Done condition
 
-The harvest plan's retirement trigger has fired (F5), and F6c's receipt
-holds: no workspace member carries the servo- prefix, and nothing outside
-git history remembers the fork as a build input.
+The harvest plan's retirement trigger has fired and F5 is complete: nothing
+outside git history uses the Stylo fork or genet-layout as a build input.
+This parent plan remains open until F6c also holds: Cargo metadata reports
+zero `servo-` prefixed workspace packages. The live count was 44 on
+2026-08-24.
 
 ## Revision, 2026-08-16: the parity trigger and the lift fallback
 

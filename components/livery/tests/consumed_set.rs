@@ -1,9 +1,9 @@
 //! F0's receipt: the consumed-longhand contract, asserted.
 //!
 //! The cutover plan's F0 stage closes the gap between Livery's catalog and the
-//! 126 longhands the current Genet product path actually reads
+//! 128 longhands the current Genet product path actually reads
 //! (`docs/2026-07-13_genet_consumed_css_property_audit.md`). Its receipt is
-//! "the census reads 126/126 consumed implemented".
+//! "the census reads 128/128 consumed implemented".
 //!
 //! That receipt lives here rather than only in `tools/import-stylo-db` on
 //! purpose. The tool needs a stylo fork checkout to run at all, and the fork
@@ -133,8 +133,9 @@ fn the_consumed_set_is_the_current_128_longhands() {
 /// assertion and F0's receipt is closed.
 ///
 /// 38 as of 2026-07-25; 35 as of 2026-07-26 (the grid/alignment
-/// stragglers landed: align-self, justify-items, justify-self).
-const MAX_REMAINING: usize = 35;
+/// stragglers landed); 31 as of 2026-08-24 (animation-delay, clear,
+/// contain, and direction landed).
+const MAX_REMAINING: usize = 31;
 
 /// F0's receipt, as a ratchet. Prints the exact remaining worklist with the
 /// catalog group for each name, so a failure message is the next slice.
