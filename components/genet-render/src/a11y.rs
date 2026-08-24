@@ -27,6 +27,7 @@ fn role_for<D: LayoutDom>(dom: &D, node: D::NodeId) -> Role {
             "main" => return Role::Main,
             "navigation" => return Role::Navigation,
             "heading" => return Role::Heading,
+            "alert" => return Role::Alert,
             _ => {},
         }
     }
@@ -54,6 +55,14 @@ fn direct_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
         .collect()
 }
 
+/// One ARIA numeric attribute, when it parses. A malformed value is left unset
+/// rather than projected as zero: a reader is better told nothing than told a
+/// wrong position.
+fn aria_number<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<f64> {
+    dom.attribute(node, &Namespace::default(), &LocalName::from(name))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+}
+
 fn walk<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -72,6 +81,17 @@ where
         .unwrap_or_else(|| direct_text(dom, node));
     if !label.is_empty() {
         access.set_label(label);
+    }
+    // A progress bar or slider whose value never reaches the tree is
+    // decoration: the reader is told it exists but not how far along it is.
+    if let Some(value) = aria_number(dom, node, "aria-valuenow") {
+        access.set_numeric_value(value);
+    }
+    if let Some(value) = aria_number(dom, node, "aria-valuemin") {
+        access.set_min_numeric_value(value);
+    }
+    if let Some(value) = aria_number(dom, node, "aria-valuemax") {
+        access.set_max_numeric_value(value);
     }
     if let Some(fragment) = fragments.get(node) {
         access.set_bounds(Rect::new(
@@ -109,5 +129,65 @@ where
         tree: Some(Tree::new(access_id(dom, root))),
         tree_id: TreeId::ROOT,
         focus: access_id(dom, focus.unwrap_or(root)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use accesskit::{Node as AccessNode, Role};
+    use genet_scripted_dom::ScriptedDom;
+    use layout_dom_api::{LayoutDom, LayoutDomMut};
+
+    use super::accesskit_tree;
+    use crate::fragments_from_scripted_dom;
+
+    const SHEET: &[&str] = &["div { display: block; }"];
+
+    fn nodes_for(html: &str) -> Vec<AccessNode> {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        dom.set_inner_html(root, html);
+        let fragments = fragments_from_scripted_dom(&dom, SHEET, 400, 300).expect("layout");
+        accesskit_tree(&dom, &fragments, None)
+            .nodes
+            .into_iter()
+            .map(|(_, node)| node)
+            .collect()
+    }
+
+    fn with_role(html: &str, role: Role) -> AccessNode {
+        nodes_for(html)
+            .into_iter()
+            .find(|node| node.role() == role)
+            .unwrap_or_else(|| panic!("no node projected with role {role:?}"))
+    }
+
+    #[test]
+    fn a_refusal_projects_as_an_alert() {
+        let nodes = nodes_for("<div role=\"alert\">Cannot flash this board</div>");
+        assert!(
+            nodes.iter().any(|node| node.role() == Role::Alert),
+            "role=alert must reach the reader as an alert, not a generic container",
+        );
+    }
+
+    #[test]
+    fn a_progress_bar_carries_its_value() {
+        let bar = with_role(
+            "<div role=\"progressbar\" aria-valuenow=\"50\" aria-valuemin=\"0\" aria-valuemax=\"100\"></div>",
+            Role::ProgressIndicator,
+        );
+        assert_eq!(bar.numeric_value(), Some(50.0));
+        assert_eq!(bar.min_numeric_value(), Some(0.0));
+        assert_eq!(bar.max_numeric_value(), Some(100.0));
+    }
+
+    #[test]
+    fn a_malformed_value_is_left_unset() {
+        let bar = with_role(
+            "<div role=\"progressbar\" aria-valuenow=\"soon\"></div>",
+            Role::ProgressIndicator,
+        );
+        assert_eq!(bar.numeric_value(), None);
     }
 }
