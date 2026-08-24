@@ -20,7 +20,7 @@ use crate::{SmolwebDocument, SmolwebTheme, resolve_href};
 /// The only three outcomes of the cheap static reader pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticArticleOutcome {
-    Article(Article),
+    Article(Box<Article>),
     NeedsScriptedDom,
     NotReadable,
 }
@@ -30,7 +30,7 @@ pub enum StaticArticleOutcome {
 pub fn extract_static_article(source: &str) -> StaticArticleOutcome {
     let dom = genet_static_dom::StaticDocument::parse(source);
     if let Some(article) = fleece::extract_article(&dom) {
-        StaticArticleOutcome::Article(article)
+        StaticArticleOutcome::Article(Box::new(article))
     } else if fleece::carries_script(&dom) {
         StaticArticleOutcome::NeedsScriptedDom
     } else {
