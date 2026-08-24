@@ -68,7 +68,7 @@ plans and receipts.
 
 | # | Lane | Owned surface | State |
 |---|---|---|---|
-| 9 | Intrinsic sizing contributions | `buckram/src/intrinsic.rs` | Open |
+| 9 | Intrinsic sizing contributions | **Complete** | K3m/K3q's box-keyed queries, validated cache, subtree contributions, and shrink-to-fit consumers remain live on current main. Buckram is 237/237, the focused live Livery receipt is green, and corrected css-sizing is 163 verified pass / 349 fail / 220 skip / 0 error. Normal-flow used sizing for content keywords remains an explicit K7 dispatch gap. See the [current-main reconciliation](2026-08-24_buckram_intrinsic_sizing_reconciliation.md). |
 | 10 | Writing modes | `FlowAxes` consumers in Buckram and `to_block_style` | Open |
 | 12 | Floats and shapes | block float exclusions and `shape-outside` | Open |
 | 17 | Counters, lists, generated content | Livery `content`/`counter-*` cascade and marker boxes | Open |
