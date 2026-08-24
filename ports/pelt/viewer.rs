@@ -47,6 +47,8 @@ pub(crate) fn main() {
     let mut frames: Option<u32> = None;
     let mut with_tiles = false;
     let mut tile_receipt = false;
+    let mut capability_receipt = false;
+    let mut tile_engine_overrides = Vec::new();
     let mut tile_urls = Vec::new();
     let mut netrender_smoke = false;
     let mut webgl_wgpu_smoke = false;
@@ -120,6 +122,22 @@ pub(crate) fn main() {
             "--tile-receipt" => {
                 with_tiles = true;
                 tile_receipt = true;
+            },
+            "--capability-receipt" => {
+                with_tiles = true;
+                capability_receipt = true;
+            },
+            "--tile-engine" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--tile-engine requires N=engine-id");
+                    std::process::exit(2);
+                };
+                tile_engine_overrides.push(parse_tile_engine(&value));
+                with_tiles = true;
+            },
+            value if value.starts_with("--tile-engine=") => {
+                tile_engine_overrides.push(parse_tile_engine(&value["--tile-engine=".len()..]));
+                with_tiles = true;
             },
             "--netrender-smoke" => {
                 netrender_smoke = true;
@@ -233,17 +251,67 @@ pub(crate) fn main() {
     }
 
     if with_tiles {
-        if selected_engine != SelectedEngine::Livery {
-            eprintln!(
-                "P3 tiles currently route document lanes through genet.livery; per-tile engine routing is P4"
-            );
-            std::process::exit(2);
+        if capability_receipt {
+            if !cfg!(all(feature = "scripted", feature = "smolweb")) {
+                eprintln!("--capability-receipt needs `--features scripted,smolweb`");
+                std::process::exit(2);
+            }
+            tile_urls = capability_fixture_urls();
+            tile_engine_overrides = vec![
+                (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
+                (2, inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+                (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+                (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+            ];
         }
         if tile_urls.is_empty() {
             tile_urls.push(url.clone());
         }
+        if !capability_receipt {
+            let profile_engine = match selected_engine {
+                SelectedEngine::Livery => None,
+                SelectedEngine::Reader => {
+                    if !cfg!(feature = "reader") {
+                        eprintln!("the reader workspace route needs `--features reader`");
+                        std::process::exit(2);
+                    }
+                    Some(inker::routing::ENGINE_GENET_READER)
+                },
+                SelectedEngine::Scripted => {
+                    if !cfg!(feature = "scripted") {
+                        eprintln!("the scripted workspace route needs `--features scripted`");
+                        std::process::exit(2);
+                    }
+                    if js_engine == "nova" {
+                        if !cfg!(feature = "scripted-nova") {
+                            eprintln!("the Nova workspace route needs `--features scripted-nova`");
+                            std::process::exit(2);
+                        }
+                        Some(inker::routing::ENGINE_GENET_SCRIPTED_NOVA)
+                    } else {
+                        Some(inker::routing::ENGINE_GENET_SCRIPTED)
+                    }
+                },
+            };
+            if let Some(engine) = profile_engine {
+                let mut profile_overrides = (1..=tile_urls.len())
+                    .map(|tile| (tile as u64, engine.to_owned()))
+                    .collect::<Vec<_>>();
+                // A per-tile choice is more specific than the profile-wide
+                // `--engine` choice and therefore wins on duplicates.
+                profile_overrides.extend(tile_engine_overrides);
+                tile_engine_overrides = profile_overrides;
+            }
+        }
         #[cfg(feature = "livery")]
-        run_workspace_profile(tile_urls, size, frames, tile_receipt);
+        run_workspace_profile(
+            tile_urls,
+            size,
+            frames,
+            tile_receipt,
+            capability_receipt,
+            tile_engine_overrides,
+        );
         #[cfg(not(feature = "livery"))]
         {
             eprintln!("the Pelt workspace needs `--features livery`");
@@ -452,6 +520,8 @@ fn run_workspace_profile(
     size: Option<(u32, u32)>,
     frames: Option<u32>,
     interaction_receipt: bool,
+    capability_receipt: bool,
+    route_overrides: Vec<(u64, String)>,
 ) {
     let mut config =
         pelt_desktop::WorkspaceViewerConfig::new(urls, pelt_desktop::WindowingMode::Headed);
@@ -464,9 +534,15 @@ fn run_workspace_profile(
     if interaction_receipt {
         config = config.with_interaction_receipt();
     }
+    for (tile, engine) in route_overrides {
+        config = config.with_route_override(tile, engine);
+    }
+    if capability_receipt {
+        config = config.with_capability_receipt();
+    }
     match pelt_desktop::run_livery_workspace_viewer(config) {
         Ok(outcome) => println!(
-            "pelt workspace engine=genet.livery first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={}",
+            "pelt workspace first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={} capability_receipt={} routes={}",
             outcome.first_url,
             outcome.created_window,
             outcome.redraws,
@@ -474,12 +550,39 @@ fn run_workspace_profile(
             outcome.size.1,
             outcome.tile_count,
             outcome.interaction_receipt,
+            outcome.capability_receipt,
+            outcome.routes.join(","),
         ),
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
         },
     }
+}
+
+fn parse_tile_engine(value: &str) -> (u64, String) {
+    let Some((tile, engine)) = value.split_once('=') else {
+        eprintln!("--tile-engine expects N=engine-id (got '{value}')");
+        std::process::exit(2);
+    };
+    let tile = tile.parse::<u64>().ok().filter(|tile| *tile > 0);
+    if let (Some(tile), false) = (tile, engine.trim().is_empty()) {
+        (tile, engine.trim().to_owned())
+    } else {
+        eprintln!("--tile-engine expects N=engine-id (got '{value}')");
+        std::process::exit(2);
+    }
+}
+
+fn capability_fixture_urls() -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("workspace")
+        .join("p4");
+    ["native.gmi", "static.html", "scripted.html", "surface.html"]
+        .into_iter()
+        .map(|name| root.join(name).to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Without the scripted profile compiled in, `--engine scripted` is a clean error
@@ -727,8 +830,10 @@ Options:
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
-    --tiles                            (open positional URLs in a recursive Frisket workspace)
+    --tiles                            (route positional URLs in a recursive Frisket workspace)
+    --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
+    --capability-receipt               (drive the mixed P4 routing receipt)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

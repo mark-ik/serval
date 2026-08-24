@@ -1,5 +1,6 @@
 //! Headed recursive Pelt workspace over TileTree and Frisket.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,14 +10,17 @@ use genet_host_api::tile::{
 };
 use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
 use inker::{
-    SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey, SessionModifiers,
-    SessionNavigationCommand, SessionPointerButton, SessionRegistry, SessionScrollKey,
-    SurfaceEngineRegistry,
+    EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey,
+    SessionModifiers, SessionNavigationCommand, SessionPointerButton, SessionRegistry,
+    SessionScrollKey, SurfaceEngineRegistry, SurfaceFrame,
 };
+#[cfg(target_os = "windows")]
+use inker::{FrameHandleOwnership, NativeTextureHandle};
 use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
-    PeltController, PeltControllerConfig, PeltHostEffect, PeltWorkspace, WorkspaceRect,
+    PeltController, PeltHostEffect, PeltRegistries, PeltRouteState, PeltTileRequest, PeltWorkspace,
+    WorkspaceRect,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -38,6 +42,10 @@ pub struct WorkspaceViewerConfig {
     /// Drive the checked-in P3 interaction receipt through the same semantic
     /// pointer and navigation paths as the window.
     pub interaction_receipt: bool,
+    /// Drive the mixed P4 routing receipt after the first shared frame.
+    pub capability_receipt: bool,
+    /// One-based tile number to explicit engine id.
+    pub route_overrides: HashMap<u64, String>,
 }
 
 impl WorkspaceViewerConfig {
@@ -48,6 +56,8 @@ impl WorkspaceViewerConfig {
             size: None,
             frames: None,
             interaction_receipt: false,
+            capability_receipt: false,
+            route_overrides: HashMap::new(),
         }
     }
 
@@ -66,6 +76,17 @@ impl WorkspaceViewerConfig {
         self.frames = Some(self.frames.unwrap_or(0).max(u32::from(RECEIPT_STEPS) + 1));
         self
     }
+
+    pub fn with_route_override(mut self, tile: u64, engine_id: impl Into<String>) -> Self {
+        self.route_overrides.insert(tile, engine_id.into());
+        self
+    }
+
+    pub fn with_capability_receipt(mut self) -> Self {
+        self.capability_receipt = true;
+        self.frames = Some(self.frames.unwrap_or(0).max(2));
+        self
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +97,8 @@ pub struct WorkspaceViewerOutcome {
     pub size: (u32, u32),
     pub tile_count: usize,
     pub interaction_receipt: bool,
+    pub capability_receipt: bool,
+    pub routes: Vec<String>,
 }
 
 pub fn run_livery_workspace_viewer(
@@ -91,25 +114,29 @@ pub fn run_livery_workspace_viewer(
             size: (0, 0),
             tile_count,
             interaction_receipt: false,
+            capability_receipt: false,
+            routes: Vec::new(),
         });
     }
 
     let initial_size = config.size.unwrap_or((1100, 750));
-    let workspace = PeltWorkspace::try_new(tree, |tile| {
-        let ContentSource::Document(DocumentRef(address)) = &tile.content else {
-            return Err("standalone Pelt only constructs document controllers in P3".to_owned());
-        };
-        let mut sessions: SessionRegistry<Scene> = SessionRegistry::new();
-        sessions.register(Box::new(genet_documents::LiverySessionEngine::new(
-            genet_documents::LocalFetcher,
-        )));
-        PeltController::new(
-            sessions,
-            SurfaceEngineRegistry::new(),
-            PeltControllerConfig::new(inker::routing::ENGINE_GENET_LIVERY, address, initial_size),
-            WorkspaceClock(Instant::now()),
-        )
-    })?;
+    let registries = workspace_registries();
+    let overrides = config.route_overrides.clone();
+    let workspace = PeltWorkspace::try_routed(
+        tree,
+        registries,
+        |tile| {
+            let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                return Err("standalone Pelt only routes document tile sources".to_owned());
+            };
+            let mut request = PeltTileRequest::new(address, initial_size);
+            if let Some(engine) = overrides.get(&tile.id.0) {
+                request = request.with_engine_override(engine);
+            }
+            Ok(request)
+        },
+        || Box::new(WorkspaceClock(Instant::now())),
+    )?;
     let frisket = FrisketSurface::new(workspace.tree());
     let event_loop =
         EventLoop::new().map_err(|error| format!("could not create event loop: {error}"))?;
@@ -129,6 +156,66 @@ impl pelt_core::PeltClock for WorkspaceClock {
     fn now_ms(&self) -> f64 {
         self.0.elapsed().as_secs_f64() * 1000.0
     }
+}
+
+fn workspace_registries() -> PeltRegistries<Scene> {
+    let mut sessions: SessionRegistry<Scene> = SessionRegistry::new();
+    let fetcher = genet_documents::LocalFetcher::with_resource_policy(
+        genet_documents::ResourceFetchPolicy::default(),
+    );
+    sessions.register(Box::new(genet_documents::LiverySessionEngine::new(
+        fetcher.clone(),
+    )));
+    #[cfg(feature = "reader")]
+    sessions.register(Box::new(genet_documents::ReaderSessionEngine::default()));
+    #[cfg(feature = "scripted")]
+    sessions.register(Box::new(genet_documents::ScriptedSessionEngine::<
+        script_engine_boa::BoaEngine,
+        _,
+    >::new(
+        inker::routing::ENGINE_GENET_SCRIPTED,
+        fetcher.clone(),
+    )));
+    #[cfg(feature = "scripted-nova")]
+    sessions.register(Box::new(genet_documents::ScriptedSessionEngine::<
+        script_engine_nova::NovaEngine,
+        _,
+    >::new(
+        inker::routing::ENGINE_GENET_SCRIPTED_NOVA,
+        fetcher.clone(),
+    )));
+    #[cfg(feature = "smolweb")]
+    for engine_id in [
+        inker::routing::ENGINE_NEMATIC_GEMTEXT,
+        inker::routing::ENGINE_NEMATIC_GOPHER,
+        inker::routing::ENGINE_NEMATIC_FEED,
+        inker::routing::ENGINE_NEMATIC_NEX,
+        inker::routing::ENGINE_NEMATIC_FINGER,
+    ] {
+        sessions.register(Box::new(genet_documents::SmolwebSessionEngine::new(
+            engine_id,
+            fetcher.clone(),
+            genet_documents::SmolwebTheme::System,
+        )));
+    }
+
+    let mut policy = inker::routing::EngineRoutePolicy::default();
+    for rule in &mut policy.rules {
+        if rule.engine_id == inker::routing::ENGINE_GENET_WEB {
+            rule.engine_id = inker::routing::ENGINE_GENET_LIVERY.to_owned();
+        }
+    }
+    policy.fallback.engine_id = inker::routing::ENGINE_GENET_LIVERY.to_owned();
+    PeltRegistries::new(
+        sessions,
+        SurfaceEngineRegistry::new(),
+        policy,
+        "pelt.workspace",
+        inker::routing::ENGINE_GENET_LIVERY,
+        EngineProfileBinding {
+            user_data_dir: "pelt-surface-profile".to_owned(),
+        },
+    )
 }
 
 fn tree_from_urls(urls: &[String]) -> TileTree {
@@ -257,6 +344,26 @@ impl WorkspaceApp {
     }
 
     fn outcome(&self) -> WorkspaceViewerOutcome {
+        let mut routes = self
+            .workspace
+            .routes()
+            .map(|route| {
+                let state = match &route.state {
+                    PeltRouteState::Document => "document".to_owned(),
+                    PeltRouteState::Surface => {
+                        format!("surface:{:?}", route.decision.surface_contract.mode)
+                    },
+                    PeltRouteState::Fallback {
+                        active_engine,
+                        reason,
+                    } => {
+                        format!("fallback:{active_engine}:{reason}")
+                    },
+                };
+                format!("{}={}:{state}", route.tile.0, route.selected_engine())
+            })
+            .collect::<Vec<_>>();
+        routes.sort();
         WorkspaceViewerOutcome {
             first_url: self.config.urls.first().cloned().unwrap_or_default(),
             created_window: self.window.is_some(),
@@ -267,7 +374,9 @@ impl WorkspaceApp {
                 (0, 0)
             },
             tile_count: self.workspace.tree().tiles().len(),
-            interaction_receipt: self.receipt_complete,
+            interaction_receipt: self.config.interaction_receipt && self.receipt_complete,
+            capability_receipt: self.config.capability_receipt && self.receipt_complete,
+            routes,
         }
     }
 
@@ -290,6 +399,14 @@ impl WorkspaceApp {
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
+        if self.config.capability_receipt && self.redraws > 0 && !self.receipt_complete {
+            if let Err(error) = self.validate_capability_receipt() {
+                self.receipt_error = Some(error);
+                event_loop.exit();
+                return;
+            }
+            self.receipt_complete = true;
+        }
         if self.config.interaction_receipt && self.redraws > 0 && !self.receipt_complete {
             if let Err(error) = self.drive_receipt_step() {
                 self.receipt_error = Some(error);
@@ -309,8 +426,29 @@ impl WorkspaceApp {
         };
         self.workspace
             .set_content_rects(pane_frame.content_rects.iter().copied());
+        self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
         let workspace_frame = self.workspace.frame();
+        for surface in workspace_frame.surfaces {
+            match surface.frame {
+                Ok(None) => {},
+                Ok(Some(frame)) => {
+                    discard_unimported_surface_frame(frame);
+                    self.receipt_error = Some(format!(
+                        "tile {} produced a native surface frame, but this platform has no shared-handle importer",
+                        surface.tile.0
+                    ));
+                    event_loop.exit();
+                    return;
+                },
+                Err(error) => {
+                    self.receipt_error =
+                        Some(format!("tile {} surface failed: {error}", surface.tile.0));
+                    event_loop.exit();
+                    return;
+                },
+            }
+        }
         let Some(host) = self.host.as_ref() else {
             return;
         };
@@ -381,6 +519,79 @@ impl WorkspaceApp {
         } else if self.config.interaction_receipt || more || self.config.frames.is_some() {
             self.request_redraw();
         }
+    }
+
+    fn validate_capability_receipt(&self) -> Result<(), String> {
+        let expected = [
+            (1, inker::routing::ENGINE_NEMATIC_GEMTEXT),
+            (2, inker::routing::ENGINE_GENET_LIVERY),
+            (3, inker::routing::ENGINE_GENET_SCRIPTED),
+            (4, inker::routing::ENGINE_SCRYING_WEB),
+        ];
+        for (tile, engine) in expected {
+            let route = self
+                .workspace
+                .route(TileId(tile))
+                .ok_or_else(|| format!("P4 receipt is missing tile {tile}"))?;
+            if route.selected_engine() != engine {
+                return Err(format!(
+                    "P4 tile {tile} selected {} instead of {engine}",
+                    route.selected_engine()
+                ));
+            }
+        }
+        if !matches!(
+            self.workspace.route(TileId(4)).map(|route| &route.state),
+            Some(PeltRouteState::Fallback { active_engine, .. })
+                if active_engine == inker::routing::ENGINE_GENET_LIVERY
+        ) {
+            return Err("P4 external surface tile did not expose its Livery fallback".to_owned());
+        }
+        let first = self
+            .workspace
+            .controller(TileId(1))
+            .ok_or("P4 smolweb tile is not live")?;
+        let second = self
+            .workspace
+            .controller(TileId(2))
+            .ok_or("P4 static tile is not live")?;
+        let third = self
+            .workspace
+            .controller(TileId(3))
+            .ok_or("P4 scripted tile is not live")?;
+        if !first.shares_registries_with(second) || !second.shares_registries_with(third) {
+            return Err("P4 document tiles did not share their long-lived registries".to_owned());
+        }
+        let native = first
+            .inspect()
+            .ok_or("P4 smolweb tile did not expose a structural report")?;
+        if !native
+            .links
+            .iter()
+            .any(|link| link.ends_with("static.html"))
+        {
+            return Err("P4 smolweb tile did not parse its gemtext link".to_owned());
+        }
+        let static_report = second
+            .inspect()
+            .ok_or("P4 static tile did not expose a structural report")?;
+        if static_report.title.as_deref() != Some("Static Livery")
+            || static_report.headings != ["Static Livery"]
+        {
+            return Err("P4 static tile did not retain its Livery semantics".to_owned());
+        }
+        let scripted = third
+            .inspect()
+            .ok_or("P4 scripted tile did not expose a structural report")?;
+        if scripted.title.as_deref() != Some("Scripted Livery")
+            || !scripted
+                .outline
+                .iter()
+                .any(|entry| entry.name == "Boa mutated this retained DOM")
+        {
+            return Err("P4 scripted tile did not expose its post-Boa DOM".to_owned());
+        }
+        Ok(())
     }
 
     fn request_redraw(&self) {
@@ -704,6 +915,24 @@ impl WorkspaceApp {
         self.pointer_up();
         Ok(())
     }
+}
+
+fn discard_unimported_surface_frame(frame: SurfaceFrame) {
+    #[cfg(target_os = "windows")]
+    if let NativeTextureHandle::D3d12Shared {
+        handle,
+        ownership: FrameHandleOwnership::Transferred,
+    } = frame.texture
+    {
+        // SAFETY: Inker transferred this one-shot Win32 handle to the host,
+        // and this rejection path consumes the frame without importing it.
+        unsafe {
+            let _ = windows_sys::Win32::Foundation::CloseHandle(handle as _);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = frame;
 }
 
 impl ApplicationHandler for WorkspaceApp {

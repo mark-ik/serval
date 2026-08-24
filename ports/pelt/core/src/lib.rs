@@ -6,6 +6,8 @@
 
 mod workspace;
 
+use std::sync::Arc;
+
 use genet_host_api::resolve_href;
 use inker::{
     ContentReport, DocumentSession, SessionEffect, SessionFormMethod, SessionInput,
@@ -13,7 +15,10 @@ use inker::{
     SessionSpawnRequest, SurfaceEngineRegistry,
 };
 
-pub use workspace::{PeltTileFrame, PeltWorkspace, PeltWorkspaceFrame, WorkspaceRect};
+pub use workspace::{
+    PeltRegistries, PeltRouteSource, PeltRouteState, PeltSurfaceLayer, PeltTileFrame,
+    PeltTileRequest, PeltTileRoute, PeltWorkspace, PeltWorkspaceFrame, WorkspaceRect,
+};
 
 /// A caller-owned monotonic clock. Pelt asks for the current time only while
 /// pumping a retained session; it neither selects a system clock nor owns an
@@ -67,12 +72,13 @@ pub struct PeltHostEffect {
 /// Pelt's reusable one-session browser controller.
 ///
 /// Concrete document engines and their resource policy arrive inside
-/// `session_engines`. Surface engines are retained for the P4 composition
-/// lane, but P2 does not select or spawn them. Frames remain generic, so the
-/// embedding host owns every wgpu resource and presentation target.
+/// `session_engines`. The routed workspace shares both registry pairs across
+/// its controllers and owns surface producers beside them. Frames remain
+/// generic, so the embedding host owns every wgpu resource and presentation
+/// target.
 pub struct PeltController<F> {
-    session_engines: SessionRegistry<F>,
-    surface_engines: SurfaceEngineRegistry,
+    session_engines: Arc<SessionRegistry<F>>,
+    surface_engines: Arc<SurfaceEngineRegistry>,
     engine_id: String,
     session: Box<dyn DocumentSession<F>>,
     history: Vec<SessionSpawnRequest>,
@@ -88,6 +94,31 @@ impl<F: 'static> PeltController<F> {
         config: PeltControllerConfig,
         clock: impl PeltClock,
     ) -> Result<Self, String> {
+        Self::new_shared(
+            Arc::new(session_engines),
+            Arc::new(surface_engines),
+            config,
+            clock,
+        )
+    }
+
+    /// Spawn a controller from host-long-lived registries. Every tile keeps its
+    /// own session and history while sharing the immutable engine factories.
+    pub fn new_shared(
+        session_engines: Arc<SessionRegistry<F>>,
+        surface_engines: Arc<SurfaceEngineRegistry>,
+        config: PeltControllerConfig,
+        clock: impl PeltClock,
+    ) -> Result<Self, String> {
+        Self::new_shared_boxed(session_engines, surface_engines, config, Box::new(clock))
+    }
+
+    pub(crate) fn new_shared_boxed(
+        session_engines: Arc<SessionRegistry<F>>,
+        surface_engines: Arc<SurfaceEngineRegistry>,
+        config: PeltControllerConfig,
+        clock: Box<dyn PeltClock>,
+    ) -> Result<Self, String> {
         let engine_id = config.engine_id;
         let viewport = config.request.viewport;
         let session = session_engines
@@ -101,7 +132,7 @@ impl<F: 'static> PeltController<F> {
             history: vec![config.request],
             history_index: 0,
             viewport,
-            clock: Box::new(clock),
+            clock,
         })
     }
 
@@ -111,6 +142,10 @@ impl<F: 'static> PeltController<F> {
 
     pub fn address(&self) -> &str {
         &self.history[self.history_index].address
+    }
+
+    pub fn request(&self) -> &SessionSpawnRequest {
+        &self.history[self.history_index]
     }
 
     pub fn title(&self) -> Option<String> {
@@ -133,16 +168,26 @@ impl<F: 'static> PeltController<F> {
         &self.session_engines
     }
 
-    pub fn session_engines_mut(&mut self) -> &mut SessionRegistry<F> {
-        &mut self.session_engines
+    /// Mutate an owned registry before sharing it. Returns `None` once another
+    /// controller shares the registry.
+    pub fn session_engines_mut(&mut self) -> Option<&mut SessionRegistry<F>> {
+        Arc::get_mut(&mut self.session_engines)
     }
 
     pub fn surface_engines(&self) -> &SurfaceEngineRegistry {
         &self.surface_engines
     }
 
-    pub fn surface_engines_mut(&mut self) -> &mut SurfaceEngineRegistry {
-        &mut self.surface_engines
+    /// Mutate an owned registry before sharing it. See
+    /// [`Self::session_engines_mut`] for the routed-workspace rule.
+    pub fn surface_engines_mut(&mut self) -> Option<&mut SurfaceEngineRegistry> {
+        Arc::get_mut(&mut self.surface_engines)
+    }
+
+    /// Whether two live controllers use the same host registry pair.
+    pub fn shares_registries_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.session_engines, &other.session_engines)
+            && Arc::ptr_eq(&self.surface_engines, &other.surface_engines)
     }
 
     /// Advance session-owned time work using the injected clock. `true`

@@ -1,0 +1,5 @@
+# Pelt native document
+
+This tile is parsed as gemtext and lowered through the engine-native smolweb lane.
+
+=> static.html Static neighbor

@@ -156,6 +156,7 @@ sha2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation"] }
 # Windows-only types (HWND) used by the `windows-present` feature's
 # `run_windows_dxgi_present_smoke` to bridge winit's RawWindowHandle
 # to paint's WindowsDxgiBackend constructor. Same workspace `windows`
