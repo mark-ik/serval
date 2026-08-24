@@ -22,6 +22,7 @@ webxr = ["dep:webxr", "dep:webxr-api"]
 
 [dev-dependencies]
 euclid = { workspace = true }
+pollster = { workspace = true }
 webgl_wgpu = { workspace = true }
 
 [lints.clippy]
@@ -73,7 +74,7 @@ objc2-app-kit = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # C4 Wayland compositor backend (compositor_wayland/). ash version matches
-# wgpu-hal 29's lockfile-pinned 0.38.0+1.3.281 so the types line up.
+# wgpu-hal 30's lockfile-pinned 0.38.0+1.3.281 so the types line up.
 ash = "0.38"
 # Bake pipeline uniform upload (compositor_wayland/bake.rs).
 bytemuck = { workspace = true }
