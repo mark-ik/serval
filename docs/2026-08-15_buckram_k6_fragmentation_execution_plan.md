@@ -89,34 +89,37 @@ the existing K5 runner. These are inventory counts, not pass counts.
 The manifest kinds remain unchanged. The frozen current-main Livery results
 below replace the old 96-pass note and the archived overlay-backed census.
 
-A routing sample with the current-main runner produces:
+A routing sample with the corrected harness produces:
 
 - `multicol-fill-auto-001.xht`: fail;
 - `multicol-basic-005.xht`: pass, unverified;
-- `multicol-break-000.xht`: pass, unverified; and
+- `multicol-break-000.xht`: fail; and
 - `multicol-height-002-print.xht`: skip.
 
-The two passes receive no capability credit because the route does not consume
-multicol computed values. The print skip confirms the pagination harness gate.
+The surviving pass receives no capability credit because the route does not
+consume multicol computed values. The print skip confirms the pagination
+harness gate.
 
 The current exact maps are:
 
 | Family | Pass | Fail | Skip | Unverified pass |
 |---|---:|---:|---:|---:|
-| `css/css-multicol` | 105 | 292 | 311 | 105 |
-| `css/css-break` | 125 | 790 | 255 | 125 |
-| `css/css-position` | 56 | 62 | 226 | 5 |
-| `css/css-tables` | 66 | 64 | 198 | 0 |
-| `css/css-flexbox` | 395 | 489 | 474 | 11 |
-| `css/css-grid` | 438 | 705 | 748 | 4 |
+| `css/css-multicol` | 60 | 337 | 311 | 60 |
+| `css/css-break` | 83 | 832 | 255 | 83 |
+| `css/css-position` | 45 | 73 | 226 | 1 |
+| `css/css-tables` | 53 | 77 | 198 | 0 |
+| `css/css-flexbox` | 316 | 568 | 474 | 11 |
+| `css/css-grid` | 285 | 858 | 748 | 2 |
 | `css/css-page` | 0 | 0 | 278 | 0 |
 
-All 230 passes in the two direct fragmentation directories are unverified;
-20 more unverified passes sit in the guard directories. Exact per-file
+All 143 passes in the two direct fragmentation directories are unverified;
+14 more unverified passes sit in the guard directories. Exact per-file
 classification and the named family ratchets are in the
 [current-main census reconciliation](2026-08-24_buckram_k6_corpus_census_reconciliation.md).
-These maps are the frozen K6 baseline. Refresh them if accepted source changes
-before K6a begins.
+These corrected maps supersede the original 230-direct / 20-guard score, whose
+fuzzy comparison admitted an unlimited number of low-delta pixels. They are
+the frozen K6 baseline. Refresh them if accepted source changes before K6a
+begins.
 
 ## Serialized execution
 

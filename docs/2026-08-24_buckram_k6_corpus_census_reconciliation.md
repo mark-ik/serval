@@ -14,15 +14,17 @@ under the lane program's uncommitted read-only overlay. Its result maps also
 predated the accepted K5 recovery. This reconciliation reruns the census from
 accepted current main and carries forward none of that build provenance.
 
-The current result is sharper than the historical one: all 230 passes in
-`css/css-multicol` and `css/css-break` are unverified. Neither side consumed
-a fragmentation input. Another 20 unverified passes sit in the position,
-flex, and grid guard directories. These results receive no K6 capability
-credit.
+The WPT harness correction supersedes the original current-main score. The
+old fuzzy scorer admitted 93 false passes in the K6 inventory. The exact
+corrected result is 143 unverified passes in `css/css-multicol` and
+`css/css-break`. Neither side consumed a fragmentation input. Another 14
+unverified passes sit in the position, flex, and grid guard directories.
+These results receive no K6 capability credit.
 
 ## Method
 
-The frozen current-main runner wrote exact result maps for:
+The frozen corrected runner wrote one exact full-CSS result map. The classifier
+then selected the same family prefixes used by the earlier separate maps:
 
 - `css/css-multicol`
 - `css/css-break`
@@ -47,39 +49,40 @@ these maps; non-reftest and script-dependent items remain skipped.
 
 | Family | Total | Runnable | Pass | Fail | Skip | Unverified | Verified |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `css/css-multicol` | 708 | 397 | 105 | 292 | 311 | 105 | 0 |
-| `css/css-break` | 1,170 | 915 | 125 | 790 | 255 | 125 | 0 |
-| `css/css-break/table` | 164 | 120 | 15 | 105 | 44 | 15 | 0 |
-| `css/css-break/flexbox` | 329 | 290 | 33 | 257 | 39 | 33 | 0 |
+| `css/css-multicol` | 708 | 397 | 60 | 337 | 311 | 60 | 0 |
+| `css/css-break` | 1,170 | 915 | 83 | 832 | 255 | 83 | 0 |
+| `css/css-break/table` | 164 | 120 | 10 | 110 | 44 | 10 | 0 |
+| `css/css-break/flexbox` | 329 | 290 | 27 | 263 | 39 | 27 | 0 |
 | `css/css-break/grid` | 100 | 94 | 6 | 88 | 6 | 6 | 0 |
 | `css/css-page` | 278 | 0 | 0 | 0 | 278 | 0 | 0 |
-| `css/css-tables` | 328 | 130 | 66 | 64 | 198 | 0 | 66 |
-| `css/css-position` | 344 | 118 | 56 | 62 | 226 | 5 | 51 |
-| `css/css-flexbox` | 1,358 | 884 | 395 | 489 | 474 | 11 | 384 |
-| `css/css-grid` | 1,891 | 1,143 | 438 | 705 | 748 | 4 | 434 |
+| `css/css-tables` | 328 | 130 | 53 | 77 | 198 | 0 | 53 |
+| `css/css-position` | 344 | 118 | 45 | 73 | 226 | 1 | 44 |
+| `css/css-flexbox` | 1,358 | 884 | 316 | 568 | 474 | 11 | 305 |
+| `css/css-grid` | 1,891 | 1,143 | 285 | 858 | 748 | 2 | 283 |
 
 The subdirectory rows are included in the `css/css-break` total and are not
-added again. The direct fragmentation total is therefore 230 unverified
-passes, not 230 plus its table, flex, and grid breakdowns.
+added again. The direct fragmentation total is therefore 143 unverified
+passes, not 143 plus its table, flex, and grid breakdowns.
 
-The 20 unverified guard passes are:
+The 14 unverified guard passes are:
 
-- five in `css/css-position`: four vertical-rl multicol static-position
-  cases and `position-absolute-multicol-001`;
+- one in `css/css-position`: `position-absolute-multicol-001`;
 - eleven in `css/css-flexbox`: the eight `flexbox-break-request-*` cases,
   `flexbox-with-multi-column-property`, and the two
   `flexbox_columns-flexitems*` cases;
-- four in `css/css-grid`: `grid-lanes-gap-002`,
-  `column-property-should-not-apply-on-grid-container-001`,
-  `grid-inline-multicol-001`, and `grid-multicol-001`.
+- two in `css/css-grid`: `grid-lanes-gap-002` and
+  `column-property-should-not-apply-on-grid-container-001`.
+
+The four vertical-rl position guards and two grid-multicol guards previously
+reported as unverified passes now fail under correct fuzzy scoring.
 
 ## Named ratchets
 
-- `multicol-fill-auto-*` is 2 pass / 6 fail. The two passes remain
+- `multicol-fill-auto-*` is 1 pass / 7 fail. The remaining pass is
   unverified; `multicol-fill-auto-001.xht` remains the first red K6c target.
 - `multicol-basic-001` through `-004` fail; `-005` through `-008` pass
   unverified.
-- `multicol-break-000` and `-001` pass unverified.
+- `multicol-break-000` and `-001` now fail under correct fuzzy scoring.
 - `basic-pagination-001-print.html` skips as `non-reftest`, as do all 278
   `css/css-page` files in the current renderer path.
 
@@ -117,16 +120,17 @@ session consumer. They no longer claim K5h is blocking K6.
 - Manifest SHA-256:
   `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`.
 - Frozen runner SHA-256:
-  `E670FF76C2E392FA5B7C55C11E898427CADD6CA6887976C42E98A57BEBAFE617`.
-  A non-document source diff proves current main source-identical to that
-  runner's K5 positioning build.
+  `3CABCBE7C06892FCD1A4DAAA1B9BF45AA44D69BB633964A823023E3DC9636D81`.
+  This runner checks WPT's two fuzzy ranges independently and labels every
+  surviving coincidence pass `reference-unverified` in its exact result map.
 - `cargo test --locked --offline -p genet-livery --test
   k6_fragmentation_contracts -- --list` lists six tests and zero benchmarks.
 - Strict no-dependency Clippy for that target is green.
 - File-local Rustfmt and `git diff --check` are green.
-- Exact maps, classifier, per-file classifications, stdout, lockfile, and
-  provenance are under
-  `testing/genet/wpt-ledger/2026-08-24_k6_census_v2`.
+- The exact full-CSS map, refreshed classifier, per-file classifications, and
+  stdout are under `testing/genet/wpt-ledger/2026-08-24_k6_census_v3`.
+  The frozen runner, baseline/candidate maps, and exact result diff are under
+  `testing/genet/wpt-ledger/2026-08-24_harness_ledger`.
 
 ## Done condition
 

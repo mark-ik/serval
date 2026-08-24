@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "renderer": "livery",
+  "reason": "reference-unverified",
+  "source": "docs/2026-08-24_buckram_k6_corpus_census_reconciliation.md",
+  "scopes": [
+    "css/css-break/",
+    "css/css-multicol/"
+  ],
+  "tests": [
+    "css/css-flexbox/flexbox-break-request-horiz-001a.html",
+    "css/css-flexbox/flexbox-break-request-horiz-001b.html",
+    "css/css-flexbox/flexbox-break-request-horiz-002a.html",
+    "css/css-flexbox/flexbox-break-request-horiz-002b.html",
+    "css/css-flexbox/flexbox-break-request-vert-001a.html",
+    "css/css-flexbox/flexbox-break-request-vert-001b.html",
+    "css/css-flexbox/flexbox-break-request-vert-002a.html",
+    "css/css-flexbox/flexbox-break-request-vert-002b.html",
+    "css/css-flexbox/flexbox-with-multi-column-property.html",
+    "css/css-flexbox/flexbox_columns-flexitems-2.html",
+    "css/css-flexbox/flexbox_columns-flexitems.html",
+    "css/css-grid/grid-lanes/gap/grid-lanes-gap-002.html",
+    "css/css-grid/grid-model/column-property-should-not-apply-on-grid-container-001.html",
+    "css/css-grid/grid-model/grid-inline-multicol-001.html",
+    "css/css-grid/grid-model/grid-multicol-001.html",
+    "css/css-position/multicol/static-position/vrl-ltr-ltr-in-multicol.html",
+    "css/css-position/multicol/static-position/vrl-ltr-rtl-in-multicol.tentative.html",
+    "css/css-position/multicol/static-position/vrl-rtl-ltr-in-multicol.tentative.html",
+    "css/css-position/multicol/static-position/vrl-rtl-rtl-in-multicol.html",
+    "css/css-position/position-absolute-multicol-001.html"
+  ]
+}

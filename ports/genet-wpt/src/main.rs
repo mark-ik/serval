@@ -50,7 +50,7 @@ const REFTEST_H: u32 = 600;
 // sub-1% sliver of (anti-aliased edge) pixels. Exact-match scoring (0,0)
 // therefore flips borderline tests between runs, making the pass count
 // non-deterministic. This floor — at most `FUZZ_FLOOR_DIFF` per-channel
-// delta on at most one two-hundredth of the physical raster pixels — absorbs exactly that
+// delta on at most one hundredth of the physical raster pixels — absorbs exactly that
 // jitter and nothing near a real paint bug (those differ by 255 over a
 // localized region). Applied as a *lower bound* on every comparison: a
 // test's own `<meta name=fuzzy>` still wins where it is looser.
@@ -58,7 +58,7 @@ const FUZZ_FLOOR_DIFF: u16 = 1;
 
 fn fuzz_floor_pixels(viewport: render::RenderViewport) -> u64 {
     let (width, height) = viewport.device_size();
-    (width as u64 * height as u64) / 200
+    (width as u64 * height as u64) / 100
 }
 
 /// WPT test classification (convention-based; see the plan doc).
@@ -177,7 +177,7 @@ struct TestCase {
     url: String,
     kind: Kind,
     refs: Vec<(String, manifest::RefMatch)>,
-    fuzzy: Option<(u16, u64)>,
+    fuzzy: Option<FuzzyRange>,
     long_timeout: bool,
     from_manifest: bool,
 }
@@ -212,7 +212,7 @@ impl TestCase {
             url: normalize_test_url(&test.url),
             kind: Kind::from_manifest(test.kind),
             refs: test.refs,
-            fuzzy: manifest_fuzzy_upper(test.fuzzy),
+            fuzzy: manifest_fuzzy_range(test.fuzzy),
             long_timeout: test.long_timeout,
             from_manifest: true,
         })
@@ -239,9 +239,17 @@ fn strip_url_path(url_or_path: &str) -> &str {
         .unwrap_or(url_or_path)
 }
 
-fn manifest_fuzzy_upper(fuzzy: Option<((u32, u32), (u32, u32))>) -> Option<(u16, u64)> {
-    fuzzy.map(|((_, diff_hi), (_, total_hi))| {
-        (diff_hi.min(u32::from(u16::MAX)) as u16, u64::from(total_hi))
+type FuzzyRange = ((u16, u16), (u64, u64));
+
+fn manifest_fuzzy_range(fuzzy: Option<((u32, u32), (u32, u32))>) -> Option<FuzzyRange> {
+    fuzzy.and_then(|((diff_lo, diff_hi), (total_lo, total_hi))| {
+        (diff_lo <= diff_hi && total_lo <= total_hi).then_some((
+            (
+                diff_lo.min(u32::from(u16::MAX)) as u16,
+                diff_hi.min(u32::from(u16::MAX)) as u16,
+            ),
+            (u64::from(total_lo), u64::from(total_hi)),
+        ))
     })
 }
 
@@ -474,6 +482,9 @@ struct Args {
     /// Write aggregate Buckram table-dispatch counters for the documents the
     /// Livery reftest renderer actually laid out.
     write_table_ledger: Option<PathBuf>,
+    /// Override the checked-in list of reftests whose visual pass is known not
+    /// to verify the capability named by the test/reference pair.
+    reference_verification: Option<PathBuf>,
     /// Exact reftest result files joined by the absolute conformance command.
     reftest_results: Vec<PathBuf>,
     /// Exact testharness result files joined by the absolute conformance command.
@@ -505,6 +516,7 @@ fn parse_args() -> Result<Args, String> {
     let mut write_expectations = None;
     let mut expectation_policy = ExpectationPolicy::Exact;
     let mut write_table_ledger = None;
+    let mut reference_verification = None;
     let mut reftest_results = Vec::new();
     let mut testharness_results = Vec::new();
     let mut write_conformance = None;
@@ -571,6 +583,11 @@ fn parse_args() -> Result<Args, String> {
                     it.next().ok_or("--write-table-ledger needs a path")?,
                 ));
             },
+            "--reference-verification" => {
+                reference_verification = Some(PathBuf::from(
+                    it.next().ok_or("--reference-verification needs a path")?,
+                ));
+            },
             "--reftest-results" => {
                 reftest_results.push(PathBuf::from(
                     it.next().ok_or("--reftest-results needs a path")?,
@@ -620,6 +637,7 @@ fn parse_args() -> Result<Args, String> {
         write_expectations,
         expectation_policy,
         write_table_ledger,
+        reference_verification,
         reftest_results,
         testharness_results,
         write_conformance,
@@ -656,6 +674,8 @@ Options:
                          policy for --write-expectations (default: exact)
     --write-table-ledger <f>
                          write Livery reftest table-dispatch counters
+    --reference-verification <f>
+                         override the checked-in reference-verification map
     --reftest-results <f>
                          add an exact reftest result file to `conformance`
     --testharness-results <f>
@@ -770,6 +790,11 @@ fn real_main() {
         && !(args.command == "reftest" && args.renderer == ReftestRenderer::Livery)
     {
         eprintln!("--write-table-ledger requires `reftest --renderer livery`");
+        std::process::exit(2);
+    }
+
+    if args.reference_verification.is_some() && args.command != "reftest" {
+        eprintln!("--reference-verification is supported only for `reftest`");
         std::process::exit(2);
     }
 
@@ -2862,9 +2887,9 @@ fn attribute_value_follows(bytes: &[u8], mut at: usize) -> bool {
 }
 
 /// WPT `<meta name="fuzzy" content="...">` tolerance, as
-/// `(max_per_channel_difference, max_differing_pixels)` upper bounds.
+/// inclusive `(max_per_channel_difference, max_differing_pixels)` ranges.
 /// Common forms: `maxDifference=0-2;totalPixels=0-100` or `0-2;0-100`.
-fn parse_fuzzy(html: &str) -> Option<(u16, u64)> {
+fn parse_fuzzy(html: &str) -> Option<FuzzyRange> {
     let doc = StaticDocument::parse_auto(html);
     let no_ns = layout_dom_api::Namespace::default();
     let name = LocalName::from("name");
@@ -2885,30 +2910,60 @@ fn parse_fuzzy(html: &str) -> Option<(u16, u64)> {
     None
 }
 
-fn parse_fuzzy_content(content: &str) -> Option<(u16, u64)> {
-    let (a, b) = content.trim().split_once(';')?;
-    Some((range_upper(a)? as u16, range_upper(b)?))
+fn parse_fuzzy_content(content: &str) -> Option<FuzzyRange> {
+    let values = content
+        .trim()
+        .rsplit_once(':')
+        .map_or(content.trim(), |(_, values)| values);
+    let mut positional = Vec::new();
+    let mut max_difference = None;
+    let mut total_pixels = None;
+    for segment in values.split(';') {
+        let (name, value) = segment
+            .split_once('=')
+            .map_or((None, segment), |(name, value)| (Some(name.trim()), value));
+        let range = parse_fuzzy_range(value)?;
+        match name {
+            Some("maxDifference") if max_difference.is_none() => max_difference = Some(range),
+            Some("totalPixels") if total_pixels.is_none() => total_pixels = Some(range),
+            Some(_) => return None,
+            None => positional.push(range),
+        }
+    }
+    let mut positional = positional.into_iter();
+    let difference = max_difference.or_else(|| positional.next())?;
+    let pixels = total_pixels.or_else(|| positional.next())?;
+    if positional.next().is_some() {
+        return None;
+    }
+    Some((
+        (
+            difference.0.min(u64::from(u16::MAX)) as u16,
+            difference.1.min(u64::from(u16::MAX)) as u16,
+        ),
+        pixels,
+    ))
 }
 
-/// Upper bound of a fuzzy segment: `label=lo-hi` / `lo-hi` / `n` -> the
-/// last number.
-fn range_upper(seg: &str) -> Option<u64> {
-    let after_eq = seg.rsplit('=').next().unwrap_or(seg);
-    after_eq.rsplit('-').next()?.trim().parse::<u64>().ok()
+fn parse_fuzzy_range(value: &str) -> Option<(u64, u64)> {
+    let value = value.trim();
+    let (lo, hi) = value.split_once('-').unwrap_or((value, value));
+    let lo = lo.trim().parse().ok()?;
+    let hi = hi.trim().parse().ok()?;
+    (lo <= hi).then_some((lo, hi))
 }
 
 /// Whether two images match under an optional fuzzy tolerance. With
-/// `None`, exact; with `Some((max_diff, max_pixels))`, at most
-/// `max_pixels` may differ by more than `max_diff` on any channel.
-fn images_match(a: &render::Image, b: &render::Image, fuzzy: Option<(u16, u64)>) -> bool {
+/// `None`, exact. With a range, the observed largest channel delta and number
+/// of pixels with any non-zero delta must fall within their independent WPT
+/// ranges. WPT treats a zero observation as acceptable when that metric's
+/// lower bound is zero, even if the other metric has a positive lower bound.
+fn images_match(a: &render::Image, b: &render::Image, fuzzy: Option<FuzzyRange>) -> bool {
     if a.dimensions() != b.dimensions() {
         return false;
     }
-    // A pixel "differs" only if its per-channel delta exceeds `max_diff`; at most
-    // `max_pixels` such pixels are tolerated (WPT fuzzy semantics). Preserved
-    // exactly from the pre-diagnostics version.
-    let (max_diff, max_pixels) = fuzzy.unwrap_or((0, 0));
-    let mut differing = 0u64;
+    let mut pixels_different = 0u64;
+    let mut max_per_channel = 0u16;
     for (pa, pb) in a.pixels().zip(b.pixels()) {
         let channel_max =
             pa.0.iter()
@@ -2916,14 +2971,143 @@ fn images_match(a: &render::Image, b: &render::Image, fuzzy: Option<(u16, u64)>)
                 .map(|(x, y)| (i16::from(*x) - i16::from(*y)).unsigned_abs())
                 .max()
                 .unwrap_or(0);
-        if channel_max > max_diff {
-            differing += 1;
-            if differing > max_pixels {
-                return false;
-            }
+        if channel_max != 0 {
+            pixels_different += 1;
+            max_per_channel = max_per_channel.max(channel_max);
         }
     }
-    true
+    let Some(((difference_lo, difference_hi), (pixels_lo, pixels_hi))) = fuzzy else {
+        return pixels_different == 0 && max_per_channel == 0;
+    };
+    (pixels_different == 0 && pixels_lo == 0)
+        || (max_per_channel == 0 && difference_lo == 0)
+        || ((difference_lo..=difference_hi).contains(&max_per_channel)
+            && (pixels_lo..=pixels_hi).contains(&pixels_different))
+}
+
+fn widen_fuzzy_for_gpu(fuzzy: Option<FuzzyRange>, viewport: render::RenderViewport) -> FuzzyRange {
+    let floor_pixels = fuzz_floor_pixels(viewport);
+    fuzzy.map_or(
+        ((0, FUZZ_FLOOR_DIFF), (0, floor_pixels)),
+        |((difference_lo, difference_hi), (pixels_lo, pixels_hi))| {
+            (
+                (difference_lo, difference_hi.max(FUZZ_FLOOR_DIFF)),
+                (pixels_lo, pixels_hi.max(floor_pixels)),
+            )
+        },
+    )
+}
+
+const CHECKED_REFERENCE_VERIFICATION: &str =
+    include_str!("../expectations/reftest/reference_verification.json");
+
+#[derive(serde::Deserialize)]
+struct ReferenceVerificationFile {
+    version: u32,
+    renderer: String,
+    reason: String,
+    source: String,
+    scopes: Vec<String>,
+    tests: Vec<String>,
+}
+
+struct ReferenceVerification {
+    reason: String,
+    source: String,
+    scopes: Vec<String>,
+    tests: BTreeSet<String>,
+}
+
+impl ReferenceVerification {
+    fn load(path: Option<&Path>, renderer: &str) -> Result<Self, String> {
+        let (label, contents) = match path {
+            Some(path) => (
+                path.display().to_string(),
+                fs::read_to_string(path).map_err(|error| {
+                    format!(
+                        "reference verification read failed ({}): {error}",
+                        path.display()
+                    )
+                })?,
+            ),
+            None => (
+                "checked-in reference_verification.json".to_string(),
+                CHECKED_REFERENCE_VERIFICATION.to_string(),
+            ),
+        };
+        Self::parse(&contents, &label, renderer)
+    }
+
+    fn parse(contents: &str, label: &str, renderer: &str) -> Result<Self, String> {
+        let file: ReferenceVerificationFile = serde_json::from_str(contents)
+            .map_err(|error| format!("reference verification parse failed ({label}): {error}"))?;
+        if file.version != 1 {
+            return Err(format!(
+                "reference verification {label} has version {}, expected 1",
+                file.version
+            ));
+        }
+        if !file.renderer.eq_ignore_ascii_case(renderer) {
+            return Err(format!(
+                "reference verification {label} records renderer `{}`, but this run uses `{renderer}`",
+                file.renderer
+            ));
+        }
+        if file.reason != "reference-unverified" || file.source.trim().is_empty() {
+            return Err(format!(
+                "reference verification {label} needs reason `reference-unverified` and a non-empty `source`"
+            ));
+        }
+        let mut scopes = BTreeSet::new();
+        for scope in file.scopes {
+            validate_reference_verification_path(&scope, true, label)?;
+            if !scopes.insert(scope.clone()) {
+                return Err(format!(
+                    "reference verification {label} repeats scope `{scope}`"
+                ));
+            }
+        }
+        let mut tests = BTreeSet::new();
+        for test in file.tests {
+            validate_reference_verification_path(&test, false, label)?;
+            if !tests.insert(test.clone()) {
+                return Err(format!(
+                    "reference verification {label} repeats test `{test}`"
+                ));
+            }
+        }
+        Ok(Self {
+            reason: file.reason,
+            source: file.source,
+            scopes: scopes.into_iter().collect(),
+            tests,
+        })
+    }
+
+    fn reason_for(&self, test: &str) -> Option<&str> {
+        (self.tests.contains(test) || self.scopes.iter().any(|scope| test.starts_with(scope)))
+            .then_some(self.reason.as_str())
+    }
+}
+
+fn validate_reference_verification_path(
+    path: &str,
+    scope: bool,
+    label: &str,
+) -> Result<(), String> {
+    let shape_is_valid = !path.is_empty()
+        && path.trim() == path
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path.ends_with('/') == scope;
+    if shape_is_valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "reference verification {label} has invalid {} `{path}`",
+            if scope { "scope" } else { "test" }
+        ))
+    }
 }
 
 /// Full per-pixel diff between a test render and its reference. The shape of a
@@ -3171,6 +3355,16 @@ fn write_table_ledger(path: &Path, summary: &TableLedgerSummary) -> Result<(), s
 }
 
 fn reftest(tests: &[TestCase], args: &Args) {
+    let reference_verification = match ReferenceVerification::load(
+        args.reference_verification.as_deref(),
+        args.renderer.label(),
+    ) {
+        Ok(verification) => verification,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        },
+    };
     let renderer = match render::Renderer::boot() {
         Ok(r) => r,
         Err(e) => {
@@ -3185,7 +3379,8 @@ fn reftest(tests: &[TestCase], args: &Args) {
     let prev = panic::take_hook();
     panic::set_hook(Box::new(|_| {}));
 
-    let (mut passed, mut failed, mut skipped, mut errored) = (0, 0, 0, 0);
+    let (mut passed, mut reference_unverified, mut failed, mut skipped, mut errored) =
+        (0, 0, 0, 0, 0);
     let mut buckets: HashMap<&'static str, u64> = HashMap::new();
     let mut table_ledger = args
         .write_table_ledger
@@ -3244,16 +3439,9 @@ fn reftest(tests: &[TestCase], args: &Args) {
             continue;
         }
 
-        // Apply the GPU-jitter floor (see FUZZ_FLOOR_*): never compare
-        // tighter than it, so a deterministic-to-1/255 render scores stably.
-        // A test's explicit <meta fuzzy> widens it where looser.
-        let fuzzy = {
-            let (d, p) = test
-                .fuzzy
-                .or_else(|| parse_fuzzy(&test_html))
-                .unwrap_or((0, 0));
-            Some((d.max(FUZZ_FLOOR_DIFF), p.max(fuzz_floor_pixels(viewport))))
-        };
+        // Apply the GPU-jitter floor (see FUZZ_FLOOR_*): never compare tighter
+        // than its upper bounds. Keep WPT's authored lower bounds intact.
+        let fuzzy = widen_fuzzy_for_gpu(test.fuzzy.or_else(|| parse_fuzzy(&test_html)), viewport);
         let test_dir = test.path.parent().unwrap_or(tests_root);
         let ref_dir = ref_path.parent().unwrap_or(tests_root);
         let test_xml = is_xml_path(&test.path);
@@ -3285,16 +3473,24 @@ fn reftest(tests: &[TestCase], args: &Args) {
             }
         }
 
-        let matches = images_match(&test_img, &ref_img, fuzzy);
+        let matches = images_match(&test_img, &ref_img, Some(fuzzy));
         let pass = match kind {
             MatchKind::Match => matches,
             MatchKind::Mismatch => !matches,
         };
         if pass {
             passed += 1;
-            actuals.push(ActualRecord::new(test, "pass"));
-            if args.verbose {
-                println!("PASS  {}", test.name());
+            if let Some(reason) = reference_verification.reason_for(test.name()) {
+                reference_unverified += 1;
+                actuals.push(ActualRecord::with_reason(test, "pass", reason));
+                if args.verbose {
+                    println!("PASS  reference-unverified {}", test.name());
+                }
+            } else {
+                actuals.push(ActualRecord::new(test, "pass"));
+                if args.verbose {
+                    println!("PASS  {}", test.name());
+                }
             }
         } else {
             failed += 1;
@@ -3331,13 +3527,21 @@ fn reftest(tests: &[TestCase], args: &Args) {
     panic::set_hook(prev);
 
     println!(
-        "\nreftest: {} passed, {} failed, {} skipped, {} errored (of {} files)",
+        "\nreftest: {} passed ({} verified, {} reference-unverified), {} failed, {} skipped, {} errored (of {} files)",
         passed,
+        passed - reference_unverified,
+        reference_unverified,
         failed,
         skipped,
         errored,
         tests.len()
     );
+    if reference_unverified != 0 {
+        println!(
+            "  reference verification: {} ({})",
+            reference_verification.reason, reference_verification.source
+        );
+    }
     if !buckets.is_empty() {
         let mut sorted: Vec<_> = buckets.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1));
@@ -3448,6 +3652,133 @@ fn dump(tests: &[TestCase], args: &Args) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn solid_image(width: u32, height: u32, value: u8) -> render::Image {
+        image::RgbaImage::from_pixel(width, height, image::Rgba([value, value, value, 255]))
+    }
+
+    #[test]
+    fn fuzzy_matching_checks_max_difference_and_total_pixels_independently() {
+        let viewport = render::RenderViewport::new(800, 600, 1.0).expect("default viewport");
+        assert_eq!(fuzz_floor_pixels(viewport), 4_800);
+
+        let exact = solid_image(2, 1, 0);
+        assert!(images_match(&exact, &exact, None));
+
+        let one_low_delta =
+            image::RgbaImage::from_vec(2, 1, vec![1, 1, 1, 255, 0, 0, 0, 255]).expect("two pixels");
+        assert!(images_match(&exact, &one_low_delta, Some(((0, 1), (0, 1)))));
+
+        let two_low_deltas = solid_image(2, 1, 1);
+        assert!(!images_match(
+            &exact,
+            &two_low_deltas,
+            Some(((0, 1), (0, 1)))
+        ));
+
+        let one_large_delta =
+            image::RgbaImage::from_vec(2, 1, vec![2, 0, 0, 255, 0, 0, 0, 255]).expect("two pixels");
+        assert!(!images_match(
+            &exact,
+            &one_large_delta,
+            Some(((0, 1), (0, 1)))
+        ));
+        assert!(!images_match(
+            &exact,
+            &solid_image(1, 1, 0),
+            Some(((0, 255), (0, 2)))
+        ));
+    }
+
+    #[test]
+    fn fuzzy_matching_honors_lower_bounds_and_wpt_zero_exceptions() {
+        let exact = solid_image(2, 1, 0);
+        let one_low_delta =
+            image::RgbaImage::from_vec(2, 1, vec![1, 1, 1, 255, 0, 0, 0, 255]).expect("two pixels");
+        assert!(!images_match(
+            &exact,
+            &one_low_delta,
+            Some(((2, 3), (2, 3)))
+        ));
+        assert!(!images_match(&exact, &exact, Some(((1, 3), (1, 3)))));
+        assert!(images_match(&exact, &exact, Some(((1, 3), (0, 3)))));
+    }
+
+    #[test]
+    fn fuzzy_content_accepts_reference_keys_and_clamps_max_difference() {
+        assert_eq!(
+            parse_fuzzy_content("ref.html:maxDifference=0-2;totalPixels=0-100"),
+            Some(((0, 2), (0, 100)))
+        );
+        assert_eq!(
+            parse_fuzzy_content("https://web-platform.test/ref.html:70000;9"),
+            Some(((u16::MAX, u16::MAX), (9, 9)))
+        );
+    }
+
+    #[test]
+    fn checked_reference_verification_is_scoped_and_exact() {
+        let verification = ReferenceVerification::parse(
+            CHECKED_REFERENCE_VERIFICATION,
+            "checked fixture",
+            "livery",
+        )
+        .expect("checked verification map parses");
+        assert_eq!(verification.scopes.len(), 2);
+        assert_eq!(verification.tests.len(), 20);
+        assert_eq!(
+            verification.reason_for("css/css-multicol/example.html"),
+            Some("reference-unverified")
+        );
+        assert_eq!(
+            verification.reason_for(
+                "css/css-position/multicol/static-position/vrl-ltr-ltr-in-multicol.html"
+            ),
+            Some("reference-unverified")
+        );
+        assert_eq!(
+            verification.reason_for("css/css-position/position-relative-001.html"),
+            None
+        );
+    }
+
+    #[test]
+    fn reference_verification_rejects_duplicates_and_renderer_drift() {
+        let duplicate = r#"{
+            "version": 1,
+            "renderer": "livery",
+            "reason": "reference-unverified",
+            "source": "fixture",
+            "scopes": ["css/example/", "css/example/"],
+            "tests": []
+        }"#;
+        let error = ReferenceVerification::parse(duplicate, "fixture", "livery")
+            .err()
+            .expect("duplicate scope is invalid");
+        assert!(error.contains("repeats scope"), "{error}");
+
+        let wrong_reason = r#"{
+            "version": 1,
+            "renderer": "livery",
+            "reason": "known-gap",
+            "source": "fixture",
+            "scopes": [],
+            "tests": []
+        }"#;
+        let error = ReferenceVerification::parse(wrong_reason, "fixture", "livery")
+            .err()
+            .expect("an unrecognized reason is invalid");
+        assert!(error.contains("reason `reference-unverified`"), "{error}");
+
+        let error = ReferenceVerification::parse(
+            CHECKED_REFERENCE_VERIFICATION,
+            "checked fixture",
+            "stylo",
+        )
+        .err()
+        .expect("renderer mismatch is invalid");
+        assert!(error.contains("records renderer `livery`"), "{error}");
+    }
 
     #[test]
     fn about_blank_reference_is_an_empty_html_document() {
