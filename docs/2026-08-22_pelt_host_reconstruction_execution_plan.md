@@ -3,7 +3,8 @@
 **Date:** 2026-08-22
 
 **Status:** active. P0 completed 2026-08-22. P1 was rebased and reverified on
-current `main` 2026-08-24. P2 is the next implementation lane.
+current `main` 2026-08-24. P2 completed 2026-08-24. P3 is the next
+implementation lane.
 
 ## Objective
 
@@ -170,15 +171,23 @@ Receipts:
 
 POST submissions are exposed as typed form facts but remain an explicit
 unsupported transport result in this synchronous local controller. Stop is in
-the host vocabulary but becomes operative when P2 introduces cancellable host
-transport rather than synchronous session spawning.
+the host vocabulary and P2 consumes it synchronously; cancellable host
+transport remains a separate open seam.
 
 ### P2: extract the embeddable host core
 
+**Status:** complete 2026-08-24.
+
 Create a public Pelt controller that owns registries, sessions, navigation, host
 effects, and frame production without creating an event loop or window. Inject
-the host's resource policy, engine registries, wgpu device/queue, target size,
-clock, and settings.
+the host's resource policy, engine registries, target size, clock, and settings.
+
+Implementation ruling: resource and settings policy enter through the
+caller-constructed session engines and initial `SessionSpawnRequest`. The
+controller is generic over the engine frame, so a raw wgpu device or queue is
+not part of its contract. The embedding host owns those resources and the
+presentation target. This keeps the reusable core independent of winit, wgpu,
+Netrender, and any concrete paint backend.
 
 `pelt-desktop` becomes a thin consumer that translates winit events and presents
 the returned frame. A second focused test host drives the same controller with a
@@ -186,6 +195,44 @@ caller-owned target.
 
 Done when standalone Pelt and the test embedder use the same controller, and the
 controller creates neither a winit event loop nor a wgpu device.
+
+Landed:
+
+- `pelt-core` owns the document and surface registries, retained session,
+  complete spawn-request history, navigation, host effects, target size, clock,
+  pumping, and generic frame production. Pelt and `pelt-desktop` re-export its
+  public contract.
+- The initial held body and content type survive reload and history traversal.
+  Fresh navigation starts with a fresh address-only request, so a prior response
+  cannot leak into a new route.
+- Host-owned address resolution moved to `genet-host-api`; `genet-documents`
+  keeps a compatibility re-export.
+- Default Livery and Reader viewers use the controller. The desktop layer now
+  translates winit events, pointer capture, redraw, and presentation only.
+- A recording embedder drives the same controller with `String` frames and a
+  caller-owned target, without window or GPU dependencies.
+
+Receipts:
+
+- `cargo test -p pelt-core --offline`: 1 focused embedder test passed, covering
+  clock pumping, frame production, relative navigation, reload, back/forward,
+  GET encoding, resize, surface-registry ownership, and held-body history.
+- `cargo test -p genet-host-api --offline`: 20 passed. The moved local, remote,
+  root-relative, scheme-relative, absolute, and Windows-path resolver remains
+  covered.
+- Livery+Reader `genet-documents`: 16 passed. Reader-only `pelt-desktop`: 2
+  passed. Default `pelt-desktop`: 3 passed. Default Pelt builds and tests.
+- Strict all-targets Clippy passes for `pelt-core`, `genet-host-api`, and
+  `pelt-desktop`, with dependency linting excluded.
+- `cargo tree -p pelt-core --offline` contains neither winit, wgpu, Netrender,
+  `genet-winit-host`, nor `genet-render-host`.
+- Bounded standalone Pelt created an 800x600 native window, presented one
+  Livery frame from `ports/pelt/examples/browser-loop/index.html`, and exited
+  with `redraws=1`.
+
+Deferred by gate rather than lost: recursive multi-session state remains P3;
+scripted, smolweb, Reader link refetch/rerouting, and surface composition remain
+P4. POST transport and cancellable Stop remain explicit transport seams.
 
 ### P3: restore recursive tiling and nesting
 
@@ -265,8 +312,7 @@ terminal.
 
 ## Immediate next lane
 
-P2 extracts the now-proven `BrowserSession` behavior from `pelt-desktop` into a
-public, window-independent Pelt controller. The first forcing receipt is a
-caller-owned target that drives the same session replacement, input effects,
-history, and frame production as standalone Pelt while creating neither a
-winit event loop nor a wgpu device.
+P3 gives each tile its own `PeltController` and uses `TileTree` plus Frisket for
+recursive split/tab arrangement. The first forcing receipt is two independent
+documents whose history, scroll, session identity, and resize state survive tab
+activation and nested splits.
