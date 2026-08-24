@@ -160,8 +160,9 @@ pub use summary_body::{SummaryBody, summary_body};
 // `h1`/`h2`/`h3`, `ul`/`ol`/`li`. (No `button` here — `controls::button` is the
 // button view, with a handler.)
 pub use frisket::{
-    DividerTarget, FRISKET_CSS, FRISKET_TILE_ATTR, PaneView, decode_pane_path, divider_target,
-    encode_pane_path, frisket, stack_target, tab_drop_index, tab_target,
+    DividerTarget, FRISKET_CSS, FRISKET_TILE_ATTR, PaneView, close_target, content_target,
+    decode_pane_path, divider_target, encode_pane_path, frisket, stack_target, tab_drop_index,
+    tab_target,
 };
 pub use sectioned_list::{ListRow, ListRowKind, ListSection, sectioned_list};
 pub use split::{Split, SplitAxis, split};

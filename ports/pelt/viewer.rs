@@ -45,6 +45,9 @@ pub(crate) fn main() {
     let mut size: Option<(u32, u32)> = None;
     // Bounded headed capture/smoke run. Interactive profiles leave this unset.
     let mut frames: Option<u32> = None;
+    let mut with_tiles = false;
+    let mut tile_receipt = false;
+    let mut tile_urls = Vec::new();
     let mut netrender_smoke = false;
     let mut webgl_wgpu_smoke = false;
     #[cfg(feature = "windows-present")]
@@ -111,6 +114,13 @@ pub(crate) fn main() {
             value if value.starts_with("--frames=") => {
                 frames = Some(parse_frames(&value["--frames=".len()..]));
             },
+            "--tiles" => {
+                with_tiles = true;
+            },
+            "--tile-receipt" => {
+                with_tiles = true;
+                tile_receipt = true;
+            },
             "--netrender-smoke" => {
                 netrender_smoke = true;
             },
@@ -147,6 +157,7 @@ pub(crate) fn main() {
             },
             value => {
                 url = Some(value.to_owned());
+                tile_urls.push(value.to_owned());
             },
         }
     }
@@ -154,7 +165,14 @@ pub(crate) fn main() {
     let engine_profile = selected_engine.profile();
     let engine = DeferredShellEngine::new(engine_profile);
     let capabilities = engine.capabilities();
-    let url = url.unwrap_or_else(|| "about:blank".to_owned());
+    let url = if with_tiles {
+        tile_urls
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "about:blank".to_owned())
+    } else {
+        url.unwrap_or_else(|| "about:blank".to_owned())
+    };
     println!(
         "pelt host profile={} url={} javascript={} webdriver={} devtools={} webgpu={} webxr={}",
         selected_engine.label(),
@@ -211,6 +229,26 @@ pub(crate) fn main() {
     #[cfg(feature = "linux-present")]
     if wayland_present_surfaces_smoke {
         run_optional_wayland_present_surfaces_smoke();
+        return;
+    }
+
+    if with_tiles {
+        if selected_engine != SelectedEngine::Livery {
+            eprintln!(
+                "P3 tiles currently route document lanes through genet.livery; per-tile engine routing is P4"
+            );
+            std::process::exit(2);
+        }
+        if tile_urls.is_empty() {
+            tile_urls.push(url.clone());
+        }
+        #[cfg(feature = "livery")]
+        run_workspace_profile(tile_urls, size, frames, tile_receipt);
+        #[cfg(not(feature = "livery"))]
+        {
+            eprintln!("the Pelt workspace needs `--features livery`");
+            std::process::exit(2);
+        }
         return;
     }
 
@@ -399,6 +437,43 @@ fn run_livery_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>
         Ok(outcome) => println!(
             "pelt livery viewer engine=genet.livery url={} window={} redraws={} size={}x{}",
             outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
+        ),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        },
+    }
+}
+
+/// Dispatch multiple document URLs into the recursive TileTree + Frisket host.
+#[cfg(feature = "livery")]
+fn run_workspace_profile(
+    urls: Vec<String>,
+    size: Option<(u32, u32)>,
+    frames: Option<u32>,
+    interaction_receipt: bool,
+) {
+    let mut config =
+        pelt_desktop::WorkspaceViewerConfig::new(urls, pelt_desktop::WindowingMode::Headed);
+    if let Some((width, height)) = size {
+        config = config.with_size(width, height);
+    }
+    if let Some(limit) = frames {
+        config = config.with_frame_limit(limit);
+    }
+    if interaction_receipt {
+        config = config.with_interaction_receipt();
+    }
+    match pelt_desktop::run_livery_workspace_viewer(config) {
+        Ok(outcome) => println!(
+            "pelt workspace engine=genet.livery first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={}",
+            outcome.first_url,
+            outcome.created_window,
+            outcome.redraws,
+            outcome.size.0,
+            outcome.size.1,
+            outcome.tile_count,
+            outcome.interaction_receipt,
         ),
         Err(error) => {
             eprintln!("{error}");
@@ -639,7 +714,7 @@ fn print_help() {
         "\
 pelt {VERSION}
 
-Usage: pelt [--engine <profile>] [<url-or-file>] [options]
+Usage: pelt [--engine <profile>] [<url-or-file> ...] [options]
 
 Pelt is Genet's reference host. Livery/Buckram renders script-free HTML by
 default (file://, bare paths, data: URLs, and http(s)). `--engine scripted`
@@ -652,6 +727,8 @@ Options:
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
+    --tiles                            (open positional URLs in a recursive Frisket workspace)
+    --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

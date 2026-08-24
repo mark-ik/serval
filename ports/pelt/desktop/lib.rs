@@ -8,8 +8,12 @@
 //! dialogs, filesystem integration, and platform event-loop glue. It stays
 //! above `genet-host-api` and below the UI chrome crate.
 
+#[cfg(feature = "livery")]
+mod frisket_surface;
 mod profile;
 mod static_viewer;
+#[cfg(feature = "livery")]
+mod workspace_viewer;
 
 /// The host of an absolute URL, without userinfo or port. `None` for anything
 /// without an authority, which includes every local filesystem path.
@@ -96,6 +100,10 @@ pub use static_viewer::run_livery_viewer;
 #[cfg(feature = "reader")]
 pub use static_viewer::run_reader_viewer;
 pub use static_viewer::{StaticViewerConfig, StaticViewerOutcome, run_static_viewer};
+#[cfg(feature = "livery")]
+pub use workspace_viewer::{
+    WorkspaceViewerConfig, WorkspaceViewerOutcome, run_livery_workspace_viewer,
+};
 // `ScriptResourceFetcher` is `genet_scripted::ResourceFetcher` (the external-script
 // byte seam `ScriptedDocument::from_body` takes), distinct from `genet_host_api::
 // ResourceFetcher` (the shell-level fetch contract); re-exported so a host can impl

@@ -4,12 +4,16 @@
 
 //! Window-neutral Pelt host controller.
 
+mod workspace;
+
 use genet_host_api::resolve_href;
 use inker::{
     ContentReport, DocumentSession, SessionEffect, SessionFormMethod, SessionInput,
     SessionInputResult, SessionNavigationCommand, SessionRegistry, SessionScrollKey,
     SessionSpawnRequest, SurfaceEngineRegistry,
 };
+
+pub use workspace::{PeltTileFrame, PeltWorkspace, PeltWorkspaceFrame, WorkspaceRect};
 
 /// A caller-owned monotonic clock. Pelt asks for the current time only while
 /// pumping a retained session; it neither selects a system clock nor owns an
@@ -163,6 +167,13 @@ impl<F: 'static> PeltController<F> {
 
     pub fn scroll_for_key(&mut self, key: SessionScrollKey) -> bool {
         self.session.scroll_for_key(key)
+    }
+
+    /// Tell the retained session whether its tile is currently visible.
+    /// Hidden sessions keep their navigation and scroll state while avoiding
+    /// work that only contributes to a visible frame.
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.session.set_hidden(hidden);
     }
 
     pub fn input(&mut self, input: SessionInput) -> PeltHostEffect {

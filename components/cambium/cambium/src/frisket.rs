@@ -62,13 +62,13 @@ pub const FRISKET_CSS: &str = "\
     .frisket-split { width: 100%; height: 100%; } \
     .frisket-branch { display: flex; } \
     .frisket-stack { width: 100%; height: 100%; } \
-    .frisket-tabbar { display: flex; align-items: stretch; height: 44px; padding: 4px 2px 0 2px; background: #33333a; } \
+    .frisket-tabbar { display: flex; flex-grow: 0; flex-shrink: 0; flex-basis: 44px; align-items: stretch; height: 44px; padding: 4px 2px 0 2px; background: #33333a; } \
     .frisket-tab { display: flex; align-items: center; min-width: 0; padding: 8px 14px; font-size: 15px; line-height: 1.2; color: #cccccc; background: #2a2a30; margin-right: 3px; } \
     .frisket-tab.active { color: #ffffff; background: #4a4a55; } \
-    .frisket-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } \
-    .frisket-close { flex: 0 0 auto; margin-left: 10px; padding: 0 5px; font-size: 15px; color: #999999; } \
-    .frisket-content { flex: 1 1 0; min-height: 0; background: #ffffff; } \
-    .frisket-divider { flex: 0 0 10px; background: #1a1a1f; }";
+    .frisket-label { flex-grow: 1; flex-shrink: 1; flex-basis: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } \
+    .frisket-close { flex-grow: 0; flex-shrink: 0; flex-basis: auto; margin-left: 10px; padding: 0 5px; font-size: 15px; color: #999999; } \
+    .frisket-content { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-height: 0; background: #ffffff; } \
+    .frisket-divider { flex-grow: 0; flex-shrink: 0; flex-basis: 10px; background: #1a1a1f; }";
 
 /// Encode a split path (`[0, 1]`) as an attribute string (`"0.1"`); the root
 /// split is the empty string.
@@ -142,7 +142,7 @@ where
                         .attr(
                             "style",
                             format!(
-                                "flex: {frac} {frac} 0; min-width: 0; min-height: 0;",
+                                "flex-grow: {frac}; flex-shrink: {frac}; flex-basis: 0px; min-width: 0; min-height: 0;",
                                 frac = branch.fraction
                             ),
                         ),
@@ -313,6 +313,33 @@ pub fn tab_target<D: LayoutDom>(dom: &D, hit: D::NodeId) -> Option<TileId> {
     let mut node = hit;
     loop {
         if let Some(id) = attr(dom, node, ATTR_TABID).and_then(|s| s.parse::<u64>().ok()) {
+            return Some(TileId(id));
+        }
+        node = dom.parent(node)?;
+    }
+}
+
+/// Resolve a press on a tab's close affordance to the tile it closes.
+/// Returns `None` for every other descendant of the tab.
+pub fn close_target<D: LayoutDom>(dom: &D, hit: D::NodeId) -> Option<TileId> {
+    if !has_class(dom, hit, "frisket-close") {
+        return None;
+    }
+    let mut node = dom.parent(hit)?;
+    loop {
+        if let Some(id) = attr(dom, node, ATTR_TABID).and_then(|s| s.parse::<u64>().ok()) {
+            return Some(TileId(id));
+        }
+        node = dom.parent(node)?;
+    }
+}
+
+/// Walk up from a content descendant to the active tile whose Frisket hole
+/// contains it.
+pub fn content_target<D: LayoutDom>(dom: &D, hit: D::NodeId) -> Option<TileId> {
+    let mut node = hit;
+    loop {
+        if let Some(id) = attr(dom, node, FRISKET_TILE_ATTR).and_then(|s| s.parse::<u64>().ok()) {
             return Some(TileId(id));
         }
         node = dom.parent(node)?;
@@ -497,7 +524,11 @@ mod tests {
             .find(|child| has_class(&*dom, *child, "frisket-branch"))
             .expect("first branch");
         assert!(
-            attr_of(&dom, branch, "style").is_some_and(|s| s.contains("flex: 0.7 0.7 0")),
+            attr_of(&dom, branch, "style").is_some_and(|s| {
+                s.contains("flex-grow: 0.7")
+                    && s.contains("flex-shrink: 0.7")
+                    && s.contains("flex-basis: 0px")
+            }),
             "style {:?}",
             attr_of(&dom, branch, "style")
         );
@@ -584,6 +615,22 @@ mod tests {
 
         let close = find_attr(&dom, root, "aria-label", "Close Third").expect("close");
         assert_eq!(tab_target(&*dom, close), None);
+        assert_eq!(close_target(&*dom, close), Some(TileId(3)));
+        assert_eq!(close_target(&*dom, tab), None);
+    }
+
+    #[test]
+    fn a_content_hole_resolves_to_its_active_tile() {
+        let (dom, runner) = harness();
+        let root = runner.root();
+        let dom = dom.borrow();
+        let content = find_class(&dom, root, "frisket-content").expect("content hole");
+        let active = attr(&*dom, content, FRISKET_TILE_ATTR)
+            .and_then(|id| id.parse::<u64>().ok())
+            .map(TileId)
+            .expect("active tile id");
+        assert_eq!(content_target(&*dom, content), Some(active));
+        assert_eq!(content_target(&*dom, root), None);
     }
 
     #[test]
