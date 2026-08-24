@@ -12342,6 +12342,55 @@ mod tests {
     }
 
     #[test]
+    fn live_two_level_orthogonal_flow_uses_the_inner_line_block_contribution() {
+        let document = StaticDocument::parse(
+            "<html><body><div class=\"vertical\"><div class=\"line\">A B C D E F G</div></div><div class=\"after\"></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &document,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; border: 0; } \
+                 .vertical { writing-mode: vertical-rl; background: yellow; } \
+                 .line { writing-mode: horizontal-tb; } .after { height: 10px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let vertical = document
+            .first_with_class(document.document(), "vertical")
+            .expect("vertical host");
+        let line = document
+            .first_with_class(document.document(), "line")
+            .expect("horizontal line");
+        let after = document
+            .first_with_class(document.document(), "after")
+            .expect("following block");
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &document,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("two-level orthogonal layout");
+        let vertical = layout
+            .get(vertical)
+            .expect("vertical fragment")
+            .physical_rect();
+        let line = layout.get(line).expect("line fragment").physical_rect();
+        let after = layout
+            .get(after)
+            .expect("following fragment")
+            .physical_rect();
+
+        assert!(vertical.height > 0.0 && vertical.height < 40.0);
+        assert_eq!(vertical.height, line.height);
+        assert_eq!(vertical.width, line.width);
+        assert_eq!(after.y, vertical.height);
+    }
+
+    #[test]
     fn contained_root_keeps_body_writing_mode_local_to_body_content() {
         fn first_text(
             dom: &StaticDocument,

@@ -617,7 +617,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             resolved_shrink_to_fit: None,
             marker: PhantomData,
         };
-        let result = run.measure_intrinsic_inline_subtree(id).ok();
+        let result = run.measure_intrinsic_inline_subtree(id, None).ok();
         run.tree.nodes[id.index()].block_style = original_style;
         result
     }
@@ -1538,8 +1538,11 @@ where
     fn measure_intrinsic_inline_subtree(
         &mut self,
         node: AlgorithmNodeId,
+        orthogonal_inline_constraint: Option<f32>,
     ) -> Result<IntrinsicSizes, BlockDeferral> {
-        if let Some(sizes) = self.tree.nodes[node.index()].intrinsic_inline_sizes {
+        if orthogonal_inline_constraint.is_none()
+            && let Some(sizes) = self.tree.nodes[node.index()].intrinsic_inline_sizes
+        {
             return Ok(sizes);
         }
 
@@ -1555,6 +1558,9 @@ where
                 IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
             },
             AlgorithmKind::Leaf => {
+                if orthogonal_inline_constraint.is_some() && !style.flow.is_horizontal() {
+                    return Err(BlockDeferral::IntrinsicSize);
+                }
                 let min_content = self
                     .measure_inline_intrinsic(node, IntrinsicSizeKind::MinContent)
                     .ok_or(BlockDeferral::IntrinsicSize)?;
@@ -1572,7 +1578,19 @@ where
                     let mut min_content = 0.0_f32;
                     let mut max_content = 0.0_f32;
                     for child in children {
-                        let child_sizes = self.intrinsic_inline_outer_contribution(child)?;
+                        let child_style = self.tree.nodes[child.index()].block_style;
+                        let child_sizes =
+                            if style.flow.is_horizontal() == child_style.flow.is_horizontal() {
+                                self.intrinsic_inline_outer_contribution(
+                                    child,
+                                    orthogonal_inline_constraint,
+                                )?
+                            } else {
+                                self.measure_orthogonal_block_outer_contribution(
+                                    child,
+                                    orthogonal_inline_constraint,
+                                )?
+                            };
                         min_content = min_content.max(child_sizes.min_content);
                         max_content = max_content.max(child_sizes.max_content);
                     }
@@ -1588,21 +1606,101 @@ where
                 self.measure_admitted_algorithm_inline_intrinsic(node, style)?
             },
         };
-        self.tree.nodes[node.index()].intrinsic_inline_sizes = Some(sizes);
+        if orthogonal_inline_constraint.is_none() {
+            self.tree.nodes[node.index()].intrinsic_inline_sizes = Some(sizes);
+        }
         Ok(sizes)
     }
 
     fn intrinsic_inline_outer_contribution(
         &mut self,
         node: AlgorithmNodeId,
+        orthogonal_inline_constraint: Option<f32>,
     ) -> Result<IntrinsicSizes, BlockDeferral> {
         let style = self.tree.nodes[node.index()].block_style;
-        let sizes = self.measure_intrinsic_inline_subtree(node)?;
+        let sizes = self.measure_intrinsic_inline_subtree(node, orthogonal_inline_constraint)?;
         let (padding_border_start, padding_border_end) = intrinsic_inline_padding_border(style)?;
         let (margin_start, margin_end) = intrinsic_inline_margins(style)?;
         let outer = padding_border_start + padding_border_end + margin_start + margin_end;
         IntrinsicSizes::new(sizes.min_content + outer, sizes.max_content + outer)
             .ok_or(BlockDeferral::IntrinsicSize)
+    }
+
+    /// Resolve the contribution of a perpendicular child to this formatting
+    /// root's intrinsic inline size. Writing Modes requires the child's sizing
+    /// phase to run first: its auto inline size becomes fit-content, then its
+    /// used block size contributes to the parent's min/max-content query.
+    ///
+    /// The query temporarily treats the child as the root of its own flow and
+    /// accepts only a Buckram block result (or a formatter leaf). A Taffy block
+    /// fallback therefore cannot become an intrinsic answer.
+    fn measure_orthogonal_block_outer_contribution(
+        &mut self,
+        node: AlgorithmNodeId,
+        orthogonal_inline_constraint: Option<f32>,
+    ) -> Result<IntrinsicSizes, BlockDeferral> {
+        let constraint = orthogonal_inline_constraint
+            .filter(|size| size.is_finite() && *size >= 0.0)
+            .ok_or(BlockDeferral::IndefiniteInlineSize)?;
+        let original_style = self.tree.nodes[node.index()].block_style;
+        let kind = self.tree.nodes[node.index()].kind;
+        if !matches!(kind, AlgorithmKind::Block | AlgorithmKind::Leaf)
+            || original_style.position != crate::BlockPosition::Static
+            || original_style.float != FloatSide::None
+            || original_style.replaced
+            || original_style.aspect_ratio.is_some()
+            || original_style.size_containment.width
+            || original_style.size_containment.height
+            || original_style.has_nonlinear_lengths
+        {
+            return Err(BlockDeferral::IntrinsicSize);
+        }
+
+        let mut query_style = original_style;
+        query_style.containing_flow = query_style.flow;
+        self.tree.nodes[node.index()].block_style = query_style;
+        let result = (|| {
+            let intrinsic = self.measure_intrinsic_inline_subtree(node, Some(constraint))?;
+            let mut sizing_style = query_style;
+            sizing_style.shrink_to_fit = true;
+            let used_inline = solve_shrink_to_fit_inline_size(sizing_style, constraint, intrinsic);
+            self.clear_subtree_backend_cache(node);
+            let output = self.compute_block_child(
+                node,
+                BlockChildInput {
+                    containing_flow: query_style.flow,
+                    border_box_inline_size: Some(used_inline.border_box),
+                    containing_size: LogicalOptionalSize {
+                        inline: Some(constraint),
+                        block: None,
+                    },
+                    available_size: AlgorithmSize::new(
+                        AlgorithmAvailableSpace::Definite(constraint),
+                        AlgorithmAvailableSpace::MaxContent,
+                    ),
+                },
+                None,
+                None,
+            );
+            if kind == AlgorithmKind::Block
+                && self.tree.nodes[node.index()].block_algorithm != Some(BlockAlgorithm::Buckram)
+            {
+                return Err(BlockDeferral::IntrinsicSize);
+            }
+            let block_size = query_style
+                .flow
+                .logical_size(PhysicalSize {
+                    width: output.size.width,
+                    height: output.size.height,
+                })
+                .block;
+            let (margin_start, margin_end) = intrinsic_inline_margins(original_style)?;
+            let outer = block_size + margin_start + margin_end;
+            IntrinsicSizes::new(outer, outer).ok_or(BlockDeferral::IntrinsicSize)
+        })();
+        self.tree.nodes[node.index()].block_style = original_style;
+        self.clear_subtree_cache(node);
+        result
     }
 
     fn measure_admitted_algorithm_inline_intrinsic(
@@ -1665,12 +1763,64 @@ where
         style: BlockStyle,
         containing_inline_size: f32,
     ) -> Result<crate::UsedInlineSize, BlockDeferral> {
-        let intrinsic = self.measure_intrinsic_inline_subtree(node)?;
+        let intrinsic = self.measure_intrinsic_inline_subtree(node, None)?;
         Ok(solve_shrink_to_fit_inline_size(
             style,
             containing_inline_size,
             intrinsic,
         ))
+    }
+
+    fn resolve_orthogonal_auto_inline_size(
+        &mut self,
+        node: AlgorithmNodeId,
+        style: BlockStyle,
+        constraint: f32,
+    ) -> Result<f32, BlockDeferral> {
+        if !constraint.is_finite()
+            || constraint < 0.0
+            || style.flow.is_horizontal() == style.containing_flow.is_horizontal()
+            // The vertical-host half of this first slice sizes a direct
+            // perpendicular block contribution. Walking through same-flow
+            // wrappers can reach a nested horizontal atomic inline while an
+            // adjacent vertical text run remains unsupported, producing two
+            // different answers for otherwise equivalent subtrees.
+            || (!style.flow.is_horizontal()
+                && !self.tree.nodes[node.index()].children.iter().any(|child| {
+                    let child_kind = self.tree.nodes[child.index()].kind;
+                    let child_style = self.tree.nodes[child.index()].block_style;
+                    matches!(child_kind, AlgorithmKind::Block)
+                        && child_style.position == crate::BlockPosition::Static
+                        && child_style.float == FloatSide::None
+                        && child_style.flow.is_horizontal()
+                            != style.flow.is_horizontal()
+                }))
+            || !matches!(
+                intrinsic_inline_dimension(style.size, style.flow),
+                BlockSizeValue::Auto
+            )
+        {
+            return Err(BlockDeferral::IntrinsicSize);
+        }
+
+        let original_style = self.tree.nodes[node.index()].block_style;
+        let mut query_style = style;
+        query_style.containing_flow = query_style.flow;
+        // This first slice admits only absolute padding and margins. Their
+        // percentage basis differs across the sizing and positioning phases;
+        // accepting percentages here would silently choose the wrong phase.
+        intrinsic_inline_padding_border(query_style)?;
+        intrinsic_inline_margins(query_style)?;
+        self.tree.nodes[node.index()].block_style = query_style;
+        let result = self
+            .measure_intrinsic_inline_subtree(node, Some(constraint))
+            .map(|intrinsic| {
+                let mut sizing_style = query_style;
+                sizing_style.shrink_to_fit = true;
+                solve_shrink_to_fit_inline_size(sizing_style, constraint, intrinsic).border_box
+            });
+        self.tree.nodes[node.index()].block_style = original_style;
+        result
     }
 
     fn clear_subtree_cache(&mut self, node: AlgorithmNodeId) {
@@ -1861,15 +2011,31 @@ where
         // out-of-flow root) takes its grid's border-edge inline size rather
         // than filling the available space.
         let table_wrapper_inline = self.table_wrapper_inline_size(node);
-        outer_logical.inline =
-            table_wrapper_inline
-                .or(outer_logical.inline)
-                .or(match own_available.width {
-                    AlgorithmAvailableSpace::Definite(size) => Some(size),
-                    AlgorithmAvailableSpace::MinContent | AlgorithmAvailableSpace::MaxContent => {
-                        None
-                    },
-                });
+        let orthogonal_auto_inline = if table_wrapper_inline.is_none()
+            && outer_logical.inline.is_none()
+            && style.flow.is_horizontal() != style.containing_flow.is_horizontal()
+            && matches!(
+                intrinsic_inline_dimension(style.size, style.flow),
+                BlockSizeValue::Auto
+            ) {
+            let constraint = own_parent.inline.or(match own_available.width {
+                AlgorithmAvailableSpace::Definite(size) => Some(size),
+                AlgorithmAvailableSpace::MinContent | AlgorithmAvailableSpace::MaxContent => None,
+            });
+            constraint.and_then(|constraint| {
+                self.resolve_orthogonal_auto_inline_size(node, style, constraint)
+                    .ok()
+            })
+        } else {
+            None
+        };
+        outer_logical.inline = table_wrapper_inline
+            .or(outer_logical.inline)
+            .or(orthogonal_auto_inline)
+            .or(match own_available.width {
+                AlgorithmAvailableSpace::Definite(size) => Some(size),
+                AlgorithmAvailableSpace::MinContent | AlgorithmAvailableSpace::MaxContent => None,
+            });
         let content_padding_border = style.content_logical_padding_border(containing_inline);
         let content_inline = outer_logical
             .inline
@@ -2772,10 +2938,10 @@ where
                 inline_size: (inline_end - inline_start).max(0.0),
                 block_size: (block_end - block_start).max(0.0),
             };
-            let physical = container.block_style.flow.physical_rect(
-                track_area,
-                container_size,
-            );
+            let physical = container
+                .block_style
+                .flow
+                .physical_rect(track_area, container_size);
             taffy::geometry::Rect {
                 left: physical.x,
                 right: physical.x + physical.width,
@@ -5333,6 +5499,146 @@ mod tests {
                 "the backend overwrote a rectangle the table algorithm owns"
             );
         }
+    }
+
+    #[test]
+    fn orthogonal_auto_inline_uses_intrinsic_child_block_contribution() {
+        use crate::{Direction, WritingMode};
+
+        let horizontal = FlowAxes::HORIZONTAL_LTR;
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let text = tree.new_leaf_with_context_and_block_style(
+            BlockStyle::anonymous(horizontal, horizontal),
+            Style::default(),
+            (),
+            2,
+        );
+        let line = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle::anonymous(horizontal, vertical),
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[text],
+            1,
+        );
+        let root = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: horizontal,
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[line],
+            0,
+        );
+
+        tree.compute_layout_with_measure(
+            root,
+            available(300.0, 200.0),
+            |known, available, node, _context, _line_constraints| {
+                assert_eq!(node, text);
+                let width = known.width.unwrap_or_else(|| match available.width {
+                    AlgorithmAvailableSpace::Definite(width) => 120.0_f32.min(width),
+                    AlgorithmAvailableSpace::MinContent => 40.0,
+                    AlgorithmAvailableSpace::MaxContent => 120.0,
+                });
+                AlgorithmSize::new(width, known.height.unwrap_or(20.0))
+            },
+        );
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.block_algorithm(line), Some(BlockAlgorithm::Buckram));
+        assert_eq!(
+            tree.layout(root),
+            AlgorithmLayout {
+                width: 120.0,
+                height: 20.0,
+                ..AlgorithmLayout::default()
+            }
+        );
+        assert_eq!(
+            tree.layout(line),
+            AlgorithmLayout {
+                width: 120.0,
+                height: 20.0,
+                ..AlgorithmLayout::default()
+            }
+        );
+    }
+
+    #[test]
+    fn orthogonal_auto_inline_rejects_a_nested_flow_boundary() {
+        use crate::{Direction, WritingMode};
+
+        let horizontal = FlowAxes::HORIZONTAL_LTR;
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let text = tree.new_leaf_with_context_and_block_style(
+            BlockStyle::anonymous(horizontal, horizontal),
+            Style::default(),
+            (),
+            3,
+        );
+        let line = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle::anonymous(horizontal, vertical),
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[text],
+            2,
+        );
+        let same_flow_wrapper = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle::anonymous(vertical, vertical),
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[line],
+            1,
+        );
+        let root = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: horizontal,
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[same_flow_wrapper],
+            0,
+        );
+
+        tree.compute_layout_with_measure(
+            root,
+            available(300.0, 200.0),
+            |known, available, node, _context, _line_constraints| {
+                assert_eq!(node, text);
+                let width = known.width.unwrap_or_else(|| match available.width {
+                    AlgorithmAvailableSpace::Definite(width) => 120.0_f32.min(width),
+                    AlgorithmAvailableSpace::MinContent => 40.0,
+                    AlgorithmAvailableSpace::MaxContent => 120.0,
+                });
+                AlgorithmSize::new(width, known.height.unwrap_or(20.0))
+            },
+        );
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.layout(root).height, 200.0);
     }
 
     #[test]
