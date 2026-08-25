@@ -1914,7 +1914,24 @@ where
             )
             && child_style.float == FloatSide::None
             && !child_style.replaced
-            && child_style.flow == child_style.containing_flow
+            // Capability admission decides whether a horizontal direction
+            // boundary may use this transform. Once admitted, the block axis
+            // is unchanged and Buckram mirrors the inline geometry.
+            && (child_style.flow == child_style.containing_flow
+                || child_style.flow.is_horizontal()
+                    && child_style.containing_flow.is_horizontal())
+    }
+
+    fn child_content_inline_size(
+        child_style: BlockStyle,
+        child_size: PhysicalSize,
+        containing_inline_size: f32,
+    ) -> f32 {
+        let padding_border = child_style.content_logical_padding_border(containing_inline_size);
+        (child_style.flow.logical_size(child_size).inline
+            - padding_border.inline_start
+            - padding_border.inline_end)
+            .max(0.0)
     }
 
     fn predicted_child_content_origin(
@@ -2281,8 +2298,14 @@ where
                         inline,
                         content_inline,
                     );
-                    let float_state =
-                        formatting_context.float_state_for_descendant(origin.0, origin.1);
+                    let child_content_inline_size =
+                        Self::child_content_inline_size(child_style, child_size, content_inline);
+                    let float_state = formatting_context.float_state_for_descendant(
+                        origin.0,
+                        origin.1,
+                        child_style.flow,
+                        child_content_inline_size,
+                    );
                     self.clear_subtree_cache(child);
                     let next_output = self.compute_block_child(
                         child,
@@ -2359,6 +2382,8 @@ where
                     float_state,
                     placement.logical_rect.inline_start + padding_border.inline_start,
                     placement.logical_rect.block_start + padding_border.block_start,
+                    child_style.flow,
+                    Self::child_content_inline_size(child_style, child_size, content_inline),
                 );
             }
             let child_padding = child_style.resolved_padding(content_inline);

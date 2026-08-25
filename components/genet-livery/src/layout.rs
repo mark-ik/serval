@@ -6023,7 +6023,10 @@ fn supports_nested_float_state<Id>(
         )
         && block_style.float == FloatSide::None
         && !block_style.replaced
-        && block_style.flow == block_style.containing_flow
+        // Buckram mirrors exclusions across horizontal direction changes.
+        // Vertical writing modes still need a full axis transform.
+        && (block_style.flow == block_style.containing_flow
+            || block_style.flow.is_horizontal() && block_style.containing_flow.is_horizontal())
 }
 
 fn supports_float_avoidance<Id>(
@@ -13249,6 +13252,62 @@ mod tests {
             right_line.x + right_line.width > right.x + 5.0
                 && right_line.x + right_line.width < right.x + 15.0,
             "a rounded right float releases its top-corner interval: float={right:?}, line={right_line:?}"
+        );
+        assert_eq!(layout.block_algorithm_counts().taffy, 0);
+    }
+
+    #[test]
+    fn horizontal_direction_changes_keep_shape_constraints_for_atomic_lines() {
+        let dom = StaticDocument::parse(
+            r#"<html><body><div id=host><div id=shape></div>
+             <div id=a class=box></div> <div id=b class=box></div>
+             <div id=c class='box tall'></div> <div id=d class='box tall'></div>
+             <div id=e class=box></div> <div id=f class=box></div></div></body></html>"#,
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body { margin: 0; }\
+                 #host { direction: rtl; width: 200px; line-height: 0; }\
+                 #shape { float: right; shape-outside: margin-box; border-radius: 50%;\
+                          width: 20px; height: 20px; padding: 20px; border: 20px solid;\
+                          margin: 10px; }\
+                 .box { display: inline-block; width: 60px; height: 12px; }\
+                 .tall { height: 36px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let host = node_by_id(&dom, dom.document(), "host").expect("host");
+        let host = layout.get(host).expect("host fragment").physical_rect();
+        let actual = ["a", "b", "c", "d", "e", "f"].map(|id| {
+            let node = node_by_id(&dom, dom.document(), id).unwrap_or_else(|| panic!("{id}"));
+            let rect = layout
+                .get(node)
+                .unwrap_or_else(|| panic!("{id} fragment"))
+                .physical_rect();
+            (rect.x - host.x, rect.y - host.y, rect.height)
+        });
+
+        assert_eq!(
+            actual,
+            [
+                (44.0, 0.0, 12.0),
+                (32.0, 12.0, 12.0),
+                (20.0, 24.0, 36.0),
+                (20.0, 60.0, 36.0),
+                (32.0, 96.0, 12.0),
+                (44.0, 108.0, 12.0),
+            ]
         );
         assert_eq!(layout.block_algorithm_counts().taffy, 0);
     }

@@ -889,6 +889,12 @@ struct FloatMarginBox {
     block: SignedBlockExtent,
 }
 
+impl FloatMarginBox {
+    fn mirror_inline(&mut self, containing_inline_size: f32) {
+        self.inline_start = containing_inline_size - self.inline_start - self.inline_size;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct LogicalCornerRadius {
     inline: f32,
@@ -985,6 +991,24 @@ impl FloatLineArea {
                 rect.block.start += block_offset;
                 clip.inline_start += inline_offset;
                 clip.block.start += block_offset;
+            },
+        }
+    }
+
+    fn mirror_inline(&mut self, containing_inline_size: f32) {
+        match self {
+            Self::Rect(rect) => rect.mirror_inline(containing_inline_size),
+            Self::Rounded { rect, clip, radii } => {
+                rect.mirror_inline(containing_inline_size);
+                clip.mirror_inline(containing_inline_size);
+                std::mem::swap(
+                    &mut radii.block_start_inline_start,
+                    &mut radii.block_start_inline_end,
+                );
+                std::mem::swap(
+                    &mut radii.block_end_inline_start,
+                    &mut radii.block_end_inline_end,
+                );
             },
         }
     }
@@ -1112,6 +1136,17 @@ impl FloatContextState {
         self.exclusions.iter().any(|exclusion| {
             exclusion.side == side && exclusion.is_valid_exclusion() && exclusion.block_end() > 0.0
         })
+    }
+
+    fn mirror_inline(&mut self, containing_inline_size: f32) {
+        // Exclusions are stored in the current formatting context's logical
+        // coordinates. A direction change mirrors those coordinates while the
+        // float side itself remains the physical left or right side.
+        for exclusion in &mut self.exclusions {
+            exclusion.margin_box.mirror_inline(containing_inline_size);
+            exclusion.line_area.mirror_inline(containing_inline_size);
+            exclusion.at_inline_start = !exclusion.at_inline_start;
+        }
     }
 }
 
@@ -1324,8 +1359,10 @@ impl BlockFormattingContext {
         &self,
         inline_offset: f32,
         block_offset: f32,
+        descendant_flow: FlowAxes,
+        descendant_inline_size: f32,
     ) -> FloatContextState {
-        FloatContextState {
+        let mut state = FloatContextState {
             exclusions: self
                 .float_exclusions
                 .iter()
@@ -1337,7 +1374,13 @@ impl BlockFormattingContext {
                     exclusion
                 })
                 .collect(),
+        };
+        if self.containing_block.flow.inline_start() != descendant_flow.inline_start() {
+            // Translation put the exclusion in the descendant's physical
+            // content box; mirror it into the descendant's logical direction.
+            state.mirror_inline(descendant_inline_size);
         }
+        state
     }
 
     /// Return only floats created by this ordinary block, excluding inherited
@@ -1351,10 +1394,17 @@ impl BlockFormattingContext {
     /// Merge a descendant's newly created floats back into this BFC.
     pub(crate) fn import_descendant_float_state(
         &mut self,
-        state: FloatContextState,
+        mut state: FloatContextState,
         inline_offset: f32,
         block_offset: f32,
+        descendant_flow: FlowAxes,
+        descendant_inline_size: f32,
     ) {
+        if self.containing_block.flow.inline_start() != descendant_flow.inline_start() {
+            // Undo the descendant's logical direction before translating its
+            // newly created floats back into this context.
+            state.mirror_inline(descendant_inline_size);
+        }
         for mut exclusion in state.exclusions {
             exclusion.margin_box.inline_start += inline_offset;
             exclusion.margin_box.block.start += block_offset;
@@ -2617,7 +2667,8 @@ mod tests {
             },
         );
 
-        let inherited = parent.float_state_for_descendant(20.0, 10.0);
+        let inherited =
+            parent.float_state_for_descendant(20.0, 10.0, FlowAxes::HORIZONTAL_LTR, 160.0);
         let mut descendant = BlockFormattingContext::with_float_state(
             BlockContainingBlock {
                 flow: FlowAxes::HORIZONTAL_LTR,
@@ -2646,7 +2697,13 @@ mod tests {
         );
         assert_eq!((nested.rect.x, nested.rect.y), (110.0, 0.0));
 
-        parent.import_descendant_float_state(descendant.exported_float_state(), 20.0, 10.0);
+        parent.import_descendant_float_state(
+            descendant.exported_float_state(),
+            20.0,
+            10.0,
+            FlowAxes::HORIZONTAL_LTR,
+            160.0,
+        );
         assert_eq!(parent.float_exclusion_count(), 2);
         assert_eq!(
             parent.available_inline_space(15.0, 1.0),
@@ -2655,6 +2712,160 @@ mod tests {
                 inline_size: 50.0,
             }
         );
+    }
+
+    #[test]
+    fn direction_flipped_descendants_mirror_and_return_float_exclusions() {
+        let rtl = FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl);
+        let mut parent = horizontal_context(200.0);
+        parent.place_float(
+            fixed_float(FloatSide::Left, 80.0),
+            PhysicalSize {
+                width: 80.0,
+                height: 40.0,
+            },
+        );
+
+        let inherited = parent.float_state_for_descendant(20.0, 10.0, rtl, 160.0);
+        let mut descendant = BlockFormattingContext::with_float_state(
+            BlockContainingBlock {
+                flow: rtl,
+                content_box: PhysicalSize {
+                    width: 160.0,
+                    height: 0.0,
+                },
+            },
+            false,
+            inherited,
+        );
+        assert_eq!(
+            descendant.available_inline_space(0.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 0.0,
+                inline_size: 100.0,
+            }
+        );
+        assert_eq!(
+            descendant
+                .float_line_constraints(0.0)
+                .expect("mirrored line constraints")
+                .horizontal_physical_space(0.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 60.0,
+                inline_size: 100.0,
+            }
+        );
+
+        let nested = descendant.place_float(
+            fixed_float(FloatSide::Right, 50.0),
+            PhysicalSize {
+                width: 50.0,
+                height: 20.0,
+            },
+        );
+        assert_eq!((nested.rect.x, nested.rect.y), (110.0, 0.0));
+
+        parent.import_descendant_float_state(
+            descendant.exported_float_state(),
+            20.0,
+            10.0,
+            rtl,
+            160.0,
+        );
+        assert_eq!(
+            parent.available_inline_space(15.0, 1.0),
+            FloatAvailableSpace {
+                inline_start: 80.0,
+                inline_size: 50.0,
+            }
+        );
+
+        let mut rtl_parent = BlockFormattingContext::new(BlockContainingBlock {
+            flow: rtl,
+            content_box: PhysicalSize {
+                width: 200.0,
+                height: 0.0,
+            },
+        });
+        rtl_parent.place_float(
+            fixed_float(FloatSide::Right, 80.0),
+            PhysicalSize {
+                width: 80.0,
+                height: 40.0,
+            },
+        );
+        let inherited =
+            rtl_parent.float_state_for_descendant(20.0, 10.0, FlowAxes::HORIZONTAL_LTR, 160.0);
+        let mut ltr_descendant = BlockFormattingContext::with_float_state(
+            BlockContainingBlock {
+                flow: FlowAxes::HORIZONTAL_LTR,
+                content_box: PhysicalSize {
+                    width: 160.0,
+                    height: 0.0,
+                },
+            },
+            false,
+            inherited,
+        );
+        assert_eq!(
+            ltr_descendant.available_inline_space(0.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 0.0,
+                inline_size: 100.0,
+            }
+        );
+        ltr_descendant.place_float(
+            fixed_float(FloatSide::Left, 50.0),
+            PhysicalSize {
+                width: 50.0,
+                height: 20.0,
+            },
+        );
+        rtl_parent.import_descendant_float_state(
+            ltr_descendant.exported_float_state(),
+            20.0,
+            10.0,
+            FlowAxes::HORIZONTAL_LTR,
+            160.0,
+        );
+        assert_eq!(rtl_parent.float_exclusion_count(), 2);
+        assert_eq!(
+            rtl_parent.float_exclusions[1].margin_box.inline_start,
+            130.0
+        );
+
+        let mut rounded_parent = horizontal_context(200.0);
+        let mut rounded_style = fixed_float(FloatSide::Left, 100.0);
+        rounded_style.float_reference_box = FloatReferenceBox::BorderBox;
+        rounded_style.has_shape_outside_box = true;
+        rounded_style.corner_radii.top_right = BlockCornerRadius {
+            horizontal: FlowLength::px(40.0),
+            vertical: FlowLength::px(80.0),
+        };
+        rounded_parent.place_float(
+            rounded_style,
+            PhysicalSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        let rounded_descendant = BlockFormattingContext::with_float_state(
+            BlockContainingBlock {
+                flow: rtl,
+                content_box: PhysicalSize {
+                    width: 200.0,
+                    height: 0.0,
+                },
+            },
+            false,
+            rounded_parent.float_state_for_descendant(0.0, 0.0, rtl, 200.0),
+        );
+        let rounded_top = rounded_descendant
+            .float_line_constraints(0.0)
+            .expect("mirrored rounded constraints")
+            .horizontal_physical_space(0.0, 0.0);
+        assert!((rounded_top.inline_start - 60.0).abs() <= 0.01);
+        assert!((rounded_top.inline_size - 140.0).abs() <= 0.01);
     }
 
     #[test]
@@ -2677,7 +2888,7 @@ mod tests {
                 },
             },
             false,
-            parent.float_state_for_descendant(20.0, 30.0),
+            parent.float_state_for_descendant(20.0, 30.0, FlowAxes::HORIZONTAL_LTR, 180.0),
         );
 
         assert_eq!(
@@ -3375,7 +3586,7 @@ mod tests {
                 },
             },
             false,
-            parent.float_state_for_descendant(20.0, 10.0),
+            parent.float_state_for_descendant(20.0, 10.0, FlowAxes::HORIZONTAL_LTR, 180.0),
         );
         assert_eq!(
             descendant.available_inline_space(20.0, 10.0),
