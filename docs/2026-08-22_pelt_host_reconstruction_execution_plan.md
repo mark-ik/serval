@@ -3,8 +3,9 @@
 **Date:** 2026-08-22
 
 **Status:** active. P0 completed 2026-08-22. P1 was rebased and reverified on
-current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4 is the next
-implementation lane.
+current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4's capability
+routing slice completed 2026-08-24. Native shared-handle import and surface
+composition remain the current P4 lane.
 
 ## Objective
 
@@ -50,11 +51,12 @@ selection.
   overlays, embedded hosts, and headless surfaces.
 
 `pelt-core` now exposes both a one-session controller and a recursive workspace
-of retained controllers. Standalone Pelt consumes `TileTree` and Frisket,
-routes complete host effects, and composites active document scenes through one
-desktop surface host. Pelt retains a surface registry per controller, but no
-surface engine is selected or composed yet. Shared long-lived registries and
-capability routing remain P4.
+of retained document controllers and surface producers. Standalone Pelt
+consumes `TileTree` and Frisket, routes complete host effects, selects a visible
+engine route per tile through shared long-lived registries, and composites
+active document scenes through one desktop surface host. Surface producers are
+retained, sized, positioned, polled, and sent input. The desktop adapter does
+not yet import their raw platform texture handles into its wgpu device.
 
 ## Content tiers
 
@@ -315,6 +317,10 @@ external surface composition remain P4.
 
 ### P4: route by capability and compose surface engines
 
+**Status:** partial 2026-08-24. Capability routing and the explicit external
+fallback receipt are complete. Native shared-handle import and composition are
+open.
+
 Install long-lived document and surface registries in the host core. Select a
 route from scheme, content type, user settings, and declared capability. Keep
 the selection visible and user-overridable per tile.
@@ -325,6 +331,64 @@ per-tile devices, readback, and hidden child windows.
 
 Done when one window simultaneously hosts a smolweb document, static Livery
 HTML, scripted Livery HTML, and an external surface fallback.
+
+Landed:
+
+- `PeltRegistries` owns one shared document registry, surface registry, route
+  policy, surface profile, and document fallback. Every routed controller uses
+  that same pair rather than reconstructing registries per tile.
+- Each tile retains its selected route, decision source, active engine, and
+  explicit fallback reason. User overrides survive unavailable engines and are
+  visible in the title. A failed live replacement restores the prior request,
+  controller or surface, and route atomically. Successful replacement keeps
+  the tile's current navigated address.
+- Registered `CompositedTexture` engines become retained surface producers.
+  Pelt forwards physical-pixel size, offset, focus, pointer, wheel, keyboard,
+  and web navigation; visible producers keep the redraw loop polling for late
+  frames. `NativeOverlay` and `EmbeddedHost` remain explicit unattached
+  contracts and visibly use the document fallback.
+- The desktop registry constructs one host fetcher and registers Livery,
+  Reader, Boa scripted, optional Nova scripted, and smolweb-native session
+  engines over it. Global `--engine` selection now applies to every workspace
+  tile, while repeatable `--tile-engine N=engine-id` choices win per tile.
+- `--capability-receipt` uses checked-in Gemtext, static HTML, scripted HTML,
+  and fallback fixtures. It verifies the Gemtext link, static title and
+  heading, Boa's retained DOM mutation, shared registry identities, and the
+  selected external fallback route before accepting the headed run.
+
+Receipts:
+
+- `cargo test -p pelt-core --offline`: 3 integration tests passed after
+  rebasing on current `origin/main`. The routing receipt covers shared
+  registries, document and surface routes, unavailable and unattached
+  fallbacks, high-DPI surface geometry, late-frame polling, current-address
+  rerouting, override precedence, and failed-spawn rollback.
+- `cargo check -p pelt --features scripted,smolweb --offline` passes. Strict
+  all-target Clippy passes for `pelt-core` and for Pelt with that feature pair,
+  with dependency linting excluded. Nematic and `genet-scripted` still emit
+  their pre-existing unused-code warnings outside this lane.
+- The bounded native `--capability-receipt --size 1000x700` command created one
+  window, presented two frames, and exited with `tiles=4
+  capability_receipt=true` and routes `nematic.gemtext:document`,
+  `genet.livery:document`, `genet.scripted:document`, and
+  `scrying.web:fallback:genet.livery`.
+- The P3 headed regression still presents nine frames, drives the full split,
+  tab, navigation, resize, drag, and close sequence, and exits with `tiles=3
+  interaction_receipt=true`.
+
+Open native-composition gate:
+
+- `SurfaceFrame` carries a raw `D3d12Shared`, `IoSurface`, or `DmaBuf` handle,
+  not a `wgpu::Texture`. Genet currently has no host importer for those frame
+  handles. The desktop adapter rejects such a frame honestly and closes a
+  transferred Win32 handle on that rejection path.
+- The first forcing implementation is D3D12 shared-texture import on the
+  host-owned wgpu device. It must honor the fence value, handle ownership,
+  format, and `resource_epoch`, cache the imported resource, and sample it in
+  the same compositor pass as the document scenes.
+- IOSurface and DMA-BUF import follow their platform receipts. Native overlay
+  and embedded-host attachment remain separate platform seams rather than
+  aliases for texture composition.
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
@@ -373,7 +437,9 @@ terminal.
 
 ## Immediate next lane
 
-P4 replaces P3's Livery-only controller factory with long-lived document and
-surface registries plus visible per-tile capability routing. Its forcing
-receipt mixes native smolweb, script-free and scripted Livery documents, and an
-external surface in this same workspace and compositor.
+Finish P4 at the native import boundary. Import a D3D12 shared texture into the
+existing host wgpu device, wait on its declared fence, cache it by resource
+epoch, and composite it into its Frisket content hole. Replace the current
+selected `scrying.web` fallback fixture with a registered producer receipt that
+delivers and visibly composes an actual frame. P5 remains deferred until that
+receipt passes without a second device, readback, or hidden child window.
