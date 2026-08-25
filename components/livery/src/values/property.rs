@@ -1358,8 +1358,11 @@ keyword_value! {
 }
 
 keyword_value! {
-    /// The bounded rectangular `shape-outside` forms admitted by row 12.
-    /// Basic shapes, images, and rounded reference boxes remain deferred.
+    /// The box-valued `shape-outside` forms admitted by row 12.
+    /// Horizontal layout honors linear circular corner radii. Nonlinear radius
+    /// math uses the default margin-box float area; basic shapes, images,
+    /// elliptical corner pairs, multi-contour curved line retry, and vertical
+    /// float-area transforms remain deferred.
     pub enum ShapeOutside {
         None => "none",
         MarginBox => "margin-box",

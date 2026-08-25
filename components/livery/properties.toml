@@ -1537,7 +1537,7 @@ grammar = "none | margin-box | border-box | padding-box | content-box"
 seed_values = ["none", "margin-box", "border-box", "padding-box", "content-box"]
 animation = "discrete"
 source = "css_shapes_1"
-partial = "horizontal non-curved reference boxes alter inline float exclusions; basic shapes, images, curved boxes, shape-margin, shape-image-threshold, and vertical float-area transforms remain deferred and use the default margin-box float area"
+partial = "horizontal box-valued reference boxes alter inline float exclusions and honor linear circular border-radius; nonlinear corner-radius math uses the default margin-box float area, while basic shapes, images, elliptical corner pairs, multi-contour curved line retry, shape-margin, shape-image-threshold, and vertical float-area transforms remain deferred"
 
 [[property]]
 name = "text-decoration-line"

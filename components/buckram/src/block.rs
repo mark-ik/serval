@@ -152,6 +152,25 @@ pub enum FloatReferenceBox {
     ContentBox,
 }
 
+/// One physical corner radius retained until the float's used border box is
+/// known. Percentages resolve against the corresponding border-box dimension,
+/// not the containing block.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockCornerRadius {
+    pub horizontal: FlowLength,
+    pub vertical: FlowLength,
+}
+
+/// Physical CSS border radii. The block algorithm converts these to its
+/// logical axes only for horizontal `shape-outside` reference boxes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockCornerRadii {
+    pub top_left: BlockCornerRadius,
+    pub top_right: BlockCornerRadius,
+    pub bottom_right: BlockCornerRadius,
+    pub bottom_left: BlockCornerRadius,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ClearSide {
     #[default]
@@ -193,6 +212,10 @@ pub struct BlockStyle {
     pub position: BlockPosition,
     pub float: FloatSide,
     pub float_reference_box: FloatReferenceBox,
+    /// Whether `float_reference_box` came from an authored box-valued
+    /// `shape-outside`, rather than the initial `shape-outside: none`.
+    pub has_shape_outside_box: bool,
+    pub corner_radii: BlockCornerRadii,
     pub clear: ClearSide,
     pub establishes_bfc: bool,
     /// The used inline size must be obtained from CSS shrink-to-fit sizing.
@@ -224,6 +247,8 @@ impl Default for BlockStyle {
             position: BlockPosition::Static,
             float: FloatSide::None,
             float_reference_box: FloatReferenceBox::MarginBox,
+            has_shape_outside_box: false,
+            corner_radii: BlockCornerRadii::default(),
             clear: ClearSide::None,
             establishes_bfc: false,
             shrink_to_fit: false,
@@ -833,7 +858,7 @@ struct FloatExclusion {
     margin_box: FloatMarginBox,
     /// The float area consulted by inline line breaking. For the default
     /// `shape-outside: none`, this is identical to `margin_box`.
-    line_area: FloatMarginBox,
+    line_area: FloatLineArea,
 }
 
 /// The block axis of a float margin box retains its signed used size. A
@@ -864,6 +889,186 @@ struct FloatMarginBox {
     block: SignedBlockExtent,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LogicalCornerRadius {
+    inline: f32,
+    block: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LogicalCornerRadii {
+    block_start_inline_start: LogicalCornerRadius,
+    block_start_inline_end: LogicalCornerRadius,
+    block_end_inline_end: LogicalCornerRadius,
+    block_end_inline_start: LogicalCornerRadius,
+}
+
+/// A float area used only by inline line breaking. Its rectangular bounds are
+/// kept separate from the per-line interval so the rest of float placement
+/// remains governed by the margin box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FloatLineArea {
+    Rect(FloatMarginBox),
+    Rounded {
+        rect: FloatMarginBox,
+        clip: FloatMarginBox,
+        radii: LogicalCornerRadii,
+    },
+}
+
+impl FloatLineArea {
+    fn bounds(self) -> FloatMarginBox {
+        match self {
+            Self::Rect(rect) => rect,
+            Self::Rounded { clip, .. } => clip,
+        }
+    }
+
+    fn is_valid_exclusion(self) -> bool {
+        self.bounds().block.is_valid_exclusion()
+    }
+
+    fn overlaps_block(self, block_start: f32, block_size: f32) -> bool {
+        let rect = self.bounds();
+        self.is_valid_exclusion()
+            && spans_overlap(
+                rect.block.start,
+                rect.block.used_size,
+                block_start,
+                block_size,
+            )
+    }
+
+    fn block_end(self) -> f32 {
+        self.bounds().block.end()
+    }
+
+    fn retry_breakpoints(self, line_block_size: f32) -> Vec<f32> {
+        match self {
+            Self::Rect(rect) => vec![
+                rect.block.start - line_block_size.max(0.0),
+                rect.block.end(),
+            ],
+            Self::Rounded { rect, clip, radii } => {
+                let line_block_size = line_block_size.max(0.0);
+                let lower = clip.block.start - line_block_size;
+                let upper = clip.block.end();
+                let mut points = vec![
+                    lower,
+                    clip.block.start,
+                    clip.block.end() - line_block_size,
+                    upper,
+                ];
+                for point in [
+                    rect.block.start + radii.block_start_inline_start.block - line_block_size,
+                    rect.block.start + radii.block_start_inline_end.block - line_block_size,
+                    rect.block.end() - radii.block_end_inline_start.block,
+                    rect.block.end() - radii.block_end_inline_end.block,
+                ] {
+                    if point >= lower && point <= upper {
+                        points.push(point);
+                    }
+                }
+                points
+            },
+        }
+    }
+
+    fn translate(&mut self, inline_offset: f32, block_offset: f32) {
+        match self {
+            Self::Rect(rect) => {
+                rect.inline_start += inline_offset;
+                rect.block.start += block_offset;
+            },
+            Self::Rounded { rect, clip, .. } => {
+                rect.inline_start += inline_offset;
+                rect.block.start += block_offset;
+                clip.inline_start += inline_offset;
+                clip.block.start += block_offset;
+            },
+        }
+    }
+
+    /// Return the conservative inline bounds occupied anywhere in this line's
+    /// full block-axis span. A line that crosses a rounded corner therefore
+    /// cannot overlap the curve after its first break attempt.
+    fn inline_bounds_for_span(self, block_start: f32, block_size: f32) -> Option<(f32, f32)> {
+        if !self.overlaps_block(block_start, block_size) {
+            return None;
+        }
+        match self {
+            Self::Rect(rect) => Some((rect.inline_start, rect.inline_start + rect.inline_size)),
+            Self::Rounded { rect, clip, radii } => {
+                let span_start = block_start.max(clip.block.start);
+                let span_end = (block_start + block_size).min(clip.block.end());
+                // A zero-height provisional line still needs the contour at
+                // its top edge before Parley reports its eventual line height.
+                // For a non-zero line we also inspect the points where either
+                // edge reaches the straight middle of the rounded rectangle.
+                let sample = [
+                    span_start,
+                    span_end,
+                    rect.block.start + radii.block_start_inline_start.block,
+                    rect.block.start + radii.block_start_inline_end.block,
+                    rect.block.end() - radii.block_end_inline_start.block,
+                    rect.block.end() - radii.block_end_inline_end.block,
+                ];
+                let mut inline_start = f32::INFINITY;
+                let mut inline_end = f32::NEG_INFINITY;
+                let clip_start = clip.inline_start;
+                let clip_end = clip.inline_start + clip.inline_size;
+                for block in sample {
+                    if block < span_start || block > span_end {
+                        continue;
+                    }
+                    let (start, end) = rounded_inline_bounds_at(rect, radii, block);
+                    let start = start.max(clip_start);
+                    let end = end.min(clip_end);
+                    if start <= end {
+                        inline_start = inline_start.min(start);
+                        inline_end = inline_end.max(end);
+                    }
+                }
+                (inline_start <= inline_end).then_some((inline_start, inline_end))
+            },
+        }
+    }
+}
+
+fn rounded_inline_bounds_at(
+    rect: FloatMarginBox,
+    radii: LogicalCornerRadii,
+    block: f32,
+) -> (f32, f32) {
+    let block_offset = (block - rect.block.start).clamp(0.0, rect.block.used_size);
+    let block_end = rect.block.used_size;
+    let edge_inset = |block_start_radius: LogicalCornerRadius,
+                      block_end_radius: LogicalCornerRadius| {
+        if block_offset < block_start_radius.block {
+            rounded_corner_inset(block_start_radius, block_offset)
+        } else if block_offset >= block_end - block_end_radius.block {
+            rounded_corner_inset(block_end_radius, block_end - block_offset)
+        } else {
+            0.0
+        }
+    };
+    let start_inset = edge_inset(radii.block_start_inline_start, radii.block_end_inline_start);
+    let end_inset = edge_inset(radii.block_start_inline_end, radii.block_end_inline_end);
+    (
+        rect.inline_start + start_inset,
+        rect.inline_start + rect.inline_size - end_inset,
+    )
+}
+
+fn rounded_corner_inset(radius: LogicalCornerRadius, edge_distance: f32) -> f32 {
+    if radius.inline <= 0.0 || radius.block <= 0.0 {
+        return 0.0;
+    }
+    let center_distance = (radius.block - edge_distance).clamp(0.0, radius.block);
+    let normalized = 1.0 - (center_distance / radius.block).powi(2);
+    radius.inline * (1.0 - normalized.max(0.0).sqrt())
+}
+
 impl FloatExclusion {
     fn block_start(self) -> f32 {
         self.margin_box.block.start
@@ -888,14 +1093,7 @@ impl FloatExclusion {
     }
 
     fn line_area_overlaps_block(self, block_start: f32, block_size: f32) -> bool {
-        self.is_valid_exclusion()
-            && self.line_area.block.is_valid_exclusion()
-            && spans_overlap(
-                self.line_area.block.start,
-                self.line_area.block.used_size,
-                block_start,
-                block_size,
-            )
+        self.is_valid_exclusion() && self.line_area.overlaps_block(block_start, block_size)
     }
 }
 
@@ -969,37 +1167,95 @@ impl FloatLineConstraints {
         }
     }
 
-    /// Find the next lower float boundary that gives this line more inline
-    /// room. CSS moves a line down when the interval beside a float cannot
+    /// Find the first lower float band that can contain the requested inline
+    /// advance. CSS moves a line down when the interval beside a float cannot
     /// contain any of its content.
     pub fn next_wider_block_start(
         &self,
         line_block_start: f32,
         line_block_size: f32,
-        current_inline_size: f32,
+        required_inline_size: f32,
     ) -> Option<f32> {
         let absolute_start = self.block_offset + line_block_start;
-        let mut candidates = self
+        // An unbreakable line wider than its containing block still moves to
+        // the first band that restores the containing block's full width,
+        // then overflows there. Requiring its impossible full advance would
+        // leave it beside a float that occurs later in the inline sequence.
+        let required_inline_size = required_inline_size.min(self.containing_inline_size);
+        let active = self
             .exclusions
             .iter()
             .filter(|exclusion| {
-                exclusion.is_valid_exclusion() && exclusion.line_area.block.is_valid_exclusion()
+                exclusion.is_valid_exclusion()
+                    && exclusion.line_area.is_valid_exclusion()
+                    && exclusion.line_area.block_end() > absolute_start
             })
-            .map(|exclusion| exclusion.line_area.block.end())
-            .filter(|block_end| *block_end > absolute_start)
             .collect::<Vec<_>>();
-        candidates.sort_by(f32::total_cmp);
-        candidates.dedup_by(|left, right| (*left - *right).abs() <= f32::EPSILON);
-        candidates.into_iter().find_map(|candidate| {
-            let available = available_line_space_for(
+        let rounded_count = active
+            .iter()
+            .filter(|exclusion| matches!(exclusion.line_area, FloatLineArea::Rounded { .. }))
+            .count();
+        let fits = |candidate| {
+            available_line_space_for(
                 self.containing_inline_size,
                 &self.exclusions,
                 candidate,
                 line_block_size,
+            )
+            .inline_size
+                + 0.01
+                >= required_inline_size
+        };
+
+        // Rectangles change only at exact boundaries. Intersections between
+        // several moving contours need their own global envelope solver. Use
+        // contour bisection only for exactly one rounded area; every other
+        // case retries at exact complete-area boundaries.
+        if rounded_count != 1 {
+            let mut block_ends = active
+                .into_iter()
+                .map(|exclusion| exclusion.line_area.block_end())
+                .filter(|block_end| *block_end > absolute_start)
+                .collect::<Vec<_>>();
+            block_ends.sort_by(f32::total_cmp);
+            block_ends.dedup_by(|left, right| (*left - *right).abs() <= f32::EPSILON);
+            return block_ends.into_iter().find_map(|candidate| {
+                fits(candidate).then_some((candidate - self.block_offset).max(line_block_start))
+            });
+        }
+
+        let mut candidates = Vec::new();
+        for exclusion in active {
+            candidates.extend(
+                exclusion
+                    .line_area
+                    .retry_breakpoints(line_block_size)
+                    .into_iter()
+                    .filter(|point| *point > absolute_start),
             );
-            (available.inline_size > current_inline_size + 0.01)
-                .then_some((candidate - self.block_offset).max(line_block_start))
-        })
+        }
+        candidates.sort_by(f32::total_cmp);
+        candidates.dedup_by(|left, right| (*left - *right).abs() <= f32::EPSILON);
+        let mut lower = absolute_start;
+        for mut upper in candidates {
+            if !fits(upper) {
+                lower = upper;
+                continue;
+            }
+            // Rounded contours widen continuously through their block-end
+            // corner. Rectangular boundaries are discontinuous; the same
+            // search converges on their exact edge because only `upper` fits.
+            for _ in 0..24 {
+                let middle = lower + (upper - lower) * 0.5;
+                if fits(middle) {
+                    upper = middle;
+                } else {
+                    lower = middle;
+                }
+            }
+            return Some((upper - self.block_offset).max(line_block_start));
+        }
+        None
     }
 }
 
@@ -1077,8 +1333,7 @@ impl BlockFormattingContext {
                 .map(|mut exclusion| {
                     exclusion.margin_box.inline_start -= inline_offset;
                     exclusion.margin_box.block.start -= block_offset;
-                    exclusion.line_area.inline_start -= inline_offset;
-                    exclusion.line_area.block.start -= block_offset;
+                    exclusion.line_area.translate(-inline_offset, -block_offset);
                     exclusion
                 })
                 .collect(),
@@ -1103,8 +1358,7 @@ impl BlockFormattingContext {
         for mut exclusion in state.exclusions {
             exclusion.margin_box.inline_start += inline_offset;
             exclusion.margin_box.block.start += block_offset;
-            exclusion.line_area.inline_start += inline_offset;
-            exclusion.line_area.block.start += block_offset;
+            exclusion.line_area.translate(inline_offset, block_offset);
             if exclusion.is_valid_exclusion() {
                 self.latest_float_block_start =
                     self.latest_float_block_start.max(exclusion.block_start());
@@ -1570,17 +1824,29 @@ fn float_line_area(
     containing_inline_size: f32,
     margin_box: FloatMarginBox,
     border_box: LogicalRect,
-) -> FloatMarginBox {
-    // Row 12's first slice admits only horizontal rectangular reference
-    // boxes. Vertical float-area transforms and rounded/basic/image shapes
-    // deliberately retain the default margin-box float area.
-    if style.float_reference_box == FloatReferenceBox::MarginBox
+) -> FloatLineArea {
+    // A float without an authored box-valued shape keeps the CSS 2.1 margin
+    // rectangle, even if it is painted with rounded borders.
+    if !style.has_shape_outside_box
         || !matches!(
             style.containing_flow.inline_start(),
             crate::PhysicalSide::Left | crate::PhysicalSide::Right
         )
     {
-        return margin_box;
+        return FloatLineArea::Rect(margin_box);
+    }
+
+    if style.float_reference_box == FloatReferenceBox::MarginBox {
+        let radii = reference_box_radii(style, border_box, margin_box);
+        return if radii == LogicalCornerRadii::default() {
+            FloatLineArea::Rect(margin_box)
+        } else {
+            FloatLineArea::Rounded {
+                rect: margin_box,
+                clip: margin_box,
+                radii,
+            }
+        };
     }
 
     let border = style.containing_flow.logical_sides(style.border);
@@ -1611,7 +1877,161 @@ fn float_line_area(
             used_size: (border_box.block_size - inset.block_start - inset.block_end).max(0.0),
         },
     };
-    clip_float_area_to_margin_box(reference_box, margin_box)
+    let clipped_reference_box = clip_float_area_to_margin_box(reference_box, margin_box);
+    let radii = reference_box_radii(style, border_box, reference_box);
+    if radii == LogicalCornerRadii::default() {
+        FloatLineArea::Rect(clipped_reference_box)
+    } else {
+        FloatLineArea::Rounded {
+            rect: reference_box,
+            clip: clipped_reference_box,
+            radii,
+        }
+    }
+}
+
+fn reference_box_radii(
+    style: BlockStyle,
+    border_box: LogicalRect,
+    reference_box: FloatMarginBox,
+) -> LogicalCornerRadii {
+    if reference_box.inline_size <= 0.0 || reference_box.block.used_size <= 0.0 {
+        return LogicalCornerRadii::default();
+    }
+    let physical = style.corner_radii;
+    let resolve = |radius: BlockCornerRadius| LogicalCornerRadius {
+        inline: radius.horizontal.resolve(border_box.inline_size).max(0.0),
+        block: radius.vertical.resolve(border_box.block_size).max(0.0),
+    };
+    let mut radii = match style.containing_flow.inline_start() {
+        crate::PhysicalSide::Left => LogicalCornerRadii {
+            block_start_inline_start: resolve(physical.top_left),
+            block_start_inline_end: resolve(physical.top_right),
+            block_end_inline_end: resolve(physical.bottom_right),
+            block_end_inline_start: resolve(physical.bottom_left),
+        },
+        crate::PhysicalSide::Right => LogicalCornerRadii {
+            block_start_inline_start: resolve(physical.top_right),
+            block_start_inline_end: resolve(physical.top_left),
+            block_end_inline_end: resolve(physical.bottom_left),
+            block_end_inline_start: resolve(physical.bottom_right),
+        },
+        crate::PhysicalSide::Top | crate::PhysicalSide::Bottom => {
+            return LogicalCornerRadii::default();
+        },
+    };
+    normalize_corner_radii(&mut radii, border_box.inline_size, border_box.block_size);
+
+    let insets = crate::LogicalSides {
+        inline_start: reference_box.inline_start - border_box.inline_start,
+        inline_end: border_box.inline_start + border_box.inline_size
+            - reference_box.inline_start
+            - reference_box.inline_size,
+        block_start: reference_box.block.start - border_box.block_start,
+        block_end: border_box.block_start + border_box.block_size
+            - reference_box.block.start
+            - reference_box.block.used_size,
+    };
+    if style.float_reference_box == FloatReferenceBox::MarginBox {
+        let margin_inline_start = -insets.inline_start;
+        let margin_inline_end = -insets.inline_end;
+        let margin_block_start = -insets.block_start;
+        let margin_block_end = -insets.block_end;
+        radii.block_start_inline_start.inline =
+            margin_box_corner_radius(radii.block_start_inline_start.inline, margin_inline_start);
+        radii.block_start_inline_start.block =
+            margin_box_corner_radius(radii.block_start_inline_start.block, margin_block_start);
+        radii.block_start_inline_end.inline =
+            margin_box_corner_radius(radii.block_start_inline_end.inline, margin_inline_end);
+        radii.block_start_inline_end.block =
+            margin_box_corner_radius(radii.block_start_inline_end.block, margin_block_start);
+        radii.block_end_inline_end.inline =
+            margin_box_corner_radius(radii.block_end_inline_end.inline, margin_inline_end);
+        radii.block_end_inline_end.block =
+            margin_box_corner_radius(radii.block_end_inline_end.block, margin_block_end);
+        radii.block_end_inline_start.inline =
+            margin_box_corner_radius(radii.block_end_inline_start.inline, margin_inline_start);
+        radii.block_end_inline_start.block =
+            margin_box_corner_radius(radii.block_end_inline_start.block, margin_block_end);
+        normalize_corner_radii(
+            &mut radii,
+            reference_box.inline_size,
+            reference_box.block.used_size,
+        );
+        return radii;
+    }
+
+    // Inner reference boxes contract the corresponding used border radius by
+    // their distance from the outside border edge.
+    for radius in [
+        &mut radii.block_start_inline_start,
+        &mut radii.block_start_inline_end,
+    ] {
+        radius.block = (radius.block - insets.block_start).max(0.0);
+    }
+    for radius in [
+        &mut radii.block_end_inline_start,
+        &mut radii.block_end_inline_end,
+    ] {
+        radius.block = (radius.block - insets.block_end).max(0.0);
+    }
+    for radius in [
+        &mut radii.block_start_inline_start,
+        &mut radii.block_end_inline_start,
+    ] {
+        radius.inline = (radius.inline - insets.inline_start).max(0.0);
+    }
+    for radius in [
+        &mut radii.block_start_inline_end,
+        &mut radii.block_end_inline_end,
+    ] {
+        radius.inline = (radius.inline - insets.inline_end).max(0.0);
+    }
+    normalize_corner_radii(
+        &mut radii,
+        reference_box.inline_size,
+        reference_box.block.used_size,
+    );
+    radii
+}
+
+fn margin_box_corner_radius(border_radius: f32, margin: f32) -> f32 {
+    if margin <= 0.0 {
+        return (border_radius + margin).max(0.0);
+    }
+    let ratio = border_radius / margin;
+    if ratio >= 1.0 {
+        border_radius + margin
+    } else {
+        border_radius + margin * (1.0 + (ratio - 1.0).powi(3))
+    }
+}
+
+fn normalize_corner_radii(radii: &mut LogicalCornerRadii, inline_size: f32, block_size: f32) {
+    let inline_size = inline_size.max(0.0);
+    let block_size = block_size.max(0.0);
+    let scale = [
+        inline_size / (radii.block_start_inline_start.inline + radii.block_start_inline_end.inline),
+        inline_size / (radii.block_end_inline_start.inline + radii.block_end_inline_end.inline),
+        block_size / (radii.block_start_inline_start.block + radii.block_end_inline_start.block),
+        block_size / (radii.block_start_inline_end.block + radii.block_end_inline_end.block),
+    ]
+    .into_iter()
+    .filter(|value| value.is_finite())
+    .fold(1.0_f32, f32::min)
+    .min(1.0);
+    if scale >= 1.0 {
+        return;
+    }
+    for radius in [
+        &mut radii.block_start_inline_start,
+        &mut radii.block_start_inline_end,
+        &mut radii.block_end_inline_end,
+        &mut radii.block_end_inline_start,
+    ] {
+        radius.inline *= scale;
+        radius.block *= scale;
+    }
 }
 
 fn clip_float_area_to_margin_box(
@@ -1673,11 +2093,16 @@ fn available_line_space_for(
         .iter()
         .filter(|exclusion| exclusion.line_area_overlaps_block(block_start, block_size))
     {
+        let Some((area_start, area_end)) = exclusion
+            .line_area
+            .inline_bounds_for_span(block_start, block_size)
+        else {
+            continue;
+        };
         if exclusion.at_inline_start {
-            inline_start = inline_start
-                .max(exclusion.line_area.inline_start + exclusion.line_area.inline_size);
+            inline_start = inline_start.max(area_end);
         } else {
-            inline_end = inline_end.min(exclusion.line_area.inline_start);
+            inline_end = inline_end.min(area_start);
         }
     }
     FloatAvailableSpace {
@@ -2481,8 +2906,12 @@ mod tests {
             }
         );
         assert_eq!(
-            constraints.next_wider_block_start(0.0, 18.0, 60.0),
+            constraints.next_wider_block_start(0.0, 18.0, 100.0),
             Some(20.0)
+        );
+        assert_eq!(
+            constraints.next_wider_block_start(0.0, 18.0, 300.0),
+            Some(40.0)
         );
     }
 
@@ -2499,6 +2928,7 @@ mod tests {
             let mut context = horizontal_context(200.0);
             let mut style = fixed_float(FloatSide::Left, 80.0);
             style.float_reference_box = reference_box;
+            style.has_shape_outside_box = true;
             style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
             style.padding = PhysicalSides::splat(FlowLength::px(10.0));
             style.border = PhysicalSides::splat(5.0);
@@ -2544,11 +2974,332 @@ mod tests {
         }
     }
 
+    fn circular_radii(radius: f32) -> BlockCornerRadii {
+        let corner = BlockCornerRadius {
+            horizontal: FlowLength::px(radius),
+            vertical: FlowLength::px(radius),
+        };
+        BlockCornerRadii {
+            top_left: corner,
+            top_right: corner,
+            bottom_right: corner,
+            bottom_left: corner,
+        }
+    }
+
+    #[test]
+    fn rounded_shape_boxes_use_conservative_full_line_span_intervals_on_both_sides() {
+        let mut left = horizontal_context(200.0);
+        let mut left_style = fixed_float(FloatSide::Left, 100.0);
+        left_style.float_reference_box = FloatReferenceBox::BorderBox;
+        left_style.has_shape_outside_box = true;
+        left_style.corner_radii = circular_radii(50.0);
+        left.place_float(
+            left_style,
+            PhysicalSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        let left_constraints = left
+            .float_line_constraints(0.0)
+            .expect("left rounded float");
+        let top = left_constraints.available_space(0.0, 0.0);
+        let top_span = left_constraints.available_space(0.0, 25.0);
+        let middle = left_constraints.available_space(50.0, 10.0);
+        let bottom = left_constraints.available_space(75.0, 25.0);
+        assert!((top.inline_start - 50.0).abs() <= 0.01, "top={top:?}");
+        assert!(
+            (top_span.inline_start - 93.30127).abs() <= 0.01,
+            "top_span={top_span:?}"
+        );
+        assert!(
+            (middle.inline_start - 100.0).abs() <= 0.01,
+            "middle={middle:?}"
+        );
+        assert!(
+            (bottom.inline_start - 93.30127).abs() <= 0.01,
+            "bottom={bottom:?}"
+        );
+
+        let mut right = horizontal_context(200.0);
+        let mut right_style = fixed_float(FloatSide::Right, 100.0);
+        right_style.float_reference_box = FloatReferenceBox::BorderBox;
+        right_style.has_shape_outside_box = true;
+        right_style.corner_radii = circular_radii(50.0);
+        right.place_float(
+            right_style,
+            PhysicalSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        let right_constraints = right
+            .float_line_constraints(0.0)
+            .expect("right rounded float");
+        let right_top = right_constraints.available_space(0.0, 0.0);
+        let right_middle = right_constraints.available_space(50.0, 10.0);
+        assert!(
+            (right_top.inline_size - 150.0).abs() <= 0.01,
+            "top={right_top:?}"
+        );
+        assert!(
+            (right_middle.inline_size - 100.0).abs() <= 0.01,
+            "middle={right_middle:?}"
+        );
+    }
+
+    #[test]
+    fn asymmetric_opposite_corner_bands_shape_each_inline_edge_independently() {
+        let rect = FloatMarginBox {
+            inline_start: 0.0,
+            inline_size: 100.0,
+            block: SignedBlockExtent {
+                start: 0.0,
+                used_size: 100.0,
+            },
+        };
+        let radii = LogicalCornerRadii {
+            block_start_inline_start: LogicalCornerRadius {
+                inline: 40.0,
+                block: 80.0,
+            },
+            block_end_inline_end: LogicalCornerRadius {
+                inline: 30.0,
+                block: 80.0,
+            },
+            ..LogicalCornerRadii::default()
+        };
+
+        let (inline_start, inline_end) = rounded_inline_bounds_at(rect, radii, 50.0);
+        assert!(
+            (inline_start - 2.919).abs() <= 0.01,
+            "inline_start={inline_start}"
+        );
+        assert!(
+            (inline_end - 97.811).abs() <= 0.01,
+            "inline_end={inline_end}"
+        );
+    }
+
+    #[test]
+    fn rounded_retry_finds_the_first_lower_contour_band_that_fits() {
+        let mut context = horizontal_context(200.0);
+        let mut style = fixed_float(FloatSide::Left, 100.0);
+        style.float_reference_box = FloatReferenceBox::BorderBox;
+        style.has_shape_outside_box = true;
+        style.corner_radii = BlockCornerRadii {
+            bottom_right: BlockCornerRadius {
+                horizontal: FlowLength::px(50.0),
+                vertical: FlowLength::px(50.0),
+            },
+            bottom_left: BlockCornerRadius {
+                horizontal: FlowLength::px(50.0),
+                vertical: FlowLength::px(50.0),
+            },
+            ..BlockCornerRadii::default()
+        };
+        context.place_float(
+            style,
+            PhysicalSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        let constraints = context.float_line_constraints(0.0).expect("rounded float");
+
+        assert_eq!(constraints.available_space(50.0, 10.0).inline_size, 100.0);
+        let retry = constraints
+            .next_wider_block_start(50.0, 10.0, 120.0)
+            .expect("lower contour band");
+        assert!((retry - 90.0).abs() <= 0.02, "retry={retry}");
+        assert!(constraints.available_space(retry, 10.0).inline_size + 0.01 >= 120.0);
+        assert!(constraints.available_space(retry - 0.05, 10.0).inline_size + 0.01 < 120.0);
+    }
+
+    #[test]
+    fn rounded_retry_finds_a_fitting_window_before_a_lower_rectangle() {
+        let rounded_box = FloatMarginBox {
+            inline_start: 0.0,
+            inline_size: 100.0,
+            block: SignedBlockExtent {
+                start: 0.0,
+                used_size: 100.0,
+            },
+        };
+        let lower_rectangle = FloatMarginBox {
+            inline_start: 150.0,
+            inline_size: 50.0,
+            block: SignedBlockExtent {
+                start: 102.0,
+                used_size: 48.0,
+            },
+        };
+        let bottom_corner = LogicalCornerRadius {
+            inline: 50.0,
+            block: 50.0,
+        };
+        let constraints = FloatLineConstraints {
+            flow: FlowAxes::HORIZONTAL_LTR,
+            containing_inline_size: 200.0,
+            block_offset: 0.0,
+            exclusions: vec![
+                FloatExclusion {
+                    side: FloatSide::Left,
+                    at_inline_start: true,
+                    margin_box: rounded_box,
+                    line_area: FloatLineArea::Rounded {
+                        rect: rounded_box,
+                        clip: rounded_box,
+                        radii: LogicalCornerRadii {
+                            block_end_inline_start: bottom_corner,
+                            block_end_inline_end: bottom_corner,
+                            ..LogicalCornerRadii::default()
+                        },
+                    },
+                },
+                FloatExclusion {
+                    side: FloatSide::Right,
+                    at_inline_start: false,
+                    margin_box: lower_rectangle,
+                    line_area: FloatLineArea::Rect(lower_rectangle),
+                },
+            ],
+        };
+
+        let retry = constraints
+            .next_wider_block_start(50.0, 10.0, 120.0)
+            .expect("fitting window before the lower rectangle");
+        assert!((retry - 90.0).abs() <= 0.02, "retry={retry}");
+        assert!(retry < lower_rectangle.block.start - 10.0);
+    }
+
+    #[test]
+    fn reference_box_radii_expand_and_contract_without_changing_margin_authority() {
+        let border_box = LogicalRect {
+            inline_start: 10.0,
+            block_start: 10.0,
+            inline_size: 100.0,
+            block_size: 100.0,
+        };
+        let mut style = fixed_float(FloatSide::Left, 100.0);
+        style.has_shape_outside_box = true;
+        style.corner_radii = circular_radii(40.0);
+        let reference = |inline_start, inline_size, block_start, block_size| FloatMarginBox {
+            inline_start,
+            inline_size,
+            block: SignedBlockExtent {
+                start: block_start,
+                used_size: block_size,
+            },
+        };
+        let margin = reference_box_radii(style, border_box, reference(0.0, 120.0, 0.0, 120.0));
+        let padding = reference_box_radii(style, border_box, reference(20.0, 80.0, 20.0, 80.0));
+        let content = reference_box_radii(style, border_box, reference(40.0, 40.0, 40.0, 40.0));
+        let mut softened_style = style;
+        softened_style.corner_radii = circular_radii(10.0);
+        let softened_margin = reference_box_radii(
+            softened_style,
+            border_box,
+            reference(-10.0, 140.0, -10.0, 140.0),
+        );
+        assert_eq!(
+            margin.block_start_inline_start,
+            LogicalCornerRadius {
+                inline: 50.0,
+                block: 50.0
+            }
+        );
+        assert_eq!(
+            padding.block_start_inline_start,
+            LogicalCornerRadius {
+                inline: 30.0,
+                block: 30.0
+            }
+        );
+        assert_eq!(
+            content.block_start_inline_start,
+            LogicalCornerRadius {
+                inline: 10.0,
+                block: 10.0
+            }
+        );
+        assert_eq!(
+            softened_margin.block_start_inline_start,
+            LogicalCornerRadius {
+                inline: 27.5,
+                block: 27.5
+            },
+            "a positive margin larger than the radius uses the CSS Shapes cubic adjustment"
+        );
+        assert_eq!(margin_box_corner_radius(0.0, 20.0), 0.0);
+        assert_eq!(margin_box_corner_radius(40.0, -10.0), 30.0);
+
+        let mut context = horizontal_context(140.0);
+        style.float_reference_box = FloatReferenceBox::ContentBox;
+        style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
+        style.padding = PhysicalSides::splat(FlowLength::px(10.0));
+        style.border = PhysicalSides::splat(5.0);
+        context.place_float(
+            style,
+            PhysicalSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        assert_eq!(
+            context.available_inline_space(30.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 120.0,
+                inline_size: 20.0,
+            },
+            "float placement continues to consult the margin box"
+        );
+        assert_eq!(
+            context.used_block_size_containing_floats(false),
+            120.0,
+            "float containment continues to consult the margin box"
+        );
+    }
+
+    #[test]
+    fn rounded_reference_box_is_shaped_before_negative_margin_clipping() {
+        let margin_box = FloatMarginBox {
+            inline_start: 25.0,
+            inline_size: 50.0,
+            block: SignedBlockExtent {
+                start: 0.0,
+                used_size: 100.0,
+            },
+        };
+        let border_box = LogicalRect {
+            inline_start: 0.0,
+            block_start: 0.0,
+            inline_size: 100.0,
+            block_size: 100.0,
+        };
+        let style = BlockStyle {
+            float_reference_box: FloatReferenceBox::BorderBox,
+            has_shape_outside_box: true,
+            corner_radii: circular_radii(50.0),
+            ..BlockStyle::default()
+        };
+        let area = float_line_area(style, 100.0, margin_box, border_box);
+
+        assert_eq!(area.bounds(), margin_box);
+        let (inline_start, inline_end) = area
+            .inline_bounds_for_span(10.0, 0.0)
+            .expect("clipped rounded contour");
+        assert!((inline_start - 25.0).abs() <= 0.01);
+        assert!((inline_end - 75.0).abs() <= 0.01);
+    }
+
     #[test]
     fn descendant_float_state_translates_margin_and_line_areas_together() {
         let mut parent = horizontal_context(200.0);
         let mut style = fixed_float(FloatSide::Left, 80.0);
         style.float_reference_box = FloatReferenceBox::ContentBox;
+        style.has_shape_outside_box = true;
         style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
         style.padding = PhysicalSides::splat(FlowLength::px(10.0));
         style.border = PhysicalSides::splat(5.0);
@@ -2595,6 +3346,7 @@ mod tests {
         let mut context = horizontal_context(200.0);
         let mut style = fixed_float(FloatSide::Right, 80.0);
         style.float_reference_box = FloatReferenceBox::ContentBox;
+        style.has_shape_outside_box = true;
         style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
         style.padding = PhysicalSides::splat(FlowLength::px(10.0));
         style.border = PhysicalSides::splat(5.0);
@@ -2645,6 +3397,7 @@ mod tests {
         let style = BlockStyle {
             containing_flow: FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
             float_reference_box: FloatReferenceBox::ContentBox,
+            has_shape_outside_box: true,
             padding: PhysicalSides::splat(FlowLength::px(10.0)),
             border: PhysicalSides::splat(5.0),
             ..BlockStyle::default()
@@ -2652,7 +3405,7 @@ mod tests {
 
         assert_eq!(
             float_line_area(style, 200.0, margin_box, border_box),
-            margin_box
+            FloatLineArea::Rect(margin_box)
         );
     }
 

@@ -7,7 +7,7 @@ use std::{
 
 use buckram::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmNodeId, AlgorithmSize, AlgorithmTree,
-    Baselines, BlockBoxSizing, BlockDeferral, BlockDimensions,
+    Baselines, BlockBoxSizing, BlockCornerRadii, BlockCornerRadius, BlockDeferral, BlockDimensions,
     BlockPosition as BuckramBlockPosition, BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide,
     CollapsedBorderGeometry, ContainingBlock, CssBox, DisplayInside, DisplayOutside,
     FloatContextProvenance, FloatLineConstraints, FloatReferenceBox, FloatSide, FlowAxes,
@@ -5792,6 +5792,8 @@ where
         || computed.overflow_y != CssOverflow::Visible
         || computed.contain.has_layout()
         || computed.contain.has_paint();
+    let shape_reference_box = shape_outside_reference_box(computed);
+    let nonlinear_shape_radius = shape_outside_has_nonlinear_radius(computed);
 
     BlockStyle {
         flow: css_box.flow,
@@ -5864,7 +5866,14 @@ where
             CssFloat::Left => FloatSide::Left,
             CssFloat::Right => FloatSide::Right,
         },
-        float_reference_box: float_reference_box(computed),
+        float_reference_box: shape_reference_box.unwrap_or(FloatReferenceBox::MarginBox),
+        has_shape_outside_box: shape_reference_box.is_some() && !nonlinear_shape_radius,
+        corner_radii: BlockCornerRadii {
+            top_left: block_corner_radius(computed.border_top_left_radius, font_size),
+            top_right: block_corner_radius(computed.border_top_right_radius, font_size),
+            bottom_right: block_corner_radius(computed.border_bottom_right_radius, font_size),
+            bottom_left: block_corner_radius(computed.border_bottom_left_radius, font_size),
+        },
         clear: match computed.clear {
             CssClear::None => ClearSide::None,
             CssClear::Left => ClearSide::Left,
@@ -5891,27 +5900,34 @@ where
     }
 }
 
-fn float_reference_box(computed: &ComputedValues) -> FloatReferenceBox {
-    let has_curved_border = [
-        computed.border_top_left_radius,
-        computed.border_top_right_radius,
-        computed.border_bottom_right_radius,
-        computed.border_bottom_left_radius,
-    ]
-    .into_iter()
-    .any(|radius| radius != Radius::ZERO);
-    if has_curved_border {
-        // CSS Shapes makes each reference box honor border-radius. Curvature
-        // is a later row-12 slice, so retain the default margin-box float area
-        // instead of claiming a rectangular approximation.
-        return FloatReferenceBox::MarginBox;
-    }
+fn shape_outside_reference_box(computed: &ComputedValues) -> Option<FloatReferenceBox> {
     match computed.shape_outside {
-        CssShapeOutside::None | CssShapeOutside::MarginBox => FloatReferenceBox::MarginBox,
-        CssShapeOutside::BorderBox => FloatReferenceBox::BorderBox,
-        CssShapeOutside::PaddingBox => FloatReferenceBox::PaddingBox,
-        CssShapeOutside::ContentBox => FloatReferenceBox::ContentBox,
+        CssShapeOutside::None => None,
+        CssShapeOutside::MarginBox => Some(FloatReferenceBox::MarginBox),
+        CssShapeOutside::BorderBox => Some(FloatReferenceBox::BorderBox),
+        CssShapeOutside::PaddingBox => Some(FloatReferenceBox::PaddingBox),
+        CssShapeOutside::ContentBox => Some(FloatReferenceBox::ContentBox),
     }
+}
+
+fn block_corner_radius(radius: Radius, em: f32) -> BlockCornerRadius {
+    let value = flow_length(radius.0, em);
+    BlockCornerRadius {
+        horizontal: value,
+        vertical: value,
+    }
+}
+
+fn shape_outside_has_nonlinear_radius(computed: &ComputedValues) -> bool {
+    shape_outside_reference_box(computed).is_some()
+        && [
+            computed.border_top_left_radius,
+            computed.border_top_right_radius,
+            computed.border_bottom_right_radius,
+            computed.border_bottom_left_radius,
+        ]
+        .into_iter()
+        .any(|radius| length_has_math(radius.0))
 }
 
 fn block_size_value(value: CssSize, em: f32) -> BlockSizeValue {
@@ -13021,7 +13037,7 @@ mod tests {
             ("border", 80.0),
             ("padding", 60.0),
             ("content", 50.0),
-            ("curved", 100.0),
+            ("curved", 50.0),
         ] {
             let host_node = by_id(&dom, dom.document(), &format!("host-{name}"))
                 .unwrap_or_else(|| panic!("host-{name}"));
@@ -13053,6 +13069,201 @@ mod tests {
             assert!(host.height >= 80.0);
         }
         assert_eq!(algorithms.taffy, 0);
+    }
+
+    #[test]
+    fn live_rounded_shape_boxes_shift_left_and_right_line_edges() {
+        fn by_id(
+            dom: &StaticDocument,
+            node: <StaticDocument as LayoutDom>::NodeId,
+            expected: &str,
+        ) -> Option<<StaticDocument as LayoutDom>::NodeId> {
+            if dom.attributes(node).any(|attribute| {
+                attribute.name.ns.as_ref().is_empty()
+                    && attribute.name.local.as_ref() == "id"
+                    && attribute.value == expected
+            }) {
+                return Some(node);
+            }
+            dom.dom_children(node)
+                .find_map(|child| by_id(dom, child, expected))
+        }
+
+        let dom = StaticDocument::parse(
+            "<html><body>\
+             <div id=\"left\" class=\"host\"><div id=\"left-float\" class=\"shape left\"></div>\
+             <div><span id=\"left-copy\">aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa</span></div></div>\
+             <div id=\"right\" class=\"host right-host\"><div id=\"right-float\" class=\"shape right\"></div>\
+             <div><span id=\"right-copy\">aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa</span></div></div>\
+             </body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div, span { margin: 0; padding: 0; border: 0; }\
+                 .host { width: 200px; overflow-x: hidden; overflow-y: hidden;\
+                         font-family: monospace; font-size: 10px; line-height: 20px; }\
+                 .shape { width: 80px; height: 80px; shape-outside: border-box; border-radius: 50%; }\
+                 .left { float: left; }\
+                 .right { float: right; }\
+                 .right-host { direction: rtl; text-align: right; }",
+            ]),
+            &Device::screen(320.0, 300.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            300.0,
+            ViewportSizes::uniform(320.0, 300.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let rect = |id| {
+            let node = by_id(&dom, dom.document(), id).expect(id);
+            layout.get(node).expect(id).physical_rect()
+        };
+        let first_line = |id| {
+            let node = by_id(&dom, dom.document(), id).expect(id);
+            layout
+                .fragments_for_node(node)
+                .map(|fragment| fragment.physical_rect())
+                .min_by(|left, right| left.y.total_cmp(&right.y))
+                .expect(id)
+        };
+
+        let left = rect("left-float");
+        let left_line = first_line("left-copy");
+        assert!(
+            left_line.x > left.x + 50.0 && left_line.x < left.x + 80.0,
+            "a rounded left float releases its top-corner interval: host={left:?}, line={left_line:?}"
+        );
+
+        let right = rect("right-float");
+        let right_line = first_line("right-copy");
+        assert!(
+            right_line.x + right_line.width > right.x + 5.0
+                && right_line.x + right_line.width < right.x + 15.0,
+            "a rounded right float releases its top-corner interval: float={right:?}, line={right_line:?}"
+        );
+        assert_eq!(layout.block_algorithm_counts().taffy, 0);
+    }
+
+    #[test]
+    fn nonlinear_corner_radius_falls_back_only_when_shape_outside_consumes_it() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=\"paint\"></div><div id=\"shape\"></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["#paint, #shape { width: 100px; height: 100px;\
+                                  border-radius: min(10px, 50%); }\
+                 #shape { float: left; shape-outside: border-box; }"]),
+            &Device::screen(320.0, 300.0),
+            &InteractionStates::default(),
+        );
+        let paint = node_by_id(&dom, dom.document(), "paint").expect("paint");
+        let shape = node_by_id(&dom, dom.document(), "shape").expect("shape");
+        let paint = styles.get(paint).expect("paint style");
+        let shape = styles.get(shape).expect("shape style");
+
+        assert!(length_has_math(shape.border_top_left_radius.0));
+        assert!(!shape_outside_has_nonlinear_radius(paint));
+        assert!(shape_outside_has_nonlinear_radius(shape));
+        assert!(!block_style_has_nonlinear_lengths(paint));
+        assert!(!block_style_has_nonlinear_lengths(shape));
+    }
+
+    #[test]
+    fn live_nonlinear_shape_radius_retains_buckram_and_the_default_margin_area() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=\"host\"><div id=\"shape\"></div>\
+             <div><span id=\"copy\">aa aa aa aa aa aa aa aa</span></div></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div, span { margin: 0; padding: 0; border: 0; }\
+                 #host { width: 200px; overflow-x: hidden; overflow-y: hidden;\
+                         font-family: monospace; font-size: 10px; line-height: 20px; }\
+                 #shape { float: left; width: 80px; height: 80px; margin: 10px;\
+                          shape-outside: border-box; border-radius: min(10px, 50%); }",
+            ]),
+            &Device::screen(320.0, 300.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            300.0,
+            ViewportSizes::uniform(320.0, 300.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let shape = node_by_id(&dom, dom.document(), "shape").expect("shape");
+        let copy = node_by_id(&dom, dom.document(), "copy").expect("copy");
+        let shape = layout.get(shape).expect("shape layout").physical_rect();
+        let line = layout
+            .fragments_for_node(copy)
+            .map(|fragment| fragment.physical_rect())
+            .min_by(|left, right| left.y.total_cmp(&right.y))
+            .expect("copy line");
+
+        assert!((line.x - (shape.x + shape.width + 10.0)).abs() <= 0.01);
+        assert_eq!(layout.block_algorithm_counts().taffy, 0);
+    }
+
+    #[test]
+    fn live_unbreakable_line_retries_inside_a_rounded_bottom_contour() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=\"host\"><div id=\"shape\"></div>\
+             <div><span id=\"copy\">aaaaaaaaaaaaaaaaaaaa</span></div></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div, span { margin: 0; padding: 0; border: 0; }\
+                 #host { width: 200px; overflow-x: hidden; overflow-y: hidden;\
+                         font-family: monospace; font-size: 10px; line-height: 20px; }\
+                 #shape { float: left; width: 100px; height: 100px;\
+                          shape-outside: border-box; border-radius: 0 0 50% 50%; }\
+                 #copy { white-space: nowrap; }",
+            ]),
+            &Device::screen(320.0, 300.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            300.0,
+            ViewportSizes::uniform(320.0, 300.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let shape = node_by_id(&dom, dom.document(), "shape").expect("shape");
+        let copy = node_by_id(&dom, dom.document(), "copy").expect("copy");
+        let shape = layout.get(shape).expect("shape layout").physical_rect();
+        let line = layout
+            .fragments_for_node(copy)
+            .map(|fragment| fragment.physical_rect())
+            .min_by(|left, right| left.y.total_cmp(&right.y))
+            .expect("copy line");
+
+        assert!(line.width > 100.0 && line.width < 150.0, "line={line:?}");
+        assert!(
+            line.y > shape.y + 50.0 && line.y < shape.y + shape.height,
+            "the line should fit within the widening bottom contour: shape={shape:?}, line={line:?}"
+        );
+        assert_eq!(layout.block_algorithm_counts().taffy, 0);
     }
 
     #[test]

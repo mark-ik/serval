@@ -158,7 +158,7 @@ fn break_inline_lines(
                     && let Some(next_top) = constraints.next_wider_block_start(
                         line_top,
                         line.line_height.max(0.0),
-                        available.inline_size,
+                        line.advance,
                     )
                     && breaker.revert()
                 {
