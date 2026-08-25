@@ -910,7 +910,15 @@ the ones to take first, ahead of anything ranked purely by file count.
 | gamut mapping (out-of-gamut colors clip per channel) | not built | inherited | no |
 | contextual `color-layers()`, `alpha()`, `contrast-color()`, relative colors, and system colors | absolute forms built; retained contextual computation is C1-C3 | inherited | **yes** |
 | `order` with grid auto-placement | not built | inherited | no |
-| relative-position table parts | **built through accepted K4h/K5c integration** | **new** | no |
+| relative-position table parts | rows, groups, and cells built through K4h/K5c; relative captions and the `left` offsets of parts **regressed at the K5 integration**, see the master plan's K5 regression ledger | **new** | no |
+| `css/CSS2/tables/table-anonymous-objects-059` through `-098` | **10/40** since the 2026-08-21 K5 fallback repair (0/40 from the 2026-08-15 integration until then). Residual 30: 4 anti-aliasing-only, 6 reference `<col>` background paint gap, 20 anonymous first-row cell placement. The K5 regression is fixed; the 20 are K4-model construction debt with no open gate | inherited | **yes** |
+| K5 positioning regressions against the 2026-08-10 ledger | 14 `css/css-position`, 2 `css/CSS2/abspos`, and 4 `fixed-table-layout` files still red after the 2026-08-21 repairs, plus 7 files those repairs themselves regressed (aspect-ratio, ruby, font, and pre-wrap absolute boxes under a Taffy fallback) against 232 gains; all named in the master plan's K5 regression ledger | **new** | **yes** |
+
+**The anonymous-table residual compounds** for the same reason block-flow
+anonymous boxes do: the inferred first row is a box-generation shape that
+more table code will assume is correct. **The K5 regression list compounds**
+because positioned layout is the seam K6 fragmentation builds on; every
+unrepaired static-position defect becomes a continuation-chain defect.
 
 **The two that compound, in detail, because they are the ones that will hurt:**
 

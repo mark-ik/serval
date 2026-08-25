@@ -11,8 +11,14 @@
 use std::fmt;
 use std::str::FromStr;
 
+pub mod input;
 pub mod settings;
 pub mod tile;
+
+pub use input::{
+    ButtonState, CursorShape, FocusChange, HostEffect, HostInput, HostKey, InputModifiers,
+    NavigationCommand, PointerButton, TextComposition,
+};
 
 /// Coarse engine selection for diagnostic hosts such as standalone Pelt.
 ///

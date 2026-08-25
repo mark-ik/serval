@@ -102,9 +102,16 @@ insets and percentages.
 carrier independently of final child placement. The remaining grid K5b work is
 the static-rectangle rule, not this containing-block substitution.
 
-Taffy still excludes the out-of-flow box, and remains the measured fallback
-for unadmitted descendants, the non-replaced block axis, flex/grid roots, and
-replaced non-leaves or missing contributions. The retained inline formatter
+Taffy excludes the out-of-flow box from flow, and remains the measured
+fallback for unadmitted descendants, the non-replaced block axis, flex/grid
+roots, and replaced non-leaves or missing contributions. That exclusion was
+only true of the flex/grid provider until 2026-08-21: a Taffy *block*
+fallback received absolute boxes as `position: relative` and laid them out in
+flow, which is what had emptied the `table-anonymous-objects` family and
+several `css/css-position` files since the K5 integration merge. The fallback
+now flips its out-of-flow children to Taffy's absolute role only while it
+runs. The K5b plan and the master plan's K5 regression ledger carry the
+correction and its receipts. The retained inline formatter
 now omits each outermost absolute or fixed descendant from its enclosing line,
 then gives that descendant a separate local block-formatting root. Its
 structural fragment parent remains the enclosing inline line, so K5b keeps the

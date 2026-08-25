@@ -5,7 +5,7 @@ use std::{
     hash::Hash,
 };
 
-use layout_dom_api::{LayoutDom, NodeKind};
+use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
     ComputedValues,
     values::{
@@ -29,8 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     LiveryLayout, StylePlane,
     layout::{
-        Fragment, TablePaintModel, border_width_px, order_modified_children,
-        z_index_stacking_level,
+        Fragment, TablePaintModel, border_width_px, order_modified_children, z_index_stacking_level,
     },
     text::{TextFrame, TextSystem},
 };
@@ -50,6 +49,20 @@ pub struct LiveryPaintList {
     image_keys: HashMap<String, ImageKey>,
     #[serde(skip)]
     image_sources: HashMap<String, Vec<u8>>,
+    #[serde(skip)]
+    host_leaf_slots: Vec<HostLeafSlot>,
+}
+
+/// A custom leaf's content position in the CSS paint order.
+///
+/// Livery records this while the DOM paint stack is live. The retained host
+/// later replaces the slot with its command stream or fragment, so CSS clips,
+/// transforms, and stacking contexts apply to host-painted content too.
+#[derive(Clone, Copy, Debug)]
+struct HostLeafSlot {
+    key: u64,
+    command_index: usize,
+    origin: LayoutPoint,
 }
 
 impl LiveryPaintList {
@@ -67,6 +80,48 @@ impl LiveryPaintList {
             placement: CommonPlacement::new(rect),
             color,
         }));
+    }
+
+    /// Fill custom-leaf paint slots recorded during the CSS paint walk.
+    ///
+    /// A leaf's commands are inserted while its ancestors' clips, transforms,
+    /// and stacking context remain active. `fragment` takes precedence because
+    /// a renderer-owned lowering is the retained form of that same leaf.
+    pub fn splice_host_leaf_slots<F, G>(&mut self, mut commands: F, mut fragment: G)
+    where
+        F: FnMut(u64) -> Option<Vec<PaintCmd>>,
+        G: FnMut(u64) -> Option<u64>,
+    {
+        let slots = std::mem::take(&mut self.host_leaf_slots);
+        let mut inserted = 0usize;
+        for slot in slots {
+            let replacement = if let Some(id) = fragment(slot.key) {
+                vec![PaintCmd::PlaceRetainedFragment(
+                    paint_list_api::RetainedFragmentRef {
+                        id,
+                        origin: slot.origin,
+                    },
+                )]
+            } else if let Some(items) = commands(slot.key) {
+                if items.is_empty() {
+                    continue;
+                }
+                let mut replacement = Vec::with_capacity(items.len() + 2);
+                replacement.push(PaintCmd::PushTransform(TransformSpec {
+                    origin: slot.origin,
+                    transform: LayoutTransform::identity(),
+                    kind: TransformKind::Standard,
+                }));
+                replacement.extend(items);
+                replacement.push(PaintCmd::PopTransform);
+                replacement
+            } else {
+                continue;
+            };
+            let index = slot.command_index + inserted;
+            inserted += replacement.len();
+            self.commands.splice(index..index, replacement);
+        }
     }
 
     /// Splice host-painted commands at a retained document position.
@@ -107,6 +162,7 @@ impl LiveryPaintList {
             images: Vec::new(),
             image_keys: HashMap::new(),
             image_sources: image_sources.clone(),
+            host_leaf_slots: Vec::new(),
         }
     }
 
@@ -381,6 +437,7 @@ fn emit_node<D>(
     let mut deferred_collapsed = table
         .filter(|table| table.is_collapsed())
         .map(DeferredCollapsedBorders::new);
+    record_host_leaf_slot(dom, fragments, id, list);
     emit_children_in_stacking_order(
         dom,
         styles,
@@ -407,6 +464,49 @@ fn emit_node<D>(
     }
     if transform.is_some() {
         list.commands.push(PaintCmd::PopTransform);
+    }
+}
+
+fn custom_leaf_key<D>(dom: &D, id: D::NodeId) -> Option<u64>
+where
+    D: LayoutDom,
+{
+    if dom.kind(id) != NodeKind::Element
+        || !matches!(
+            dom.element_name(id)?.local.as_ref(),
+            "custom-leaf" | "chisel-leaf"
+        )
+    {
+        return None;
+    }
+    dom.attribute(id, &Namespace::default(), &LocalName::from("key"))?
+        .parse()
+        .ok()
+}
+
+/// Mark this replaced leaf's place in the current CSS paint phase.
+///
+/// A positioned leaf arrives through [`emit_node`], while an ordinary block
+/// leaf arrives through [`emit_normal_node`]. Both paths must record the same
+/// marker: leaving it only in the stacking-context path silently drops the
+/// normal-flow leaves used by graph canvases and grid cells.
+fn record_host_leaf_slot<D>(
+    dom: &D,
+    fragments: &LiveryLayout<D::NodeId>,
+    id: D::NodeId,
+    list: &mut LiveryPaintList,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if let Some(key) = custom_leaf_key(dom, id)
+        && let Some(fragment) = fragments.get(id)
+    {
+        list.host_leaf_slots.push(HostLeafSlot {
+            key,
+            command_index: list.commands.len(),
+            origin: LayoutPoint::new(fragment.x, fragment.y),
+        });
     }
 }
 
@@ -1108,6 +1208,94 @@ mod positioned_paint_tests {
     }
 
     #[test]
+    fn custom_leaf_stays_below_a_later_stacking_overlay_and_inside_its_clip() {
+        let document = StaticDocument::parse(
+            "<div id=canvas><custom-leaf key=7></custom-leaf><div id=card></div></div>",
+        );
+        let styles = resolve_styles(
+            &document,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+                 #canvas { position: relative; width: 80px; height: 80px; overflow: hidden; } \
+                 custom-leaf { display: block; width: 120px; height: 120px; } \
+                 #card { position: absolute; left: 10px; top: 10px; width: 50px; height: 50px; \
+                         z-index: 4; background: #ff0000; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let fragments = layout(&document, &styles, 320.0, 240.0).expect("leaf fixture layout");
+        let mut list = emit_paint_list(
+            &document,
+            &styles,
+            &fragments,
+            DeviceIntSize::new(320, 240),
+            1,
+        );
+        let blue = ColorF::new(0.0, 0.0, 1.0, 1.0);
+        list.splice_host_leaf_slots(
+            |key| {
+                assert_eq!(key, 7);
+                Some(vec![PaintCmd::DrawRect(RectItem {
+                    placement: CommonPlacement::new(LayoutRect::new(
+                        LayoutPoint::new(0.0, 0.0),
+                        LayoutPoint::new(120.0, 120.0),
+                    )),
+                    color: blue,
+                })])
+            },
+            |_| None,
+        );
+
+        let leaf = first_rect(&list, blue);
+        let card = first_rect(&list, ColorF::new(1.0, 0.0, 0.0, 1.0));
+        let clip_start = list.commands()[..leaf]
+            .iter()
+            .rposition(|command| matches!(command, PaintCmd::PushClip(_)))
+            .expect("the canvas clip encloses its custom leaf");
+        let clip_end = list.commands()[leaf + 1..]
+            .iter()
+            .position(|command| matches!(command, PaintCmd::PopClip))
+            .map(|index| leaf + index + 1)
+            .expect("the canvas clip closes after its custom leaf");
+
+        assert!(
+            clip_start < leaf && leaf < clip_end,
+            "the leaf stays in the canvas overflow stack"
+        );
+        assert!(
+            leaf < card,
+            "a custom leaf paints in its DOM stacking phase before the later card overlay"
+        );
+    }
+
+    #[test]
+    fn absolute_card_subtree_translates_its_shaped_text_with_its_fragment() {
+        let list = render(
+            "<div id=canvas><div id=layer><div id=card><div id=editor>Card controls</div></div></div></div>",
+            "html, body, div { margin: 0; padding: 0; } \
+             #canvas { position: relative; width: 520px; height: 260px; } \
+             #layer { position: absolute; left: 100px; top: 60px; width: 150px; height: 160px; } \
+             #card { position: absolute; left: 0; top: 0; width: 100%; height: 100%; \
+                     box-sizing: border-box; overflow: hidden; padding: 10px; } \
+             #editor { display: flex; flex-wrap: wrap; }",
+        );
+        let run = list
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                PaintCmd::DrawText(run) if !run.glyphs.is_empty() => Some(run),
+                _ => None,
+            })
+            .expect("the card editor's text paints");
+        let glyph = &run.glyphs[0];
+
+        assert!(
+            glyph.point.x >= 110.0 && glyph.point.y >= 70.0,
+            "the shaped text follows the absolute card's 100px, 60px translation: {:?}",
+            glyph.point
+        );
+    }
+
+    #[test]
     fn positioned_numeric_z_indices_wrap_the_normal_paint_phase() {
         let list = render(
             "<div id=host><div id=behind></div><div id=normal></div><div id=front></div></div>",
@@ -1554,6 +1742,7 @@ fn emit_normal_node<'a, D>(
         list.commands
             .push(PaintCmd::PushTransform(transform.clone()));
     }
+    record_host_leaf_slot(dom, fragments, id, list);
     if let Some(table) = fragments.table_paint_for_node(id) {
         if let Some(deferred) = deferred_collapsed.as_deref_mut() {
             deferred.flush(styles, fragments, list);

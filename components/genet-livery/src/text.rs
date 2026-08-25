@@ -580,6 +580,7 @@ impl TextSystem {
                         prepared_sources.push(source);
                     }
                     visual_commands.push(PreparedCommand {
+                        source,
                         owners: run.owners,
                         command,
                     });
@@ -1218,6 +1219,7 @@ where
                         prepared_sources.push(source_node);
                     }
                     visual_commands.push(PreparedCommand {
+                        source: source_node,
                         owners: command_owners,
                         command: PaintCmd::DrawText(TextRunItem {
                             placement: CommonPlacement::new(super::paint::bounds(&container)),
@@ -1396,16 +1398,14 @@ where
         }
     }
 
-    fn append_prepared_from(
-        &mut self,
-        source_frame: &Self,
-        mut includes: impl FnMut(Id) -> bool,
-    ) {
+    fn append_prepared_from(&mut self, source_frame: &Self, mut includes: impl FnMut(Id) -> bool) {
         for (old_group, commands) in source_frame.prepared_groups.iter().enumerate() {
             let sources = source_frame
                 .source_groups
                 .iter()
-                .filter_map(|(source, group)| (*group == old_group && includes(*source)).then_some(*source))
+                .filter_map(|(source, group)| {
+                    (*group == old_group && includes(*source)).then_some(*source)
+                })
                 .collect::<Vec<_>>();
             if sources.is_empty() {
                 continue;
@@ -1419,11 +1419,7 @@ where
         }
     }
 
-    fn copy_geometry_from(
-        &mut self,
-        source_frame: &Self,
-        mut includes: impl FnMut(Id) -> bool,
-    ) {
+    fn copy_geometry_from(&mut self, source_frame: &Self, mut includes: impl FnMut(Id) -> bool) {
         for (source, fragments) in &source_frame.inline_fragments {
             if includes(*source) {
                 self.inline_fragments.insert(*source, fragments.clone());
@@ -1458,20 +1454,72 @@ where
         for (source, value) in &source_frame.text_values {
             if includes(*source) {
                 self.text_values.insert(*source, value.clone());
-                let group = source_frame.text_groups.get(source).copied().unwrap_or_default();
+                let group = source_frame
+                    .text_groups
+                    .get(source)
+                    .copied()
+                    .unwrap_or_default();
                 self.text_groups
                     .insert(*source, group.saturating_add(group_offset));
             }
         }
-        self.next_text_group = self.next_text_group.max(
-            source_frame
-                .next_text_group
-                .saturating_add(group_offset),
-        );
+        self.next_text_group = self
+            .next_text_group
+            .max(source_frame.next_text_group.saturating_add(group_offset));
     }
 
     pub(crate) fn mark_decoration_painted(&mut self, source: Id) -> bool {
         self.painted_decorations.insert(source)
+    }
+
+    /// Move all shaped text belonging to a translated DOM subtree.
+    ///
+    /// Final relative and absolute positioning moves the fragment tree after
+    /// inline formatting has already placed glyphs in document coordinates.
+    /// Keep the retained text frame in lockstep with that fragment translation.
+    pub(crate) fn translate_subtree<D>(&mut self, dom: &D, root: Id, offset: (f32, f32))
+    where
+        D: LayoutDom<NodeId = Id>,
+    {
+        if offset.0 == 0.0 && offset.1 == 0.0 {
+            return;
+        }
+        let mut nodes = HashSet::new();
+        collect_subtree_nodes(dom, root, &mut nodes);
+        for group in &mut self.prepared_groups {
+            for prepared in group {
+                if nodes.contains(&prepared.source) {
+                    translate_paint_command(&mut prepared.command, offset);
+                }
+            }
+        }
+        for (node, fragments) in &mut self.inline_fragments {
+            if nodes.contains(node) {
+                for fragment in fragments {
+                    translate_fragment(fragment, offset);
+                }
+            }
+        }
+        for (node, lines) in &mut self.inline_line_keys {
+            if nodes.contains(node) {
+                for line in lines {
+                    *line += offset.1;
+                }
+            }
+        }
+        #[cfg(test)]
+        for (node, baselines) in &mut self.inline_baselines {
+            if nodes.contains(node) {
+                for baseline in baselines {
+                    *baseline += offset.1;
+                }
+            }
+        }
+        for cluster in &mut self.text_clusters {
+            if nodes.contains(&cluster.source) {
+                translate_fragment(&mut cluster.fragment, offset);
+            }
+        }
     }
 
     pub(crate) fn inline_fragments(&self, source: Id) -> Option<&[Fragment]> {
@@ -1795,6 +1843,7 @@ where
 
 #[derive(Clone, Debug)]
 struct PreparedCommand<Id> {
+    source: Id,
     owners: Vec<Id>,
     command: PaintCmd,
 }
@@ -1885,18 +1934,25 @@ fn append_positioned_inline_start_markers<Id>(
     Id: Copy + Eq,
 {
     for marker in inline_boxes.iter().filter(|inline_box| inline_box.marker) {
-        let Some((first_index, first_line)) = items.iter().enumerate().find_map(|(index, item)| match item {
-            ShapedItem::Text(run) if run.owners.contains(&marker.source) => {
-                Some((index, run.line_y))
-            },
-            ShapedItem::InlineBox {
-                source,
-                owners,
-                line_y,
-                ..
-            } if *source == marker.source || owners.contains(&marker.source) => Some((index, *line_y)),
-            ShapedItem::Text(_) | ShapedItem::InlineBox { .. } => None,
-        }) else {
+        let Some((first_index, first_line)) =
+            items
+                .iter()
+                .enumerate()
+                .find_map(|(index, item)| match item {
+                    ShapedItem::Text(run) if run.owners.contains(&marker.source) => {
+                        Some((index, run.line_y))
+                    },
+                    ShapedItem::InlineBox {
+                        source,
+                        owners,
+                        line_y,
+                        ..
+                    } if *source == marker.source || owners.contains(&marker.source) => {
+                        Some((index, *line_y))
+                    },
+                    ShapedItem::Text(_) | ShapedItem::InlineBox { .. } => None,
+                })
+        else {
             continue;
         };
         let Some(previous_line) = items
@@ -1915,23 +1971,26 @@ fn append_positioned_inline_start_markers<Id>(
         else {
             continue;
         };
-        items.insert(first_index, ShapedItem::InlineBox {
-            source: marker.source,
-            owners: marker.owners.clone(),
-            fragment: Fragment {
-                x: content_end,
-                y: previous_line,
-                ..Fragment::default()
+        items.insert(
+            first_index,
+            ShapedItem::InlineBox {
+                source: marker.source,
+                owners: marker.owners.clone(),
+                fragment: Fragment {
+                    x: content_end,
+                    y: previous_line,
+                    ..Fragment::default()
+                },
+                line_fragment: Fragment {
+                    x: content_end,
+                    y: previous_line,
+                    ..Fragment::default()
+                },
+                edge: false,
+                paint: true,
+                line_y: previous_line,
             },
-            line_fragment: Fragment {
-                x: content_end,
-                y: previous_line,
-                ..Fragment::default()
-            },
-            edge: false,
-            paint: true,
-            line_y: previous_line,
-        });
+        );
     }
 }
 
@@ -1960,6 +2019,33 @@ struct ShapedCluster<Id> {
 fn translate_fragment(fragment: &mut Fragment, origin: (f32, f32)) {
     fragment.x += origin.0;
     fragment.y += origin.1;
+}
+
+fn collect_subtree_nodes<D>(dom: &D, node: D::NodeId, nodes: &mut HashSet<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !nodes.insert(node) {
+        return;
+    }
+    for child in dom.dom_children(node) {
+        collect_subtree_nodes(dom, child, nodes);
+    }
+}
+
+fn translate_paint_command(command: &mut PaintCmd, offset: (f32, f32)) {
+    let PaintCmd::DrawText(run) = command else {
+        return;
+    };
+    run.placement.bounds.min.x += offset.0;
+    run.placement.bounds.max.x += offset.0;
+    run.placement.bounds.min.y += offset.1;
+    run.placement.bounds.max.y += offset.1;
+    for glyph in &mut run.glyphs {
+        glyph.point.x += offset.0;
+        glyph.point.y += offset.1;
+    }
 }
 
 fn is_inline<D>(dom: &D, styles: &StylePlane<D::NodeId>, id: D::NodeId) -> bool

@@ -1,14 +1,19 @@
 # Buckram: a CSS layout engine over reusable algorithms
 
 **Date:** 2026-07-26
-**Status:** in execution, corrected 2026-08-15. K0 through K4 are accepted.
+**Status:** in execution, corrected 2026-08-21. K0 through K4 are accepted.
 K4 closed at `610df0981a8` when K4h deleted the table compatibility bridge.
-K5 is active on `buckram-k5-positioning`, which integrated current `main` at
-`27c2c87828f`. K5a is complete and K5c is accepted; K5b is partial, while
-K5d through K5h retain open work in their execution plans. K5h already has
-real selected-root replacement and fresh-final equivalence receipts, but its
-remaining private flex/grid static-position provider still blocks closure.
-The [K6 execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md)
+The `buckram-k5-positioning` branch integrated current `main` at
+`27c2c87828f`, merged back into `main` at `1d1be5e5817` on 2026-08-20, and
+was deleted; K5 continues on `main` by ruling, unless a demonstrable
+conflict forces a branch. That merge carried positioning regressions against
+the 2026-08-10 ledger; two were repaired on 2026-08-21 and the rest are
+named in the K5 regression ledger below. K5a is complete and K5c is accepted;
+K5b is partial, while K5d through K5h retain open work in their execution
+plans. K5h already has real selected-root replacement and fresh-final
+equivalence receipts, but its remaining private flex/grid static-position
+provider still blocks closure. The
+[K6 execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md)
 is prepared and remains blocked on accepted K5h closure on `main`.
 **Decision:** Buckram owns CSS box generation, formatting contexts, intrinsic
 sizing, and fragments. Taffy is an algorithm library for flex and grid, with
@@ -1541,8 +1546,9 @@ when their named limitations are closed.
 
 K5 began after K4h exposed table wrappers, grids, cells, rows, and captions
 through their correct containing fragments. It consumes that seam and must not
-invent a second table-positioning path. The active branch integrated current
-`main` at `27c2c87828f`; that integration is not a K5 closure receipt.
+invent a second table-positioning path. The former `buckram-k5-positioning`
+branch integrated current `main` at `27c2c87828f` and merged back into `main`
+at `1d1be5e5817` on 2026-08-20; neither integration is a K5 closure receipt.
 
 [CSS Positioned Layout Level 3](https://www.w3.org/TR/css-position-3/) is the
 primary positioning authority. CSS 2.1 remains evidence for the cases it
@@ -1615,6 +1621,12 @@ positioned containing block independently of `CssBoxTree`.
 **Removal receipt:** delete the out-of-flow IFC cache guard and every
 static-position value recovered from a completed Taffy layout.
 
+- **Receipt (2026-08-21):** a Taffy block fallback now excludes absolute and
+  fixed children from flow and supplies their hypothetical in-flow position
+  as `static_location`; see the K5 regression ledger. The remaining K5b gap
+  named there is the static position of an absolute box that precedes an
+  in-flow table.
+
 #### K5c. Relative positioning
 
 - Lay a relatively positioned box in normal flow, then apply its used logical
@@ -1623,6 +1635,10 @@ static-position value recovered from a completed Taffy layout.
 - Accumulate ink and scrollable overflow from the offset geometry and keep
   paint, hit testing, accessibility, and CSSOM on the same fragments.
 - Cover relatively positioned table parts through the K4h seam.
+- **Receipt (2026-08-21):** block-axis percentage insets resolve against the
+  containing block's specified block size and are `auto` when it is
+  indefinite, on both the generic and the table-part route. Relative
+  captions remain an open K5c item; see the K5 regression ledger.
 
 #### K5d. Absolute and fixed layout
 
@@ -1694,6 +1710,137 @@ overflow, paint, hit-testing, and scrolling fixtures cover their integration.
 A mutation matrix proves full-layout equivalence and stable box and fragment
 identities outside each dirty root. Taffy's position enum no longer selects
 browser positioning semantics.
+
+#### K5 regression ledger (2026-08-21)
+
+The K5 integration was never measured against the last pre-K5d `main`
+ledger. Doing so on 2026-08-21 found the regressions below. All figures are
+absolute Livery reftest results from the release runner; the ledgers live
+under `testing/genet/wpt-ledger/2026-08-21_anonymous_table_remeasure/`
+(`provenance.txt` names each binary's tree). Stylo comparison is no longer
+available: the 2026-08-21 retirement removed that renderer from the runner.
+
+| Directory | 2026-08-10 `main` (pre-K5d) | 2026-08-12 K5 branch | 2026-08-21 `main` before repair | after repair |
+|---|---:|---:|---:|---:|
+| `css/css-position` | 40 / 78 | 20 / 98 | 22 / 96 | **37 / 81** |
+| `css/CSS2/abspos` | 8 / 16 | 11 / 13 | 13 / 11 | 13 / 11 |
+| `css/CSS2/tables` | 154 / 108 | 145 / 117 | 147 / 115 | **165 / 97** |
+| `table-anonymous-objects-059..098` | 0 / 40 | 0 / 40 | 0 / 40 | **10 / 30** |
+
+**Repaired.** Two defects, both with Buckram or Livery fixtures:
+
+1. *An absolutely positioned box consumed normal-flow space whenever a table
+   sat anywhere under its block ancestors.* A table grid establishes an
+   independent formatting context that Buckram's block formatter does not
+   admit; the wrapper deferred to Taffy, each ancestor's
+   `child_margin_state` propagated the deferral, and the root fell back too.
+   The scratch formatter presented every box to Taffy as
+   `position: relative`, so Taffy laid the absolute box out in flow and
+   pushed its siblings down, while K5d then moved the fragment but not its
+   flow consequences. The Taffy block fallback now presents its own absolute
+   and fixed children as `Position::Absolute` for the duration of its run
+   (`with_out_of_flow_children_excluded` in the algorithm adapter), so Taffy
+   excludes them and its `static_location` is the K5b source for that
+   parent; each child's backend role is restored afterwards. Giving every
+   out-of-flow box that role permanently was tried first and rejected by the
+   full-`css` ratchet: it reached the child's own Taffy leaf layout and
+   regressed `css-sizing/aspect-ratio/abspos-008/-014` and three
+   `css-ruby/abs-in-ruby-*` files. The Buckram owned path, the flex/grid
+   provider, and the inline route are unchanged. Receipts:
+   `positioned_block_children.rs`
+   (`absolute_block_takes_no_flow_space_whatever_it_contains` and the
+   document-session variants), `table-anonymous-objects` 0→10/40, seven
+   `height-width-table-001*` files, `separated-border-model-003a`,
+   `position-absolute-center-003/004`, and five
+   `position-relative-table-*-top*` files; no file lost.
+2. *Block-axis percentage insets on relatively positioned boxes resolved
+   against the containing block's inline size.* `BlockStyle::relative_offset`
+   now takes the containing block's specified block size and treats a
+   percentage as `auto` when that size is indefinite (CSS 2.1 §9.3.2); the
+   table-part route does the same against the row's or table's specified
+   height. A stretched flex item's cross size and a grid item's area count
+   as definite (Flexbox §9.8, Grid §6.6), and a percentage block size is
+   only as definite as the size it resolves against (CSS 2.1 §10.5); the
+   ratchet demanded both through
+   `css-flexbox/position-relative-percentage-top-002/-003`. Receipts:
+   `relative_block_percentages_need_a_definite_containing_block_size`
+   in Buckram, `relative_block_percentage_insets_resolve_only_against_a_specified_height`
+   in Livery, and `position-relative-006` through `-013` (8 files).
+
+**Full-`css` ratchet for the two repairs** (`post-fix-4-final` against the
+same-day pre-fix runner, `css_reftest_livery_prefix.json`; the pre-fix run is
+within one file of the 2026-08-16 ledger, so intervening commits are not in
+this delta): 10,148 → 10,340 passing of 36,311 files, 232 gains, 40 losses,
+0 errors. Gains by directory: 47 `css-grid`, 43 `CSS2`, 38 `css-gaps`, 30
+`css-flexbox`, 20 `css-sizing`, 15 `css-position`, 13 `css-text`, and 26
+across nine others. The 40 losses are all files whose absolutely positioned
+boxes sit under a Taffy block fallback and fall into three explained groups:
+
+- 33 `css-shapes/shape-outside/*` files are false passes exposed. Their
+  references draw the expected picture with absolutely positioned boxes
+  inside a `position: absolute; writing-mode: vertical-rl` container; before
+  the repair the test and the reference rendered identically wrong, and now
+  the reference renders its float shape without those boxes while the test
+  side is unchanged. The reference side names a K5d gap: absolute boxes with
+  logical insets in a vertical writing mode inside an absolute container do
+  not render.
+- `css-sizing/aspect-ratio/abspos-008` and `-014`: an absolute box whose
+  intrinsic contribution K5d does not admit (aspect-ratio) now takes Taffy's
+  absolute-pass measurement instead of the in-flow measurement K5d relied
+  on, and the max-height transfer through the ratio is lost.
+- `css-ruby/abs-in-ruby-*` (3), `css-fonts/font-feature-resolution-001/-002`,
+  and `css-text/white-space/pre-wrap-leading-spaces-014`: absolute text boxes
+  used as reference markers measure differently under Taffy's absolute pass
+  than under the in-flow pass, by a few pixels. Not reduced further.
+
+The seven non-shapes losses are real regressions of this repair. Whether
+they are accepted against the 232 gains is an open ruling; either way they
+stay in this ledger until K5d sizes unadmitted positioned boxes itself.
+
+**Still regressed against 2026-08-10**, with the attribution the renders
+support:
+
+- `position-relative-table-{tbody,tfoot,thead,tr}-left[-absolute-child]`,
+  `position-relative-table-thead-top[-absolute-child]`,
+  `position-relative-table-tbody-top-absolute-child`,
+  `position-relative-table-tr-top` (12 files): an absolutely positioned box
+  with an `auto` block inset that precedes an in-flow table takes its static
+  position *after* the table. Pinned by
+  `absolute_box_before_a_table_keeps_its_static_position_above_the_table`.
+- `position-relative-table-caption`: a relatively positioned caption does not
+  move. Captions are excluded from the generic relative route and not moved
+  by the table-part route. Pinned by `relative_caption_moves_by_its_inset`.
+- `position-absolute-in-inline-margin-top`: the static position of an
+  absolute box inside a block-in-inline continuation ignores that block's
+  margin. Not pinned.
+- `css/CSS2/abspos/static-inside-inline-block` and
+  `abspos-containing-block-initial-009e`: not attributed.
+- `fixed-table-layout-017` through `-020`: regressed between 2026-08-10 and
+  the 2026-08-12 K5 branch; not attributed.
+
+Net gains over 2026-08-10 are also real and are listed in the ledger diff:
+eleven `css/css-position` files, seven `css/CSS2/abspos` files, and fifteen
+`css/CSS2/tables` files now pass that did not then.
+
+**Red receipts on `main`.** The Livery lib-test binary could not be linked on
+this tree until 2026-08-21 (`LNK1318`: its PDB exceeds the 4 GB limit; the
+suite runs with `--config profile.dev.package.genet-livery.debug=1`). Linked
+that way, three tests the K5 plans cite as receipts fail at `c3b57758a69`,
+and fail identically with the 2026-08-21 repairs reverted:
+`document::tests::positioned_inset_mutation_reuses_a_stable_fragment_subtree`
+(K5h: the retained inset path translates the fragment subtree but not the
+text frame, so the text paints at the old inset), and both tests in
+`tests/grid_abspos.rs` (K5b: `static_grid_parent_uses_content_static_rectangle_unless_it_is_the_containing_block`
+expects 281 and gets 297; `probe_positioned_grid_items` places the second
+item at x 23 instead of 223). They are not attributed to a commit here; the
+K5b and K5h status lines must not be read as current until they are green.
+
+The anonymous-table family's residual 30 (4 anti-aliasing-only, 6 reference
+`<col>` background paint gap, 20 anonymous first-row cell placement) is not a
+K5 defect; it is recorded in the fullweb cutover register.
+
+**Stop:** a K5 gate does not close while a file in this ledger is red without
+a named owner or an accepted deferral.
 
 ### K6. Fragmentation
 

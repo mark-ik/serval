@@ -3,9 +3,9 @@
 **Date:** 2026-08-15
 
 **Status:** Planning complete. Engine implementation is blocked on accepted K5h
-closure on `main`. The active K5 branch integrated current `main` at
-`27c2c87828f`, but K5h remains in progress. Documentation and corpus census may
-proceed while K5 runs.
+closure on `main`. The K5 branch merged into `main` at `1d1be5e5817` on
+2026-08-20 with K5h still in progress, so there is no K5h closure commit to
+record yet. Documentation and corpus census may proceed while K5 runs.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K6.
@@ -35,10 +35,11 @@ Stylo comparison remains an interoperability ledger. It is not K6 acceptance.
 ## Handoff state
 
 This plan was prepared against the moving `buckram-k5-positioning` worktree on
-2026-08-15. That branch integrated current `main` at `27c2c87828f`. The merge
-keeps Livery and K5 development coherent, but it does not make an interim K5
-commit a K6 base. The executor records the accepted K5h closure commit after it
-lands on `main` and regenerates this inventory before K6a code begins.
+2026-08-15. That branch integrated current `main` at `27c2c87828f`, merged
+into `main` at `1d1be5e5817` on 2026-08-20, and was then deleted. Neither
+merge makes an interim K5 commit a K6 base. The executor records the accepted
+K5h closure commit after it lands on `main` and regenerates this inventory
+before K6a code begins.
 
 K4 is closed by the accepted K4h bridge deletion at `610df0981a8`. The master
 plan now records that closure. K6 consumes the accepted K4 table model and does

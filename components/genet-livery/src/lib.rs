@@ -37,8 +37,8 @@ pub use document::{ClickOutcome, LayoutDamage, LayoutDamageKind, LinkTarget, Liv
 pub use dom::{ElementRef, InteractionStates, SelectorTree};
 pub use invalidation::{AttributeSnapshot, ElementSnapshot, IncrementalStyle, RestyleStats};
 pub use layout::{
-    BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test, layout,
-    hit_test_with_scroll, layout_with_text_system, resolve_container_query_styles,
+    BlockAlgorithmCounts, LayoutError, LiveryLayout, content_box_size, hit_test,
+    hit_test_with_scroll, layout, layout_with_text_system, resolve_container_query_styles,
     resolve_container_query_styles_with_images, resolve_container_relative_styles,
     used_value_context,
 };

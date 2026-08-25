@@ -10,9 +10,15 @@ table-root case, and falls back to a fresh complete layout outside that
 boundary. A background-only reuse admission first rules out a newly introduced
 transition or keyframe; a clock advance invalidates that paint cache and goes
 through ordinary retained layout so text shaping samples the same animated
-style as paint. The active K5 branch integrated current `main` at
-`27c2c87828f`; the merged Buckram and Genet Livery library suites pass 220/220
-and 193/193. This integration does not close K5h.
+style as paint. The K5 branch integrated current `main` at `27c2c87828f` and
+merged into `main` at `1d1be5e5817` on 2026-08-20; at the `27c2c87828f`
+integration the merged Buckram and Genet Livery library suites passed 220/220
+and 193/193. Neither merge closes K5h. On 2026-08-21 the Livery lib suite
+(197 tests, linked with reduced debuginfo) is red on
+`positioned_inset_mutation_reuses_a_stable_fragment_subtree`: the retained
+inset path moves the fragment subtree but not the text frame. The master
+plan's K5 regression ledger records it; the receipt below is not current
+until it is green again.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5h.

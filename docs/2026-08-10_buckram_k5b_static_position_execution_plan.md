@@ -113,6 +113,28 @@ its owning line fragment, and K4h table structural fragments emit wrapper and
 part records from their own logical rectangles. The remaining K5b work is the
 unadmitted source-context matrix, not a second grid-area implementation.
 
+**Fallback correction, 2026-08-21.** Until this date the scratch formatter
+received every box as Taffy `position: relative`, so a block parent that fell
+back to Taffy laid its absolute children out in flow: the box consumed
+normal-flow space, its siblings moved, and its recorded static position was
+that in-flow location. Any table under a block triggers that fallback through
+the whole ancestor chain. The fallback now presents its own absolute and fixed
+children to Taffy as `Position::Absolute` only while it runs
+(`with_out_of_flow_children_excluded`), so Taffy excludes them and its
+`static_location` is the hypothetical in-flow position K5b needs; the
+children's backend role is restored afterwards, and the Buckram owned block
+path, the flex/grid provider, and the inline route are unchanged. A permanent
+role change was measured and rejected: it reached each child's own leaf
+layout and regressed aspect-ratio and ruby absolute-positioning files.
+Receipts are in `positioned_block_children.rs` and the master plan's K5
+regression ledger. The ledger also names the remaining block-source gap: an
+absolute box with an `auto` block inset that precedes an in-flow table takes
+its static position after the table. It further records that both
+`tests/grid_abspos.rs` receipts cited above are red on `main` at
+`c3b57758a69`, with or without the fallback correction; the direct-grid
+paragraphs above describe the intended behavior, not the measured one, until
+they pass again.
+
 K5b does not calculate final absolute or fixed geometry. K5d now consumes the
 wrapper, caption, row-group, row, and cell records through the shared
 used-geometry path; row-group, row, and cell records use a zero-track anchor

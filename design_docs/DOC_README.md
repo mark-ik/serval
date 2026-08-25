@@ -1,0 +1,123 @@
+# genet Documentation Index
+
+The canonical index for `genet/design_docs/`, per [`DOC_POLICY.md`](DOC_POLICY.md)
+§6. If any other index disagrees with this file, this file wins.
+
+Founded 2026-08-24, when the canonical policy core was distributed across the
+workspace and the component documents for inker, nematic and verso-tile were
+repatriated here from mere.
+
+> **Read the policy's "Two doc homes" section first.** This repository also has
+> a flat `docs/` directory of ~163 older engine documents that this index does
+> **not** cover and that no index covers. That split is deliberate and
+> temporary; migrating it is open, unscheduled work. New documents go here, not
+> there.
+
+## Required reading order
+
+1. The root [`README.md`](../README.md) — what genet is.
+2. [`DOC_POLICY.md`](DOC_POLICY.md) — the shared core plus this repo's addendum,
+   including the `docs/` boundary and the smolweb split.
+3. The area root you are working in, below.
+
+## fleece — reader extraction
+
+- [fleece_standards_adoption_plan](2026-08-24_fleece_standards_adoption_plan.md)
+  (**planned 2026-08-24**: give Fleece 0.2 one canonical DOM-text coordinate
+  space, W3C Text Quote and Text Position selectors on article blocks, and an
+  optional Text Fragment projection. A serialized Terra-owned API seam feeds
+  disjoint Luna/Terra conformance, encoding, lowering, and consumer packets;
+  later independent phases harden JSON-LD/Microdata fidelity, Open Graph and
+  document links, and HTML table semantics without moving annotation or
+  source-identity authority into Fleece.)
+
+## inker_docs/ — the engine controller
+
+- [engine_picker_and_pluggability_plan](inker_docs/implementation_strategy/2026-06-15_engine_picker_and_pluggability_plan.md)
+  (**Phases 0–3 shipped + verified** — route → activate → manage → pick. The
+  user-facing engine **picker** as an inker affordance, distinct from verso's
+  flip; the three-level pluggability model (in-build / registered-but-off /
+  active via `is_available = contains && enabled`), a global default with
+  per-session override, no-handler fallback, local-file ingestion, and the two
+  content tiers as the two registries — glass/black-box, wasm/native.
+  **Remaining**: Phase 4 (no-handler and local files), Phase 2b (per-host and
+  per-session), Phase 5 (the verso flip). Its progress log names meerkat, which
+  was deleted 2026-07-18; read those as the Turnstone/mere hosts.)
+
+## nematic_docs/ — the smolweb engine and knot composition
+
+- [polyglot_knot_design](nematic_docs/implementation_strategy/2026-05-08_polyglot_knot_design.md)
+  (**implemented 2026-05-08/09**, retained as design rationale and format spec:
+  extends the `nematic.knot` note format from frontmatter-plus-markdown to a
+  polyglot composition where every other `nematic.*` protocol's blocks embed
+  fenced-code-block-style and round-trip back to the source protocol's syntax.)
+- [knot_evaluation_export_plan](nematic_docs/implementation_strategy/2026-06-12_knot_evaluation_export_plan.md)
+  (**reconciled and complete for the first production capability set,
+  2026-07-27**: `include` transclusion fences over errand's smolweb transports,
+  `lua eval` / `rhai eval` script fences via the `BlockEvaluator` slice,
+  `to_gemtext` and gophermap exporters, the Knot production effect bridge,
+  Turnstone consent, and the sealed attributable resolve cache. The production
+  Knot adapter supplies anonymous HTTP(S) plus read-only Gemini, Gopher,
+  Finger, Spartan, Nex and Guppy; Titan stays excluded.)
+- [polyglot_block_resolver_plan](nematic_docs/implementation_strategy/2026-06-13_polyglot_block_resolver_plan.md)
+  (**planned**: collapse the three separate passes — `expand_fenced_blocks`,
+  `resolve_transclusions`, `evaluate_blocks`, each with its own dispatch and
+  trust handling — into one registry that resolves *any* fenced block by its
+  tag, and the new resolver kinds that makes pluggable: graph/eidetic query
+  blocks, diagram DSLs, sandboxed wasm blocks.)
+- [native_smolweb_rendering_plan](nematic_docs/implementation_strategy/2026-06-27_native_smolweb_rendering_plan.md)
+  (**planning (with Mark)**: render every smolweb format natively and
+  idiomatically rather than flattening it into one model. The **two-family
+  model** — document family (djot/markdown/reader-HTML, native `Block`) versus
+  smolweb family (gemtext/gopher/feed/scroll/misfin, a per-format AST, views
+  shared with the host because they avoid `Block`). Its §5 crate-home diagram
+  is superseded by the smolweb home decision; crate homes read through that.)
+- [smolweb_fidelity_plan](nematic_docs/implementation_strategy/2026-07-01_smolweb_fidelity_plan.md)
+  (**planning (with Mark)**: recovers the spec-faithfulness the flavour-neutral
+  pipeline collapses. Key code-verified finding — **the losses are at the parse
+  ASTs, not the box rendering**, so the fix is richer ASTs rather than a
+  different render regime. Three workstreams: enrich the parse ASTs; produce
+  trust at the transport and carry it through the native lane, which currently
+  drops `DocumentTrustState`; and bespoke rendering only where the line model
+  is not box-shaped, gopher's fixed-width typed column being the clear case.
+  **WS1's enrichment lands wherever the grammar lives at the time** — if a
+  grammar has moved to a smolweb crate, the enrichment goes there.)
+
+## verso_docs/ — rendering surfaces and the engine flip
+
+- [compatibility_view_charter](verso_docs/technical_architecture/2026-06-10_compatibility_view_charter.md)
+  (**charter decision (Mark, 2026-06-10)**, pre-implementation: verso reborn as
+  the engine-flip / compatibility-view seam — portable view-state carriers and
+  the one-hop invariant, minted at the first genet→scrying flip.)
+- [genet_scrying_flipcarrier_plan](verso_docs/implementation_strategy/2026-06-23_genet_scrying_flipcarrier_plan.md)
+  (**design resolved; `verso-api` plus the genet donor primitives shipped
+  2026-06-23**: the first flip. Crate layering is `verso-api` plus per-engine
+  `verso-genet`/`verso-scry`/`verso-weld`/`verso-graft` adapters plus a `verso`
+  orchestrator, host-wired and feature-gated with no engine stacking;
+  `FlipDonor`/`FlipBack`/`FlipReceiver` encode no-chain in the types. Gated on
+  the inker picker's Phase 4.)
+
+## Working principles
+
+- **New docs go in `design_docs/`, never `docs/`.** See the policy's two-homes
+  section for why both exist and what it would cost to merge them.
+- **The smolweb boundary is spec versus use.** What a protocol *is* belongs to
+  the smolweb workspace; what a browser *does with it* belongs here. Cite
+  across the boundary by path — relative links do not survive it.
+- **Prefer runtime verification to extended static tracing.** If runtime
+  diagnostics are blocked, surface that blocker early rather than continuing to
+  read code.
+- **State the exact standards layer implemented.** Selector values are not the
+  Web Annotation Protocol; JSON-LD syntax harvesting is not JSON-LD processing;
+  raw URL attributes are not resolved links. Keep these boundaries visible in
+  public types and receipts.
+- **Parallel work needs commit fences as well as file fences.** Pin one base,
+  give each worker a disposable detached worktree and disjoint write paths,
+  inspect staged paths before committing, and remove the worktree immediately
+  after integration.
+
+## Status
+
+Founded 2026-08-24. The active index now covers one flat Fleece plan plus eight
+documents in three area roots. The engine corpus in `docs/` is not indexed here
+and is not governed by the policy yet.

@@ -140,11 +140,17 @@ fn overflow_shorthand_expands_one_or_two_axis_values() {
 
     assert_eq!(
         values("overflow: hidden"),
-        vec![("overflow-x", Overflow::Hidden), ("overflow-y", Overflow::Hidden)]
+        vec![
+            ("overflow-x", Overflow::Hidden),
+            ("overflow-y", Overflow::Hidden)
+        ]
     );
     assert_eq!(
         values("overflow: clip auto"),
-        vec![("overflow-x", Overflow::Clip), ("overflow-y", Overflow::Auto)]
+        vec![
+            ("overflow-x", Overflow::Clip),
+            ("overflow-y", Overflow::Auto)
+        ]
     );
 }
 

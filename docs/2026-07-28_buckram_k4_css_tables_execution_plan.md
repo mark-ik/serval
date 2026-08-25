@@ -1306,6 +1306,20 @@ was not the whole family. The remaining 30 return to K4 as anonymous-table
 construction and sizing work; PH owns only the already-correct HTML-side
 declarations.
 
+**Correction, 2026-08-21:** nothing returned to K4, which was already closed
+at `610df0981a8` when the paragraph above was written. The 10/40 did not
+survive the K5 integration merge: from 2026-08-16 the family measured 0/40
+on `main`, and renders showed identical table geometry with the
+`position: absolute` overlay laid out in flow. That was a K5 fallback defect
+(a table anywhere under a block made the whole ancestor chain fall back to
+Taffy, which treated absolute boxes as in-flow); its repair restored 10/40 on
+2026-08-21. The residual 30 are 4 anti-aliasing-only diffs (059, 060, 063,
+064), 6 files whose reference `<col>` backgrounds do not paint (093 through
+098), and 20 with anonymous first-row cells stacked in column 0 or duplicated
+rows. Those 20 are the construction defect this section names; they are
+recorded in the fullweb cutover register as K4-model debt with no open gate.
+K4 stays closed.
+
 Its reach is wider than these 40: `border`, `width`, `bgcolor`, and `align`
 are the same mechanism, and every one of them is currently ignored.
 

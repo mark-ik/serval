@@ -61,6 +61,58 @@ pub struct StaticViewerOutcome {
     pub size: (u32, u32),
 }
 
+/// The single-content history owned by Pelt's present host. P3 moves this
+/// state into one entry per tile, but even the first adapter must not let a
+/// document session silently replace itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NavigationState {
+    entries: Vec<String>,
+    active: usize,
+}
+
+impl NavigationState {
+    fn new(address: String) -> Self {
+        Self {
+            entries: vec![address],
+            active: 0,
+        }
+    }
+
+    fn current(&self) -> &str {
+        &self.entries[self.active]
+    }
+
+    fn commit(&mut self, address: String) {
+        self.entries.truncate(self.active + 1);
+        self.entries.push(address);
+        self.active = self.entries.len() - 1;
+    }
+
+    fn back(&mut self) -> Option<&str> {
+        (self.active > 0).then(|| {
+            self.active -= 1;
+            self.current()
+        })
+    }
+
+    fn previous(&self) -> Option<&str> {
+        self.active
+            .checked_sub(1)
+            .map(|index| self.entries[index].as_str())
+    }
+
+    fn forward(&mut self) -> Option<&str> {
+        (self.active + 1 < self.entries.len()).then(|| {
+            self.active += 1;
+            self.current()
+        })
+    }
+
+    fn next(&self) -> Option<&str> {
+        self.entries.get(self.active + 1).map(String::as_str)
+    }
+}
+
 /// Presentation-level keyboard scroll actions. Engine adapters translate this
 /// vocabulary at their boundary; the window shell does not own a layout engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,7 +470,7 @@ pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
 #[cfg(feature = "livery")]
 pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
     use genet_documents::LiverySessionEngine;
-    use inker::{SessionRegistry, SessionSpawnRequest};
+    use inker::{SessionEngine, SessionSpawnRequest};
     use netrender::Scene;
 
     if matches!(config.profile.windowing, WindowingMode::Headless) {
@@ -430,19 +482,19 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
         });
     }
     let (width, height) = config.size.unwrap_or((800, 600));
-    let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
-    registry.register(Box::new(LiverySessionEngine::new(
-        genet_documents::LocalFetcher,
-    )));
+    let engine: Box<dyn SessionEngine<Scene>> =
+        Box::new(LiverySessionEngine::new(genet_documents::LocalFetcher));
     let request = SessionSpawnRequest::new(&config.url).with_viewport(width, height);
-    let session = registry
-        .spawn(inker::routing::ENGINE_GENET_LIVERY, &request)
+    let session = engine
+        .spawn(&request)
         .map_err(|error| format!("could not spawn engine genet.livery: {error}"))?;
     run_headed_with(
         config,
         SessionViewerContent {
             session,
             posture: None,
+            replacement_engine: Some(engine),
+            primary_pointer_down: false,
         },
     )
 }
@@ -492,13 +544,25 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
                 lineage.tool, lineage.version, lineage.selector, score, lineage.block_count
             )
         });
-    run_headed_with(config, SessionViewerContent { session, posture })
+    run_headed_with(
+        config,
+        SessionViewerContent {
+            session,
+            posture,
+            replacement_engine: None,
+            primary_pointer_down: false,
+        },
+    )
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
 struct SessionViewerContent {
     session: Box<dyn inker::DocumentSession<netrender::Scene>>,
     posture: Option<String>,
+    /// The P1 single-document replacement factory. P2 lifts this out of the
+    /// desktop adapter into the embeddable host core.
+    replacement_engine: Option<Box<dyn inker::SessionEngine<netrender::Scene>>>,
+    primary_pointer_down: bool,
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
@@ -534,6 +598,100 @@ impl windowed::ViewerContent for SessionViewerContent {
 
     fn click_at(&mut self, x: f32, y: f32) -> bool {
         matches!(self.session.click_at(x, y), inker::SessionClick::Handled)
+    }
+
+    fn handle_input(
+        &mut self,
+        input: genet_host_api::HostInput,
+    ) -> Vec<genet_host_api::HostEffect> {
+        use genet_host_api::{ButtonState, HostEffect, HostInput, PointerButton};
+
+        fn click_effect(click: inker::SessionClick) -> Option<HostEffect> {
+            match click {
+                inker::SessionClick::Navigate(target) => Some(HostEffect::Navigate { target }),
+                inker::SessionClick::Submit(target) => Some(HostEffect::Submit { target }),
+                inker::SessionClick::Handled => Some(HostEffect::Redraw),
+                inker::SessionClick::Miss => None,
+            }
+        }
+
+        match input {
+            HostInput::PointerMoved { x, y } if self.primary_pointer_down => self
+                .session
+                .pointer_move(x, y)
+                .then_some(HostEffect::Redraw)
+                .into_iter()
+                .collect(),
+            HostInput::PointerButton {
+                button: PointerButton::Primary,
+                state: ButtonState::Pressed,
+                x,
+                y,
+            } => {
+                self.primary_pointer_down = true;
+                click_effect(self.session.pointer_down(x, y))
+                    .into_iter()
+                    .collect()
+            },
+            HostInput::PointerButton {
+                button: PointerButton::Primary,
+                state: ButtonState::Released,
+                x,
+                y,
+            } => {
+                if !std::mem::take(&mut self.primary_pointer_down) {
+                    return Vec::new();
+                }
+                click_effect(self.session.pointer_up(x, y))
+                    .into_iter()
+                    .collect()
+            },
+            other => {
+                let redraw = match other {
+                    HostInput::Wheel { x, y, dx, dy } => self.session.scroll_at(x, y, dx, dy),
+                    HostInput::Key { key, modifiers } => {
+                        let key = match key {
+                            genet_host_api::HostKey::ArrowUp => {
+                                Some(inker::SessionScrollKey::LineUp)
+                            },
+                            genet_host_api::HostKey::ArrowDown => {
+                                Some(inker::SessionScrollKey::LineDown)
+                            },
+                            genet_host_api::HostKey::PageUp => {
+                                Some(inker::SessionScrollKey::PageUp)
+                            },
+                            genet_host_api::HostKey::PageDown => {
+                                Some(inker::SessionScrollKey::PageDown)
+                            },
+                            genet_host_api::HostKey::Home => Some(inker::SessionScrollKey::Home),
+                            genet_host_api::HostKey::End => Some(inker::SessionScrollKey::End),
+                            genet_host_api::HostKey::Space if modifiers.shift => {
+                                Some(inker::SessionScrollKey::PageUp)
+                            },
+                            genet_host_api::HostKey::Space => {
+                                Some(inker::SessionScrollKey::PageDown)
+                            },
+                            _ => None,
+                        };
+                        key.is_some_and(|key| self.session.scroll_for_key(key))
+                    },
+                    _ => false,
+                };
+                redraw.then_some(HostEffect::Redraw).into_iter().collect()
+            },
+        }
+    }
+
+    fn replace_session(&mut self, address: &str, width: u32, height: u32) -> Result<(), String> {
+        let engine = self
+            .replacement_engine
+            .as_ref()
+            .ok_or_else(|| "this document route cannot create a replacement session".to_string())?;
+        self.session = engine
+            .spawn(&inker::SessionSpawnRequest::new(address).with_viewport(width, height))
+            .map_err(|error| error.to_string())?;
+        self.primary_pointer_down = false;
+        Ok(())
     }
 
     fn posture(&self) -> Option<&str> {
@@ -576,7 +734,12 @@ pub(crate) mod windowed {
     use winit::keyboard::{Key, NamedKey};
     use winit::window::{Window, WindowId};
 
-    use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
+    use genet_host_api::{
+        ButtonState, HostEffect, HostInput, HostKey, InputModifiers, NavigationCommand,
+        PointerButton,
+    };
+
+    use super::{NavigationState, StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
 
     /// A document the viewer can present: render at a size, scroll, click, and (for
     /// scripted content) advance time-based work. Livery-backed static and scripted
@@ -608,6 +771,35 @@ pub(crate) mod windowed {
         fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool;
         /// Handle a left click at a scene point; return whether the document scrolled.
         fn click_at(&mut self, x: f32, y: f32) -> bool;
+        /// Translate a host-neutral event without exposing the concrete document
+        /// type to the winit adapter. Engines that can distinguish a link or
+        /// submission override this and return the corresponding host effect.
+        fn handle_input(&mut self, input: HostInput) -> Vec<HostEffect> {
+            let redraw = match input {
+                HostInput::Wheel { x, y, dx, dy } => self.scroll_at(x, y, dx, dy),
+                HostInput::PointerButton {
+                    button: PointerButton::Primary,
+                    state: ButtonState::Pressed,
+                    x,
+                    y,
+                } => self.click_at(x, y),
+                HostInput::Key { key, modifiers } => {
+                    host_key_to_scroll(key, modifiers).is_some_and(|key| self.scroll_for_key(key))
+                },
+                _ => false,
+            };
+            redraw.then_some(HostEffect::Redraw).into_iter().collect()
+        }
+        /// Replace the retained session after the host resolved an address.
+        /// Content that is not a browsable document keeps the default refusal.
+        fn replace_session(
+            &mut self,
+            _address: &str,
+            _width: u32,
+            _height: u32,
+        ) -> Result<(), String> {
+            Err("this Pelt content does not support document navigation".to_string())
+        }
         /// Advance time-based work (script timers + GC) to `now_ms`; return whether
         /// more is pending, so the shell keeps requesting frames. Static content has
         /// none — the default returns `false` and the shell redraws only on input.
@@ -641,6 +833,43 @@ pub(crate) mod windowed {
         })
     }
 
+    fn host_key_to_scroll(key: HostKey, modifiers: InputModifiers) -> Option<ViewerScrollKey> {
+        Some(match key {
+            HostKey::ArrowUp => ViewerScrollKey::Up,
+            HostKey::ArrowDown => ViewerScrollKey::Down,
+            HostKey::ArrowLeft => ViewerScrollKey::Left,
+            HostKey::ArrowRight => ViewerScrollKey::Right,
+            HostKey::PageUp => ViewerScrollKey::PageUp,
+            HostKey::PageDown => ViewerScrollKey::PageDown,
+            HostKey::Home => ViewerScrollKey::Home,
+            HostKey::End => ViewerScrollKey::End,
+            HostKey::Space if modifiers.shift => ViewerScrollKey::PageUp,
+            HostKey::Space => ViewerScrollKey::PageDown,
+            _ => return None,
+        })
+    }
+
+    fn host_key_from_winit(key: &Key) -> HostKey {
+        match key {
+            Key::Named(NamedKey::ArrowUp) => HostKey::ArrowUp,
+            Key::Named(NamedKey::ArrowDown) => HostKey::ArrowDown,
+            Key::Named(NamedKey::ArrowLeft) => HostKey::ArrowLeft,
+            Key::Named(NamedKey::ArrowRight) => HostKey::ArrowRight,
+            Key::Named(NamedKey::PageUp) => HostKey::PageUp,
+            Key::Named(NamedKey::PageDown) => HostKey::PageDown,
+            Key::Named(NamedKey::Home) => HostKey::Home,
+            Key::Named(NamedKey::End) => HostKey::End,
+            Key::Named(NamedKey::Enter) => HostKey::Enter,
+            Key::Named(NamedKey::Escape) => HostKey::Escape,
+            Key::Named(NamedKey::Tab) => HostKey::Tab,
+            Key::Named(NamedKey::Backspace) => HostKey::Backspace,
+            Key::Named(NamedKey::Delete) => HostKey::Delete,
+            Key::Named(NamedKey::Space) => HostKey::Space,
+            Key::Character(value) => HostKey::Character(value.to_string()),
+            other => HostKey::Other(format!("{other:?}")),
+        }
+    }
+
     /// The viewer application: a [`ViewerContent`] document plus the window + shared
     /// present stack that drives it. Generic over the content so the static and
     /// scripted profiles share the shell.
@@ -663,6 +892,7 @@ pub(crate) mod windowed {
         /// Last cursor position in physical px (winit's `MouseInput` carries none),
         /// so a click can hit-test the document for in-page link navigation.
         cursor: (f32, f32),
+        navigation: NavigationState,
         /// Frame-loop clock origin, supplying the `now_ms` virtual clock that drives
         /// scripted content's timers (a no-op for static content).
         start: Instant,
@@ -670,6 +900,7 @@ pub(crate) mod windowed {
 
     impl<C: ViewerContent> ViewerApp<C> {
         pub(crate) fn new(config: StaticViewerConfig, doc: C) -> Self {
+            let navigation = NavigationState::new(config.url.clone());
             Self {
                 width: config.size.map_or(800, |size| size.0),
                 height: config.size.map_or(600, |size| size.1),
@@ -681,13 +912,14 @@ pub(crate) mod windowed {
                 redraws: 0,
                 shift: false,
                 cursor: (0.0, 0.0),
+                navigation,
                 start: Instant::now(),
             }
         }
 
         pub(crate) fn outcome(&self) -> StaticViewerOutcome {
             StaticViewerOutcome {
-                url: self.config.url.clone(),
+                url: self.navigation.current().to_owned(),
                 created_window: self.window.is_some(),
                 redraws: self.redraws,
                 size: if self.window.is_some() {
@@ -699,8 +931,10 @@ pub(crate) mod windowed {
         }
 
         fn window_title(&self) -> String {
-            let mut title =
-                super::pelt_window_title(self.doc.title().as_deref(), Some(&self.config.url));
+            let mut title = super::pelt_window_title(
+                self.doc.title().as_deref(),
+                Some(self.navigation.current()),
+            );
             if let Some(posture) = self.doc.posture() {
                 title.push_str(" — ");
                 title.push_str(posture);
@@ -770,6 +1004,112 @@ pub(crate) mod windowed {
         fn request_redraw(&self) {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
+            }
+        }
+
+        fn resolve_address(&self, target: &str) -> String {
+            #[cfg(any(feature = "livery", feature = "reader"))]
+            {
+                genet_documents::resolve_href(self.navigation.current(), target)
+            }
+            #[cfg(not(any(feature = "livery", feature = "reader")))]
+            {
+                target.to_owned()
+            }
+        }
+
+        fn replace_at(&mut self, address: &str) -> bool {
+            let (width, height) = self.logical_size();
+            match self.doc.replace_session(address, width, height) {
+                Ok(()) => {
+                    self.request_redraw();
+                    true
+                },
+                Err(error) => {
+                    eprintln!("[pelt-viewer] navigation to {address} failed: {error}");
+                    false
+                },
+            }
+        }
+
+        fn sync_window_title(&self) {
+            if let Some(window) = self.window.as_ref() {
+                window.set_title(&self.window_title());
+            }
+        }
+
+        fn navigate(&mut self, target: &str) {
+            let address = self.resolve_address(target);
+            if self.replace_at(&address) {
+                self.navigation.commit(address);
+                self.sync_window_title();
+            }
+        }
+
+        fn handle_navigation_command(&mut self, command: NavigationCommand) {
+            match command {
+                NavigationCommand::Address(target) => self.navigate(&target),
+                NavigationCommand::Reload => {
+                    let address = self.navigation.current().to_owned();
+                    if self.replace_at(&address) {
+                        self.sync_window_title();
+                    }
+                },
+                NavigationCommand::Stop => {
+                    // P1 sessions are synchronous. The command is deliberately
+                    // accepted now so async engines can attach cancellation in P2.
+                },
+                NavigationCommand::Back => {
+                    if let Some(address) = self.navigation.previous().map(str::to_owned)
+                        && self.replace_at(&address)
+                    {
+                        let _ = self.navigation.back();
+                        self.sync_window_title();
+                    }
+                },
+                NavigationCommand::Forward => {
+                    if let Some(address) = self.navigation.next().map(str::to_owned)
+                        && self.replace_at(&address)
+                    {
+                        let _ = self.navigation.forward();
+                        self.sync_window_title();
+                    }
+                },
+            }
+        }
+
+        fn consume_effects(&mut self, effects: Vec<HostEffect>) {
+            for effect in effects {
+                match effect {
+                    HostEffect::Redraw => self.request_redraw(),
+                    HostEffect::Cursor(_) => {
+                        // Cursor application remains platform chrome; P6 gives it
+                        // a visible status surface. Keeping this semantic effect
+                        // here prevents a document lane from seeing winit types.
+                    },
+                    HostEffect::Navigate { target } => self.navigate(&target),
+                    HostEffect::Submit { target } => {
+                        // A session has named an endpoint, but P1's Livery lane
+                        // does not yet expose editable values or a serialized
+                        // body. Do not silently turn this into a GET navigation.
+                        eprintln!(
+                            "[pelt-viewer] form submission to {target} needs a document-provided body"
+                        );
+                    },
+                }
+            }
+        }
+
+        /// The one semantic ingress for the desktop adapter. Native events are
+        /// lowered before this point, and history commands never reach a
+        /// concrete document session.
+        fn dispatch_host_input(&mut self, input: HostInput) {
+            match input {
+                HostInput::Navigation(command) => self.handle_navigation_command(command),
+                input => {
+                    let effects = self.doc.handle_input(input);
+                    self.consume_effects(effects);
+                },
             }
         }
     }
@@ -853,9 +1193,12 @@ pub(crate) mod windowed {
                     // moved (not at an edge).
                     let (dx, dy) = wheel_delta_from_winit(delta);
                     let (dx, dy) = (dx / self.scale_factor, dy / self.scale_factor);
-                    if self.doc.scroll_at(self.cursor.0, self.cursor.1, dx, dy) {
-                        self.request_redraw();
-                    }
+                    self.dispatch_host_input(HostInput::Wheel {
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                        dx,
+                        dy,
+                    });
                 },
                 WindowEvent::ModifiersChanged(mods) => {
                     self.shift = mods.state().shift_key();
@@ -865,16 +1208,33 @@ pub(crate) mod windowed {
                         super::logical_position(position.x as f32, self.scale_factor),
                         super::logical_position(position.y as f32, self.scale_factor),
                     );
+                    self.dispatch_host_input(HostInput::PointerMoved {
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                    });
                 },
                 WindowEvent::MouseInput { state, button, .. } => {
                     // A left click on an in-page link (`<a href="#id">`) scrolls its
                     // target into view (anchor-fragment navigation, scope doc rule 5).
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        let (x, y) = self.cursor;
-                        if self.doc.click_at(x, y) {
-                            self.request_redraw();
-                        }
-                    }
+                    let button = match button {
+                        MouseButton::Left => PointerButton::Primary,
+                        MouseButton::Middle => PointerButton::Auxiliary,
+                        MouseButton::Right => PointerButton::Secondary,
+                        MouseButton::Back => PointerButton::Other(8),
+                        MouseButton::Forward => PointerButton::Other(9),
+                        MouseButton::Other(value) => PointerButton::Other(value),
+                    };
+                    let state = match state {
+                        ElementState::Pressed => ButtonState::Pressed,
+                        ElementState::Released => ButtonState::Released,
+                    };
+                    let (x, y) = self.cursor;
+                    self.dispatch_host_input(HostInput::PointerButton {
+                        button,
+                        state,
+                        x,
+                        y,
+                    });
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
                     // The keyboard scroll defaults (scope doc rule 5): map the key to
@@ -882,16 +1242,156 @@ pub(crate) mod windowed {
                     // gate yet — pelt has no focusable fields in V1/V2; add the "focus
                     // not in an editable" check when it gains them.)
                     if event.state == ElementState::Pressed {
-                        if let Some(key) = scroll_key_from_winit(&event.logical_key, self.shift) {
-                            if self.doc.scroll_for_key(key) {
-                                self.request_redraw();
-                            }
-                        }
+                        self.dispatch_host_input(HostInput::Key {
+                            key: host_key_from_winit(&event.logical_key),
+                            modifiers: InputModifiers {
+                                shift: self.shift,
+                                ..InputModifiers::default()
+                            },
+                        });
                     }
                 },
                 WindowEvent::RedrawRequested => self.render(event_loop),
                 _ => {},
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "livery"))]
+mod browser_loop_tests {
+    use std::any::Any;
+    use std::sync::{Arc, Mutex};
+
+    use genet_host_api::{ButtonState, HostInput, NavigationCommand, PointerButton};
+    use inker::{
+        DocumentSession, SessionClick, SessionEngine, SessionError, SessionLink, SessionScrollKey,
+        SessionSpawnRequest,
+    };
+    use netrender::Scene;
+
+    use super::windowed::{ViewerApp, ViewerContent};
+    use super::{SessionViewerContent, StaticViewerConfig, WindowingMode};
+    use genet_host_api::EngineProfile;
+
+    #[derive(Clone)]
+    struct RecordingEngine(Arc<Mutex<Vec<String>>>);
+
+    impl SessionEngine<Scene> for RecordingEngine {
+        fn engine_id(&self) -> &str {
+            "test.browser-loop"
+        }
+
+        fn spawn(
+            &self,
+            request: &SessionSpawnRequest,
+        ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
+            self.0.lock().unwrap().push(request.address.clone());
+            Ok(Box::new(TestSession))
+        }
+    }
+
+    struct TestSession;
+
+    impl DocumentSession<Scene> for TestSession {
+        fn frame(&mut self, width: u32, height: u32) -> Scene {
+            Scene::new(width, height)
+        }
+
+        fn scroll_by(&mut self, _dx: f32, _dy: f32) -> bool {
+            false
+        }
+
+        fn scroll_for_key(&mut self, _key: SessionScrollKey) -> bool {
+            false
+        }
+
+        fn click_at(&mut self, _x: f32, _y: f32) -> SessionClick {
+            SessionClick::Navigate("next.html".to_string())
+        }
+
+        fn links(&self) -> Vec<SessionLink> {
+            Vec::new()
+        }
+
+        fn as_any_ref(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn host_consumes_relative_navigation_and_replaces_history_sessions() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let engine: Box<dyn SessionEngine<Scene>> = Box::new(RecordingEngine(requests.clone()));
+        let initial = "https://example.test/docs/start.html";
+        let session = engine
+            .spawn(&SessionSpawnRequest::new(initial).with_viewport(800, 600))
+            .expect("initial session");
+        let content = SessionViewerContent {
+            session,
+            posture: None,
+            replacement_engine: Some(engine),
+            primary_pointer_down: false,
+        };
+        let config = StaticViewerConfig::new(EngineProfile::Livery, WindowingMode::Headed, initial);
+        let mut app = ViewerApp::new(config, content);
+
+        app.dispatch_host_input(HostInput::PointerButton {
+            button: PointerButton::Primary,
+            state: ButtonState::Pressed,
+            x: 10.0,
+            y: 10.0,
+        });
+        // The press navigates and replaces the session. The paired release is
+        // not a click on the replacement page.
+        app.dispatch_host_input(HostInput::PointerButton {
+            button: PointerButton::Primary,
+            state: ButtonState::Released,
+            x: 10.0,
+            y: 10.0,
+        });
+        assert_eq!(
+            app.navigation.current(),
+            "https://example.test/docs/next.html"
+        );
+        app.dispatch_host_input(HostInput::Navigation(NavigationCommand::Address(
+            "https://next.test/next.html".to_string(),
+        )));
+        assert_eq!(app.navigation.current(), "https://next.test/next.html");
+        assert_eq!(app.window_title(), "Pelt — next.test");
+
+        app.dispatch_host_input(HostInput::Navigation(NavigationCommand::Back));
+        assert_eq!(
+            app.navigation.current(),
+            "https://example.test/docs/next.html"
+        );
+        app.dispatch_host_input(HostInput::Navigation(NavigationCommand::Back));
+        assert_eq!(app.navigation.current(), initial);
+        app.dispatch_host_input(HostInput::Navigation(NavigationCommand::Forward));
+        assert_eq!(
+            app.navigation.current(),
+            "https://example.test/docs/next.html"
+        );
+        app.dispatch_host_input(HostInput::Navigation(NavigationCommand::Forward));
+        assert_eq!(app.navigation.current(), "https://next.test/next.html");
+        app.dispatch_host_input(HostInput::Navigation(NavigationCommand::Reload));
+
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                "https://example.test/docs/start.html",
+                "https://example.test/docs/next.html",
+                "https://next.test/next.html",
+                "https://example.test/docs/next.html",
+                "https://example.test/docs/start.html",
+                "https://example.test/docs/next.html",
+                "https://next.test/next.html",
+                "https://next.test/next.html",
+            ]
+        );
     }
 }

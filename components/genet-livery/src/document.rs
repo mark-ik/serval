@@ -1,6 +1,9 @@
 //! Retained Livery document ownership.
 
-use std::{collections::{HashMap, HashSet}, hash::Hash};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
 use layout_dom_api::{DomMutation, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind};
 use livery::cascade::DeclaredValue;
@@ -20,9 +23,8 @@ use crate::{
     emit_paint_list_with_text_system_scrolled_with_images, hit_test_with_scroll,
     layout::{
         RetainedRootFormatting, StickyScrollport, layout_retained_formatting_root,
-        layout_with_text_system, retained_table_owner,
-        resolve_container_query_styles,
-        resolve_container_query_styles_with_images,
+        layout_with_text_system, resolve_container_query_styles,
+        resolve_container_query_styles_with_images, retained_table_owner,
     },
     resolve_styles,
 };
@@ -558,9 +560,10 @@ where
             && self.layout_dirty
             && self.transitions.is_empty()
             && self.keyframe_animation.is_none()
-            && let Some(node) = self.layout.as_ref().and_then(|layout| {
-                styles.only_positioned_insets_changed(&layout.styles)
-            })
+            && let Some(node) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| styles.only_positioned_insets_changed(&layout.styles))
             && self.layout.as_mut().is_some_and(|layout| {
                 layout.fragments.reposition_stable_positioned_subtree(
                     &self.dom,
@@ -596,9 +599,10 @@ where
             && self.layout_dirty
             && self.transitions.is_empty()
             && self.keyframe_animation.is_none()
-            && let Some(node) = self.layout.as_ref().and_then(|layout| {
-                styles.only_positioned_leaf_geometry_changed(&layout.styles)
-            })
+            && let Some(node) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| styles.only_positioned_leaf_geometry_changed(&layout.styles))
             && self.layout.as_mut().is_some_and(|layout| {
                 layout.fragments.resize_positioned_leaf(
                     &self.dom,
@@ -634,9 +638,10 @@ where
             && self.layout_dirty
             && self.transitions.is_empty()
             && self.keyframe_animation.is_none()
-            && self.layout.as_ref().is_some_and(|layout| {
-                styles.differs_only_in_background_color(&layout.styles)
-            })
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| styles.differs_only_in_background_color(&layout.styles))
         {
             self.layout
                 .as_mut()
@@ -663,7 +668,8 @@ where
             let previous_styles = previous.styles.clone();
             let previous_fragments = previous.fragments.clone();
             let dom_text_order = text_sources_in_dom_order(&self.dom);
-            let mut candidate = retained_table_owner(previous_fragments.boxes(), root).unwrap_or(root);
+            let mut candidate =
+                retained_table_owner(previous_fragments.boxes(), root).unwrap_or(root);
             loop {
                 let mut replaced_nodes = nodes_in_subtree(&self.dom, candidate);
                 replaced_nodes.extend(previous_fragments.generated_subtree_nodes(candidate));
@@ -700,9 +706,8 @@ where
                             self.layout_generation = self.layout_generation.saturating_add(1);
                             #[cfg(test)]
                             {
-                                self.retained_root_relayout_generation = self
-                                    .retained_root_relayout_generation
-                                    .saturating_add(1);
+                                self.retained_root_relayout_generation =
+                                    self.retained_root_relayout_generation.saturating_add(1);
                             }
                             self.clamp_scroll();
                             self.clamp_nested_scroll();
@@ -710,13 +715,13 @@ where
                             return self.paint_active_layout(width, height);
                         }
                         break;
-                    }
+                    },
                     RetainedRootFormatting::PromoteParent => {
                         let Some(parent) = self.dom.parent(candidate) else {
                             break;
                         };
                         candidate = parent;
-                    }
+                    },
                     RetainedRootFormatting::Unsupported => break,
                 }
             }
@@ -739,8 +744,10 @@ where
             fragments.reconcile_identifiers(&previous.fragments);
         }
         let replacement_roots = self.last_layout_damage.as_ref().and_then(|damage| {
-            (!damage.full_document && damage.kind == LayoutDamageKind::Dom && !damage.roots.is_empty())
-                .then(|| damage.roots.clone())
+            (!damage.full_document
+                && damage.kind == LayoutDamageKind::Dom
+                && !damage.roots.is_empty())
+            .then(|| damage.roots.clone())
         });
         if let (Some(mut previous), Some(roots)) = (previous, replacement_roots)
             && previous
@@ -860,9 +867,11 @@ where
             .as_ref()
             .or(self.identity_source.as_ref())
             .is_some_and(|layout| {
-                layout.fragments.boxes().iter().any(|(_, css_box)| {
-                    css_box.positioning == buckram::PositioningScheme::Sticky
-                })
+                layout
+                    .fragments
+                    .boxes()
+                    .iter()
+                    .any(|(_, css_box)| css_box.positioning == buckram::PositioningScheme::Sticky)
             })
     }
 
@@ -1914,7 +1923,11 @@ mod tests {
             .fragments
             .table_paint_for_node(node)
             .expect("retained table paint model");
-        for source in paint.fragments().iter().filter_map(|fragment| fragment.box_id) {
+        for source in paint
+            .fragments()
+            .iter()
+            .filter_map(|fragment| fragment.box_id)
+        {
             assert!(
                 !layout
                     .fragments
@@ -2092,12 +2105,10 @@ mod tests {
         let initial = "<html><body><div id=flex><div id=child>child</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=flex style=\"width: 180px\"><div id=child>child</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #flex { display: flex; width: 100px; height: 40px; background: red; } \
                  #child { width: 40px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2156,12 +2167,10 @@ mod tests {
         let initial = "<html><body><div id=flex><div id=existing>existing</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=flex><div id=existing>existing</div><div id=inserted>inserted</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #flex { display: flex; width: 180px; height: 40px; background: red; } \
                  #existing, #inserted { width: 60px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2232,12 +2241,10 @@ mod tests {
         let initial = "<html><body><div id=grid><div id=existing>existing</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=grid><div id=existing>existing</div><div id=inserted>inserted</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #grid { display: grid; grid-template-columns: 60px 60px; width: 180px; height: 40px; background: red; } \
                  #existing, #inserted { width: 60px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2308,12 +2315,10 @@ mod tests {
         let initial = "<html><body><div id=flex><div id=existing></div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=flex><div id=existing></div><div id=inserted>inside</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #flex { display: flex; width: 180px; height: 40px; background: red; } \
                  #existing, #inserted { width: 60px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2400,12 +2405,10 @@ mod tests {
         let initial = "<html><body><div id=grid><div id=existing></div></div><div id=outside></div></body></html>";
         let final_document = "<html><body><div id=grid><div id=existing></div><div id=inserted></div></div><div id=outside></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #grid { display: grid; grid-template-columns: 60px 60px; width: 180px; height: 40px; background: red; } \
                  #existing, #inserted { width: 60px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2463,12 +2466,10 @@ mod tests {
         let initial = "<html><body><div id=flex><div id=removed>remove me</div><div id=survives>survives</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=flex><div id=survives>survives</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #flex { display: flex; width: 180px; height: 40px; background: red; } \
                  #removed, #survives { width: 60px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2521,13 +2522,11 @@ mod tests {
         let initial = "<html><body><div id=flex><div id=existing></div></div><div id=outside></div></body></html>";
         let final_document = "<html><body><div id=flex><div id=existing></div><div id=inserted></div></div><div id=outside></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #flex { display: flex; flex-direction: column; width: 100px; height: 40px; background: red; } \
                  #existing { flex-shrink: 0; width: 100px; height: 20px; background: blue; } \
                  #inserted { flex-shrink: 0; width: 100px; height: 100px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2580,15 +2579,13 @@ mod tests {
         let initial = "<html><body><div id=host><div id=flex><div id=existing></div></div><div id=after></div></div><div id=outside></div></body></html>";
         let final_document = "<html><body><div id=host><div id=flex><div id=existing></div><div id=inserted></div></div><div id=after></div></div><div id=outside></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #host { width: 160px; height: 120px; background: red; } \
                  #flex { display: flex; flex-direction: column; width: 100px; background: blue; } \
                  #existing { flex-shrink: 0; width: 100px; height: 20px; } \
                  #inserted { flex-shrink: 0; width: 100px; height: 60px; } \
                  #after { width: 100px; height: 20px; background: yellow; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2653,16 +2650,14 @@ mod tests {
         let initial = "<html><body><div id=host><div id=parent><div id=flex><div id=existing></div></div><div id=after></div></div></div><div id=outside></div></body></html>";
         let final_document = "<html><body><div id=host><div id=parent><div id=flex><div id=existing></div><div id=inserted></div></div><div id=after></div></div></div><div id=outside></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #host { width: 160px; height: 160px; background: red; } \
                  #parent { width: 160px; background: orange; } \
                  #flex { display: flex; flex-direction: column; width: 100px; background: blue; } \
                  #existing { flex-shrink: 0; width: 100px; height: 20px; } \
                  #inserted { flex-shrink: 0; width: 100px; height: 60px; } \
                  #after { width: 100px; height: 20px; background: yellow; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2732,13 +2727,11 @@ mod tests {
         let initial = "<html><body><table id=table><tbody><tr id=row><td id=first></td></tr></tbody></table><div id=outside></div></body></html>";
         let final_document = "<html><body><table id=table><tbody><tr id=row><td id=first></td><td id=second></td></tr></tbody></table><div id=outside></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2805,14 +2798,12 @@ mod tests {
         let initial = "<html><body><table id=table><caption id=caption>caption</caption><tbody><tr id=row><td id=first></td></tr></tbody></table><div id=outside></div></body></html>";
         let final_document = "<html><body><table id=table><caption id=caption>caption</caption><tbody><tr id=row><td id=first></td><td id=second></td></tr></tbody></table><div id=outside></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
                  caption { display: table-caption; width: 120px; height: 20px; background: red; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2875,13 +2866,11 @@ mod tests {
         let initial = "<html><body><table id=changed><tbody><tr id=row><td id=first></td></tr></tbody></table><table id=other><tbody><tr><td id=other-cell></td></tr></tbody></table></body></html>";
         let final_document = "<html><body><table id=changed><tbody><tr id=row><td id=first></td><td id=second></td></tr></tbody></table><table id=other><tbody><tr><td id=other-cell></td></tr></tbody></table></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  table { display: table; table-layout: fixed; width: 120px; height: 80px; border-spacing: 0; background: blue; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 40px; height: 20px; background: yellow; } \
-                 #other-cell { position: absolute; top: 0; }",
-            ])
+                 #other-cell { position: absolute; top: 0; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -2897,11 +2886,15 @@ mod tests {
         let local_generation = retained.retained_root_relayout_generation;
         assert_table_paint_sources_are_live(&retained, changed);
         assert_table_paint_sources_are_live(&retained, other);
-        let initial_ledger = retained.table_shadow_ledger().expect("completed table ledger");
-        assert_eq!(initial_ledger.assigned, 2, "one contribution per live table");
+        let initial_ledger = retained
+            .table_shadow_ledger()
+            .expect("completed table ledger");
         assert_eq!(
-            initial_ledger.honored,
-            1,
+            initial_ledger.assigned, 2,
+            "one contribution per live table"
+        );
+        assert_eq!(
+            initial_ledger.honored, 1,
             "the zero-contribution table has no cell track to verify",
         );
         assert!(
@@ -2938,15 +2931,22 @@ mod tests {
             table_wrapper_fragment_id(&retained, changed),
             changed_wrapper_before,
         );
-        assert_eq!(table_wrapper_fragment_id(&retained, other), other_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&retained, other),
+            other_wrapper_before
+        );
         assert_eq!(generated_ids(&retained, other), other_before);
         assert_table_paint_sources_are_live(&retained, changed);
         assert_table_paint_sources_are_live(&retained, other);
-        let retained_ledger = retained.table_shadow_ledger().expect("retained table ledger");
-        assert_eq!(retained_ledger.assigned, 2, "aggregate keeps both table entries");
+        let retained_ledger = retained
+            .table_shadow_ledger()
+            .expect("retained table ledger");
         assert_eq!(
-            retained_ledger.honored,
-            1,
+            retained_ledger.assigned, 2,
+            "aggregate keeps both table entries"
+        );
+        assert_eq!(
+            retained_ledger.honored, 1,
             "the untouched zero-contribution table has no cell track to verify",
         );
         assert!(
@@ -2976,16 +2976,14 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { height: 80px; overflow-y: auto; } \
                  #spacer { height: 120px; } \
                  table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 100px; } \
                  #sticky { position: sticky; top: 0; height: 20px; background: red; } \
-                 #tail { height: 180px; background: blue; }",
-            ]),
+                 #tail { height: 180px; background: blue; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("initial table frame");
@@ -3012,7 +3010,10 @@ mod tests {
         );
 
         assert!(document.scroll_at(10.0, 10.0, 0.0, 150.0));
-        assert_eq!(document.element_scroll().get(&scroller), Some(&(0.0, 150.0)));
+        assert_eq!(
+            document.element_scroll().get(&scroller),
+            Some(&(0.0, 150.0))
+        );
         document.frame(160, 120).expect("scrolled table frame");
 
         let active = document.sticky_layout(document.layout.as_ref().expect("retained layout"));
@@ -3023,7 +3024,10 @@ mod tests {
         assert_eq!(sticky_rect.y, 150.0);
         assert_eq!(sticky_rect.y - document.element_scroll()[&scroller].1, 0.0);
         assert_eq!(generated_ids(&document, sticky), ids_before);
-        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&document, table),
+            table_wrapper_before
+        );
         assert_eq!(
             document
                 .layout
@@ -3044,16 +3048,14 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { height: 80px; overflow-y: auto; } \
                  #spacer { height: 120px; } \
                  table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 100px; } \
                  #sticky-row { position: sticky; top: 0; height: 20px; background: red; } \
-                 #tail-cell { height: 180px; background: blue; }",
-            ]),
+                 #tail-cell { height: 180px; background: blue; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("initial table frame");
@@ -3098,7 +3100,10 @@ mod tests {
         assert_eq!(row_rect.y - document.element_scroll()[&scroller].1, 0.0);
         assert_eq!(generated_ids(&document, sticky_row), row_ids_before);
         assert_eq!(generated_ids(&document, sticky_cell), cell_ids_before);
-        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&document, table),
+            table_wrapper_before
+        );
         assert_eq!(
             document
                 .layout
@@ -3119,8 +3124,7 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { height: 80px; overflow-y: auto; } \
                  #spacer { height: 120px; } \
                  table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
@@ -3128,8 +3132,7 @@ mod tests {
                  td { display: table-cell; width: 100px; } \
                  #sticky-group { position: sticky; top: 0; } \
                  #sticky-row { height: 20px; background: red; } \
-                 #tail-cell { height: 180px; background: blue; }",
-            ]),
+                 #tail-cell { height: 180px; background: blue; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("initial table frame");
@@ -3182,7 +3185,10 @@ mod tests {
         assert_eq!(generated_ids(&document, sticky_group), group_ids_before);
         assert_eq!(generated_ids(&document, sticky_row), row_ids_before);
         assert_eq!(generated_ids(&document, sticky_cell), cell_ids_before);
-        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&document, table),
+            table_wrapper_before
+        );
         assert_eq!(
             document
                 .layout
@@ -3203,8 +3209,7 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { height: 80px; overflow-y: auto; } \
                  #spacer { height: 120px; } \
                  table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
@@ -3212,8 +3217,7 @@ mod tests {
                  tr { display: table-row; } td { display: table-cell; width: 100px; } \
                  #sticky-group { position: sticky; top: 0; } \
                  #sticky-row { height: 20px; background: red; } \
-                 #tail-cell { height: 180px; background: blue; }",
-            ]),
+                 #tail-cell { height: 180px; background: blue; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("initial table frame");
@@ -3257,7 +3261,10 @@ mod tests {
         assert_eq!(generated_ids(&document, sticky_group), group_ids_before);
         assert_eq!(generated_ids(&document, sticky_row), row_ids_before);
         assert_eq!(generated_ids(&document, sticky_cell), cell_ids_before);
-        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&document, table),
+            table_wrapper_before
+        );
         assert_eq!(
             document
                 .layout
@@ -3278,8 +3285,7 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { height: 80px; overflow-y: auto; } \
                  #spacer { height: 120px; } \
                  table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
@@ -3287,8 +3293,7 @@ mod tests {
                  tr { display: table-row; } td { display: table-cell; width: 100px; } \
                  #tail-cell { height: 180px; background: blue; } \
                  #sticky-group { position: sticky; bottom: 0; } \
-                 #sticky-row { height: 20px; background: red; }",
-            ]),
+                 #sticky-row { height: 20px; background: red; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("initial table frame");
@@ -3334,7 +3339,10 @@ mod tests {
         assert_eq!(generated_ids(&document, sticky_group), group_ids_before);
         assert_eq!(generated_ids(&document, sticky_row), row_ids_before);
         assert_eq!(generated_ids(&document, sticky_cell), cell_ids_before);
-        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&document, table),
+            table_wrapper_before
+        );
         assert_eq!(
             document
                 .layout
@@ -3355,8 +3363,7 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { height: 80px; overflow-y: auto; } \
                  #spacer { height: 120px; } \
                  table { display: table; table-layout: fixed; width: 100px; border-spacing: 0; } \
@@ -3364,8 +3371,7 @@ mod tests {
                  tbody { display: table-row-group; } tr { display: table-row; } \
                  td { display: table-cell; width: 100px; } \
                  #sticky-caption { position: sticky; top: 0; height: 20px; background: red; } \
-                 #tail-cell { height: 180px; background: blue; }",
-            ]),
+                 #tail-cell { height: 180px; background: blue; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("initial table frame");
@@ -3393,7 +3399,10 @@ mod tests {
         assert_eq!(caption_rect.y, 150.0);
         assert_eq!(caption_rect.y - document.element_scroll()[&scroller].1, 0.0);
         assert_eq!(generated_ids(&document, caption), caption_ids_before);
-        assert_eq!(table_wrapper_fragment_id(&document, table), table_wrapper_before);
+        assert_eq!(
+            table_wrapper_fragment_id(&document, table),
+            table_wrapper_before
+        );
         assert_eq!(
             document
                 .layout
@@ -3410,12 +3419,10 @@ mod tests {
         let initial = "<html><body><div id=first><div id=first-child>one</div></div><div id=second><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=first style=\"width: 160px\"><div id=first-child>one</div></div><div id=second style=\"width: 180px\"><div id=second-child>two</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #first, #second { display: flex; width: 100px; height: 30px; background: red; } \
                  #first-child, #second-child { width: 40px; height: 20px; background: blue; } \
-                 #outside { width: 80px; height: 20px; background: green; }",
-            ])
+                 #outside { width: 80px; height: 20px; background: green; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -3471,14 +3478,12 @@ mod tests {
         let initial = "<html><body><div id=flex><div id=child>child</div></div><table id=table><tbody><tr><td>cell</td></tr></tbody></table></body></html>";
         let final_document = "<html><body><div id=flex style=\"width: 180px\"><div id=child>child</div></div><table id=table><tbody><tr><td>cell</td></tr></tbody></table></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #flex { display: flex; width: 100px; height: 40px; background: red; } \
                  #child { width: 40px; height: 20px; background: blue; } \
                  table { display: table; border-spacing: 0; background: green; } \
                  tbody { display: table-row-group; } tr { display: table-row; } \
-                 td { display: table-cell; width: 60px; height: 20px; background: yellow; }",
-            ])
+                 td { display: table-cell; width: 60px; height: 20px; background: yellow; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -3519,8 +3524,7 @@ mod tests {
     #[test]
     fn background_color_mutation_repaints_without_a_geometry_pass() {
         let initial = "<html><body><div id=target>target</div></body></html>";
-        let final_document =
-            "<html><body><div id=target style=\"background-color: blue\">target</div></body></html>";
+        let final_document = "<html><body><div id=target style=\"background-color: blue\">target</div></body></html>";
         let styles = || {
             StyleSet::cambium(&[
                 "html, body { margin: 0; padding: 0; } #target { width: 100px; height: 20px; }",
@@ -3568,12 +3572,10 @@ mod tests {
         let initial = "<html><body><div id=containing><div id=positioned>target</div></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=containing><div id=positioned style=\"left: 70px\">target</div></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #containing { position: relative; width: 200px; height: 60px; } \
                  #positioned { position: absolute; left: 10px; top: 5px; width: 40px; height: 20px; } \
-                 #outside { width: 80px; height: 20px; }",
-            ])
+                 #outside { width: 80px; height: 20px; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -3587,11 +3589,7 @@ mod tests {
         let layout_generation = retained.layout_generation();
 
         retained.mutate_dom(|dom| {
-            dom.set_attribute(
-                by_id(dom, "positioned"),
-                attr("style"),
-                "left: 70px",
-            );
+            dom.set_attribute(by_id(dom, "positioned"), attr("style"), "left: 70px");
         });
         let retained_paint = retained.frame(240, 120).expect("repositioned frame");
 
@@ -3604,7 +3602,10 @@ mod tests {
             .and_then(|layout| layout.fragments.get(positioned))
             .map(|fragment| fragment.physical_rect())
             .expect("repositioned fragment");
-        assert_eq!((rect.x, rect.y, rect.width, rect.height), (70.0, 5.0, 40.0, 20.0));
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (70.0, 5.0, 40.0, 20.0)
+        );
         assert!(
             retained.identity_source.is_none() && !retained.layout_dirty,
             "the positioned fragment subtree was translated without a fresh layout",
@@ -3625,14 +3626,13 @@ mod tests {
 
     #[test]
     fn positioned_inset_reuse_updates_nested_scroll_range() {
-        let initial = "<html><body><div id=scroller><div id=positioned>out of flow</div></div></body></html>";
+        let initial =
+            "<html><body><div id=scroller><div id=positioned>out of flow</div></div></body></html>";
         let final_document = "<html><body><div id=scroller><div id=positioned style=\"top: 300px\">out of flow</div></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #scroller { position: relative; width: 100px; height: 80px; overflow-y: auto; } \
-                 #positioned { position: absolute; left: 0; top: 200px; width: 100px; height: 20px; }",
-            ])
+                 #positioned { position: absolute; left: 0; top: 200px; width: 100px; height: 20px; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -3645,11 +3645,7 @@ mod tests {
         let layout_generation = retained.layout_generation();
 
         retained.mutate_dom(|dom| {
-            dom.set_attribute(
-                by_id(dom, "positioned"),
-                attr("style"),
-                "top: 300px",
-            );
+            dom.set_attribute(by_id(dom, "positioned"), attr("style"), "top: 300px");
         });
         retained.frame(160, 120).expect("repositioned frame");
 
@@ -3677,12 +3673,10 @@ mod tests {
         let initial = "<html><body><div id=containing><canvas id=positioned width=\"80\" height=\"40\"></canvas></div><div id=outside>outside</div></body></html>";
         let final_document = "<html><body><div id=containing><canvas id=positioned width=\"80\" height=\"40\" style=\"left: 70px; width: 120px; height: 60px\"></canvas></div><div id=outside>outside</div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #containing { position: relative; width: 200px; height: 80px; } \
                  #positioned { position: absolute; left: 10px; top: 5px; } \
-                 #outside { width: 80px; height: 20px; }",
-            ])
+                 #outside { width: 80px; height: 20px; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -3713,7 +3707,10 @@ mod tests {
             .and_then(|layout| layout.fragments.get(positioned))
             .map(|fragment| fragment.physical_rect())
             .expect("resized fragment");
-        assert_eq!((rect.x, rect.y, rect.width, rect.height), (70.0, 5.0, 120.0, 60.0));
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (70.0, 5.0, 120.0, 60.0)
+        );
 
         let mut fresh_dom = ScriptedDom::from_serialized_document(final_document);
         let mut fresh_mutations = Vec::new();
@@ -3733,11 +3730,9 @@ mod tests {
         let initial = "<html><body><div id=scroller><canvas id=positioned width=\"100\" height=\"20\"></canvas></div></body></html>";
         let final_document = "<html><body><div id=scroller><canvas id=positioned width=\"100\" height=\"20\" style=\"top: 200px; width: 120px; height: 60px\"></canvas></div></body></html>";
         let styles = || {
-            StyleSet::cambium(&[
-                "html, body, div { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
                  #scroller { position: relative; width: 100px; height: 80px; overflow-y: auto; } \
-                 #positioned { position: absolute; left: 0; top: 100px; }",
-            ])
+                 #positioned { position: absolute; left: 0; top: 100px; }"])
         };
         let mut dom = ScriptedDom::from_serialized_document(initial);
         let mut initial_mutations = Vec::new();
@@ -3942,11 +3937,9 @@ mod tests {
         dom.drain_mutations(&mut initial_mutations);
         let mut document = LiveryDocument::new(
             dom,
-            StyleSet::cambium(&[
-                "html, body { margin: 0; padding: 0; } \
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } \
                  #scroller { position: relative; width: 100px; height: 80px; overflow-y: auto; } \
-                 #positioned { position: absolute; top: 200px; width: 100px; height: 20px; }",
-            ]),
+                 #positioned { position: absolute; top: 200px; width: 100px; height: 20px; }"]),
             Device::screen(160.0, 120.0),
         );
         document.frame(160, 120).expect("positioned overflow frame");

@@ -59,6 +59,18 @@ impl FlowLengthAuto {
             Self::Value(value) => Some(value.resolve(containing_inline_size)),
         }
     }
+
+    /// Resolve against a block-axis basis that may be indefinite. A
+    /// percentage with no definite basis behaves as `auto`, which is how CSS
+    /// treats a block-axis inset whose containing block has no specified
+    /// block size.
+    pub fn resolve_block(self, containing_block_size: Option<f32>) -> Option<f32> {
+        match self {
+            Self::Auto => None,
+            Self::Value(value) if value.percentage == 0.0 => Some(value.px),
+            Self::Value(value) => containing_block_size.map(|basis| value.resolve(basis)),
+        }
+    }
 }
 
 /// A CSS preferred, minimum, or maximum size before intrinsic querying.
@@ -292,24 +304,36 @@ impl BlockStyle {
     /// Resolve relative positioning after normal-flow placement.
     ///
     /// The static flow rectangle remains unchanged; a specified start inset
-    /// wins over the opposing end inset, whose sign is reversed. Percentages
-    /// stay tied to the containing block's inline basis until this point.
-    pub fn relative_offset(self, containing_inline_size: f32) -> LogicalOffset {
+    /// wins over the opposing end inset, whose sign is reversed. Inline-axis
+    /// percentages resolve against the containing block's inline size.
+    /// Block-axis percentages resolve against its block size, and behave as
+    /// `auto` when that size is indefinite, as CSS 2.1 §9.3.2 and CSS
+    /// Positioned Layout require for a containing block with no specified
+    /// block size.
+    pub fn relative_offset(
+        self,
+        containing_inline_size: f32,
+        containing_block_size: Option<f32>,
+    ) -> LogicalOffset {
         if self.position != BlockPosition::Relative {
             return LogicalOffset::default();
         }
-        let inset = self.containing_flow.logical_sides(
+        let inline = self.containing_flow.logical_sides(
             self.inset
                 .map(|value| value.resolve(containing_inline_size)),
         );
+        let block = self.containing_flow.logical_sides(
+            self.inset
+                .map(|value| value.resolve_block(containing_block_size)),
+        );
         LogicalOffset {
-            inline: inset
+            inline: inline
                 .inline_start
-                .or_else(|| inset.inline_end.map(|value| -value))
+                .or_else(|| inline.inline_end.map(|value| -value))
                 .unwrap_or(0.0),
-            block: inset
+            block: block
                 .block_start
-                .or_else(|| inset.block_end.map(|value| -value))
+                .or_else(|| block.block_end.map(|value| -value))
                 .unwrap_or(0.0),
         }
     }
@@ -2360,7 +2384,7 @@ mod tests {
         horizontal.inset.left = FlowLengthAuto::Value(FlowLength::px(12.0));
         horizontal.inset.bottom = FlowLengthAuto::Value(FlowLength::px(7.0));
         assert_eq!(
-            horizontal.relative_offset(200.0),
+            horizontal.relative_offset(200.0, None),
             LogicalOffset {
                 inline: 12.0,
                 block: -7.0,
@@ -2374,11 +2398,54 @@ mod tests {
         vertical.inset.top = FlowLengthAuto::Value(FlowLength::px(9.0));
         vertical.inset.right = FlowLengthAuto::Value(FlowLength::px(5.0));
         assert_eq!(
-            vertical.relative_offset(200.0),
+            vertical.relative_offset(200.0, None),
             LogicalOffset {
                 inline: 9.0,
                 block: 5.0,
             }
         );
+    }
+
+    #[test]
+    fn relative_block_percentages_need_a_definite_containing_block_size() {
+        let mut style = BlockStyle {
+            position: BlockPosition::Relative,
+            ..BlockStyle::default()
+        };
+        style.inset.left = FlowLengthAuto::Value(FlowLength {
+            px: 0.0,
+            percentage: 0.25,
+        });
+        style.inset.top = FlowLengthAuto::Value(FlowLength {
+            px: 10.0,
+            percentage: -100.0,
+        });
+
+        // An indefinite block basis turns the percentage block inset into
+        // `auto`; the inline percentage still resolves against the width.
+        assert_eq!(
+            style.relative_offset(200.0, None),
+            LogicalOffset {
+                inline: 50.0,
+                block: 0.0,
+            }
+        );
+        assert_eq!(
+            style.relative_offset(200.0, Some(100.0)),
+            LogicalOffset {
+                inline: 50.0,
+                block: -9990.0,
+            }
+        );
+
+        // With `top` auto, `bottom` supplies the reversed offset under the
+        // same basis rule.
+        style.inset.top = FlowLengthAuto::Auto;
+        style.inset.bottom = FlowLengthAuto::Value(FlowLength {
+            px: 0.0,
+            percentage: 0.5,
+        });
+        assert_eq!(style.relative_offset(200.0, None).block, 0.0);
+        assert_eq!(style.relative_offset(200.0, Some(40.0)).block, -20.0);
     }
 }

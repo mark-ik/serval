@@ -31,6 +31,23 @@ and hit-test source stay unchanged.
 - Table row, row-group, and cell offsets continue through K4h's
   `TableFragments::apply_relative_offsets`, which already moves the structural
   part and cell-content geometry as one operation.
+- **2026-08-21:** block-axis percentage insets resolve against the containing
+  block's specified block size and behave as `auto` when it is indefinite
+  (CSS 2.1 §9.3.2), on both routes; the table-part route takes the row's
+  specified height for a cell and the table's for a row or group. A
+  stretched flex item's cross size and a grid item's area are definite
+  (Flexbox §9.8, Grid §6.6), and a percentage block size inherits the
+  definiteness of its own basis (CSS 2.1 §10.5). Until then both axes used
+  the inline basis, which `position-relative-006` through `-013` falsified,
+  and the first correction treated stretched items as indefinite, which
+  `css-flexbox/position-relative-percentage-top-002/-003` falsified. Receipts: `relative_block_percentages_need_a_definite_containing_block_size`
+  (Buckram), `relative_block_percentage_insets_resolve_only_against_a_specified_height`
+  (Livery), and those eight files.
+- **Open, 2026-08-21:** a relatively positioned `caption` does not move. It is
+  excluded from the generic route with the other internal table roles, and the
+  table-part route does not translate it. Pinned by
+  `relative_caption_moves_by_its_inset`; `position-relative-table-caption`
+  stays red until it is routed.
 
 ## Boundary
 
