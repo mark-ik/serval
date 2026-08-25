@@ -709,16 +709,18 @@ fn parse_flex_components(parts: &[&str]) -> Option<(FlexFactor, FlexFactor, Size
         .map(|part| part.parse::<FlexFactor>())
         .collect::<Result<Vec<_>, _>>();
     if let Ok(factors) = factors {
-        match factors.as_slice() {
-            [grow] => return Some((*grow, FlexFactor::ONE, flex_zero_basis())),
-            [grow, shrink] => return Some((*grow, *shrink, flex_zero_basis())),
-            _ => {},
-        }
+        return match factors.as_slice() {
+            [grow] => Some((*grow, FlexFactor::ONE, flex_zero_basis())),
+            [grow, shrink] => Some((*grow, *shrink, flex_zero_basis())),
+            [grow, shrink, _] => parse_flex_basis(parts[2]).map(|basis| (*grow, *shrink, basis)),
+            _ => None,
+        };
     }
 
     // The basis may appear before, between, or after the factor group. Try
-    // the conventional trailing position first so an ambiguous unitless zero
-    // in `flex: 0 1 0` remains the basis rather than the grow factor.
+    // the conventional trailing position first. Three entirely numeric tokens
+    // were handled above so an interior zero cannot rescue an invalid unitless
+    // basis such as `flex: 0 1 4`.
     for basis_index in (0..parts.len()).rev() {
         let Some(basis) = parse_flex_basis(parts[basis_index]) else {
             continue;

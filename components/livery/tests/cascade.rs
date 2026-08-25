@@ -202,6 +202,8 @@ fn flex_shorthand_rejects_unmodeled_or_invalid_values() {
         "flex: content",
         "flex: 1 1 content",
         "flex: 2 3 4",
+        "flex: 0 0 4",
+        "flex: 0 1 4",
         "flex: 5px 7%",
     ] {
         let block = parse_declaration_block(css);
