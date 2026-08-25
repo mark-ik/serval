@@ -14213,4 +14213,81 @@ mod tests {
             "the independent host consumes its admitted grid BFC output"
         );
     }
+
+    #[test]
+    fn live_flex_shorthands_reach_taffy_and_change_wrap_geometry() {
+        let dom = StaticDocument::parse(
+            "<html><body>\
+             <div id=short><div id=s1 class=item></div><div id=s2 class=item></div><div id=s3 class=item></div></div>\
+             <div id=explicit><div id=e1 class=item></div><div id=e2 class=item></div><div id=e3 class=item></div></div>\
+             <div id=nowrap><div id=n1 class=item></div><div id=n2 class=item></div><div id=n3 class=item></div></div>\
+             </body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; border: 0; }\
+                 #short, #explicit, #nowrap { display: flex; width: 100px; }\
+                 #short { flex-flow: row wrap; }\
+                 #explicit { flex-direction: row; flex-wrap: wrap; }\
+                 #nowrap { flex-flow: row nowrap; }\
+                 .item { flex: 1 1 40px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let short = node_by_id(&dom, dom.document(), "short").expect("short flex host");
+        let explicit = node_by_id(&dom, dom.document(), "explicit").expect("explicit host");
+        assert_eq!(
+            styles.get(short).expect("short style").flex_direction,
+            styles.get(explicit).expect("explicit style").flex_direction
+        );
+        assert_eq!(
+            styles.get(short).expect("short style").flex_wrap,
+            styles.get(explicit).expect("explicit style").flex_wrap
+        );
+
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("flex shorthand layout");
+        let rect = |id| {
+            layout
+                .get(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect(id)
+                .physical_rect()
+        };
+        let short_host = rect("short");
+        let explicit_host = rect("explicit");
+        let s1 = rect("s1");
+        let s2 = rect("s2");
+        let s3 = rect("s3");
+        let e1 = rect("e1");
+        let e2 = rect("e2");
+        let e3 = rect("e3");
+        let n1 = rect("n1");
+        let n2 = rect("n2");
+        let n3 = rect("n3");
+
+        assert!((s1.width - 50.0).abs() <= 0.01, "s1={s1:?}");
+        assert!((s2.x - s1.x - s1.width).abs() <= 0.01, "s1={s1:?}, s2={s2:?}");
+        assert!((s3.y - s1.y - 20.0).abs() <= 0.01, "s1={s1:?}, s3={s3:?}");
+        assert!((s3.width - 100.0).abs() <= 0.01, "s3={s3:?}");
+        assert_eq!((s1.width, s1.height), (e1.width, e1.height));
+        assert!((s2.width - e2.width).abs() <= 0.01);
+        assert!((s2.y - short_host.y - (e2.y - explicit_host.y)).abs() <= 0.01);
+        assert!((s3.width - e3.width).abs() <= 0.01);
+        assert!((s3.y - short_host.y - (e3.y - explicit_host.y)).abs() <= 0.01);
+        assert_eq!(n1.y, n2.y);
+        assert_eq!(n2.y, n3.y);
+        assert!(
+            n3.x > n2.x,
+            "nowrap geometry did not stay on one row: {n1:?}, {n2:?}, {n3:?}"
+        );
+    }
 }
