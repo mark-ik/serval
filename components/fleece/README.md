@@ -56,6 +56,33 @@ strings because Fleece has no source URL or document-base authority.
 This is syntax harvesting, not JSON-LD 1.1 expansion, RDF construction,
 vocabulary reasoning, URL resolution, or remote-context loading.
 
+## Document metadata and links
+
+Fleece 0.4 retains Open Graph properties as ordered raw evidence and also
+projects each root property with the structured properties that immediately
+follow it. Unknown and malformed properties remain in the raw list rather than
+being discarded or fabricated into a group.
+
+`Metadata::links` records HTML `<link>` elements in document order, including
+tokenized relations, raw `href`, media type, language, title, media query, and
+other observed attributes. Registered relation names use their lowercase form;
+extension-relation IRIs retain their source spelling, with
+`DocumentLink::has_relation` providing the case-insensitive comparison required
+by Web Linking. `Metadata::canonical` is only the first matching raw-href
+projection. Fleece does not resolve URLs or observe HTTP `Link` headers.
+
+## HTML tables
+
+`Block::Table` carries a computed `Table` rather than a shallow row list. The
+value retains the source id and caption, row groups, declared headers and spans,
+effective grid coordinates, column- and row-group-aware header associations,
+and recoverable table-model overlap errors. It honors `rowspan=0`, clamped span
+ranges, implied rows, explicit-header precedence, first-id lookup, and nested
+table boundaries.
+
+This is HTML table semantics over the supplied DOM, not CSS table layout.
+Presentation, geometry, and accessibility UI remain consumer responsibilities.
+
 ## License
 
 MPL-2.0
