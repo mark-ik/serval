@@ -3,9 +3,9 @@ use livery::cascade::{
     CascadeLayer, MatchedDeclaration, Origin, Specificity, cascade, parse_declaration_block,
 };
 use livery::values::{
-    Color, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
-    Length, LengthPercentage, LineHeight, Margin, Overflow, Size, TextWrapMode, TransitionProperty,
-    VerticalAlign, WhiteSpaceCollapse,
+    Color, FlexDirection, FlexWrap, FontFamily, FontFeatureSettings, FontSize, FontStyle,
+    FontVariantLigatures, FontWeight, Length, LengthPercentage, LineHeight, Margin, Overflow, Size,
+    TextWrapMode, TransitionProperty, VerticalAlign, WhiteSpaceCollapse,
 };
 
 fn matched(
@@ -83,6 +83,189 @@ fn white_space_nowrap_expands_to_collapsing_unwrapped_text() {
     assert!(matches!(
         block.declarations[1].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::TextWrapMode(TextWrapMode::Nowrap))
+    ));
+}
+
+fn expanded_css_values(css: &str) -> Vec<(String, String)> {
+    parse_declaration_block(css)
+        .declarations
+        .into_iter()
+        .map(|declaration| {
+            let name = declaration.property.metadata().name.to_owned();
+            let livery::cascade::DeclaredValue::Value(value) = declaration.value else {
+                panic!("{css}: shorthand produced a non-value declaration")
+            };
+            (name, value.to_css_string())
+        })
+        .collect()
+}
+
+#[test]
+fn flex_shorthand_expands_keyword_and_arity_defaults() {
+    for (css, expected) in [
+        (
+            "flex: none",
+            vec![
+                ("flex-grow", "0"),
+                ("flex-shrink", "0"),
+                ("flex-basis", "auto"),
+            ],
+        ),
+        (
+            "flex: auto",
+            vec![
+                ("flex-grow", "1"),
+                ("flex-shrink", "1"),
+                ("flex-basis", "auto"),
+            ],
+        ),
+        (
+            "flex: 2",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "1"),
+                ("flex-basis", "0%"),
+            ],
+        ),
+        (
+            "flex: 2 3",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "3"),
+                ("flex-basis", "0%"),
+            ],
+        ),
+        (
+            "flex: 2 20px",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "1"),
+                ("flex-basis", "20px"),
+            ],
+        ),
+        (
+            "flex: 2 3 20px !important",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "3"),
+                ("flex-basis", "20px"),
+            ],
+        ),
+        (
+            "flex: 20px 2 3",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "3"),
+                ("flex-basis", "20px"),
+            ],
+        ),
+        (
+            "flex: 2 20px 3",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "3"),
+                ("flex-basis", "20px"),
+            ],
+        ),
+        (
+            "flex: 0 1 0",
+            vec![
+                ("flex-grow", "0"),
+                ("flex-shrink", "1"),
+                ("flex-basis", "0"),
+            ],
+        ),
+    ] {
+        let block = parse_declaration_block(css);
+        assert!(block.errors.is_empty(), "{css}: {:?}", block.errors);
+        assert_eq!(
+            block
+                .declarations
+                .iter()
+                .map(|declaration| declaration.important)
+                .collect::<Vec<_>>(),
+            vec![css.contains("important"); 3]
+        );
+        assert_eq!(
+            expanded_css_values(css),
+            expected
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn flex_shorthand_rejects_unmodeled_or_invalid_values() {
+    for css in [
+        "flex: content",
+        "flex: 1 1 content",
+        "flex: 2 3 4",
+        "flex: 5px 7%",
+    ] {
+        let block = parse_declaration_block(css);
+        assert!(block.declarations.is_empty(), "{css}");
+        assert_eq!(block.errors.len(), 1, "{css}: {:?}", block.errors);
+    }
+}
+
+#[test]
+fn flex_shorthands_expand_css_wide_keywords_to_every_longhand() {
+    let block = parse_declaration_block("flex: initial; flex-flow: unset");
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 5);
+    assert!(
+        block.declarations[..3].iter().all(|declaration| matches!(
+            declaration.value,
+            livery::cascade::DeclaredValue::Initial
+        ))
+    );
+    assert!(
+        block.declarations[3..]
+            .iter()
+            .all(|declaration| matches!(declaration.value, livery::cascade::DeclaredValue::Unset))
+    );
+}
+
+#[test]
+fn flex_flow_expands_direction_and_wrap_in_either_order() {
+    for css in [
+        "flex-flow: column wrap",
+        "flex-flow: wrap-reverse column-reverse",
+    ] {
+        let block = parse_declaration_block(css);
+        assert!(block.errors.is_empty(), "{css}: {:?}", block.errors);
+        assert_eq!(block.declarations.len(), 2);
+    }
+    assert_eq!(
+        expanded_css_values("flex-flow: wrap column"),
+        vec![
+            ("flex-direction".to_owned(), "column".to_owned()),
+            ("flex-wrap".to_owned(), "wrap".to_owned()),
+        ]
+    );
+    let duplicate = parse_declaration_block("flex-flow: row column");
+    assert!(duplicate.declarations.is_empty());
+    assert_eq!(duplicate.errors.len(), 1);
+}
+
+#[test]
+fn flex_longhand_values_keep_their_typed_models() {
+    let block = parse_declaration_block("flex-direction: column; flex-wrap: wrap; flex-grow: 2");
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert!(matches!(
+        block.declarations[0].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FlexDirection(FlexDirection::Column))
+    ));
+    assert!(matches!(
+        block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FlexWrap(FlexWrap::Wrap))
+    ));
+    assert!(matches!(
+        block.declarations[2].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FlexFactor(value))
+            if value.value() == 2.0
     ));
 }
 

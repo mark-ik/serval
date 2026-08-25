@@ -9,9 +9,9 @@ Regenerate after fork realignments or livery property additions.
 | stylo full database | 427 | 92 |
 | excluded (gecko-only engine) | 172 | 24 |
 | servo-lane destination | 255 | 68 |
-| implemented in livery | 101 | 23 |
+| implemented in livery | 101 | 25 |
 | of which livery-local (outside the servo lane) | 2 | 0 |
-| remaining (known, unimplemented) | 156 | 43 |
+| remaining (known, unimplemented) | 156 | 41 |
 
 ## The consumed-set bar (cutover plan F0)
 
@@ -306,7 +306,7 @@ are covered, with the upstream decomposition still ahead of them.
 - `view-transition-class` (discrete)
 - `view-transition-name` (discrete)
 
-## Remaining shorthands (43)
+## Remaining shorthands (41)
 
 - `-webkit-perspective` -> `perspective`
 - `-webkit-transform` -> `transform`
@@ -333,8 +333,6 @@ are covered, with the upstream decomposition still ahead of them.
 - `corner-right-shape` -> `corner-top-right-shape`, `corner-bottom-right-shape`
 - `corner-shape` -> `corner-top-left-shape`, `corner-top-right-shape`, `corner-bottom-right-shape`, `corner-bottom-left-shape`
 - `corner-top-shape` -> `corner-top-left-shape`, `corner-top-right-shape`
-- `flex` -> `flex-grow`, `flex-shrink`, `flex-basis`
-- `flex-flow` -> `flex-direction`, `flex-wrap`
 - `font-variant` -> `font-variant-caps`, `font-variant-east-asian`, `font-variant-ligatures`, `font-variant-numeric`, `font-variant-position`
 - `inset` -> `top`, `right`, `bottom`, `left`
 - `inset-block` -> `inset-block-start`, `inset-block-end`

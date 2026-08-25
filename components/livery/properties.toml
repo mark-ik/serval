@@ -269,6 +269,19 @@ grammar = "<single-animation-name> || <time>{1,2} || <easing-function>"
 seed_values = ["fade 100ms linear", "fade 1s ease -500ms"]
 source = "css_animations_1"
 
+[shorthands.flex]
+longhands = ["flex-grow", "flex-shrink", "flex-basis"]
+grammar = "none | [ <flex-grow> <flex-shrink>? || <flex-basis> ]"
+seed_values = ["none", "auto", "1", "1 2", "1 20px", "1 2 20px", "20px 1 2", "1 20px 2"]
+source = "css_flexbox_1"
+
+[shorthands.flex_flow]
+css_name = "flex-flow"
+longhands = ["flex-direction", "flex-wrap"]
+grammar = "<flex-direction> || <flex-wrap>"
+seed_values = ["row", "column wrap", "wrap-reverse column-reverse"]
+source = "css_flexbox_1"
+
 [[property]]
 name = "aspect-ratio"
 value_type = "aspect-ratio"
@@ -2829,16 +2842,6 @@ spec = "https://drafts.csswg.org/css-borders-4/#propdef-corner-shape"
 name = "corner-top-shape"
 sub_properties = ["corner-top-left-shape", "corner-top-right-shape"]
 spec = "https://drafts.csswg.org/css-borders-4/#propdef-corner-top-shape"
-
-[[unimplemented_shorthand]]
-name = "flex"
-sub_properties = ["flex-grow", "flex-shrink", "flex-basis"]
-spec = "https://drafts.csswg.org/css-flexbox/#flex-property"
-
-[[unimplemented_shorthand]]
-name = "flex-flow"
-sub_properties = ["flex-direction", "flex-wrap"]
-spec = "https://drafts.csswg.org/css-flexbox/#flex-flow-property"
 
 [[unimplemented_shorthand]]
 name = "font-variant"
