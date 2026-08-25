@@ -193,7 +193,7 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
                     runs: cell_inline_runs(dom, cell),
                     empty: cell_is_empty(dom, cell),
                 });
-                cover_cell(&mut grid, &cells, &mut errors, index, x, y, colspan, height);
+                cover_cell(&mut grid, &cells, &mut errors, index);
                 if rowspan == 0 {
                     grow_down.push(index);
                 }
@@ -207,17 +207,7 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
         for index in grow_down {
             let height = group_end.saturating_sub(cells[index].y).max(1);
             cells[index].height = height;
-            let cell = &cells[index];
-            cover_cell(
-                &mut grid,
-                &cells,
-                &mut errors,
-                index,
-                cell.x,
-                cell.y,
-                cell.width,
-                cell.height,
-            );
+            cover_cell(&mut grid, &cells, &mut errors, index);
         }
         group_rows.push(group_end.saturating_sub(group_start));
     }
@@ -275,15 +265,6 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
         height: grid.len() as u32,
         errors,
     }
-}
-
-/// Compatibility projection used by the existing `Block::Table { rows }` shape.
-pub(crate) fn table_rows<D: LayoutDom>(dom: &D, table: D::NodeId) -> Vec<TableRow> {
-    extract_table(dom, table)
-        .rows
-        .into_iter()
-        .filter(|row| !row.cells.is_empty())
-        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -431,11 +412,11 @@ fn cover_cell<N>(
     cells: &[CellWork<N>],
     errors: &mut Vec<TableModelError>,
     cell: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
 ) {
+    let x = cells[cell].x;
+    let y = cells[cell].y;
+    let width = cells[cell].width;
+    let height = cells[cell].height;
     for (row_index, row) in grid.iter_mut().enumerate().skip(y).take(height) {
         row.resize((x + width).max(row.len()), None);
         for (column, slot) in row.iter_mut().enumerate().skip(x).take(width) {
@@ -495,26 +476,26 @@ fn automatic_headers<N>(
     let cell = &cells[principal];
     let mut headers = Vec::new();
     for y in cell.y..cell.y + cell.height {
-        scan_headers(principal, cell.x, y, -1, 0, cells, grid, &mut headers);
+        scan_headers(principal, (cell.x, y), (-1, 0), cells, grid, &mut headers);
     }
     for x in cell.x..cell.x + cell.width {
-        scan_headers(principal, x, cell.y, 0, -1, cells, grid, &mut headers);
+        scan_headers(principal, (x, cell.y), (0, -1), cells, grid, &mut headers);
     }
     for (index, header) in cells.iter().enumerate() {
         if header.header
             && header.scope == TableScope::RowGroup
             && header.row_group.is_some()
             && header.row_group == cell.row_group
-            && header.x <= cell.x + cell.width - 1
-            && header.y <= cell.y + cell.height - 1
+            && header.x < cell.x + cell.width
+            && header.y < cell.y + cell.height
         {
             headers.push(index);
         }
         if header.header
             && header.scope == TableScope::ColumnGroup
             && shares_column_group(header, cell, columns)
-            && header.x <= cell.x + cell.width - 1
-            && header.y <= cell.y + cell.height - 1
+            && header.x < cell.x + cell.width
+            && header.y < cell.y + cell.height
         {
             headers.push(index);
         }
@@ -524,16 +505,15 @@ fn automatic_headers<N>(
 
 fn scan_headers<N>(
     principal: usize,
-    initial_x: usize,
-    initial_y: usize,
-    dx: isize,
-    dy: isize,
+    initial: (usize, usize),
+    direction: (isize, isize),
     cells: &[CellWork<N>],
     grid: &[Vec<Option<usize>>],
     headers: &mut Vec<usize>,
 ) {
-    let mut x = initial_x as isize;
-    let mut y = initial_y as isize;
+    let (dx, dy) = direction;
+    let mut x = initial.0 as isize;
+    let mut y = initial.1 as isize;
     let mut opaque = Vec::new();
     let mut in_header_block = cells[principal].header;
     let mut current_block = if in_header_block {
@@ -810,7 +790,11 @@ fn collapse_cell_inline_text(text: &str) -> String {
     let trailing = text.chars().next_back().is_some_and(char::is_whitespace);
     let core = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if core.is_empty() {
-        return leading.then_some(" ".to_string()).unwrap_or_default();
+        return if leading {
+            " ".to_string()
+        } else {
+            String::new()
+        };
     }
     format!(
         "{}{}{}",

@@ -36,13 +36,14 @@ mod structured;
 mod table;
 mod text_fragment;
 
-use table::table_rows;
-
-pub use metadata::{Metadata, extract_metadata};
+pub use metadata::{DocumentLink, Metadata, OpenGraphGroup, extract_metadata};
 pub use structured::{
     StructuredData, StructuredDataSource, StructuredValue, extract_structured_data,
 };
-pub use table::{TableCell, TableRow};
+pub use table::{
+    Table, TableCell, TableHeader, TableModelError, TableRow, TableRowGroup, TableRowGroupKind,
+    TableScope, extract_table,
+};
 pub use text_fragment::{TextFragment, text_fragment};
 
 /// The textual representation against which Fleece selectors are measured.
@@ -161,7 +162,7 @@ pub enum Block {
         text: String,
     },
     Table {
-        rows: Vec<TableRow>,
+        table: Table,
     },
     Figure {
         src: String,
@@ -1016,7 +1017,7 @@ fn collect_blocks<D: LayoutDom>(
                     options,
                 );
                 return;
-            }
+            },
             Some("ul" | "ol") => {
                 let ordered = name == Some("ol");
                 let items = list_items(dom, id, text_index, options);
@@ -1030,7 +1031,7 @@ fn collect_blocks<D: LayoutDom>(
                     ));
                 }
                 return;
-            }
+            },
             Some("blockquote") => {
                 let mut blocks = Vec::new();
                 for child in dom.dom_children(id) {
@@ -1057,7 +1058,7 @@ fn collect_blocks<D: LayoutDom>(
                     ));
                 }
                 return;
-            }
+            },
             Some("pre") => {
                 let language = code_language(dom, id);
                 let text = text_of(dom, id);
@@ -1071,20 +1072,20 @@ fn collect_blocks<D: LayoutDom>(
                     ));
                 }
                 return;
-            }
+            },
             Some("table") => {
-                let rows = table_rows(dom, id);
-                if !rows.is_empty() {
+                let table = extract_table(dom, id);
+                if !table.rows.is_empty() {
                     out.push(anchored_block(
                         dom,
                         id,
-                        Block::Table { rows },
+                        Block::Table { table },
                         text_index,
                         options,
                     ));
                 }
                 return;
-            }
+            },
             Some("figure") => {
                 if let Some(figure) = figure_block(dom, id) {
                     let anchor_id = find_first(dom, id, "figcaption").unwrap_or(id);
@@ -1103,7 +1104,7 @@ fn collect_blocks<D: LayoutDom>(
                     });
                 }
                 return;
-            }
+            },
             Some("img") => {
                 if let Some(src) = attr(dom, id, "src").filter(|src| !src.is_empty()) {
                     out.push(AnchoredBlock {
@@ -1116,15 +1117,15 @@ fn collect_blocks<D: LayoutDom>(
                     });
                 }
                 return;
-            }
+            },
             Some("hr") => {
                 out.push(AnchoredBlock {
                     anchor: None,
                     block: Block::Rule,
                 });
                 return;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     for child in dom.dom_children(id) {
@@ -1253,7 +1254,7 @@ fn collect_inline<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Inline>, s
             } else {
                 out.extend(runs);
             }
-        }
+        },
         Some("strong" | "b" | "em" | "i") => {
             let runs = nested(dom, id, shallow);
             if !runs.is_empty() {
@@ -1262,13 +1263,13 @@ fn collect_inline<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Inline>, s
                     runs,
                 });
             }
-        }
+        },
         Some("code") => {
             let text = text_of(dom, id);
             if !text.is_empty() {
                 out.push(Inline::Code(text));
             }
-        }
+        },
         Some("br") => push_text_run(out, "\n".to_string()),
         _ => out.extend(nested(dom, id, shallow)),
     }
@@ -1318,7 +1319,7 @@ fn inline_plain_text(runs: &[Inline]) -> String {
             Inline::Text(text) | Inline::Code(text) => out.push_str(text),
             Inline::Link { runs, .. } | Inline::Emphasis { runs, .. } => {
                 out.push_str(&inline_plain_text(runs));
-            }
+            },
         }
     }
     out
@@ -1761,10 +1762,9 @@ mod tests {
                 .any(|run| matches!(run, Inline::Code(code) if code == "inline()"))
         );
         assert!(
-            article
-                .blocks
-                .iter()
-                .any(|block| matches!(&block.block, Block::Table { rows } if rows[0].header))
+            article.blocks.iter().any(
+                |block| matches!(&block.block, Block::Table { table } if table.rows[0].header)
+            )
         );
         assert!(article.blocks.iter().any(|block| matches!(&block.block, Block::Figure { src, caption: Some(_), .. } if src == "/figure.png")));
     }

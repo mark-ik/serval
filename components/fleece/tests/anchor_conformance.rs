@@ -25,9 +25,9 @@ fn all_blocks<'a>(blocks: &'a [AnchoredBlock], out: &mut Vec<&'a AnchoredBlock>)
                 for item in items {
                     all_blocks(item, out);
                 }
-            }
+            },
             Block::Quote { blocks } => all_blocks(blocks, out),
-            _ => {}
+            _ => {},
         }
     }
 }
@@ -51,15 +51,15 @@ fn block_text(block: &Block) -> String {
             if let Some(caption) = caption {
                 runs_text(caption, &mut text);
             }
-        }
-        Block::Table { rows } => {
-            for row in rows {
+        },
+        Block::Table { table } => {
+            for row in &table.rows {
                 for cell in &row.cells {
                     runs_text(&cell.runs, &mut text);
                 }
             }
-        }
-        Block::List { .. } | Block::Quote { .. } | Block::Rule => {}
+        },
+        Block::List { .. } | Block::Quote { .. } | Block::Rule => {},
     }
     text
 }

@@ -1,7 +1,7 @@
 use fleece::{Block, ExtractionOptions, Inline, extract_document_with_options};
 use genet_static_dom::StaticDocument;
 
-fn table_rows(html: &str) -> Vec<fleece::TableRow> {
+fn table(html: &str) -> fleece::Table {
     let document = StaticDocument::parse(html);
     let extracted =
         extract_document_with_options(&document, ExtractionOptions { quote_context: 8 });
@@ -11,7 +11,7 @@ fn table_rows(html: &str) -> Vec<fleece::TableRow> {
         .blocks
         .into_iter()
         .find_map(|block| match block.block {
-            Block::Table { rows } => Some(rows),
+            Block::Table { table } => Some(table),
             _ => None,
         })
         .expect("fixture should produce one table block")
@@ -19,7 +19,7 @@ fn table_rows(html: &str) -> Vec<fleece::TableRow> {
 
 #[test]
 fn reader_projection_keeps_spans_coordinates_and_excludes_nested_table_cells() {
-    let rows = table_rows(
+    let table = table(
         r#"<html><body><main><h1>Regional totals</h1>
         <p>This introduction gives the reader selector enough ordinary prose to retain the semantic table below.</p>
         <table><thead><tr><th id=region scope=col>Region</th><th id=total scope=col colspan=2>Total</th></tr></thead>
@@ -28,6 +28,7 @@ fn reader_projection_keeps_spans_coordinates_and_excludes_nested_table_cells() {
         <p>This closing paragraph also supplies enough article-grade prose for stable reader selection.</p>
         </main></body></html>"#,
     );
+    let rows = &table.rows;
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].cells[1].colspan, 2);
     assert_eq!(rows[0].cells[1].width, 2);

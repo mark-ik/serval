@@ -109,7 +109,8 @@ fn lower_block(address: &str, block: &fleece::AnchoredBlock, out: &mut Vec<Block
             language: language.clone(),
             text: text.clone(),
         }),
-        fleece::Block::Table { rows } => {
+        fleece::Block::Table { table } => {
+            let rows = &table.rows;
             let header_index = rows.iter().position(|row| row.header);
             let header = header_index
                 .map(|index| {
