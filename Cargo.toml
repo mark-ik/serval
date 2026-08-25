@@ -75,6 +75,11 @@ members = [
     "components/cambium/cambium-winit-a11y",
     "components/cambium/meristem",
     "components/cambium/sprigging",
+    # Livery carries three Parley 0.10 extensions that downstream hosts must
+    # resolve from the same source. Keeping the fork as a workspace package
+    # lets git consumers name it in their own root `[patch.crates-io]`; root
+    # patches are not inherited across Cargo workspaces.
+    "support/patches/parley",
     # The Fetch network engine, adopted the same day: genet and mere were its only
     # consumers, and it must stay genet-side to keep mere's dependency direction
     # one-way.
@@ -97,7 +102,7 @@ default-members = ["ports/pelt"]
 # Git history is the reference for the eventual scripting rebuild. See
 # docs/2026-05-20_stylo_taffy_adoption_plan.md (and the cut commit). The
 # remaining Stylo + genet-layout compatibility cone was deleted 2026-08-21.
-exclude = [".cargo", "support/patches/parley"]
+exclude = [".cargo"]
 
 [workspace.package]
 version = "0.2.0"

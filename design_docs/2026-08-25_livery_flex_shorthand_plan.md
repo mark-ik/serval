@@ -105,6 +105,12 @@ a named downstream owner.
   compiled Fleece inputs but produced a status-identical flexbox map; the
   second reconciliation added only `design_docs`, with no non-document tree
   difference between the built candidate and the final rebased candidate.
+- A Turnstone published-source consumer exposed that Genet's root-local Parley
+  patch was not inheritable. Current Genet-Livery uses the fork's
+  `last_line_alignment` and `TabSize` APIs, but a downstream root silently
+  selected crates.io Parley 0.10 and failed before reaching consumer code.
+  `support/patches/parley` is now a workspace package so consumers can patch
+  crates.io to the Genet git source explicitly.
 
 ## Native and frozen receipts
 
@@ -147,3 +153,6 @@ All frozen artifacts are under
 - Repaired the invalid numeric-basis ambiguity exposed by the first exact map.
 - Completed the 1,358-file flexbox comparison with 115 gains and three assigned
   false-pass losses.
+- Published the Parley fork as a git-addressable Genet workspace package and
+  proved Genet-Livery from the workspace root before retrying the Turnstone
+  consumer.
