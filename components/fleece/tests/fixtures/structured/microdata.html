@@ -1,0 +1,46 @@
+<div id="root" itemscope itemtype="https://schema.org/Thing urn:custom:Root" itemid="/items/root" itemref="ref-b ref-a ref-overlap">
+  <meta itemprop="name alias alias" content="Root">
+  <span itemprop="tag">first</span>
+  <span itemprop="tag">second</span>
+  <div itemprop="author" itemscope itemtype="https://schema.org/Person urn:custom:Writer" itemid="/people/ada" itemref="cycle-node">
+    <span itemprop="name">Ada</span>
+    <span id="cycle-node" itemprop="related" itemscope itemtype="urn:custom:Cycle" itemid="#cycle" itemref="cycle-node">
+      <span itemprop="label">loop</span>
+    </span>
+  </div>
+  <span id="ref-overlap" itemprop="overlap">tree order overlap</span>
+  <span itemprop="generic">A  <b>B</b>
+ C</span>
+  <meta itemprop="missing-meta">
+  <img itemprop="missing-image">
+  <a itemprop="missing-link">missing href</a>
+  <div id="independent" itemscope itemtype="urn:custom:Independent">
+    <span itemprop="name">Independent</span>
+  </div>
+</div>
+<div id="ref-a" itemprop="outside-a">A</div>
+<div id="ref-b" itemprop="outside-b">B</div>
+<div itemprop="unused">Not attached</div>
+
+<div id="values" itemscope itemtype="urn:custom:Values" itemid="../values">
+  <meta itemprop="meta" content="/meta">
+  <audio itemprop="audio" src="/audio.ogg"></audio>
+  <embed itemprop="embed" src="/embed.bin">
+  <iframe itemprop="iframe" src="/frame"></iframe>
+  <img itemprop="image" src="/image.png">
+  <source itemprop="source" src="/source.mp4">
+  <track itemprop="track" src="/captions.vtt">
+  <video itemprop="video" src="/video.mp4"></video>
+  <a itemprop="anchor" href="../link">link</a>
+  <area itemprop="area" href="#area">
+  <link itemprop="link" href="//cdn.example/x">
+  <object itemprop="object" data="data:text/plain,x">object text</object>
+  <data itemprop="data" value="42">forty two</data>
+  <meter itemprop="meter" value="0.5">half</meter>
+  <time itemprop="time" datetime="2026-08-25">August 25</time>
+  <span itemprop="generic-value">A  B</span>
+</div>
+
+<div itemscope>
+  <span itemprop="untyped">untyped root</span>
+</div>
