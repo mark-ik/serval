@@ -88,7 +88,7 @@ fn partial_properties_declare_the_subset_they_build() {
 }
 
 #[test]
-fn the_consumed_set_is_the_current_128_longhands() {
+fn the_consumed_set_is_the_current_129_longhands() {
     let consumed = consumed_set();
     let declared = {
         let table: toml::Table = CONSUMED.parse().expect("parses");
@@ -104,8 +104,8 @@ fn the_consumed_set_is_the_current_128_longhands() {
     );
     assert_eq!(
         consumed.len(),
-        128,
-        "the original 126-name audit plus two live font-feature consumers is 128",
+        129,
+        "the original audit plus live font-feature and shape-outside consumers is 129",
     );
     let unique: BTreeSet<&str> = consumed.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(unique.len(), consumed.len(), "duplicate consumed names");
@@ -134,8 +134,9 @@ fn the_consumed_set_is_the_current_128_longhands() {
 ///
 /// 38 as of 2026-07-25; 35 as of 2026-07-26 (the grid/alignment
 /// stragglers landed); 31 as of 2026-08-24 (animation-delay, clear,
-/// contain, and direction landed).
-const MAX_REMAINING: usize = 31;
+/// contain, and direction landed); 27 as of 2026-08-25 after the current
+/// catalog reconciliation and the shape-outside consumer landed.
+const MAX_REMAINING: usize = 27;
 
 /// F0's receipt, as a ratchet. Prints the exact remaining worklist with the
 /// catalog group for each name, so a failure message is the next slice.

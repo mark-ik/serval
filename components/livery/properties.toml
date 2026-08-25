@@ -85,6 +85,9 @@ url = "https://www.w3.org/TR/css-writing-modes-4/"
 [sources.css2_2]
 url = "https://www.w3.org/TR/CSS22/visuren.html#flow-control"
 
+[sources.css_shapes_1]
+url = "https://www.w3.org/TR/css-shapes-1/#shape-outside-property"
+
 [shorthands.inset]
 longhands = ["top", "right", "bottom", "left"]
 grammar = "auto | <length-percentage>, one to four values"
@@ -1524,6 +1527,17 @@ grammar = "none | <number-percentage>"
 seed_values = ["none", "number", "percentage", "calc()"]
 animation = "by-computed-value"
 source = "css_transforms_1"
+
+[[property]]
+name = "shape-outside"
+value_type = "shape-outside"
+inherited = false
+initial = "none"
+grammar = "none | margin-box | border-box | padding-box | content-box"
+seed_values = ["none", "margin-box", "border-box", "padding-box", "content-box"]
+animation = "discrete"
+source = "css_shapes_1"
+partial = "horizontal non-curved reference boxes alter inline float exclusions; basic shapes, images, curved boxes, shape-margin, shape-image-threshold, and vertical float-area transforms remain deferred and use the default margin-box float area"
 
 [[property]]
 name = "text-decoration-line"

@@ -139,6 +139,19 @@ pub enum FloatSide {
     Right,
 }
 
+/// Rectangular float area used only for inline line exclusions.
+///
+/// Float placement, clearance, independent formatting-context avoidance, and
+/// containing-block height always continue to use the float margin box.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FloatReferenceBox {
+    #[default]
+    MarginBox,
+    BorderBox,
+    PaddingBox,
+    ContentBox,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ClearSide {
     #[default]
@@ -179,6 +192,7 @@ pub struct BlockStyle {
     pub box_sizing: BlockBoxSizing,
     pub position: BlockPosition,
     pub float: FloatSide,
+    pub float_reference_box: FloatReferenceBox,
     pub clear: ClearSide,
     pub establishes_bfc: bool,
     /// The used inline size must be obtained from CSS shrink-to-fit sizing.
@@ -209,6 +223,7 @@ impl Default for BlockStyle {
             box_sizing: BlockBoxSizing::ContentBox,
             position: BlockPosition::Static,
             float: FloatSide::None,
+            float_reference_box: FloatReferenceBox::MarginBox,
             clear: ClearSide::None,
             establishes_bfc: false,
             shrink_to_fit: false,
@@ -816,6 +831,9 @@ struct FloatExclusion {
     side: FloatSide,
     at_inline_start: bool,
     margin_box: FloatMarginBox,
+    /// The float area consulted by inline line breaking. For the default
+    /// `shape-outside: none`, this is identical to `margin_box`.
+    line_area: FloatMarginBox,
 }
 
 /// The block axis of a float margin box retains its signed used size. A
@@ -859,11 +877,22 @@ impl FloatExclusion {
         self.margin_box.block.is_valid_exclusion()
     }
 
-    fn overlaps_block(self, block_start: f32, block_size: f32) -> bool {
+    fn margin_box_overlaps_block(self, block_start: f32, block_size: f32) -> bool {
         self.is_valid_exclusion()
             && spans_overlap(
                 self.block_start(),
                 self.margin_box.block.used_size,
+                block_start,
+                block_size,
+            )
+    }
+
+    fn line_area_overlaps_block(self, block_start: f32, block_size: f32) -> bool {
+        self.is_valid_exclusion()
+            && self.line_area.block.is_valid_exclusion()
+            && spans_overlap(
+                self.line_area.block.start,
+                self.line_area.block.used_size,
                 block_start,
                 block_size,
             )
@@ -910,7 +939,7 @@ impl FloatLineConstraints {
         line_block_start: f32,
         line_block_size: f32,
     ) -> FloatAvailableSpace {
-        available_inline_space_for(
+        available_line_space_for(
             self.containing_inline_size,
             &self.exclusions,
             self.block_offset + line_block_start,
@@ -953,14 +982,16 @@ impl FloatLineConstraints {
         let mut candidates = self
             .exclusions
             .iter()
-            .filter(|exclusion| exclusion.is_valid_exclusion())
-            .map(|exclusion| exclusion.block_end())
+            .filter(|exclusion| {
+                exclusion.is_valid_exclusion() && exclusion.line_area.block.is_valid_exclusion()
+            })
+            .map(|exclusion| exclusion.line_area.block.end())
             .filter(|block_end| *block_end > absolute_start)
             .collect::<Vec<_>>();
         candidates.sort_by(f32::total_cmp);
         candidates.dedup_by(|left, right| (*left - *right).abs() <= f32::EPSILON);
         candidates.into_iter().find_map(|candidate| {
-            let available = available_inline_space_for(
+            let available = available_line_space_for(
                 self.containing_inline_size,
                 &self.exclusions,
                 candidate,
@@ -1046,6 +1077,8 @@ impl BlockFormattingContext {
                 .map(|mut exclusion| {
                     exclusion.margin_box.inline_start -= inline_offset;
                     exclusion.margin_box.block.start -= block_offset;
+                    exclusion.line_area.inline_start -= inline_offset;
+                    exclusion.line_area.block.start -= block_offset;
                     exclusion
                 })
                 .collect(),
@@ -1070,6 +1103,8 @@ impl BlockFormattingContext {
         for mut exclusion in state.exclusions {
             exclusion.margin_box.inline_start += inline_offset;
             exclusion.margin_box.block.start += block_offset;
+            exclusion.line_area.inline_start += inline_offset;
+            exclusion.line_area.block.start += block_offset;
             if exclusion.is_valid_exclusion() {
                 self.latest_float_block_start =
                     self.latest_float_block_start.max(exclusion.block_start());
@@ -1138,21 +1173,23 @@ impl BlockFormattingContext {
                 used_size: outer_block_size,
             },
         };
-        self.float_exclusions.push(FloatExclusion {
-            side: style.float,
-            at_inline_start,
-            margin_box,
-        });
-        if margin_box.block.is_valid_exclusion() {
-            self.latest_float_block_start =
-                self.latest_float_block_start.max(margin_box.block.start);
-        }
         let border_box = LogicalRect {
             inline_start: margin_box.inline_start + margin_inline_start,
             block_start: margin_box.block.start + margin_block_start,
             inline_size: border_size.inline,
             block_size: border_size.block,
         };
+        let line_area = float_line_area(style, containing_size.inline, margin_box, border_box);
+        self.float_exclusions.push(FloatExclusion {
+            side: style.float,
+            at_inline_start,
+            margin_box,
+            line_area,
+        });
+        if margin_box.block.is_valid_exclusion() {
+            self.latest_float_block_start =
+                self.latest_float_block_start.max(margin_box.block.start);
+        }
 
         BlockPlacement {
             logical_rect: border_box,
@@ -1173,7 +1210,7 @@ impl BlockFormattingContext {
             .flow
             .logical_size(self.containing_block.content_box)
             .inline;
-        available_inline_space_for(
+        available_margin_box_space_for(
             containing_inline,
             &self.float_exclusions,
             block_start,
@@ -1515,20 +1552,91 @@ impl BlockFormattingContext {
     fn float_exclusions_overlap(&self, block_start: f32, block_size: f32) -> bool {
         self.float_exclusions
             .iter()
-            .any(|exclusion| exclusion.overlaps_block(block_start, block_size))
+            .any(|exclusion| exclusion.margin_box_overlaps_block(block_start, block_size))
     }
 
     fn next_float_block_end(&self, block_start: f32, block_size: f32) -> Option<f32> {
         self.float_exclusions
             .iter()
-            .filter(|exclusion| exclusion.overlaps_block(block_start, block_size))
+            .filter(|exclusion| exclusion.margin_box_overlaps_block(block_start, block_size))
             .map(|exclusion| exclusion.block_end())
             .filter(|block_end| *block_end > block_start)
             .min_by(f32::total_cmp)
     }
 }
 
-fn available_inline_space_for(
+fn float_line_area(
+    style: BlockStyle,
+    containing_inline_size: f32,
+    margin_box: FloatMarginBox,
+    border_box: LogicalRect,
+) -> FloatMarginBox {
+    // Row 12's first slice admits only horizontal rectangular reference
+    // boxes. Vertical float-area transforms and rounded/basic/image shapes
+    // deliberately retain the default margin-box float area.
+    if style.float_reference_box == FloatReferenceBox::MarginBox
+        || !matches!(
+            style.containing_flow.inline_start(),
+            crate::PhysicalSide::Left | crate::PhysicalSide::Right
+        )
+    {
+        return margin_box;
+    }
+
+    let border = style.containing_flow.logical_sides(style.border);
+    let padding = style
+        .containing_flow
+        .logical_sides(style.resolved_padding(containing_inline_size));
+    let inset = match style.float_reference_box {
+        FloatReferenceBox::MarginBox => unreachable!("handled above"),
+        FloatReferenceBox::BorderBox => crate::LogicalSides {
+            inline_start: 0.0,
+            inline_end: 0.0,
+            block_start: 0.0,
+            block_end: 0.0,
+        },
+        FloatReferenceBox::PaddingBox => border,
+        FloatReferenceBox::ContentBox => crate::LogicalSides {
+            inline_start: border.inline_start + padding.inline_start,
+            inline_end: border.inline_end + padding.inline_end,
+            block_start: border.block_start + padding.block_start,
+            block_end: border.block_end + padding.block_end,
+        },
+    };
+    let reference_box = FloatMarginBox {
+        inline_start: border_box.inline_start + inset.inline_start,
+        inline_size: (border_box.inline_size - inset.inline_start - inset.inline_end).max(0.0),
+        block: SignedBlockExtent {
+            start: border_box.block_start + inset.block_start,
+            used_size: (border_box.block_size - inset.block_start - inset.block_end).max(0.0),
+        },
+    };
+    clip_float_area_to_margin_box(reference_box, margin_box)
+}
+
+fn clip_float_area_to_margin_box(
+    float_area: FloatMarginBox,
+    margin_box: FloatMarginBox,
+) -> FloatMarginBox {
+    if !margin_box.block.is_valid_exclusion() {
+        return margin_box;
+    }
+    let inline_start = float_area.inline_start.max(margin_box.inline_start);
+    let inline_end = (float_area.inline_start + float_area.inline_size)
+        .min(margin_box.inline_start + margin_box.inline_size);
+    let block_start = float_area.block.start.max(margin_box.block.start);
+    let block_end = float_area.block.end().min(margin_box.block.end());
+    FloatMarginBox {
+        inline_start,
+        inline_size: (inline_end - inline_start).max(0.0),
+        block: SignedBlockExtent {
+            start: block_start,
+            used_size: (block_end - block_start).max(0.0),
+        },
+    }
+}
+
+fn available_margin_box_space_for(
     containing_inline: f32,
     exclusions: &[FloatExclusion],
     block_start: f32,
@@ -1538,13 +1646,38 @@ fn available_inline_space_for(
     let mut inline_end = containing_inline;
     for exclusion in exclusions
         .iter()
-        .filter(|exclusion| exclusion.overlaps_block(block_start, block_size))
+        .filter(|exclusion| exclusion.margin_box_overlaps_block(block_start, block_size))
     {
         if exclusion.at_inline_start {
             inline_start = inline_start
                 .max(exclusion.margin_box.inline_start + exclusion.margin_box.inline_size);
         } else {
             inline_end = inline_end.min(exclusion.margin_box.inline_start);
+        }
+    }
+    FloatAvailableSpace {
+        inline_start,
+        inline_size: (inline_end - inline_start).max(0.0),
+    }
+}
+
+fn available_line_space_for(
+    containing_inline: f32,
+    exclusions: &[FloatExclusion],
+    block_start: f32,
+    block_size: f32,
+) -> FloatAvailableSpace {
+    let mut inline_start: f32 = 0.0;
+    let mut inline_end = containing_inline;
+    for exclusion in exclusions
+        .iter()
+        .filter(|exclusion| exclusion.line_area_overlaps_block(block_start, block_size))
+    {
+        if exclusion.at_inline_start {
+            inline_start = inline_start
+                .max(exclusion.line_area.inline_start + exclusion.line_area.inline_size);
+        } else {
+            inline_end = inline_end.min(exclusion.line_area.inline_start);
         }
     }
     FloatAvailableSpace {
@@ -2350,6 +2483,176 @@ mod tests {
         assert_eq!(
             constraints.next_wider_block_start(0.0, 18.0, 60.0),
             Some(20.0)
+        );
+    }
+
+    #[test]
+    fn rectangular_shape_boxes_change_only_line_exclusions() {
+        let cases = [
+            (FloatReferenceBox::MarginBox, 100.0),
+            (FloatReferenceBox::BorderBox, 90.0),
+            (FloatReferenceBox::PaddingBox, 85.0),
+            (FloatReferenceBox::ContentBox, 75.0),
+        ];
+
+        for (reference_box, expected_line_start) in cases {
+            let mut context = horizontal_context(200.0);
+            let mut style = fixed_float(FloatSide::Left, 80.0);
+            style.float_reference_box = reference_box;
+            style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
+            style.padding = PhysicalSides::splat(FlowLength::px(10.0));
+            style.border = PhysicalSides::splat(5.0);
+
+            let placement = context.place_float(
+                style,
+                PhysicalSize {
+                    width: 80.0,
+                    height: 80.0,
+                },
+            );
+            assert_eq!((placement.rect.x, placement.rect.y), (10.0, 10.0));
+            assert_eq!(
+                context.available_inline_space(30.0, 10.0),
+                FloatAvailableSpace {
+                    inline_start: 100.0,
+                    inline_size: 100.0,
+                },
+                "placement geometry must remain the margin box for {reference_box:?}"
+            );
+            let constraints = context.float_line_constraints(0.0).expect("float area");
+            assert_eq!(
+                constraints.available_space(30.0, 10.0),
+                FloatAvailableSpace {
+                    inline_start: expected_line_start,
+                    inline_size: 200.0 - expected_line_start,
+                },
+                "line geometry for {reference_box:?}"
+            );
+            assert_eq!(context.used_block_size_containing_floats(false), 100.0);
+
+            let cleared = context.place_in_flow(
+                BlockStyle {
+                    clear: ClearSide::Left,
+                    ..fixed_width(200.0)
+                },
+                PhysicalSize {
+                    width: 200.0,
+                    height: 10.0,
+                },
+            );
+            assert_eq!(cleared.rect.y, 100.0);
+        }
+    }
+
+    #[test]
+    fn descendant_float_state_translates_margin_and_line_areas_together() {
+        let mut parent = horizontal_context(200.0);
+        let mut style = fixed_float(FloatSide::Left, 80.0);
+        style.float_reference_box = FloatReferenceBox::ContentBox;
+        style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
+        style.padding = PhysicalSides::splat(FlowLength::px(10.0));
+        style.border = PhysicalSides::splat(5.0);
+        parent.place_float(
+            style,
+            PhysicalSize {
+                width: 80.0,
+                height: 80.0,
+            },
+        );
+
+        let descendant = BlockFormattingContext::with_float_state(
+            BlockContainingBlock {
+                flow: FlowAxes::HORIZONTAL_LTR,
+                content_box: PhysicalSize {
+                    width: 180.0,
+                    height: 0.0,
+                },
+            },
+            false,
+            parent.float_state_for_descendant(20.0, 10.0),
+        );
+        assert_eq!(
+            descendant.available_inline_space(20.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 80.0,
+                inline_size: 100.0,
+            }
+        );
+        assert_eq!(
+            descendant
+                .float_line_constraints(0.0)
+                .expect("translated float area")
+                .available_space(20.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 55.0,
+                inline_size: 125.0,
+            }
+        );
+    }
+
+    #[test]
+    fn right_float_reference_box_uses_its_line_areas_start_edge() {
+        let mut context = horizontal_context(200.0);
+        let mut style = fixed_float(FloatSide::Right, 80.0);
+        style.float_reference_box = FloatReferenceBox::ContentBox;
+        style.margin = PhysicalSides::splat(FlowLengthAuto::Value(FlowLength::px(10.0)));
+        style.padding = PhysicalSides::splat(FlowLength::px(10.0));
+        style.border = PhysicalSides::splat(5.0);
+        let placement = context.place_float(
+            style,
+            PhysicalSize {
+                width: 80.0,
+                height: 80.0,
+            },
+        );
+
+        assert_eq!((placement.rect.x, placement.rect.y), (110.0, 10.0));
+        assert_eq!(
+            context.available_inline_space(30.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 0.0,
+                inline_size: 100.0,
+            }
+        );
+        assert_eq!(
+            context
+                .float_line_constraints(0.0)
+                .expect("right float area")
+                .available_space(30.0, 10.0),
+            FloatAvailableSpace {
+                inline_start: 0.0,
+                inline_size: 125.0,
+            }
+        );
+    }
+
+    #[test]
+    fn vertical_reference_boxes_retain_the_margin_box_line_area() {
+        let margin_box = FloatMarginBox {
+            inline_start: 0.0,
+            inline_size: 100.0,
+            block: SignedBlockExtent {
+                start: 0.0,
+                used_size: 100.0,
+            },
+        };
+        let border_box = LogicalRect {
+            inline_start: 10.0,
+            block_start: 10.0,
+            inline_size: 80.0,
+            block_size: 80.0,
+        };
+        let style = BlockStyle {
+            containing_flow: FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+            float_reference_box: FloatReferenceBox::ContentBox,
+            padding: PhysicalSides::splat(FlowLength::px(10.0)),
+            border: PhysicalSides::splat(5.0),
+            ..BlockStyle::default()
+        };
+
+        assert_eq!(
+            float_line_area(style, 200.0, margin_box, border_box),
+            margin_box
         );
     }
 

@@ -1,4 +1,4 @@
-# The Genet consumed-longhand contract: the 128 longhands the current
+# The Genet consumed-longhand contract: the 129 longhands the current
 # product path actually reads.
 #
 # Source: docs/2026-07-13_genet_consumed_css_property_audit.md (landed
@@ -23,7 +23,7 @@
 audit = "2026-07-13_genet_consumed_css_property_audit.md"
 genet_rev = "6b955ff96ed"
 stylo_rev = "eec60c2464"
-count = 128
+count = 129
 
 [longhands]
 align_content = { name = "align-content", consumers = "L" }
@@ -135,6 +135,7 @@ pointer_events = { name = "pointer-events", consumers = "R" }
 position = { name = "position", consumers = "L R C" }
 right = { name = "right", consumers = "L R C" }
 row_gap = { name = "row-gap", consumers = "L" }
+shape_outside = { name = "shape-outside", consumers = "L" }
 text_align = { name = "text-align", consumers = "L C" }
 text_decoration_color = { name = "text-decoration-color", consumers = "R" }
 text_decoration_line = { name = "text-decoration-line", consumers = "R" }

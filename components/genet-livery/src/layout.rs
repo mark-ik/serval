@@ -10,14 +10,15 @@ use buckram::{
     Baselines, BlockBoxSizing, BlockDeferral, BlockDimensions,
     BlockPosition as BuckramBlockPosition, BlockSizeValue, BlockStyle, BoxId, BoxOrigin, ClearSide,
     CollapsedBorderGeometry, ContainingBlock, CssBox, DisplayInside, DisplayOutside,
-    FloatContextProvenance, FloatLineConstraints, FloatSide, FlowAxes, FlowLength, FlowLengthAuto,
-    FormattingContextKind, Fragment as TreeFragment, FragmentDraftTree, FragmentId, FragmentTree,
-    InternalTableRole, IntrinsicSizeCache, IntrinsicSizeKind, IntrinsicSizeQuery, IntrinsicSizes,
-    LayoutResult, LogicalAxis, LogicalRect, OverconstrainedInlineAlignment, PhysicalOffset,
-    PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, PositioningScheme, StaticPosition,
-    StaticPositionSource, TableCell, TableCellInput, TableCellLayoutInput, TableCellLayoutOutput,
-    TableCellLayoutPass, TableFragmentRole, TableFragments, TableGrid, TableGridInputs,
-    TableGridLines, TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
+    FloatContextProvenance, FloatLineConstraints, FloatReferenceBox, FloatSide, FlowAxes,
+    FlowLength, FlowLengthAuto, FormattingContextKind, Fragment as TreeFragment, FragmentDraftTree,
+    FragmentId, FragmentTree, InternalTableRole, IntrinsicSizeCache, IntrinsicSizeKind,
+    IntrinsicSizeQuery, IntrinsicSizes, LayoutResult, LogicalAxis, LogicalRect,
+    OverconstrainedInlineAlignment, PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides,
+    PhysicalSize, PositioningScheme, StaticPosition, StaticPositionSource, TableCell,
+    TableCellInput, TableCellLayoutInput, TableCellLayoutOutput, TableCellLayoutPass,
+    TableFragmentRole, TableFragments, TableGrid, TableGridInputs, TableGridLines,
+    TableRowLayoutError, TableRowSpan, TableTrackInput, TableTrackVisibility,
     resolve_collapsed_border_geometry,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -32,8 +33,9 @@ use livery::{
         Float as CssFloat, FontSize, Gap as CssGap, GridAutoFlow as CssGridAutoFlow,
         GridPlacement as CssGridPlacement, GridTemplate as CssGridTemplate,
         GridTrack as CssGridTrack, Inset, Length, LengthPercentage as CssLengthPercentage,
-        LineHeight, Margin, Overflow as CssOverflow, Position as CssPosition,
-        RelativeLengthEnvironment, Size as CssSize, VerticalAlign, WhiteSpaceCollapse,
+        LineHeight, Margin, Overflow as CssOverflow, Position as CssPosition, Radius,
+        RelativeLengthEnvironment, ShapeOutside as CssShapeOutside, Size as CssSize, VerticalAlign,
+        WhiteSpaceCollapse,
     },
 };
 use taffy::{
@@ -5862,6 +5864,7 @@ where
             CssFloat::Left => FloatSide::Left,
             CssFloat::Right => FloatSide::Right,
         },
+        float_reference_box: float_reference_box(computed),
         clear: match computed.clear {
             CssClear::None => ClearSide::None,
             CssClear::Left => ClearSide::Left,
@@ -5885,6 +5888,29 @@ where
             }),
         is_root_element: css_box.parent().is_none()
             && matches!(css_box.origin, BoxOrigin::Element(_)),
+    }
+}
+
+fn float_reference_box(computed: &ComputedValues) -> FloatReferenceBox {
+    let has_curved_border = [
+        computed.border_top_left_radius,
+        computed.border_top_right_radius,
+        computed.border_bottom_right_radius,
+        computed.border_bottom_left_radius,
+    ]
+    .into_iter()
+    .any(|radius| radius != Radius::ZERO);
+    if has_curved_border {
+        // CSS Shapes makes each reference box honor border-radius. Curvature
+        // is a later row-12 slice, so retain the default margin-box float area
+        // instead of claiming a rectangular approximation.
+        return FloatReferenceBox::MarginBox;
+    }
+    match computed.shape_outside {
+        CssShapeOutside::None | CssShapeOutside::MarginBox => FloatReferenceBox::MarginBox,
+        CssShapeOutside::BorderBox => FloatReferenceBox::BorderBox,
+        CssShapeOutside::PaddingBox => FloatReferenceBox::PaddingBox,
+        CssShapeOutside::ContentBox => FloatReferenceBox::ContentBox,
     }
 }
 
@@ -12926,6 +12952,106 @@ mod tests {
                 .all(|line| (line.x - host.x).abs() <= 0.5),
             "lines below the float must use the full content column"
         );
+        assert_eq!(algorithms.taffy, 0);
+    }
+
+    #[test]
+    fn live_shape_outside_reference_boxes_change_lines_but_not_float_placement() {
+        fn by_id(
+            dom: &StaticDocument,
+            node: <StaticDocument as LayoutDom>::NodeId,
+            expected: &str,
+        ) -> Option<<StaticDocument as LayoutDom>::NodeId> {
+            if dom.attributes(node).any(|attribute| {
+                attribute.name.ns.as_ref().is_empty()
+                    && attribute.name.local.as_ref() == "id"
+                    && attribute.value == expected
+            }) {
+                return Some(node);
+            }
+            dom.dom_children(node)
+                .find_map(|child| by_id(dom, child, expected))
+        }
+
+        let hosts = ["none", "margin", "border", "padding", "content", "curved"];
+        let markup = hosts
+            .iter()
+            .map(|name| {
+                format!(
+                    "<div id=\"host-{name}\" class=\"host\"><div class=\"float {name}\"></div>\
+                     <div><span id=\"copy-{name}\">aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa \
+                     aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa</span></div></div>"
+                )
+            })
+            .collect::<String>();
+        let dom = StaticDocument::parse(&format!("<html><body>{markup}</body></html>"));
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "html, body, div, span { margin: 0; padding: 0; border: 0; }\
+                 .host { width: 200px; overflow-x: hidden; overflow-y: hidden;\
+                         font-family: monospace; font-size: 10px; line-height: 20px; }\
+                 .float { float: left; width: 50px; height: 80px; margin-right: 20px;\
+                          padding-right: 10px; border-right: 20px solid; }\
+                 .margin { shape-outside: margin-box; }\
+                 .border { shape-outside: border-box; }\
+                 .padding { shape-outside: padding-box; }\
+                 .content { shape-outside: content-box; }\
+                 .curved { shape-outside: content-box; border-radius: 10px; }",
+            ]),
+            &Device::screen(320.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            600.0,
+            ViewportSizes::uniform(320.0, 600.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let algorithms = layout.block_algorithm_counts();
+
+        for (name, expected_line_start) in [
+            ("none", 100.0),
+            ("margin", 100.0),
+            ("border", 80.0),
+            ("padding", 60.0),
+            ("content", 50.0),
+            ("curved", 100.0),
+        ] {
+            let host_node = by_id(&dom, dom.document(), &format!("host-{name}"))
+                .unwrap_or_else(|| panic!("host-{name}"));
+            let copy_node = by_id(&dom, dom.document(), &format!("copy-{name}"))
+                .unwrap_or_else(|| panic!("copy-{name}"));
+            let host = layout
+                .get(host_node)
+                .unwrap_or_else(|| panic!("host-{name} fragment"))
+                .physical_rect();
+            let float_node = dom
+                .dom_children(host_node)
+                .next()
+                .unwrap_or_else(|| panic!("float-{name}"));
+            let float = layout
+                .get(float_node)
+                .unwrap_or_else(|| panic!("float-{name} fragment"))
+                .physical_rect();
+            let first_line = layout
+                .fragments_for_node(copy_node)
+                .map(|fragment| fragment.physical_rect())
+                .min_by(|left, right| left.y.total_cmp(&right.y))
+                .unwrap_or_else(|| panic!("copy-{name} line"));
+
+            assert_eq!((float.x - host.x, float.y - host.y), (0.0, 0.0));
+            assert!(
+                (first_line.x - host.x - expected_line_start).abs() <= 0.5,
+                "name={name}, host={host:?}, float={float:?}, line={first_line:?}"
+            );
+            assert!(host.height >= 80.0);
+        }
         assert_eq!(algorithms.taffy, 0);
     }
 

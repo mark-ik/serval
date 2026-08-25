@@ -1358,6 +1358,18 @@ keyword_value! {
 }
 
 keyword_value! {
+    /// The bounded rectangular `shape-outside` forms admitted by row 12.
+    /// Basic shapes, images, and rounded reference boxes remain deferred.
+    pub enum ShapeOutside {
+        None => "none",
+        MarginBox => "margin-box",
+        BorderBox => "border-box",
+        PaddingBox => "padding-box",
+        ContentBox => "content-box",
+    }
+}
+
+keyword_value! {
     /// CSS box sizing mode used by the layout adapter.
     pub enum BoxSizing {
         ContentBox => "content-box",
