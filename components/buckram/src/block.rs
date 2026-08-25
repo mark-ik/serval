@@ -1571,6 +1571,36 @@ impl BlockFormattingContext {
                 };
             }
 
+            // A negative inline-end margin may let this BFC's border box
+            // extend into an inline-end float while its contracted margin box
+            // still fits the available band. This covers a physical-left
+            // float in RTL and a physical-right float in LTR.
+            // Use the authored margin rather than the solved one: the width
+            // equation can make an otherwise zero inline-end margin negative
+            // when an inline-start margin already over-constrains the band.
+            let authored_negative_inline_end = style
+                .logical_margin(containing_inline)
+                .inline_end
+                .unwrap_or(0.0)
+                .min(0.0);
+            let has_inline_end_float_at_this_band = self.float_exclusions.iter().any(|exclusion| {
+                !exclusion.at_inline_start
+                    && exclusion.margin_box_overlaps_block(block_start, border_box_block_size)
+            });
+            let margin_box_fits_inline_end_band = has_inline_end_float_at_this_band
+                // A nonzero available start means an inline-start float also
+                // constrains this band, so there is no opposite edge to use.
+                && available.inline_start <= 0.01
+                && authored_negative_inline_end < 0.0
+                && border_end - available_end <= -authored_negative_inline_end + 0.01;
+            if margin_box_fits_inline_end_band {
+                return FloatAvoidingPlacement {
+                    block_start,
+                    inline_start,
+                    inline_size,
+                };
+            }
+
             let Some(next_block_start) =
                 self.next_float_block_end(block_start, border_box_block_size)
             else {
@@ -3129,6 +3159,151 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn rtl_bfc_with_negative_left_margin_stays_beside_a_left_float() {
+        let rtl = FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl);
+        let margin_state = BlockMarginState {
+            block_start: CollapsedMargin::ZERO,
+            block_end: CollapsedMargin::ZERO,
+            collapses_through: false,
+        };
+        let mut context = BlockFormattingContext::new(BlockContainingBlock {
+            flow: rtl,
+            content_box: PhysicalSize {
+                width: 100.0,
+                height: 0.0,
+            },
+        });
+        context.place_float(
+            fixed_float(FloatSide::Left, 50.0),
+            PhysicalSize {
+                width: 50.0,
+                height: 100.0,
+            },
+        );
+        let mut bfc = BlockStyle {
+            flow: rtl,
+            containing_flow: rtl,
+            establishes_bfc: true,
+            ..BlockStyle::default()
+        };
+        bfc.margin.left = FlowLengthAuto::Value(FlowLength::px(-20.0));
+
+        let placement = context.float_avoiding_placement(bfc, margin_state, 100.0);
+
+        assert_eq!(
+            placement,
+            FloatAvoidingPlacement {
+                block_start: 0.0,
+                inline_start: 0.0,
+                inline_size: UsedInlineSize {
+                    margin_start: 0.0,
+                    border_box: 70.0,
+                    margin_end: -20.0,
+                },
+            }
+        );
+        let committed = context.place_float_avoiding_in_flow(
+            bfc,
+            PhysicalSize {
+                width: 70.0,
+                height: 100.0,
+            },
+            margin_state,
+            placement,
+        );
+        assert_eq!((committed.rect.x, committed.rect.y), (30.0, 0.0));
+    }
+
+    #[test]
+    fn ltr_bfc_with_negative_right_margin_stays_beside_a_right_float() {
+        let margin_state = BlockMarginState {
+            block_start: CollapsedMargin::ZERO,
+            block_end: CollapsedMargin::ZERO,
+            collapses_through: false,
+        };
+        let mut context = horizontal_context(100.0);
+        context.place_float(
+            fixed_float(FloatSide::Right, 50.0),
+            PhysicalSize {
+                width: 50.0,
+                height: 100.0,
+            },
+        );
+        let mut bfc = BlockStyle {
+            establishes_bfc: true,
+            ..BlockStyle::default()
+        };
+        bfc.margin.right = FlowLengthAuto::Value(FlowLength::px(-20.0));
+
+        let placement = context.float_avoiding_placement(bfc, margin_state, 100.0);
+
+        assert_eq!(
+            placement,
+            FloatAvoidingPlacement {
+                block_start: 0.0,
+                inline_start: 0.0,
+                inline_size: UsedInlineSize {
+                    margin_start: 0.0,
+                    border_box: 70.0,
+                    margin_end: -20.0,
+                },
+            }
+        );
+        let committed = context.place_float_avoiding_in_flow(
+            bfc,
+            PhysicalSize {
+                width: 70.0,
+                height: 100.0,
+            },
+            margin_state,
+            placement,
+        );
+        assert_eq!((committed.rect.x, committed.rect.y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn negative_inline_end_margin_does_not_cross_an_inline_start_float() {
+        let rtl = FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl);
+        let margin_state = BlockMarginState {
+            block_start: CollapsedMargin::ZERO,
+            block_end: CollapsedMargin::ZERO,
+            collapses_through: false,
+        };
+        let mut context = BlockFormattingContext::new(BlockContainingBlock {
+            flow: rtl,
+            content_box: PhysicalSize {
+                width: 100.0,
+                height: 0.0,
+            },
+        });
+        context.place_float(
+            fixed_float(FloatSide::Left, 50.0),
+            PhysicalSize {
+                width: 50.0,
+                height: 100.0,
+            },
+        );
+        context.place_float(
+            fixed_float(FloatSide::Right, 20.0),
+            PhysicalSize {
+                width: 20.0,
+                height: 100.0,
+            },
+        );
+        let mut bfc = BlockStyle {
+            flow: rtl,
+            containing_flow: rtl,
+            establishes_bfc: true,
+            ..BlockStyle::default()
+        };
+        bfc.margin.left = FlowLengthAuto::Value(FlowLength::px(-20.0));
+
+        let placement = context.float_avoiding_placement(bfc, margin_state, 100.0);
+
+        assert_eq!(placement.block_start, 100.0);
     }
 
     #[test]
