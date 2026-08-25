@@ -13,6 +13,8 @@ mod dx12_surface;
 #[cfg(feature = "livery")]
 mod frisket_surface;
 mod profile;
+#[cfg(feature = "present")]
+mod receipt_capture;
 #[cfg(all(feature = "livery", target_os = "windows"))]
 mod scrying_receipt;
 mod static_viewer;
@@ -103,7 +105,10 @@ pub use smoke_windows::{
 pub use static_viewer::run_livery_viewer;
 #[cfg(feature = "reader")]
 pub use static_viewer::run_reader_viewer;
-pub use static_viewer::{StaticViewerConfig, StaticViewerOutcome, run_static_viewer};
+pub use static_viewer::{
+    StaticProductReceipt, StaticProductReceiptOutcome, StaticViewerConfig, StaticViewerOutcome,
+    run_static_viewer,
+};
 #[cfg(feature = "livery")]
 pub use workspace_viewer::{
     WorkspaceViewerConfig, WorkspaceViewerOutcome, run_livery_workspace_viewer,

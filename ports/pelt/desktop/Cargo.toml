@@ -20,7 +20,7 @@ default = ["livery", "reader", "netfetch"]
 # feature owns only the winit/wgpu shell that presents one.
 present = [
     "dep:netrender", "dep:genet-winit-host", "dep:inker", "dep:wgpu",
-    "dep:raw-window-handle",
+    "dep:raw-window-handle", "dep:image",
 ]
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [

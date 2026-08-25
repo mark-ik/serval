@@ -68,6 +68,7 @@ pub fn run_scripted_viewer(
             created_window: false,
             redraws: 0,
             size: (0, 0),
+            product_receipt: None,
         }),
         WindowingMode::Headed => run_scripted_headed(config, engine),
     }

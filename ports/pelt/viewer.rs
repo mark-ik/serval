@@ -45,6 +45,8 @@ pub(crate) fn main() {
     let mut size: Option<(u32, u32)> = None;
     // Bounded headed capture/smoke run. Interactive profiles leave this unset.
     let mut frames: Option<u32> = None;
+    let mut product_receipt: Option<pelt_desktop::StaticProductReceipt> = None;
+    let mut artifact: Option<std::path::PathBuf> = None;
     let mut with_tiles = false;
     let mut tile_receipt = false;
     let mut capability_receipt = false;
@@ -116,6 +118,26 @@ pub(crate) fn main() {
             value if value.starts_with("--frames=") => {
                 frames = Some(parse_frames(&value["--frames=".len()..]));
             },
+            "--product-receipt" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--product-receipt requires a named receipt id");
+                    std::process::exit(2);
+                };
+                product_receipt = Some(parse_product_receipt(&value));
+            },
+            value if value.starts_with("--product-receipt=") => {
+                product_receipt = Some(parse_product_receipt(&value["--product-receipt=".len()..]));
+            },
+            "--artifact" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--artifact requires a PNG path");
+                    std::process::exit(2);
+                };
+                artifact = Some(value.into());
+            },
+            value if value.starts_with("--artifact=") => {
+                artifact = Some(value["--artifact=".len()..].into());
+            },
             "--tiles" => {
                 with_tiles = true;
             },
@@ -178,6 +200,35 @@ pub(crate) fn main() {
                 tile_urls.push(value.to_owned());
             },
         }
+    }
+
+    if let Some(receipt) = product_receipt {
+        if selected_engine != SelectedEngine::Livery {
+            eprintln!(
+                "product receipt {} is owned by the livery profile",
+                receipt.id()
+            );
+            std::process::exit(2);
+        }
+        if with_tiles {
+            eprintln!(
+                "product receipt {} is a single-document receipt",
+                receipt.id()
+            );
+            std::process::exit(2);
+        }
+        if url.is_some() {
+            eprintln!("product receipt {} owns its fixture URL", receipt.id());
+            std::process::exit(2);
+        }
+        if artifact.is_none() {
+            eprintln!("--product-receipt {} needs --artifact <png>", receipt.id());
+            std::process::exit(2);
+        }
+        url = Some(product_receipt_fixture(receipt));
+    } else if artifact.is_some() {
+        eprintln!("--artifact is only accepted with --product-receipt");
+        std::process::exit(2);
     }
 
     let engine_profile = selected_engine.profile();
@@ -332,7 +383,7 @@ pub(crate) fn main() {
             }
 
             #[cfg(feature = "livery")]
-            run_livery_profile(url, size, frames);
+            run_livery_profile(url, size, frames, product_receipt, artifact);
             #[cfg(not(feature = "livery"))]
             {
                 eprintln!(
@@ -425,6 +476,29 @@ fn parse_frames(value: &str) -> u32 {
     }
 }
 
+fn parse_product_receipt(value: &str) -> pelt_desktop::StaticProductReceipt {
+    match value {
+        "article" => pelt_desktop::StaticProductReceipt::Article,
+        _ => {
+            eprintln!("--product-receipt expects article (got '{value}')");
+            std::process::exit(2);
+        },
+    }
+}
+
+fn product_receipt_fixture(receipt: pelt_desktop::StaticProductReceipt) -> String {
+    match receipt {
+        pelt_desktop::StaticProductReceipt::Article => {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("examples")
+                .join("livery-route")
+                .join("index.html")
+                .to_string_lossy()
+                .into_owned()
+        },
+    }
+}
+
 /// Dispatch a smolweb URL to the owned headed document viewer.
 #[cfg(feature = "smolweb")]
 fn run_smolweb_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
@@ -489,12 +563,24 @@ fn run_scripted_profile(url: String, js: String, size: Option<(u32, u32)>, frame
 
 /// Dispatch script-free HTML to the owned Livery/Buckram document engine.
 #[cfg(feature = "livery")]
-fn run_livery_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
+fn run_livery_profile(
+    url: String,
+    size: Option<(u32, u32)>,
+    frames: Option<u32>,
+    product_receipt: Option<pelt_desktop::StaticProductReceipt>,
+    artifact: Option<std::path::PathBuf>,
+) {
     let mut config = pelt_desktop::StaticViewerConfig::new(
         EngineProfile::Livery,
         pelt_desktop::WindowingMode::Headed,
         url,
     );
+    if let Some(receipt) = product_receipt {
+        config = config.with_product_receipt(
+            receipt,
+            artifact.expect("the CLI requires an artifact for a product receipt"),
+        );
+    }
     if let Some((width, height)) = size {
         config = config.with_size(width, height);
     }
@@ -502,10 +588,25 @@ fn run_livery_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>
         config = config.with_frame_limit(limit);
     }
     match pelt_desktop::run_livery_viewer(config) {
-        Ok(outcome) => println!(
-            "pelt livery viewer engine=genet.livery url={} window={} redraws={} size={}x{}",
-            outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
-        ),
+        Ok(outcome) => {
+            println!(
+                "pelt livery viewer engine=genet.livery url={} window={} redraws={} size={}x{}",
+                outcome.url,
+                outcome.created_window,
+                outcome.redraws,
+                outcome.size.0,
+                outcome.size.1
+            );
+            if let Some(receipt) = outcome.product_receipt {
+                println!(
+                    "pelt product receipt={} assertion={} artifact={} digest={:016x}",
+                    receipt.id,
+                    receipt.assertion,
+                    receipt.artifact.display(),
+                    receipt.digest
+                );
+            }
+        },
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -830,6 +931,8 @@ Options:
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
+    --product-receipt <article>        (bounded fixture + semantic assertion + PNG)
+    --artifact <path.png>              (required with --product-receipt)
     --tiles                            (route positional URLs in a recursive Frisket workspace)
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)

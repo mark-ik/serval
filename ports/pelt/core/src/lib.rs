@@ -156,6 +156,13 @@ impl<F: 'static> PeltController<F> {
         self.session.inspect()
     }
 
+    /// Links in the current retained frame, in document-local coordinates.
+    /// Product hosts use this for semantic receipts and accessibility-driven
+    /// activation without reaching through the controller to a concrete engine.
+    pub fn links(&self) -> Vec<inker::SessionLink> {
+        self.session.links()
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.history_index > 0
     }

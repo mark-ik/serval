@@ -424,6 +424,26 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
+**Status:** in progress 2026-08-25. Fixture 1 is complete; fixtures 2-8
+remain open.
+
+The ordinary-article receipt is:
+
+```sh
+cargo run -p pelt --no-default-features --features livery -j 1 -- \
+  --product-receipt article --artifact target/pelt-receipts/article.png
+```
+
+The named receipt owns `examples/livery-route`, a 960x640 viewport, and three
+presented frames unless the caller explicitly overrides size or frame count. It
+drives the retained jump link through press, pointer capture, release, and
+fragment scroll before accepting the artifact. Capture composes into an owned
+RGBA8 target on Pelt's host device, reads that target to PNG, then presents the
+same target. The 2026-08-25 Windows receipt recorded all three frames, the
+interaction assertion, a nonblank 960x640 PNG, and digest
+`973595d7fbd90151`. The checked-in GPU-free assertion drives the same receipt
+through `PeltController`.
+
 Check in deterministic fixtures and bounded headed capture commands for:
 
 1. an ordinary article with fonts and images;
@@ -469,10 +489,11 @@ terminal.
 
 ## Immediate next lane
 
-Execute P5. Turn Pelt into the named, deterministic product receipt for
-Livery/Buckram across ordinary articles, controls and nested scrolling,
-responsive layout, scripted mutation, resource graphs, protocol-native content,
-and the mixed workspace. Each fixture needs a bounded command, captured
-artifact, and interaction assertion. The completed Windows P4 route remains the
-explicit external-engine comparison lane; IOSurface, DMA-BUF, and multi-GPU
-hardening stay independently receipted work.
+Continue P5 from the completed ordinary-article receipt. Add named receipts for
+controls and nested scrolling, responsive layout, scripted mutation, resource
+graphs, protocol-native content, the mixed workspace, and the explicit fallback.
+The Reader tile must carry held source bytes rather than teaching Fleece to
+fetch. Each remaining fixture needs a bounded command, captured artifact, and
+interaction assertion. The completed Windows P4 route remains the external
+engine comparison lane; IOSurface, DMA-BUF, and multi-GPU hardening stay
+independently receipted work.
