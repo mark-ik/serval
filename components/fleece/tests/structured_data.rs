@@ -253,3 +253,28 @@ fn microdata_value_matrix_uses_exact_raw_attributes_and_text_content() {
         Some("/image.png")
     );
 }
+
+#[test]
+fn microdata_applies_only_to_html_elements_and_uses_html_whitespace() {
+    let data = extract_structured_data(&StaticDocument::parse(
+        r#"<svg>
+          <g itemscope itemtype="urn:ignored:Svg">
+            <text itemprop="name">Ignored</text>
+          </g>
+          <foreignObject>
+            <div itemscope itemtype="urn:kept:Html">
+              <span itemprop="whole&#x0b;token">Kept</span>
+            </div>
+          </foreignObject>
+        </svg>"#,
+    ));
+
+    assert_eq!(data.len(), 1);
+    assert_identity(
+        &data[0],
+        StructuredDataSource::Microdata,
+        &["urn:kept:Html"],
+        None,
+    );
+    assert_eq!(string(field(&data[0].value, "whole\u{000b}token")), "Kept");
+}

@@ -8,10 +8,10 @@ use layout_dom_api::{LayoutDom, NodeKind};
 
 use crate::{attr, local_name};
 
-/// One JSON value harvested from page-carried structured data.
+/// One value harvested from page-carried JSON-LD syntax or HTML Microdata.
 ///
-/// Fleece keeps this small value model locally so JSON-LD does not add a
-/// parser dependency to the render-free extraction cone.
+/// Fleece keeps the JSON-shaped variants local so JSON-LD syntax harvesting
+/// does not add a parser dependency to the render-free extraction cone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredValue {
     Null,
@@ -79,7 +79,8 @@ fn walk_structured_data<D: LayoutDom>(
     index: &DomIndex<D::NodeId>,
     out: &mut Vec<StructuredData>,
 ) {
-    if local_name(dom, id) == Some("script")
+    if is_html_element(dom, id)
+        && local_name(dom, id) == Some("script")
         && attr(dom, id, "type").is_some_and(|value| {
             value
                 .split(';')
@@ -92,7 +93,10 @@ fn walk_structured_data<D: LayoutDom>(
             collect_json_ld_root(value, out);
         }
     }
-    if attr(dom, id, "itemscope").is_some() && attr(dom, id, "itemprop").is_none() {
+    if is_html_element(dom, id)
+        && attr(dom, id, "itemscope").is_some()
+        && attr(dom, id, "itemprop").is_none()
+    {
         out.push(microdata_item(dom, id, index, &mut HashSet::new()));
     }
     for child in dom.dom_children(id) {
@@ -190,7 +194,8 @@ fn microdata_item<D: LayoutDom>(
     let mut fields = Vec::new();
     for property in item_property_elements(dom, root, index) {
         let names = item_property_names(dom, property);
-        let value = if attr(dom, property, "itemscope").is_some() {
+        let value = if is_html_element(dom, property) && attr(dom, property, "itemscope").is_some()
+        {
             if item_stack.contains(&property) {
                 StructuredValue::Cycle
             } else {
@@ -237,7 +242,7 @@ fn item_property_elements<D: LayoutDom>(
         if !memory.insert(current) {
             continue;
         }
-        if attr(dom, current, "itemscope").is_none() {
+        if !is_html_element(dom, current) || attr(dom, current, "itemscope").is_none() {
             pending.extend(element_children(dom, current));
         }
         if !item_property_names(dom, current).is_empty() {
@@ -249,6 +254,9 @@ fn item_property_elements<D: LayoutDom>(
 }
 
 fn item_property_names<D: LayoutDom>(dom: &D, id: D::NodeId) -> Vec<String> {
+    if !is_html_element(dom, id) {
+        return Vec::new();
+    }
     let Some(properties) = attr(dom, id, "itemprop") else {
         return Vec::new();
     };
@@ -261,8 +269,13 @@ fn item_property_names<D: LayoutDom>(dom: &D, id: D::NodeId) -> Vec<String> {
 
 fn html_tokens(value: &str) -> impl Iterator<Item = &str> {
     value
-        .split(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' '))
+        .split(['\t', '\n', '\u{000c}', '\r', ' '])
         .filter(|token| !token.is_empty())
+}
+
+fn is_html_element<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
+    dom.element_name(id)
+        .is_some_and(|name| name.ns.as_ref() == "http://www.w3.org/1999/xhtml")
 }
 
 fn microdata_property_text<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
@@ -525,7 +538,10 @@ impl<'a> JsonParser<'a> {
     }
 
     fn skip_ws(&mut self) {
-        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
+        while self
+            .peek()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+        {
             self.cursor += 1;
         }
     }
@@ -536,5 +552,24 @@ impl<'a> JsonParser<'a> {
 
     fn take(&mut self, expected: u8) -> Option<()> {
         (self.peek()? == expected).then(|| self.cursor += 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JsonParser;
+
+    #[test]
+    fn json_parser_accepts_only_json_whitespace() {
+        assert!(
+            JsonParser::new("{\t\"@type\"\r:\n\"Thing\" }")
+                .parse()
+                .is_some()
+        );
+        assert!(
+            JsonParser::new("{\"@type\"\u{000c}:\"Thing\"}")
+                .parse()
+                .is_none()
+        );
     }
 }
