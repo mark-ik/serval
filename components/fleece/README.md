@@ -40,6 +40,22 @@ component using the WICG draft revision pinned in its module documentation. It
 does not compose a source URL or implement navigation, activation, indication,
 or script-visible URL privacy; those remain browser-host responsibilities.
 
+## Structured data
+
+Fleece 0.3 harvests page-carried JSON-LD syntax and HTML Microdata items into
+`StructuredData`. `types` preserves every declared `@type` or `itemtype` string
+without shortening or expansion, while `id` preserves a raw `@id` or `itemid`.
+The original JSON value, including `@context` and unknown members, remains in
+`value`; explicit `@graph` objects are also exposed in source order.
+
+Microdata follows the HTML item/property traversal, including `itemref`, nested
+items, repeated properties, element-specific values, duplicate suppression,
+and cycle protection. URL-valued attributes and identifiers remain raw source
+strings because Fleece has no source URL or document-base authority.
+
+This is syntax harvesting, not JSON-LD 1.1 expansion, RDF construction,
+vocabulary reasoning, URL resolution, or remote-context loading.
+
 ## License
 
 MPL-2.0

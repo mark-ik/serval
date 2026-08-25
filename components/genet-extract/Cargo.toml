@@ -1,6 +1,6 @@
 [package]
 name = "genet-extract"
-version = "0.1.0"
+version = "0.2.0"
 repository = "https://github.com/merely-made/genet"
 publish = true
 authors.workspace = true
@@ -13,4 +13,4 @@ description = "Compatibility re-export for fleece, Genet's render-free extractio
 path = "lib.rs"
 
 [dependencies]
-fleece = { path = "../fleece" }
+fleece = { version = "0.3.0", path = "../fleece" }
