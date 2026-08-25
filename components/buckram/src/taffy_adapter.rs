@@ -615,6 +615,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             line_constraints: None,
             nested_float_state: None,
             resolved_shrink_to_fit: None,
+            fixed_leaf_intrinsics_enabled: false,
             marker: PhantomData,
         };
         let result = run.measure_intrinsic_inline_subtree(id, None).ok();
@@ -915,6 +916,7 @@ where
             line_constraints: None,
             nested_float_state: None,
             resolved_shrink_to_fit: None,
+            fixed_leaf_intrinsics_enabled: false,
             marker: PhantomData,
         };
         compute_root_layout(&mut run, root.into_taffy(), available);
@@ -1126,6 +1128,7 @@ struct AlgorithmRun<'a, S, Context, Source, Measure> {
     line_constraints: Option<FloatLineConstraints>,
     nested_float_state: Option<FloatContextState>,
     resolved_shrink_to_fit: Option<AlgorithmNodeId>,
+    fixed_leaf_intrinsics_enabled: bool,
     marker: PhantomData<&'a mut Context>,
 }
 
@@ -1548,32 +1551,39 @@ where
 
         let kind = self.tree.nodes[node.index()].kind;
         let style = self.tree.nodes[node.index()].block_style;
-        let sizes = match kind {
-            // K4d6 supplies table intrinsics from the accepted K4c query
-            // contract; nothing constructs the tag before then.
-            AlgorithmKind::Hidden | AlgorithmKind::Table => {
-                IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
-            },
-            AlgorithmKind::Leaf if self.tree.nodes[node.index()].context.is_none() => {
-                IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
-            },
-            AlgorithmKind::Leaf => {
-                if orthogonal_inline_constraint.is_some() && !style.flow.is_horizontal() {
-                    return Err(BlockDeferral::IntrinsicSize);
-                }
-                let min_content = self
-                    .measure_inline_intrinsic(node, IntrinsicSizeKind::MinContent)
-                    .ok_or(BlockDeferral::IntrinsicSize)?;
-                let max_content = self
-                    .measure_inline_intrinsic(node, IntrinsicSizeKind::MaxContent)
-                    .ok_or(BlockDeferral::IntrinsicSize)?;
-                IntrinsicSizes::new(min_content, max_content).ok_or(BlockDeferral::IntrinsicSize)?
-            },
-            AlgorithmKind::Block => {
-                if let Some(content_size) = intrinsic_definite_inline_content_size(style)? {
-                    IntrinsicSizes::new(content_size, content_size)
+        let definite_content_size = if kind == AlgorithmKind::Block
+            || (kind == AlgorithmKind::Leaf && self.fixed_leaf_intrinsics_enabled)
+        {
+            intrinsic_definite_inline_content_size(style)?
+        } else {
+            None
+        };
+        let sizes = if let Some(content_size) = definite_content_size {
+            IntrinsicSizes::new(content_size, content_size).ok_or(BlockDeferral::IntrinsicSize)?
+        } else {
+            match kind {
+                // K4d6 supplies table intrinsics from the accepted K4c query
+                // contract; nothing constructs the tag before then.
+                AlgorithmKind::Hidden | AlgorithmKind::Table => {
+                    IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
+                },
+                AlgorithmKind::Leaf if self.tree.nodes[node.index()].context.is_none() => {
+                    IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
+                },
+                AlgorithmKind::Leaf => {
+                    if orthogonal_inline_constraint.is_some() && !style.flow.is_horizontal() {
+                        return Err(BlockDeferral::IntrinsicSize);
+                    }
+                    let min_content = self
+                        .measure_inline_intrinsic(node, IntrinsicSizeKind::MinContent)
+                        .ok_or(BlockDeferral::IntrinsicSize)?;
+                    let max_content = self
+                        .measure_inline_intrinsic(node, IntrinsicSizeKind::MaxContent)
+                        .ok_or(BlockDeferral::IntrinsicSize)?;
+                    IntrinsicSizes::new(min_content, max_content)
                         .ok_or(BlockDeferral::IntrinsicSize)?
-                } else {
+                },
+                AlgorithmKind::Block => {
                     let children = self.tree.nodes[node.index()].children.clone();
                     let mut min_content = 0.0_f32;
                     let mut max_content = 0.0_f32;
@@ -1596,15 +1606,15 @@ where
                     }
                     IntrinsicSizes::new(min_content, max_content)
                         .ok_or(BlockDeferral::IntrinsicSize)?
-                }
-            },
-            // Flex and grid retain their formatting roles. Taffy is queried
-            // in its intrinsic mode for these admitted algorithm subtrees;
-            // Buckram never reads a completed normal-flow layout back as the
-            // browser-facing intrinsic answer.
-            AlgorithmKind::Flex | AlgorithmKind::Grid => {
-                self.measure_admitted_algorithm_inline_intrinsic(node, style)?
-            },
+                },
+                // Flex and grid retain their formatting roles. Taffy is queried
+                // in its intrinsic mode for these admitted algorithm subtrees;
+                // Buckram never reads a completed normal-flow layout back as the
+                // browser-facing intrinsic answer.
+                AlgorithmKind::Flex | AlgorithmKind::Grid => {
+                    self.measure_admitted_algorithm_inline_intrinsic(node, style)?
+                },
+            }
         };
         if orthogonal_inline_constraint.is_none() {
             self.tree.nodes[node.index()].intrinsic_inline_sizes = Some(sizes);
@@ -1763,7 +1773,13 @@ where
         style: BlockStyle,
         containing_inline_size: f32,
     ) -> Result<crate::UsedInlineSize, BlockDeferral> {
-        let intrinsic = self.measure_intrinsic_inline_subtree(node, None)?;
+        // Auto-width floats and atomic inline roots need fixed-size leaf
+        // descendants in their intrinsic contribution. Positioned queries
+        // keep their separately admitted empty-leaf contract.
+        let previous = std::mem::replace(&mut self.fixed_leaf_intrinsics_enabled, true);
+        let intrinsic = self.measure_intrinsic_inline_subtree(node, None);
+        self.fixed_leaf_intrinsics_enabled = previous;
+        let intrinsic = intrinsic?;
         Ok(solve_shrink_to_fit_inline_size(
             style,
             containing_inline_size,
@@ -1887,10 +1903,15 @@ where
     }
 
     fn shares_parent_float_context(&self, child: AlgorithmNodeId, child_style: BlockStyle) -> bool {
+        // Relative positioning preserves the box's normal-flow BFC geometry;
+        // its retained visual offset is applied after this layout.
         self.tree.nodes[child.index()].nested_float_state_enabled
             && self.tree.nodes[child.index()].kind == AlgorithmKind::Block
             && !child_style.establishes_bfc
-            && child_style.position == crate::BlockPosition::Static
+            && matches!(
+                child_style.position,
+                crate::BlockPosition::Static | crate::BlockPosition::Relative
+            )
             && child_style.float == FloatSide::None
             && !child_style.replaced
             && child_style.flow == child_style.containing_flow
@@ -4693,7 +4714,7 @@ mod tests {
     }
 
     #[test]
-    fn buckram_exports_nested_negative_margin_floats_through_ordinary_blocks() {
+    fn buckram_exports_nested_negative_margin_floats_through_a_relative_wrapper() {
         let mut tree = AlgorithmTree::<Style, (), u8>::new();
         let nested_float = tree.new_with_children_and_block_style(
             AlgorithmKind::Leaf,
@@ -4735,7 +4756,10 @@ mod tests {
         tree.enable_nested_float_state(inner);
         let outer = tree.new_with_children_and_block_style(
             AlgorithmKind::Block,
-            BlockStyle::default(),
+            BlockStyle {
+                position: crate::BlockPosition::Relative,
+                ..BlockStyle::default()
+            },
             Style {
                 display: Display::Block,
                 ..Style::default()

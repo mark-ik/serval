@@ -6011,11 +6011,16 @@ fn supports_nested_float_state<Id>(
     block_style: BlockStyle,
     kind: AlgorithmKind,
 ) -> bool {
+    // A relative block remains in normal flow. Livery translates its retained
+    // fragment subtree only after Buckram has resolved the shared float state.
     kind == AlgorithmKind::Block
         && css_box.display.outside == Some(DisplayOutside::Block)
         && css_box.display.internal_table.is_none()
         && !block_style.establishes_bfc
-        && block_style.position == BuckramBlockPosition::Static
+        && matches!(
+            block_style.position,
+            BuckramBlockPosition::Static | BuckramBlockPosition::Relative
+        )
         && block_style.float == FloatSide::None
         && !block_style.replaced
         && block_style.flow == block_style.containing_flow
@@ -13069,6 +13074,102 @@ mod tests {
             assert!(host.height >= 80.0);
         }
         assert_eq!(algorithms.taffy, 0);
+    }
+
+    #[test]
+    fn live_shape_outside_keeps_forced_break_lines_in_the_selected_float_band() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=\"container\"><div id=\"host\"><div id=\"shape\"></div>\
+             <br><br>\n            X\n</div></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["body { margin: 0; }\
+                 #container { position: relative; }\
+                 #host { width: 300px; height: 200px; font-family: monospace;\
+                         font-size: 40px; line-height: 40px; }\
+                 #shape { float: left; width: 150px; height: 150px; margin: 10px;\
+                          padding: 10px; border: 10px solid transparent;\
+                          shape-outside: border-box; }"]),
+            &Device::screen(400.0, 300.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            400.0,
+            300.0,
+            ViewportSizes::uniform(400.0, 300.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let host = node_by_id(&dom, dom.document(), "host").expect("host");
+        let copy = dom
+            .dom_children(host)
+            .find(|node| dom.text(*node).is_some_and(|text| text.contains('X')))
+            .expect("direct text");
+        let host = layout.get(host).expect("host fragment").physical_rect();
+        let copy = layout
+            .fragments_for_node(copy)
+            .map(|fragment| fragment.physical_rect())
+            .max_by(|left, right| left.width.total_cmp(&right.width))
+            .expect("copy line");
+
+        assert!(
+            (copy.x - host.x - 200.0).abs() <= 0.5,
+            "forced breaks must retain the border-box line origin: host={host:?}, copy={copy:?}"
+        );
+        assert!(
+            (copy.y - host.y - 80.0).abs() <= 0.5,
+            "host={host:?}, copy={copy:?}"
+        );
+        assert_eq!(layout.block_algorithm_counts().taffy, 0);
+    }
+
+    #[test]
+    fn relative_zero_height_wrapper_retains_its_floated_descendant() {
+        let dom = StaticDocument::parse(
+            "<html><body><div id=\"outer\"><div id=\"float\"><div></div></div>\
+             <div id=\"absolute\"></div></div></body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["body { margin: 0; }\
+                 #outer { position: relative; }\
+                 #float { float: left; }\
+                 #float > div, #absolute { width: 96px; height: 96px; }\
+                 #absolute { position: absolute; left: 96px; top: 0; }"]),
+            &Device::screen(400.0, 300.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            400.0,
+            300.0,
+            ViewportSizes::uniform(400.0, 300.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let outer = node_by_id(&dom, dom.document(), "outer").expect("outer");
+        let float = node_by_id(&dom, dom.document(), "float").expect("float");
+        let absolute = node_by_id(&dom, dom.document(), "absolute").expect("absolute");
+        let outer = layout.get(outer).expect("outer fragment").physical_rect();
+        let float = layout.get(float).expect("float fragment").physical_rect();
+        let absolute = layout
+            .get(absolute)
+            .expect("absolute fragment")
+            .physical_rect();
+
+        assert_eq!(
+            (float.x, float.y, float.width, float.height),
+            (outer.x, outer.y, 96.0, 96.0)
+        );
+        assert_eq!((absolute.x, absolute.y), (outer.x + 96.0, outer.y));
     }
 
     #[test]

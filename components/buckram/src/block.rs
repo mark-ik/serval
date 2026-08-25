@@ -2115,11 +2115,19 @@ fn spans_overlap(first_start: f32, first_size: f32, second_start: f32, second_si
     if first_size < 0.0 || second_size < 0.0 {
         return false;
     }
+    // A zero-height float excludes a line only when the line strictly
+    // straddles its block position. A line beginning at the same position is
+    // not narrowed. A provisional zero-height line still samples a nonzero
+    // float area at its top edge.
+    if first_size == 0.0 {
+        return second_size > 0.0
+            && second_start < first_start
+            && first_start < second_start + second_size;
+    }
     let first_end = first_start + first_size;
     let second_end = second_start + second_size;
-    if first_size == 0.0 || second_size == 0.0 {
+    if second_size == 0.0 {
         first_start <= second_start && second_start < first_end
-            || second_start <= first_start && first_start < second_end
     } else {
         first_start < second_end && second_start < first_end
     }
@@ -2737,6 +2745,53 @@ mod tests {
             assert_eq!(in_flow.rect.y, 0.0, "side={side:?}");
             assert_eq!(context.used_block_size_containing_floats(false), 10.0);
         }
+    }
+
+    #[test]
+    fn zero_height_float_excludes_only_a_straddling_nonzero_line() {
+        let mut context = horizontal_context(200.0);
+        context.place_float(
+            fixed_float(FloatSide::Left, 80.0),
+            PhysicalSize {
+                width: 80.0,
+                height: 0.0,
+            },
+        );
+
+        assert_eq!(
+            context.available_inline_space(0.0, 40.0),
+            FloatAvailableSpace {
+                inline_start: 0.0,
+                inline_size: 200.0,
+            }
+        );
+        assert_eq!(
+            context
+                .float_line_constraints(0.0)
+                .expect("retained zero-height float")
+                .available_space(0.0, 40.0),
+            FloatAvailableSpace {
+                inline_start: 0.0,
+                inline_size: 200.0,
+            }
+        );
+        assert_eq!(
+            context.available_inline_space(-10.0, 20.0),
+            FloatAvailableSpace {
+                inline_start: 80.0,
+                inline_size: 120.0,
+            }
+        );
+        assert_eq!(
+            context
+                .float_line_constraints(0.0)
+                .expect("retained zero-height float")
+                .available_space(-10.0, 20.0),
+            FloatAvailableSpace {
+                inline_start: 80.0,
+                inline_size: 120.0,
+            }
+        );
     }
 
     #[test]
