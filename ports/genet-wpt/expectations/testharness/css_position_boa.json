@@ -14,7 +14,7 @@
     },
     "css/css-position/animations/bottom-interpolation.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 52,
       "subtests_total": 144
     },
     "css/css-position/animations/left-composition.html": {
@@ -24,7 +24,7 @@
     },
     "css/css-position/animations/left-interpolation.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 52,
       "subtests_total": 144
     },
     "css/css-position/animations/position-interpolation.html": {
@@ -38,7 +38,7 @@
     },
     "css/css-position/animations/right-interpolation.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 52,
       "subtests_total": 144
     },
     "css/css-position/animations/top-composition.html": {
@@ -48,7 +48,7 @@
     },
     "css/css-position/animations/top-interpolation.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 52,
       "subtests_total": 144
     },
     "css/css-position/backdrop-inherit-computed.html": {
@@ -120,8 +120,8 @@
       "status": "skip"
     },
     "css/css-position/inheritance.html": {
-      "status": "fail",
-      "subtests_passed": 4,
+      "status": "pass",
+      "subtests_passed": 12,
       "subtests_total": 12
     },
     "css/css-position/invalidate-opacity-negative-z-index.html": {
@@ -249,7 +249,7 @@
     },
     "css/css-position/overlay/overlay-transition-property.html": {
       "status": "fail",
-      "subtests_passed": 2,
+      "subtests_passed": 1,
       "subtests_total": 4
     },
     "css/css-position/overlay/overlay-transition.html": {
@@ -269,57 +269,57 @@
     },
     "css/css-position/parsing/bottom-computed.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 3,
       "subtests_total": 5
     },
     "css/css-position/parsing/bottom-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 3,
       "subtests_total": 3
     },
     "css/css-position/parsing/bottom-valid.html": {
-      "status": "pass",
-      "subtests_passed": 4,
+      "status": "fail",
+      "subtests_passed": 3,
       "subtests_total": 4
     },
     "css/css-position/parsing/inset-computed.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 12,
       "subtests_total": 20
     },
     "css/css-position/parsing/inset-invalid.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 12,
       "subtests_total": 22
     },
     "css/css-position/parsing/inset-valid.html": {
       "status": "fail",
-      "subtests_passed": 40,
+      "subtests_passed": 36,
       "subtests_total": 50
     },
     "css/css-position/parsing/left-computed.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 3,
       "subtests_total": 5
     },
     "css/css-position/parsing/left-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 3,
       "subtests_total": 3
     },
     "css/css-position/parsing/left-valid.html": {
-      "status": "pass",
-      "subtests_passed": 4,
+      "status": "fail",
+      "subtests_passed": 3,
       "subtests_total": 4
     },
     "css/css-position/parsing/position-computed.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 5,
       "subtests_total": 5
     },
     "css/css-position/parsing/position-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 2,
       "subtests_total": 2
     },
     "css/css-position/parsing/position-valid.html": {
@@ -329,47 +329,47 @@
     },
     "css/css-position/parsing/right-computed.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 3,
       "subtests_total": 5
     },
     "css/css-position/parsing/right-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 3,
       "subtests_total": 3
     },
     "css/css-position/parsing/right-valid.html": {
-      "status": "pass",
-      "subtests_passed": 4,
+      "status": "fail",
+      "subtests_passed": 3,
       "subtests_total": 4
     },
     "css/css-position/parsing/top-computed.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 3,
       "subtests_total": 5
     },
     "css/css-position/parsing/top-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 3,
       "subtests_total": 3
     },
     "css/css-position/parsing/top-valid.html": {
+      "status": "fail",
+      "subtests_passed": 3,
+      "subtests_total": 4
+    },
+    "css/css-position/parsing/z-index-computed.html": {
+      "status": "pass",
+      "subtests_passed": 3,
+      "subtests_total": 3
+    },
+    "css/css-position/parsing/z-index-invalid.html": {
       "status": "pass",
       "subtests_passed": 4,
       "subtests_total": 4
     },
-    "css/css-position/parsing/z-index-computed.html": {
-      "status": "fail",
-      "subtests_passed": 0,
-      "subtests_total": 3
-    },
-    "css/css-position/parsing/z-index-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
-      "subtests_total": 4
-    },
     "css/css-position/parsing/z-index-positioned-computed.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 3,
       "subtests_total": 3
     },
     "css/css-position/parsing/z-index-valid.html": {
@@ -378,8 +378,8 @@
       "subtests_total": 4
     },
     "css/css-position/position-absolute-abspos-table-dynamic.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "css/css-position/position-absolute-center-001.html": {
@@ -447,8 +447,8 @@
       "subtests_total": 1
     },
     "css/css-position/position-absolute-crash-chrome-005.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "css/css-position/position-absolute-crash-chrome-006.html": {
@@ -705,8 +705,8 @@
       "status": "skip"
     },
     "css/css-position/position-fixed-at-bottom-right-on-viewport.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "css/css-position/position-fixed-dynamic-transformed-sibling.html": {
@@ -1265,8 +1265,8 @@
       "status": "skip"
     },
     "css/css-position/sticky/position-sticky-parsing.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "css/css-position/sticky/position-sticky-rendering.html": {

@@ -818,9 +818,8 @@
       "subtests_total": 29
     },
     "dom/nodes/Node-textContent.html": {
-      "status": "fail",
-      "subtests_passed": 10,
-      "subtests_total": 81
+      "reason": "panic",
+      "status": "error"
     },
     "dom/nodes/NodeList-Iterable.html": {
       "status": "pass",
@@ -1300,13 +1299,13 @@
       "status": "skip"
     },
     "dom/nodes/moveBefore/continue-css-animation-left.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/continue-css-animation-transform.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/continue-css-transition-left-pseudo.html": {
@@ -1442,8 +1441,8 @@
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-selector-matching.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-shadow-inside.html": {
@@ -1457,8 +1456,8 @@
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-size-query.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/mutation-observer.html": {

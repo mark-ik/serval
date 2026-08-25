@@ -135,13 +135,13 @@
       "subtests_total": 2
     },
     "css/css-animations/animation-base-response-001.html": {
-      "status": "pass",
-      "subtests_passed": 3,
+      "status": "fail",
+      "subtests_passed": 1,
       "subtests_total": 3
     },
     "css/css-animations/animation-base-response-002.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "css/css-animations/animation-base-response-003.html": {
@@ -574,7 +574,7 @@
     },
     "css/css-animations/computed-style-animation-parsing.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 7
     },
     "css/css-animations/crashtests/add-pseudo-while-animating-001.html": {
@@ -630,7 +630,7 @@
     },
     "css/css-animations/display-interpolation.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 80,
       "subtests_total": 138
     },
     "css/css-animations/display-none-dont-cancel-pseudo.tentative.html": {
@@ -696,7 +696,7 @@
     },
     "css/css-animations/inheritance.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 2,
       "subtests_total": 16
     },
     "css/css-animations/jump-start-animation-before-phase.html": {
@@ -708,8 +708,8 @@
       "status": "skip"
     },
     "css/css-animations/keyframes-unrelated-custom-property.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "css/css-animations/keyframes-zero-angle-crash.html": {
@@ -778,12 +778,12 @@
     },
     "css/css-animations/parsing/animation-delay-invalid.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 4,
       "subtests_total": 5
     },
     "css/css-animations/parsing/animation-delay-valid.html": {
-      "status": "pass",
-      "subtests_passed": 4,
+      "status": "fail",
+      "subtests_passed": 1,
       "subtests_total": 4
     },
     "css/css-animations/parsing/animation-direction-computed.html": {
@@ -808,12 +808,12 @@
     },
     "css/css-animations/parsing/animation-duration-invalid.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 5,
       "subtests_total": 6
     },
     "css/css-animations/parsing/animation-duration-valid.html": {
-      "status": "pass",
-      "subtests_passed": 3,
+      "status": "fail",
+      "subtests_passed": 1,
       "subtests_total": 3
     },
     "css/css-animations/parsing/animation-fill-mode-computed.html": {
@@ -853,7 +853,7 @@
     },
     "css/css-animations/parsing/animation-name-computed.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 7,
       "subtests_total": 27
     },
     "css/css-animations/parsing/animation-name-edge-cases.html": {
@@ -861,13 +861,13 @@
       "status": "skip"
     },
     "css/css-animations/parsing/animation-name-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 9,
       "subtests_total": 9
     },
     "css/css-animations/parsing/animation-name-valid.html": {
       "status": "fail",
-      "subtests_passed": 23,
+      "subtests_passed": 7,
       "subtests_total": 27
     },
     "css/css-animations/parsing/animation-play-state-computed.html": {
@@ -926,8 +926,8 @@
       "subtests_total": 36
     },
     "css/css-animations/parsing/animation-timing-function-invalid.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 7,
       "subtests_total": 7
     },
     "css/css-animations/parsing/animation-valid.html": {
@@ -1024,7 +1024,7 @@
     },
     "css/css-animations/transition-properties-not-animatable.html": {
       "status": "fail",
-      "subtests_passed": 0,
+      "subtests_passed": 105,
       "subtests_total": 126
     },
     "css/css-animations/transition-ready-time-offscreen.html": {
