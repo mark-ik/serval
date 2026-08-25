@@ -325,7 +325,7 @@ express the same statements the kernel stores.**
    stays future.
 4. **Statements wiring:** map `rel` to kernel `Semantic` edges with predicate
    IRIs — depends on the
-   linked-data plan (`mere/design_docs/mere_docs/implementation_strategy/2026-05-22_linked_data_ingest_export_plan.md`)
+   linked-data plan (`mere/design_docs/archive_docs/2026-06-09_completed_plans/2026-05-22_linked_data_ingest_export_plan.md`)
    Phase 0 (open the Semantic predicate). **Landed 2026-06-01** (Phase 0 itself
    landed 2026-05-31). Three pieces:
    - **`InlineSpan::Link.predicate`** (`#[serde(default)] Option<String>`): the
