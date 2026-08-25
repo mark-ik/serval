@@ -1,7 +1,7 @@
 {
   "command": "testharness",
   "engine": "boa",
-  "renderer": "stylo",
+  "renderer": "livery",
   "tests": {
     "css/css-position/absolute-pos-box-inside-fixed-pos-box-with-changing-height.html": {
       "reason": "non-testharness",

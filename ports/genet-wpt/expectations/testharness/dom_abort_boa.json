@@ -1,7 +1,7 @@
 {
   "command": "testharness",
   "engine": "boa",
-  "renderer": "stylo",
+  "renderer": "livery",
   "tests": {
     "dom/abort/AbortSignal.any.html": {
       "status": "pass",

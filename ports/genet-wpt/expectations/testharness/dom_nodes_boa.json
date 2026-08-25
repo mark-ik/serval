@@ -1,7 +1,7 @@
 {
   "command": "testharness",
   "engine": "boa",
-  "renderer": "stylo",
+  "renderer": "livery",
   "tests": {
     "dom/nodes/CharacterData-appendChild.html": {
       "status": "fail",

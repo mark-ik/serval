@@ -1,7 +1,7 @@
 {
   "command": "testharness",
   "engine": "boa",
-  "renderer": "stylo",
+  "renderer": "livery",
   "tests": {
     "css/mediaqueries/aspect-ratio-001.html": {
       "reason": "non-testharness",

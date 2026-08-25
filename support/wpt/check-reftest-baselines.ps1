@@ -43,8 +43,9 @@ $baselines = @(
 
 foreach ($baseline in $baselines) {
     $expectations = Join-Path $repo $baseline.Expectations
-    Write-Output "Checking WPT reftest baseline: $($baseline.Subset) [$($baseline.Engine)]"
-    & $runner reftest $baseline.Subset --engine $baseline.Engine --expectations $expectations
+    $renderer = if ($baseline.Renderer) { $baseline.Renderer } else { "livery" }
+    Write-Output "Checking WPT reftest baseline: $($baseline.Subset) [$($baseline.Engine)/$renderer]"
+    & $runner reftest $baseline.Subset --engine $baseline.Engine --renderer $renderer --expectations $expectations
     if ($LASTEXITCODE -ne 0) {
         throw "WPT reftest baseline failed: $($baseline.Subset) [$($baseline.Engine)]"
     }
