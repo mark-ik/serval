@@ -6,62 +6,151 @@ use layout_dom_api::LayoutDom;
 
 use crate::{attr, local_name};
 
-/// The document's self-description: the metadata a page declares about itself. All
-/// values are **unresolved** (a `canonical` href is the raw attribute). `Default` is
-/// "nothing declared".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Metadata {
-    /// `<meta name="description">` content — the page's own summary.
-    pub description: Option<String>,
-    /// `<link rel="canonical" href>` — the canonical URL the page claims (raw).
-    pub canonical: Option<String>,
-    /// OpenGraph `<meta property="og:*">` pairs with the `og:` prefix stripped, in
-    /// document order: `("title", …)`, `("description", …)`, `("image", …)`,
-    /// `("site_name", …)`, `("type", …)`, `("url", …)`, and the long tail.
-    pub open_graph: Vec<(String, String)>,
+const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+
+/// One grouped Open Graph root property and the structured properties that
+/// immediately follow it in the observed DOM order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenGraphGroup {
+    pub property: String,
+    pub value: String,
+    pub structured: Vec<(String, String)>,
 }
 
-/// The page's declared [`Metadata`]: `<meta name="description">`, the
-/// `<link rel="canonical">` href, and OpenGraph `<meta property="og:*">` pairs.
-/// Walks the whole tree (not just `<head>`) since pages place these loosely.
+/// A DOM `<link>` observed by Fleece. Values remain raw and unresolved;
+/// HTTP `Link` headers are outside this extraction contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentLink {
+    /// HTML-space-tokenized relations. Registered names are ASCII-folded;
+    /// extension relation IRIs retain their identity.
+    pub rel: Vec<String>,
+    pub href: Option<String>,
+    pub type_: Option<String>,
+    pub hreflang: Option<String>,
+    pub title: Option<String>,
+    pub media: Option<String>,
+    /// Other observable attributes in DOM attribute order.
+    pub other: Vec<(String, String)>,
+}
+
+/// The document's self-description. Fleece observes DOM metadata only and
+/// resolves no URLs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Metadata {
+    pub description: Option<String>,
+    /// First qualifying DOM link's raw canonical href.
+    pub canonical: Option<String>,
+    /// Ordered raw Open Graph pairs with `og:` stripped.
+    pub open_graph: Vec<(String, String)>,
+    pub open_graph_groups: Vec<OpenGraphGroup>,
+    /// HTML `<link>` elements in document order. HTTP `Link` headers are absent.
+    pub links: Vec<DocumentLink>,
+}
+
+/// Extract page metadata, Open Graph pairs/groups, and HTML DOM links.
 pub fn extract_metadata<D: LayoutDom>(dom: &D) -> Metadata {
     let mut md = Metadata::default();
     walk_metadata(dom, dom.document(), &mut md);
+    md.open_graph_groups = group_open_graph(&md.open_graph);
     md
 }
 
 fn walk_metadata<D: LayoutDom>(dom: &D, id: D::NodeId, md: &mut Metadata) {
-    match local_name(dom, id) {
-        Some("meta") => {
-            // OpenGraph (`property="og:*"`) takes precedence over `name`; a `<meta>`
-            // carries one or the other. Only the *first* description wins.
-            if let Some(prop) = attr(dom, id, "property") {
-                if let Some(key) = prop.strip_prefix("og:") {
-                    if let Some(content) = attr(dom, id, "content") {
-                        md.open_graph.push((key.to_string(), content));
+    if is_html_element(dom, id) {
+        match local_name(dom, id) {
+            Some("meta") => {
+                if let Some(prop) = attr(dom, id, "property") {
+                    if let Some(key) = prop.strip_prefix("og:") {
+                        if let Some(content) = attr(dom, id, "content") {
+                            md.open_graph.push((key.to_owned(), content));
+                        }
                     }
+                } else if attr(dom, id, "name").is_some_and(|name| name == "description")
+                    && md.description.is_none()
+                {
+                    md.description = attr(dom, id, "content").filter(|value| !value.is_empty());
                 }
-            } else if attr(dom, id, "name").as_deref() == Some("description")
-                && md.description.is_none()
-            {
-                md.description = attr(dom, id, "content").filter(|c| !c.is_empty());
-            }
-        },
-        Some("link") if md.canonical.is_none() && rel_has(dom, id, "canonical") => {
-            md.canonical = attr(dom, id, "href").filter(|h| !h.is_empty());
-        },
-        _ => {},
+            },
+            Some("link") => {
+                let link = document_link(dom, id);
+                if md.canonical.is_none() && link.rel.iter().any(|relation| relation == "canonical")
+                {
+                    md.canonical = link.href.clone().filter(|href| !href.is_empty());
+                }
+                md.links.push(link);
+            },
+            _ => {},
+        }
     }
     for child in dom.dom_children(id) {
         walk_metadata(dom, child, md);
     }
 }
 
-/// Whether `id`'s `rel` attribute contains the (space-separated, case-insensitive)
-/// token `token` — `rel` is a token list (`"stylesheet preload"`, `"canonical"`).
-fn rel_has<D: LayoutDom>(dom: &D, id: D::NodeId, token: &str) -> bool {
-    attr(dom, id, "rel").is_some_and(|rel| {
-        rel.split_whitespace()
-            .any(|t| t.eq_ignore_ascii_case(token))
-    })
+fn document_link<D: LayoutDom>(dom: &D, id: D::NodeId) -> DocumentLink {
+    let known = ["rel", "href", "type", "hreflang", "title", "media"];
+    let other = dom
+        .attributes(id)
+        .filter_map(|attribute| {
+            let name = attribute.name.local.as_ref();
+            (!known.contains(&name)).then(|| (name.to_owned(), attribute.value.to_owned()))
+        })
+        .collect();
+    DocumentLink {
+        rel: attr(dom, id, "rel")
+            .map(|value| html_space_tokens(&value).map(normalize_relation).collect())
+            .unwrap_or_default(),
+        href: attr(dom, id, "href"),
+        type_: attr(dom, id, "type"),
+        hreflang: attr(dom, id, "hreflang"),
+        title: attr(dom, id, "title"),
+        media: attr(dom, id, "media"),
+        other,
+    }
+}
+
+/// HTML space-separated tokens use exactly U+0009, U+000A, U+000C, U+000D,
+/// and U+0020, rather than every Unicode whitespace character.
+fn html_space_tokens(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(|character| {
+            matches!(
+                character,
+                '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '
+            )
+        })
+        .filter(|token| !token.is_empty())
+}
+
+fn normalize_relation(value: &str) -> String {
+    if value.contains(':') {
+        value.to_owned()
+    } else {
+        value.to_ascii_lowercase()
+    }
+}
+
+fn group_open_graph(pairs: &[(String, String)]) -> Vec<OpenGraphGroup> {
+    let mut groups: Vec<OpenGraphGroup> = Vec::new();
+    for (property, value) in pairs {
+        if let Some((root, suffix)) = property.split_once(':') {
+            if let Some(group) = groups.last_mut() {
+                if group.property == root {
+                    group.structured.push((suffix.to_owned(), value.clone()));
+                    continue;
+                }
+            }
+        }
+        groups.push(OpenGraphGroup {
+            property: property.clone(),
+            value: value.clone(),
+            structured: Vec::new(),
+        });
+    }
+    groups
+}
+
+fn is_html_element<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
+    dom.element_name(id)
+        .is_some_and(|name| name.ns.as_ref() == HTML_NAMESPACE)
 }
