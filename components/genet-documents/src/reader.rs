@@ -73,8 +73,11 @@ pub fn lower_article(address: &str, article: &Article) -> EngineDocument {
     }
 }
 
-fn lower_block(address: &str, block: &fleece::Block, out: &mut Vec<Block>) {
-    match block {
+/// Reader rendering is intentionally anchor-blind: Fleece selector evidence remains
+/// available to annotation consumers, while this boundary preserves its portable
+/// document content.
+fn lower_block(address: &str, block: &fleece::AnchoredBlock, out: &mut Vec<Block>) {
+    match &block.block {
         fleece::Block::Heading { level, runs } => out.push(Block::Heading {
             level: *level,
             spans: lower_inline(address, runs),
