@@ -113,19 +113,18 @@ All maps and frozen runners are under
 
 ## Remaining row 12 work
 
-The exact shape-box map has 30 red files:
+The subsequent [relative float-state reconciliation](2026-08-25_buckram_relative_float_state_reconciliation.md)
+repairs the seven explicit-break rectangular cases with zero loss. The exact
+shape-box map now has 23 red files:
 
-- 8 horizontal rounded cases combine the contour with existing inline or block
-  layout residuals;
-- 8 vertical or sideways rounded cases need a vertical contour transform;
-- 3 use `shape-margin` and need an expanded contour; and
-- 11 plain rectangular cases combine RTL right floats, inline-block packing,
-  explicit line breaks, or atomic inline placement with the present box
-  geometry.
+- 4 rectangular cases use `line-height: 0` with atomic inline children;
+- 8 horizontal rounded cases share that provisional atomic-line height seam;
+- 8 vertical or sideways rounded cases need a vertical contour transform; and
+- 3 use `shape-margin` and need an expanded contour.
 
-The next coherent slice is the plain rectangular inline/block reconciliation.
-It addresses the shared mechanics beneath those 11 cases and some of the eight
-remaining horizontal rounded cases without widening the Shapes claim.
+The next coherent slice is the atomic inline line-height reconciliation. It can
+address the four rectangular and eight horizontal rounded cases without
+widening the vertical-flow or shape-expansion claims.
 
 ## Done condition
 
