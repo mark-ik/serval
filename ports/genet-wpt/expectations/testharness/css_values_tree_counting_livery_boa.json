@@ -20,7 +20,7 @@
     },
     "css/css-values/tree-counting/sibling-function-container-query-invalidation.html": {
       "status": "fail",
-      "subtests_passed": 2,
+      "subtests_passed": 4,
       "subtests_total": 8
     },
     "css/css-values/tree-counting/sibling-function-container-query.html": {
