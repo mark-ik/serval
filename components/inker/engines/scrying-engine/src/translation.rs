@@ -82,7 +82,10 @@ fn map_native_frame(frame: ScryingNativeFrame, fence_handle: Option<u64>) -> Opt
             Some(SurfaceFrame {
                 texture: NativeTextureHandle::D3d12Shared {
                     handle,
-                    ownership: FrameHandleOwnership::Borrowed,
+                    // WebView2CompositionFrame transfers the one NT handle
+                    // emitted for each resource epoch to its consumer. Later
+                    // frames reuse the imported resource and carry handle 0.
+                    ownership: FrameHandleOwnership::Transferred,
                 },
                 sync,
                 width: tex.size.width,
@@ -588,6 +591,7 @@ pub fn wrap_web_message(payload: String) -> WebMessage {
 mod tests {
     use super::*;
     use inker::{PhysicalPosition, PointerButtons};
+    use scrying::native_frame::{Dx12SharedTexture, NativeFrame};
 
     fn touch_pointer(pointer_id: i32, phase: InkerPointerPhase) -> InkerPointerEvent {
         InkerPointerEvent {
@@ -609,6 +613,37 @@ mod tests {
             azimuth_angle: None,
             modifiers: InkerKeyboardModifiers::default(),
         }
+    }
+
+    #[test]
+    fn dx12_epoch_handle_is_transferred_and_reuse_may_omit_it() {
+        let frame = |handle| {
+            WebSurfaceFrame::Native(NativeFrame::Dx12SharedTexture(Dx12SharedTexture {
+                size: dpi::PhysicalSize::new(320, 200),
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                generation: 7,
+                producer_sync: SyncMechanism::ExplicitFence,
+                fence_value: 11,
+                handle,
+            }))
+        };
+        let first = map_frame(frame(0x1234_usize as *mut _), Some(0x5678)).unwrap();
+        let reused = map_frame(frame(std::ptr::null_mut()), Some(0x5678)).unwrap();
+        assert!(matches!(
+            first.texture,
+            NativeTextureHandle::D3d12Shared {
+                handle: 0x1234,
+                ownership: FrameHandleOwnership::Transferred,
+            }
+        ));
+        assert!(matches!(
+            reused.texture,
+            NativeTextureHandle::D3d12Shared {
+                handle: 0,
+                ownership: FrameHandleOwnership::Transferred,
+            }
+        ));
+        assert_eq!(first.resource_epoch, reused.resource_epoch);
     }
 
     #[test]

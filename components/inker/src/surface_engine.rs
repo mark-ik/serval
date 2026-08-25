@@ -206,7 +206,12 @@ pub enum NativeTextureHandle {
     ///
     /// The host must obey [`FrameHandleOwnership`]. A `Transferred` handle is
     /// closed by the host after `OpenSharedHandle`; a `Borrowed` handle remains
-    /// the producer's property and must not be closed by the host.
+    /// the producer's property and must not be closed by the host. A zero handle
+    /// means "reuse the resource already imported for this `resource_epoch`";
+    /// it is invalid for a new epoch. Cross-API shared textures use D3D12's
+    /// simultaneous-access rules. The host imports them from
+    /// `D3D12_RESOURCE_STATE_COMMON` and must finish sampling and return them to
+    /// COMMON before it asks the producer for another frame.
     D3d12Shared {
         handle: u64,
         ownership: FrameHandleOwnership,
@@ -250,7 +255,9 @@ pub enum SurfaceTextureFormat {
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum SurfaceSyncHandle {
-    /// Windows: D3D12 fence + signal value.
+    /// Windows: D3D12 fence + signal value. The fence HANDLE is borrowed; the
+    /// producer must keep it valid until the producer is dropped. A host may
+    /// open and retain its own COM reference instead of reopening it per frame.
     D3d12Fence { handle: u64, value: u64 },
     /// Synchronization already complete before the handle was emitted.
     None,

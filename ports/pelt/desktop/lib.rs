@@ -8,9 +8,13 @@
 //! dialogs, filesystem integration, and platform event-loop glue. It stays
 //! above `genet-host-api` and below the UI chrome crate.
 
+#[cfg(all(feature = "livery", target_os = "windows"))]
+mod dx12_surface;
 #[cfg(feature = "livery")]
 mod frisket_surface;
 mod profile;
+#[cfg(all(feature = "livery", target_os = "windows"))]
+mod scrying_receipt;
 mod static_viewer;
 #[cfg(feature = "livery")]
 mod workspace_viewer;

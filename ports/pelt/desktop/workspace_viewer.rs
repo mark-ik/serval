@@ -22,13 +22,19 @@ use pelt_core::{
     PeltController, PeltHostEffect, PeltRegistries, PeltRouteState, PeltTileRequest, PeltWorkspace,
     WorkspaceRect,
 };
+#[cfg(target_os = "windows")]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+#[cfg(target_os = "windows")]
+use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{FrisketHit, FrisketSurface};
+#[cfg(target_os = "windows")]
+use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
 use crate::{WindowingMode, static_viewer};
 
 const RECEIPT_STEPS: u8 = 8;
@@ -84,7 +90,7 @@ impl WorkspaceViewerConfig {
 
     pub fn with_capability_receipt(mut self) -> Self {
         self.capability_receipt = true;
-        self.frames = Some(self.frames.unwrap_or(0).max(2));
+        self.frames = Some(self.frames.unwrap_or(0).max(600));
         self
     }
 }
@@ -120,6 +126,11 @@ pub fn run_livery_workspace_viewer(
     }
 
     let initial_size = config.size.unwrap_or((1100, 750));
+    #[cfg(target_os = "windows")]
+    let scrying_host = Some(ScryingReceiptHost::new());
+    #[cfg(target_os = "windows")]
+    let registries = workspace_registries(scrying_host.clone());
+    #[cfg(not(target_os = "windows"))]
     let registries = workspace_registries();
     let overrides = config.route_overrides.clone();
     let workspace = PeltWorkspace::try_routed(
@@ -140,12 +151,26 @@ pub fn run_livery_workspace_viewer(
     let frisket = FrisketSurface::new(workspace.tree());
     let event_loop =
         EventLoop::new().map_err(|error| format!("could not create event loop: {error}"))?;
+    #[cfg(target_os = "windows")]
+    let mut app = WorkspaceApp::new(config, workspace, frisket, scrying_host);
+    #[cfg(not(target_os = "windows"))]
     let mut app = WorkspaceApp::new(config, workspace, frisket);
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("workspace event loop failed: {error}"))?;
     if let Some(error) = app.receipt_error.take() {
         return Err(error);
+    }
+    if app.config.capability_receipt && !app.receipt_complete {
+        return Err("P4 capability receipt ended before a native surface frame arrived".to_owned());
+    }
+    #[cfg(target_os = "windows")]
+    if app.config.capability_receipt {
+        let native = app.native_surfaces.stats();
+        println!(
+            "pelt native-surface receipt frames={} imports={} waits={} compositions={}",
+            native.frames, native.imports, native.waits, native.compositions
+        );
     }
     Ok(app.outcome())
 }
@@ -158,7 +183,9 @@ impl pelt_core::PeltClock for WorkspaceClock {
     }
 }
 
-fn workspace_registries() -> PeltRegistries<Scene> {
+fn workspace_registries(
+    #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
+) -> PeltRegistries<Scene> {
     let mut sessions: SessionRegistry<Scene> = SessionRegistry::new();
     let fetcher = genet_documents::LocalFetcher::with_resource_policy(
         genet_documents::ResourceFetchPolicy::default(),
@@ -206,9 +233,14 @@ fn workspace_registries() -> PeltRegistries<Scene> {
         }
     }
     policy.fallback.engine_id = inker::routing::ENGINE_GENET_LIVERY.to_owned();
+    let mut surfaces = SurfaceEngineRegistry::new();
+    #[cfg(target_os = "windows")]
+    if let Some(host) = scrying_host {
+        surfaces.register(Box::new(ScryingReceiptEngine::new(host)));
+    }
     PeltRegistries::new(
         sessions,
-        SurfaceEngineRegistry::new(),
+        surfaces,
         policy,
         "pelt.workspace",
         inker::routing::ENGINE_GENET_LIVERY,
@@ -315,6 +347,10 @@ struct WorkspaceApp {
     receipt_step: u8,
     receipt_complete: bool,
     receipt_error: Option<String>,
+    #[cfg(target_os = "windows")]
+    native_surfaces: Dx12SurfaceCache,
+    #[cfg(target_os = "windows")]
+    scrying_host: Option<ScryingReceiptHost>,
 }
 
 impl WorkspaceApp {
@@ -322,6 +358,7 @@ impl WorkspaceApp {
         config: WorkspaceViewerConfig,
         workspace: PeltWorkspace<Scene>,
         frisket: FrisketSurface,
+        #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
     ) -> Self {
         let (width, height) = config.size.unwrap_or((1100, 750));
         Self {
@@ -340,6 +377,10 @@ impl WorkspaceApp {
             receipt_step: 0,
             receipt_complete: false,
             receipt_error: None,
+            #[cfg(target_os = "windows")]
+            native_surfaces: Dx12SurfaceCache::new(),
+            #[cfg(target_os = "windows")]
+            scrying_host,
         }
     }
 
@@ -399,7 +440,11 @@ impl WorkspaceApp {
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
-        if self.config.capability_receipt && self.redraws > 0 && !self.receipt_complete {
+        if self.config.capability_receipt
+            && self.redraws > 0
+            && !self.receipt_complete
+            && self.capability_receipt_ready()
+        {
             if let Err(error) = self.validate_capability_receipt() {
                 self.receipt_error = Some(error);
                 event_loop.exit();
@@ -429,17 +474,51 @@ impl WorkspaceApp {
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
         let workspace_frame = self.workspace.frame();
+        #[cfg(target_os = "windows")]
+        {
+            let live_surfaces = self
+                .workspace
+                .routes()
+                .filter(|route| matches!(route.state, PeltRouteState::Surface))
+                .map(|route| route.tile)
+                .collect::<Vec<_>>();
+            self.native_surfaces
+                .retain_tiles(|tile| live_surfaces.contains(&tile));
+        }
+        #[cfg(target_os = "windows")]
+        let mut native_layers = Vec::new();
         for surface in workspace_frame.surfaces {
             match surface.frame {
                 Ok(None) => {},
                 Ok(Some(frame)) => {
-                    discard_unimported_surface_frame(frame);
-                    self.receipt_error = Some(format!(
-                        "tile {} produced a native surface frame, but this platform has no shared-handle importer",
-                        surface.tile.0
-                    ));
-                    event_loop.exit();
-                    return;
+                    #[cfg(target_os = "windows")]
+                    {
+                        let Some(host) = self.host.as_ref() else {
+                            discard_unimported_surface_frame(frame);
+                            return;
+                        };
+                        if let Err(error) =
+                            self.native_surfaces
+                                .accept_frame(surface.tile, frame, host.device())
+                        {
+                            self.receipt_error = Some(format!(
+                                "tile {} native surface import failed: {error}",
+                                surface.tile.0
+                            ));
+                            event_loop.exit();
+                            return;
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        discard_unimported_surface_frame(frame);
+                        self.receipt_error = Some(format!(
+                            "tile {} produced a native surface frame, but this platform has no shared-handle importer",
+                            surface.tile.0
+                        ));
+                        event_loop.exit();
+                        return;
+                    }
                 },
                 Err(error) => {
                     self.receipt_error =
@@ -447,6 +526,10 @@ impl WorkspaceApp {
                     event_loop.exit();
                     return;
                 },
+            }
+            #[cfg(target_os = "windows")]
+            if self.native_surfaces.view(surface.tile).is_some() {
+                native_layers.push((surface.tile, surface.rect));
             }
         }
         let Some(host) = self.host.as_ref() else {
@@ -506,10 +589,45 @@ impl WorkspaceApp {
                 placement(*rect, self.scale_factor),
             );
         }
+        #[cfg(target_os = "windows")]
+        for (tile, rect) in native_layers {
+            if let Err(error) = self.native_surfaces.stage_wait(tile, host.queue()) {
+                self.receipt_error = Some(format!(
+                    "tile {} native surface synchronization failed: {error}",
+                    tile.0
+                ));
+                event_loop.exit();
+                return;
+            }
+            let view = self
+                .native_surfaces
+                .view(tile)
+                .expect("native layer was retained above");
+            host.renderer().compose_external_texture(
+                view,
+                &target,
+                host.format(),
+                self.width,
+                self.height,
+                placement(rect, self.scale_factor),
+            );
+            if let Err(error) =
+                self.native_surfaces
+                    .return_to_common(tile, host.device(), host.queue())
+            {
+                self.receipt_error = Some(format!(
+                    "tile {} native surface release failed: {error}",
+                    tile.0
+                ));
+                event_loop.exit();
+                return;
+            }
+            self.native_surfaces.mark_composed();
+        }
         host.queue().present(swap);
         self.redraws += 1;
 
-        if self.receipt_complete
+        if (self.receipt_complete && !self.config.capability_receipt)
             || self
                 .config
                 .frames
@@ -540,6 +658,14 @@ impl WorkspaceApp {
                 ));
             }
         }
+        #[cfg(target_os = "windows")]
+        if !matches!(
+            self.workspace.route(TileId(4)).map(|route| &route.state),
+            Some(PeltRouteState::Surface)
+        ) {
+            return Err("P4 external surface tile did not retain its native producer".to_owned());
+        }
+        #[cfg(not(target_os = "windows"))]
         if !matches!(
             self.workspace.route(TileId(4)).map(|route| &route.state),
             Some(PeltRouteState::Fallback { active_engine, .. })
@@ -592,6 +718,22 @@ impl WorkspaceApp {
             return Err("P4 scripted tile did not expose its post-Boa DOM".to_owned());
         }
         Ok(())
+    }
+
+    fn capability_receipt_ready(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            let stats = self.native_surfaces.stats();
+            self.native_surfaces.view(TileId(4)).is_some()
+                && stats.frames > stats.imports
+                && stats.imports > 0
+                && stats.waits >= 2
+                && stats.compositions >= 2
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            true
+        }
     }
 
     fn request_redraw(&self) {
@@ -955,13 +1097,52 @@ impl ApplicationHandler for WorkspaceApp {
         self.width = size.width.max(1);
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
-        let options = NetrenderOptions {
+        let mut options = NetrenderOptions {
             tile_cache_size: Some(64),
             enable_vello: true,
             ..Default::default()
         };
+        #[cfg(target_os = "windows")]
+        if self
+            .workspace
+            .routes()
+            .any(|route| matches!(route.state, PeltRouteState::Surface))
+        {
+            options.backends = Some(wgpu::Backends::DX12);
+        }
         match SurfaceHost::boot(window.clone(), self.width, self.height, options) {
-            Ok(host) => self.host = Some(host),
+            Ok(host) => {
+                #[cfg(target_os = "windows")]
+                if self
+                    .workspace
+                    .routes()
+                    .any(|route| matches!(route.state, PeltRouteState::Surface))
+                    && let Some(scrying_host) = &self.scrying_host
+                {
+                    let hwnd = match window.window_handle().map(|handle| handle.as_raw()) {
+                        Ok(RawWindowHandle::Win32(handle)) => handle.hwnd.get() as usize,
+                        Ok(other) => {
+                            self.receipt_error = Some(format!(
+                                "Pelt expected a Win32 window handle, got {other:?}"
+                            ));
+                            event_loop.exit();
+                            return;
+                        },
+                        Err(error) => {
+                            self.receipt_error =
+                                Some(format!("could not borrow Pelt's Win32 handle: {error}"));
+                            event_loop.exit();
+                            return;
+                        },
+                    };
+                    if let Err(error) = scrying_host.install(hwnd, host.device()) {
+                        self.receipt_error = Some(error);
+                        event_loop.exit();
+                        return;
+                    }
+                }
+                self.host = Some(host);
+            },
             Err(error) => {
                 self.receipt_error = Some(error);
                 event_loop.exit();

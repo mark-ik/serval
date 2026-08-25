@@ -18,12 +18,16 @@ bench = false
 default = ["livery", "reader", "netfetch"]
 # Engine-neutral headed presentation. Both engines can produce a `Scene`; this
 # feature owns only the winit/wgpu shell that presents one.
-present = ["dep:netrender", "dep:genet-winit-host", "dep:inker", "dep:wgpu"]
+present = [
+    "dep:netrender", "dep:genet-winit-host", "dep:inker", "dep:wgpu",
+    "dep:raw-window-handle",
+]
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
     "dep:cambium", "dep:genet-livery", "dep:genet-scripted-dom",
     "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
+    "dep:windows", "dep:windows-sys", "dep:dpi", "dep:scrying-engine",
 ]
 # Shared fleece reader lane over the portable document canvas.
 reader = [
@@ -72,7 +76,10 @@ netrender = ["dep:netrender", "dep:webgl_wgpu", "dep:wgpu"]
 # feature gate is platform-agnostic so `cargo check --features
 # windows-present` works on non-Windows hosts (the inner code is
 # `cfg(target_os = "windows")` gated).
-windows-present = ["netrender", "dep:paint", "dep:raw-window-handle", "dep:windows", "dep:pollster"]
+windows-present = [
+    "netrender", "dep:paint", "dep:raw-window-handle", "dep:windows",
+    "dep:pollster",
+]
 # Headed presentation through genet's `MacosCALayerBackend`. Drives
 # the netrender renderer through the C4 CAMetalLayer attached to a
 # winit window's NSView. macOS/iOS-only at runtime; the feature gate
@@ -156,12 +163,15 @@ sha2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation"] }
-# Windows-only types (HWND) used by the `windows-present` feature's
-# `run_windows_dxgi_present_smoke` to bridge winit's RawWindowHandle
-# to paint's WindowsDxgiBackend constructor. Same workspace `windows`
-# version paint depends on.
-windows = { workspace = true, optional = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+], optional = true }
+# Windows presentation bridges HWND into paint; the Livery workspace also
+# imports D3D12 textures and constructs its registered Scrying producer.
+windows = { workspace = true, features = ["Win32_System_Threading"], optional = true }
+dpi = { workspace = true, optional = true }
+scrying-engine = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux-only ash extension NAME constants used by the `linux-present`

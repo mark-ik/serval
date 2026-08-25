@@ -3,9 +3,10 @@
 **Date:** 2026-08-22
 
 **Status:** active. P0 completed 2026-08-22. P1 was rebased and reverified on
-current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4's capability
-routing slice completed 2026-08-24. Native shared-handle import and surface
-composition remain the current P4 lane.
+current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4 completed on
+Windows 2026-08-25 with a registered Scrying producer, native shared-handle
+import, repeated fence waits, and visible same-window composition. P5 is the
+current lane. IOSurface and DMA-BUF imports remain separate platform lanes.
 
 ## Objective
 
@@ -56,7 +57,8 @@ consumes `TileTree` and Frisket, routes complete host effects, selects a visible
 engine route per tile through shared long-lived registries, and composites
 active document scenes through one desktop surface host. Surface producers are
 retained, sized, positioned, polled, and sent input. The desktop adapter does
-not yet import their raw platform texture handles into its wgpu device.
+import D3D12 shared textures into its existing host-owned wgpu device. IOSurface
+and DMA-BUF importers remain open for their platform receipts.
 
 ## Content tiers
 
@@ -317,9 +319,10 @@ external surface composition remain P4.
 
 ### P4: route by capability and compose surface engines
 
-**Status:** partial 2026-08-24. Capability routing and the explicit external
-fallback receipt are complete. Native shared-handle import and composition are
-open.
+**Status:** complete on Windows 2026-08-25. Capability routing, registered
+external production, host-owned D3D12 import, fence synchronization, cached
+epoch reuse, and visible same-window composition all have receipts. IOSurface
+and DMA-BUF follow as independent platform lanes.
 
 Install long-lived document and surface registries in the host core. Select a
 route from scheme, content type, user settings, and declared capability. Keep
@@ -355,6 +358,22 @@ Landed:
   and fallback fixtures. It verifies the Gemtext link, static title and
   heading, Boa's retained DOM mutation, shared registry identities, and the
   selected external fallback route before accepting the headed run.
+- The Windows importer opens D3D12 shared textures on the existing host device,
+  validates their dimensions, format, two-dimensional mip/sample shape, and
+  simultaneous-access flag, and wraps them as wgpu textures for Netrender's
+  external-texture composition path.
+- Imported resources are retained by tile and resource epoch. The first Scrying
+  frame transfers its one-shot texture handle; later zero-handle frames reuse
+  the cached resource. Each surface retains its opened fence COM reference,
+  stages the declared queue wait before sampling, and returns the resource to
+  COMMON before the next producer capture.
+- Windows registers a lazy `scrying.web` producer over the real Scrying/WebView2
+  implementation. It receives Pelt's existing HWND and host-created shared
+  fence after winit resumes while preserving the full Inker `SurfaceProducer`
+  and `WebSurface` control plane.
+- The animated native fixture changes every 80 ms. Its high-contrast
+  magenta/cyan content makes stale or missing composition immediately visible
+  inside Frisket's fourth content hole.
 
 Receipts:
 
@@ -372,23 +391,36 @@ Receipts:
   capability_receipt=true` and routes `nematic.gemtext:document`,
   `genet.livery:document`, `genet.scripted:document`, and
   `scrying.web:fallback:genet.livery`.
+- The repaired bounded command presented 600 host frames and exited with
+  `capability_receipt=true`, route four as
+  `scrying.web:surface:CompositedTexture`, and native counters `frames=4
+  imports=1 waits=4 compositions=600`. More producer frames than imports proves
+  same-epoch cache reuse; repeated waits and compositions prove the live
+  synchronization and compositor paths. A headed screenshot showed the
+  magenta/cyan WebView2 fixture beside the Gemtext, static Livery, and scripted
+  Livery tiles in the same window.
 - The P3 headed regression still presents nine frames, drives the full split,
   tab, navigation, resize, drag, and close sequence, and exits with `tiles=3
   interaction_receipt=true`.
+- `cargo test -p scrying-engine
+  dx12_epoch_handle_is_transferred_and_reuse_may_omit_it --offline` passes its
+  focused transferred-handle and zero-handle reuse test.
+- `cargo test -p pelt-desktop --no-default-features --features livery
+  dx12_surface::tests --offline` passes its exact format and cached-epoch handle
+  rules. Strict all-target Clippy passes for `scrying-engine`, `pelt-core`,
+  `pelt-desktop` with Livery, and full Pelt with scripted and smolweb. The
+  `present`-only dependency canary does not pull Scrying.
 
-Open native-composition gate:
+Deferred platform and hardening lanes:
 
-- `SurfaceFrame` carries a raw `D3d12Shared`, `IoSurface`, or `DmaBuf` handle,
-  not a `wgpu::Texture`. Genet currently has no host importer for those frame
-  handles. The desktop adapter rejects such a frame honestly and closes a
-  transferred Win32 handle on that rejection path.
-- The first forcing implementation is D3D12 shared-texture import on the
-  host-owned wgpu device. It must honor the fence value, handle ownership,
-  format, and `resource_epoch`, cache the imported resource, and sample it in
-  the same compositor pass as the document scenes.
-- IOSurface and DMA-BUF import follow their platform receipts. Native overlay
-  and embedded-host attachment remain separate platform seams rather than
-  aliases for texture composition.
+- Scrying currently creates its D3D11 capture device on the default hardware
+  adapter. A multi-GPU host may select a different D3D12 adapter, in which case
+  shared texture or fence opening fails visibly. Adapter-LUID selection and a
+  multi-GPU receipt remain Windows hardening work.
+- IOSurface and DMA-BUF require their own import, ownership, synchronization,
+  and device-compatibility receipts.
+- Native overlay and embedded-host attachment remain separate platform seams
+  rather than aliases for texture composition.
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
@@ -437,9 +469,10 @@ terminal.
 
 ## Immediate next lane
 
-Finish P4 at the native import boundary. Import a D3D12 shared texture into the
-existing host wgpu device, wait on its declared fence, cache it by resource
-epoch, and composite it into its Frisket content hole. Replace the current
-selected `scrying.web` fallback fixture with a registered producer receipt that
-delivers and visibly composes an actual frame. P5 remains deferred until that
-receipt passes without a second device, readback, or hidden child window.
+Execute P5. Turn Pelt into the named, deterministic product receipt for
+Livery/Buckram across ordinary articles, controls and nested scrolling,
+responsive layout, scripted mutation, resource graphs, protocol-native content,
+and the mixed workspace. Each fixture needs a bounded command, captured
+artifact, and interaction assertion. The completed Windows P4 route remains the
+explicit external-engine comparison lane; IOSurface, DMA-BUF, and multi-GPU
+hardening stay independently receipted work.
