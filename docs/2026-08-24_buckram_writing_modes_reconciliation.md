@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 
-**Status:** In progress.
+**Status:** Complete.
 
 **Parent:** [Buckram and Livery lane program](2026-08-21_buckram_livery_lane_program_plan.md),
 row 10, and the
@@ -63,9 +63,10 @@ own inline size is automatic:
 1. perform sizing in the child's flow while leaving margins and final
    positioning in the containing flow;
 2. query the child's min-content and max-content inline contributions;
-3. when a perpendicular descendant makes that query block-size-dependent,
-   size the descendant first through the admitted Buckram block path and feed
-   its used block size into the parent's intrinsic inline contribution;
+3. when a direct perpendicular block child makes that query
+   block-size-dependent, size the child first through the admitted Buckram
+   block path and feed its used block size into the parent's intrinsic inline
+   contribution;
 4. choose the orthogonal inline size with
    `min(max-content, max(min-content, constraint))`;
 5. take the constraint from the definite containing-block measurement, or the
@@ -101,6 +102,44 @@ does not relabel its physical-width answer as a vertical inline contribution.
   must list every exact movement and contain no unexplained loss.
 - Focused native tests, strict scoped Clippy provenance, and `git diff --check`
   are green on source identical to current main.
+
+## Receipt
+
+The frozen release runner was built from source commit `af66d66cfd7` on
+`5347d22dd32`. Main then advanced through `0601432e608`, which changes only the
+Pelt/Scrying surface lane; Buckram, Livery, the WPT runner, and the writing-mode
+corpus are identical to the frozen source.
+
+- runner: `candidate-af66d66cfd7-genet-wpt.exe`
+- runner SHA-256:
+  `BD221B64AED36C69B6847A8876A9B3D022702E1FF01D0D660815AFD7F882DF8D`
+- corrected immediate-parent map: 186 pass, 927 fail, 255 skip, 0 error;
+  SHA-256
+  `B3BDDCD252986A98F5DB032D58B77AE9AFB1C2AADF9D1A6C232F33951E31CF0D`
+- candidate map: 193 pass, 920 fail, 255 skip, 0 error; SHA-256
+  `DF6BF33D115DCE13989084409BFCF2168D60ACB28DA1DE1AD0194BF48D8E7FD5`
+- identical manifest SHA-256:
+  `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`
+- exact movement: seven fail-to-pass results, zero pass-to-nonpass results,
+  zero added tests, and zero missing tests.
+
+The seven recovered tests are:
+
+- `sizing-orthog-htb-in-vlr-006.xht`
+- `sizing-orthog-htb-in-vlr-011.xht`
+- `sizing-orthog-htb-in-vlr-012.xht`
+- `sizing-orthog-htb-in-vlr-018.xht`
+- `sizing-orthog-htb-in-vlr-023.xht`
+- `sizing-orthog-htb-in-vlr-024.xht`
+- `sizing-orthog-htb-in-vrl-023.xht`
+
+The direct-boundary and nested-wrapper Buckram fixtures pass. The seven focused
+gains exercise the live Livery route in the frozen runner. The two temporary
+`text-combine-upright-compression-005{,a}.html` losses pass again after the
+vertical-host query was restricted to a direct perpendicular block child.
+Changed-file formatting, scoped Buckram Clippy with warnings denied, and
+`git diff --check` are green. Repository-wide formatting remains independently
+red on newer, unrelated current-main files.
 
 ## Done condition
 

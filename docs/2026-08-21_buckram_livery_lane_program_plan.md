@@ -3,9 +3,9 @@
 **Date:** 2026-08-21
 **Status:** Reconstituted 2026-08-24 from accepted main. Lane 8, the
 anonymous-table continuation, K5 rows 1+2+7, 3, 4, and 5+6, K6 row 13,
-css-text row 14, paint row 15, fonts row 16, and harness rows 19+20+21 are complete. Wave 2 is
-unblocked. Every other row remains an inventory item until its current-main
-receipt is named below.
+css-text row 14, paint row 15, fonts row 16, writing-modes row 10, and harness
+rows 19+20+21 are complete. Wave 2 is unblocked. Every other row remains an
+inventory item until its current-main receipt is named below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md)
 and the [Livery fullweb cutover plan](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md).
@@ -69,7 +69,7 @@ plans and receipts.
 | # | Lane | Owned surface | State |
 |---|---|---|---|
 | 9 | Intrinsic sizing contributions | **Complete** | K3m/K3q's box-keyed queries, validated cache, subtree contributions, and shrink-to-fit consumers remain live on current main. Buckram is 237/237, the focused live Livery receipt is green, and corrected css-sizing is 163 verified pass / 349 fail / 220 skip / 0 error. Normal-flow used sizing for content keywords remains an explicit K7 dispatch gap. See the [current-main reconciliation](2026-08-24_buckram_intrinsic_sizing_reconciliation.md). |
-| 10 | Writing modes | `FlowAxes` consumers in Buckram and `to_block_style` | Open |
+| 10 | Writing modes | **Complete** | Orthogonal auto inline sizing now uses the direct perpendicular block child's intrinsic block contribution. The exact writing-modes map moves from 186 to 193 verified passes with seven gains and zero losses. Text orientation, text combine, fragmentation, and algorithm-owned positioned/table/flex/grid residuals retain their named owners. See the [current-main reconciliation](2026-08-24_buckram_writing_modes_reconciliation.md). |
 | 12 | Floats and shapes | block float exclusions and `shape-outside` | Open |
 | 17 | Counters, lists, generated content | Livery `content`/`counter-*` cascade and marker boxes | Open |
 | 18 | Flex and grid | Taffy adapter flex/grid arms and style bridge | Open |
