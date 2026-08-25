@@ -1,14 +1,4 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextQuoteSelector {
-    pub exact: String,
-    pub prefix: String,
-    pub suffix: String,
-}
-
-#[path = "../src/text_fragment.rs"]
-mod text_fragment;
-
-use text_fragment::{text_fragment, TextFragment};
+use fleece::{TextFragment, TextQuoteSelector, text_fragment};
 
 fn quote(exact: &str, prefix: &str, suffix: &str) -> TextQuoteSelector {
     TextQuoteSelector {
@@ -16,6 +6,48 @@ fn quote(exact: &str, prefix: &str, suffix: &str) -> TextQuoteSelector {
         prefix: prefix.into(),
         suffix: suffix.into(),
     }
+}
+
+fn decode_term(encoded: &str) -> String {
+    let bytes = encoded.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap();
+            decoded.push(u8::from_str_radix(hex, 16).unwrap());
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).unwrap()
+}
+
+fn resolve_directive(document: &str, directive: &str) -> Vec<(u64, u64)> {
+    let value = directive.strip_prefix(":~:text=").unwrap();
+    let (without_suffix, suffix) = value
+        .rsplit_once(",-")
+        .map_or((value, ""), |(head, tail)| (head, tail));
+    let (prefix, exact) = without_suffix
+        .split_once("-,")
+        .map_or(("", without_suffix), |(head, tail)| (head, tail));
+    let prefix = decode_term(prefix);
+    let exact = decode_term(exact);
+    let suffix = decode_term(suffix);
+
+    document
+        .match_indices(&exact)
+        .filter(|(byte_start, _)| {
+            document[..*byte_start].ends_with(&prefix)
+                && document[*byte_start + exact.len()..].starts_with(&suffix)
+        })
+        .map(|(byte_start, _)| {
+            let start = document[..byte_start].chars().count() as u64;
+            (start, start + exact.chars().count() as u64)
+        })
+        .collect()
 }
 
 #[test]
@@ -47,4 +79,18 @@ fn omits_absent_context_and_rejects_empty_exact() {
         ":~:text=hello"
     );
     assert_eq!(text_fragment(&quote("", "before", "after")), None);
+}
+
+#[test]
+fn repeated_quote_directive_resolves_to_the_selector_range() {
+    let document = "Intro. Repeat this. Middle. Repeat this. End.";
+    let selector = quote("Repeat this.", "Middle. ", " End.");
+    let second_byte = document.match_indices(&selector.exact).nth(1).unwrap().0;
+    let start = document[..second_byte].chars().count() as u64;
+    let expected = (start, start + selector.exact.chars().count() as u64);
+    let directive = text_fragment(&selector).unwrap();
+    assert_eq!(
+        resolve_directive(document, &directive.directive),
+        vec![expected]
+    );
 }

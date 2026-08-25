@@ -1,5 +1,5 @@
 use fleece::{
-    extract_document_with_options, AnchoredBlock, Article, Block, ExtractionOptions, Inline,
+    AnchoredBlock, Article, Block, ExtractionOptions, Inline, extract_document_with_options,
 };
 use genet_static_dom::StaticDocument;
 
@@ -32,7 +32,6 @@ fn all_blocks<'a>(blocks: &'a [AnchoredBlock], out: &mut Vec<&'a AnchoredBlock>)
     }
 }
 
-#[allow(dead_code)]
 fn block_text(block: &Block) -> String {
     fn runs_text(runs: &[Inline], out: &mut String) {
         for run in runs {
@@ -77,10 +76,12 @@ fn canonical_text_decodes_entities_collapses_whitespace_and_separates_adjacent_n
         .map(|anchor| anchor.quote.exact.as_str())
         .collect::<Vec<_>>();
     assert_eq!(&text[..2], ["A & B", "second"]);
-    assert!(article.blocks[0]
-        .anchor
-        .as_ref()
-        .is_some_and(|anchor| anchor.quote.exact.contains('&')));
+    assert!(
+        article.blocks[0]
+            .anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.quote.exact.contains('&'))
+    );
 }
 
 #[test]
@@ -110,6 +111,17 @@ fn context_does_not_split_combining_graphemes() {
     assert_eq!(
         paragraph.quote.prefix, " ",
         "the context budget retains the separator but not half a grapheme"
+    );
+}
+
+#[test]
+fn a_block_boundary_inside_a_cross_node_grapheme_is_not_anchored() {
+    let article = article("<main id='content'><p>e</p><p>\u{301}mark</p></main>");
+    let second = &article.blocks[1];
+    assert_eq!(block_text(&second.block), "\u{301}mark");
+    assert!(
+        second.anchor.is_none(),
+        "the inserted separator and following combining mark form one grapheme"
     );
 }
 
@@ -178,4 +190,31 @@ fn synthetic_rule_and_image_only_figure_are_unanchored() {
         .find(|block| matches!(block.block, Block::Figure { .. }))
         .expect("figure block");
     assert!(figure.anchor.is_none());
+}
+
+#[test]
+fn shallow_list_text_around_a_nested_block_is_unanchored() {
+    let article = article(
+        "<main id='content'><ul><li>before <blockquote><p>nested</p></blockquote> after</li></ul></main>",
+    );
+    let list = article
+        .blocks
+        .iter()
+        .find(|block| matches!(block.block, Block::List { .. }))
+        .expect("list block");
+    let Block::List { items, .. } = &list.block else {
+        unreachable!();
+    };
+    let shallow = &items[0][0];
+    assert_eq!(
+        block_text(&shallow.block)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        "before after"
+    );
+    assert!(
+        shallow.anchor.is_none(),
+        "the shallow paragraph skips the nested block and is discontinuous"
+    );
 }

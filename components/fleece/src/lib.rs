@@ -26,17 +26,23 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use unicode_segmentation::UnicodeSegmentation;
+
+mod text_fragment;
+
+pub use text_fragment::{TextFragment, text_fragment};
 
 /// The textual representation against which Fleece selectors are measured.
 ///
 /// `FleeceDomTextV1` walks the supplied DOM in logical DOM order, excludes
 /// `head`, `script`, `style`, `template`, and `noscript` subtrees, removes markup,
-/// and collapses every Unicode whitespace run to one ASCII space. Text is decoded
-/// DOM text, never source bytes or visual/layout order.
+/// and collapses every Unicode whitespace run to one ASCII space. Each contributing
+/// DOM text node is separated from the next by one ASCII space; element boundaries
+/// add no other characters. Text is decoded DOM text, never source bytes or
+/// visual/layout order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TextNormalization {
     #[default]
@@ -508,6 +514,7 @@ struct TextRange {
 struct FleeceTextIndex<Id> {
     text: String,
     ranges: HashMap<Id, TextRange>,
+    grapheme_boundaries: HashSet<u64>,
     pending_space: bool,
 }
 
@@ -570,9 +577,16 @@ impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
         let mut index = Self {
             text: String::new(),
             ranges: HashMap::new(),
+            grapheme_boundaries: HashSet::new(),
             pending_space: false,
         };
         index.collect(dom, dom.document());
+        let mut boundary = 0_u64;
+        index.grapheme_boundaries.insert(boundary);
+        for grapheme in UnicodeSegmentation::graphemes(index.text.as_str(), true) {
+            boundary += grapheme.chars().count() as u64;
+            index.grapheme_boundaries.insert(boundary);
+        }
         index
     }
 
@@ -648,6 +662,11 @@ fn anchor_for_node<D: LayoutDom>(
         return None;
     }
     let range = text_index.range_for(dom, id)?;
+    if !text_index.grapheme_boundaries.contains(&range.start)
+        || !text_index.grapheme_boundaries.contains(&range.end)
+    {
+        return None;
+    }
     let exact = text_slice(&text_index.text, range.start, range.end);
     (!exact.is_empty()).then(|| TextAnchor {
         position: TextPositionSelector {
@@ -1253,15 +1272,20 @@ fn list_items<D: LayoutDom>(
         .filter_map(|item| {
             let mut blocks = Vec::new();
             let shallow = inline_runs_shallow(dom, item);
-            push_inline_block(
-                &mut blocks,
-                |runs| Block::Paragraph { runs },
-                shallow,
-                dom,
-                item,
-                text_index,
-                options,
-            );
+            if !inline_plain_text(&shallow).trim().is_empty() {
+                let has_structural_child = dom
+                    .dom_children(item)
+                    .any(|child| local_name(dom, child).is_some_and(is_structural_block));
+                blocks.push(AnchoredBlock {
+                    // The shallow paragraph skips structural children. Once one
+                    // exists, the contributing inline ranges are not represented
+                    // by the full `li` range and may be discontinuous around it.
+                    anchor: (!has_structural_child)
+                        .then(|| anchor_for_node(dom, item, text_index, options))
+                        .flatten(),
+                    block: Block::Paragraph { runs: shallow },
+                });
+            }
             for child in dom.dom_children(item) {
                 if local_name(dom, child).is_some_and(is_structural_block) {
                     collect_blocks(dom, child, &mut blocks, true, text_index, options);

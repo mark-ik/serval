@@ -120,10 +120,11 @@ mod extraction_tests {
 
     #[test]
     fn static_article_is_identical_under_static_and_scripted_profiles() {
-        let source = "<main><h1>Static article</h1><p>This substantial static paragraph is already readable without executing page script.</p></main>";
-        let expected = fleece::extract_article(&genet_static_dom::StaticDocument::parse(source));
+        let source = "<main><h1>Static article 🙂</h1><p>This substantial static paragraph has e\u{301}, שלום, and enough readable text without executing page script.</p></main>";
+        let expected = fleece::extract_document(&genet_static_dom::StaticDocument::parse(source));
         let scripted = ScriptedDocument::<BoaEngine>::parse(source).expect("runtime inits");
-        assert_eq!(scripted.extract_article(), expected);
+        assert_eq!(scripted.extract(), expected.page);
+        assert_eq!(scripted.extract_article(), expected.article);
         assert!(!fleece::carries_script(
             &genet_static_dom::StaticDocument::parse(source)
         ));
