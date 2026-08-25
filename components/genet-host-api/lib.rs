@@ -13,9 +13,14 @@ use std::str::FromStr;
 
 pub mod navigation;
 pub mod settings;
+pub mod surface;
 pub mod tile;
 
 pub use navigation::resolve_href;
+pub use surface::{
+    CapabilityId, PlacementHint, ProviderId, SourceKindId, SurfaceAvailability, SurfaceDescriptor,
+    SurfaceId, SurfaceMultiplicity, SurfaceRole, SurfaceSourceShape, SurfaceUnavailableReason,
+};
 
 /// Coarse engine selection for diagnostic hosts such as standalone Pelt.
 ///

@@ -71,6 +71,7 @@ mod splice;
 mod split;
 mod styled_field;
 mod summary_body;
+mod surface;
 mod tabs;
 mod tags;
 mod text;
@@ -166,6 +167,10 @@ pub use frisket::{
 };
 pub use sectioned_list::{ListRow, ListRowKind, ListSection, sectioned_list};
 pub use split::{Split, SplitAxis, split};
+pub use surface::{
+    ResolvedSurfaceEvent, RetainedSurfaceSession, RunnerSurfaceSession, SurfaceEffect,
+    SurfaceViewport,
+};
 pub use tabs::{TabStrip, tab_strip};
 pub use tags::*;
 pub use text::text;
