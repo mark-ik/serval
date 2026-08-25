@@ -14,6 +14,35 @@
 
 use crate::{DesktopHostProfile, WindowingMode};
 use genet_host_api::EngineProfile;
+use std::path::{Path, PathBuf};
+
+/// One named bounded product receipt implemented by the single-document host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StaticProductReceipt {
+    /// Ordinary script-free article with linked CSS, font, images, tables, and
+    /// an in-page jump-link interaction.
+    Article,
+}
+
+impl StaticProductReceipt {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Article => "article",
+        }
+    }
+
+    pub fn default_size(self) -> (u32, u32) {
+        match self {
+            Self::Article => (960, 640),
+        }
+    }
+
+    pub fn default_frames(self) -> u32 {
+        match self {
+            Self::Article => 3,
+        }
+    }
+}
 
 /// Configuration for one single-document host run.
 pub struct StaticViewerConfig {
@@ -24,6 +53,10 @@ pub struct StaticViewerConfig {
     pub size: Option<(u32, u32)>,
     /// Exit after this many presented frames. `None` keeps the window interactive.
     pub frames: Option<u32>,
+    /// Named semantic receipt driven before the captured frame is accepted.
+    pub product_receipt: Option<StaticProductReceipt>,
+    /// Caller-owned PNG artifact path for the named receipt.
+    pub artifact: Option<PathBuf>,
 }
 
 impl StaticViewerConfig {
@@ -35,6 +68,8 @@ impl StaticViewerConfig {
             url,
             size: None,
             frames: None,
+            product_receipt: None,
+            artifact: None,
         }
     }
 
@@ -49,6 +84,27 @@ impl StaticViewerConfig {
         self.frames = Some(frames.max(1));
         self
     }
+
+    /// Drive a named product receipt and write its in-process frame capture.
+    pub fn with_product_receipt(
+        mut self,
+        receipt: StaticProductReceipt,
+        artifact: impl AsRef<Path>,
+    ) -> Self {
+        self.size = Some(receipt.default_size());
+        self.frames = Some(receipt.default_frames());
+        self.product_receipt = Some(receipt);
+        self.artifact = Some(artifact.as_ref().to_owned());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticProductReceiptOutcome {
+    pub id: &'static str,
+    pub assertion: String,
+    pub artifact: PathBuf,
+    pub digest: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,6 +115,7 @@ pub struct StaticViewerOutcome {
     /// The physical client size the headed run actually achieved, or `(0, 0)` when
     /// no window was created.
     pub size: (u32, u32),
+    pub product_receipt: Option<StaticProductReceiptOutcome>,
 }
 
 /// Presentation-level keyboard scroll actions. Engine adapters translate this
@@ -227,10 +284,13 @@ mod title_tests {
 /// GPU-free so the resource and interaction assertions are stable in CI.
 #[cfg(all(test, feature = "livery"))]
 mod livery_route_tests {
+    use super::windowed::ViewerContent;
+    use super::{ControllerViewerContent, StaticProductReceipt, ViewerClock};
     use genet_documents::{LiveryDocumentSession, LiverySessionEngine, LocalFetcher};
-    use inker::{SessionRegistry, SessionScrollKey, SessionSpawnRequest};
+    use inker::{SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry};
     use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
     use netrender::{Scene, SceneOp};
+    use pelt_core::{PeltController, PeltControllerConfig};
 
     fn node_by_id<D: LayoutDom>(dom: &D, expected: &str) -> D::NodeId {
         fn find<D: LayoutDom>(dom: &D, node: D::NodeId, expected: &str) -> Option<D::NodeId> {
@@ -408,6 +468,35 @@ mod livery_route_tests {
         assert!(session.scroll_by(0.0, 120.0));
         assert!(session.scroll_at(8.0, 8.0, 0.0, -80.0));
     }
+
+    #[test]
+    fn article_product_receipt_drives_the_checked_in_fixture() {
+        let fixture = format!(
+            r"{}\..\examples\livery-route\index.html",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+        registry.register(Box::new(LiverySessionEngine::new(LocalFetcher)));
+        let controller = PeltController::new(
+            registry,
+            SurfaceEngineRegistry::new(),
+            PeltControllerConfig::new(inker::routing::ENGINE_GENET_LIVERY, fixture, (960, 640)),
+            ViewerClock::new(),
+        )
+        .expect("article receipt controller");
+        let mut content = ControllerViewerContent {
+            controller,
+            posture: None,
+        };
+
+        let _geometry = content.frame(960, 640);
+        assert_eq!(
+            content
+                .drive_product_receipt(StaticProductReceipt::Article)
+                .as_deref(),
+            Ok("jump-link press/release moved the retained viewport")
+        );
+    }
 }
 
 /// Compatibility entrypoint for callers of the former static viewer. Script-free
@@ -419,6 +508,7 @@ pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             created_window: false,
             redraws: 0,
             size: (0, 0),
+            product_receipt: None,
         }),
         WindowingMode::Headed => run_livery_viewer(config),
     }
@@ -438,6 +528,7 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             created_window: false,
             redraws: 0,
             size: (0, 0),
+            product_receipt: None,
         });
     }
     let (width, height) = config.size.unwrap_or((800, 600));
@@ -483,6 +574,7 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             created_window: false,
             redraws: 0,
             size: (0, 0),
+            product_receipt: None,
         });
     }
     let source = ResourceFetcher::fetch(&genet_documents::LocalFetcher, &config.url)
@@ -542,6 +634,61 @@ impl windowed::ViewerContent for ControllerViewerContent {
         Some(self.controller.address())
     }
 
+    fn drive_product_receipt(&mut self, receipt: StaticProductReceipt) -> Result<String, String> {
+        match receipt {
+            StaticProductReceipt::Article => {
+                let link = self
+                    .controller
+                    .links()
+                    .into_iter()
+                    .find(|link| link.url == "#resource-target")
+                    .ok_or_else(|| "article receipt could not find its jump link".to_owned())?;
+                let x = link.rect[0] + 2.0;
+                let y = link.rect[1] + 2.0;
+                let pointer = |state| inker::SessionInput::PointerButton {
+                    x,
+                    y,
+                    button: inker::SessionPointerButton::Primary,
+                    state,
+                    modifiers: inker::SessionModifiers::default(),
+                };
+                let pressed = self
+                    .controller
+                    .input(pointer(inker::SessionButtonState::Pressed));
+                if !pressed.handled || pressed.pointer_capture != Some(true) {
+                    return Err(
+                        "article receipt jump-link press was not captured and handled".to_owned(),
+                    );
+                }
+                let released = self
+                    .controller
+                    .input(pointer(inker::SessionButtonState::Released));
+                if !released.handled || released.pointer_capture != Some(false) {
+                    return Err(
+                        "article receipt jump-link release was not handled and released".to_owned(),
+                    );
+                }
+                if !self
+                    .controller
+                    .scroll_for_key(inker::SessionScrollKey::Home)
+                {
+                    return Err(
+                        "article receipt jump link did not move the retained viewport".to_owned(),
+                    );
+                }
+                // The controller is fresh at scroll zero. Home moving immediately
+                // after release is the assertion that the fragment gesture moved
+                // the viewport; this next bounded scroll only chooses the artifact.
+                if !self.controller.scroll_by(0.0, 120.0) {
+                    return Err(
+                        "article receipt could not restore a visible retained scroll".to_owned(),
+                    );
+                }
+                Ok("jump-link press/release moved the retained viewport".to_owned())
+            },
+        }
+    }
+
     fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
         self.controller.frame(width, height)
     }
@@ -598,6 +745,9 @@ pub(crate) fn run_headed_with<C: windowed::ViewerContent + 'static>(
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("viewer event loop failed: {error}"))?;
+    if let Some(error) = app.receipt_failure() {
+        return Err(error.to_owned());
+    }
     Ok(app.outcome())
 }
 
@@ -619,7 +769,10 @@ pub(crate) mod windowed {
     use winit::keyboard::{Key, NamedKey};
     use winit::window::{Window, WindowId};
 
-    use super::{StaticViewerConfig, StaticViewerOutcome, ViewerScrollKey};
+    use super::{
+        StaticProductReceipt, StaticProductReceiptOutcome, StaticViewerConfig, StaticViewerOutcome,
+        ViewerScrollKey,
+    };
 
     /// Presentation work requested by the public Pelt controller. The winit
     /// adapter reads the same host-neutral result as every other embedder.
@@ -641,6 +794,17 @@ pub(crate) mod windowed {
         /// Current addressed resource after any in-window navigation.
         fn address(&self) -> Option<&str> {
             None
+        }
+        /// Drive a named product-semantic action after the first retained frame
+        /// established geometry. The capture is accepted only after this passes.
+        fn drive_product_receipt(
+            &mut self,
+            receipt: StaticProductReceipt,
+        ) -> Result<String, String> {
+            Err(format!(
+                "content does not implement product receipt {}",
+                receipt.id()
+            ))
         }
         /// Render at `width`×`height` at the current scroll.
         fn frame(&mut self, width: u32, height: u32) -> Scene;
@@ -793,6 +957,9 @@ pub(crate) mod windowed {
         /// Frame-loop clock origin, supplying the `now_ms` virtual clock that drives
         /// scripted content's timers (a no-op for static content).
         start: Instant,
+        receipt_assertion: Option<String>,
+        receipt_outcome: Option<StaticProductReceiptOutcome>,
+        receipt_failure: Option<String>,
     }
 
     impl<C: ViewerContent> ViewerApp<C> {
@@ -810,6 +977,9 @@ pub(crate) mod windowed {
                 cursor: (0.0, 0.0),
                 pointer_captured: false,
                 start: Instant::now(),
+                receipt_assertion: None,
+                receipt_outcome: None,
+                receipt_failure: None,
             }
         }
 
@@ -823,7 +993,12 @@ pub(crate) mod windowed {
                 } else {
                     (0, 0)
                 },
+                product_receipt: self.receipt_outcome.clone(),
             }
+        }
+
+        pub(crate) fn receipt_failure(&self) -> Option<&str> {
+            self.receipt_failure.as_deref()
         }
 
         fn window_title(&self) -> String {
@@ -858,7 +1033,25 @@ pub(crate) mod windowed {
                 return;
             };
             let (w, h) = self.logical_size();
-            let scene = self.doc.frame(w, h);
+            let mut scene = self.doc.frame(w, h);
+            if self.receipt_assertion.is_none()
+                && let Some(receipt) = self.config.product_receipt
+            {
+                match self.doc.drive_product_receipt(receipt) {
+                    Ok(assertion) => {
+                        self.receipt_assertion = Some(assertion);
+                        // The semantic action changed retained state. Capture the
+                        // frame produced from that state, not the geometry probe.
+                        scene = self.doc.frame(w, h);
+                    },
+                    Err(error) => {
+                        self.receipt_failure =
+                            Some(format!("product receipt {} failed: {error}", receipt.id()));
+                        event_loop.exit();
+                        return;
+                    },
+                }
+            }
             // White canvas: a document with no root/body background paints over white
             // (the page background), as a browser does.
             let (_tex, view) = host.rasterize_scaled(
@@ -868,12 +1061,43 @@ pub(crate) mod windowed {
                 ColorLoad::Clear(wgpu::Color::WHITE),
                 self.scale_factor,
             );
+
+            let capture_now = self.config.product_receipt.is_some()
+                && self.receipt_outcome.is_none()
+                && self.config.frames.map_or(self.redraws == 0, |limit| {
+                    self.redraws.saturating_add(1) >= limit
+                });
+            let captured = if capture_now {
+                let Some(path) = self.config.artifact.as_deref() else {
+                    self.receipt_failure =
+                        Some("product receipt needs an artifact path".to_owned());
+                    event_loop.exit();
+                    return;
+                };
+                match crate::receipt_capture::capture_composition(
+                    host,
+                    &view,
+                    self.width,
+                    self.height,
+                    path,
+                ) {
+                    Ok(captured) => Some(captured),
+                    Err(error) => {
+                        self.receipt_failure = Some(error);
+                        event_loop.exit();
+                        return;
+                    },
+                }
+            } else {
+                None
+            };
             let Some(frame) = host.acquire() else { return };
             let target = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
+            let presented = captured.as_ref().map_or(&view, |capture| &capture.view);
             host.renderer().compose_external_texture(
-                &view,
+                presented,
                 &target,
                 host.format(),
                 self.width,
@@ -883,6 +1107,21 @@ pub(crate) mod windowed {
             // wgpu 30 moved presentation from SurfaceTexture to Queue.
             host.queue().present(frame);
             self.redraws += 1;
+            if let Some(captured) = captured {
+                let receipt = self
+                    .config
+                    .product_receipt
+                    .expect("capture is only enabled for a named product receipt");
+                self.receipt_outcome = Some(StaticProductReceiptOutcome {
+                    id: receipt.id(),
+                    assertion: self
+                        .receipt_assertion
+                        .clone()
+                        .expect("capture follows the semantic assertion"),
+                    artifact: captured.path,
+                    digest: captured.digest,
+                });
+            }
             if let Some(limit) = self.config.frames {
                 if self.redraws >= limit {
                     event_loop.exit();

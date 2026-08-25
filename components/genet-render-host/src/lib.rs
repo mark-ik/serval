@@ -27,6 +27,60 @@
 
 use netrender::{ColorLoad, NetrenderOptions, Renderer, Scene};
 
+/// One tightly packed RGBA8 frame read back from the shared render device.
+///
+/// The host decides whether to encode, digest, or compare the bytes. Keeping the
+/// staging-buffer mechanics here lets native windows, browser canvases, and
+/// product receipt runners use the same device-level operation.
+pub struct RgbaFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl RgbaFrame {
+    /// A stable, order-sensitive FNV-1a digest of the frame bytes.
+    pub fn digest(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in &self.rgba {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    /// Whether every pixel is fully transparent.
+    ///
+    /// Opaque black is valid content, so it must not be treated as a failed
+    /// receipt merely because every RGB channel is zero.
+    pub fn is_blank(&self) -> bool {
+        self.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0)
+    }
+}
+
+#[cfg(test)]
+mod rgba_frame_tests {
+    use super::RgbaFrame;
+
+    #[test]
+    fn transparent_frames_are_blank_but_opaque_black_is_content() {
+        let transparent = RgbaFrame {
+            width: 1,
+            height: 1,
+            rgba: vec![12, 34, 56, 0],
+        };
+        assert!(transparent.is_blank());
+
+        let black = RgbaFrame {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+        };
+        assert!(!black.is_blank());
+        assert_ne!(black.digest(), transparent.digest());
+    }
+}
+
 /// The shared present core: one wgpu device + netrender [`Renderer`], booted once
 /// and shared across **every** surface. Per-target [`WindowSurface`]s are created
 /// from it via [`create_surface`](Self::create_surface), so N surfaces present
@@ -207,6 +261,80 @@ impl RenderCore {
     /// The shared wgpu queue (e.g. for external-texture import).
     pub fn queue(&self) -> &wgpu::Queue {
         &self.renderer.wgpu_device.core.queue
+    }
+
+    /// Read a `COPY_SRC` RGBA8 texture into tightly packed host memory.
+    ///
+    /// Swapchain textures are intentionally not assumed to be copyable. A host
+    /// that needs a receipt composes its final frame into an owned RGBA8 target,
+    /// calls this method, then presents that same target.
+    pub fn read_rgba8_texture(
+        &self,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Result<RgbaFrame, String> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let unpadded = width * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded = unpadded.div_ceil(align) * align;
+        let buffer = self.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("genet render host RGBA readback"),
+            size: (padded * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("genet render host RGBA readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue().submit(Some(encoder.finish()));
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device()
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|error| format!("RGBA readback poll failed: {error}"))?;
+        let data = slice
+            .get_mapped_range()
+            .map_err(|error| format!("RGBA readback map failed: {error}"))?;
+        let mut rgba = Vec::with_capacity((unpadded * height) as usize);
+        for row in 0..height {
+            let start = (row * padded) as usize;
+            rgba.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        Ok(RgbaFrame {
+            width,
+            height,
+            rgba,
+        })
     }
 
     /// Rasterize `scene` into a fresh `(w, h)` `Rgba8Unorm` texture, cleared to
