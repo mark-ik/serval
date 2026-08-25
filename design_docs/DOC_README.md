@@ -30,6 +30,15 @@ repatriated here from mere.
   header associations. The releases preserve Fleece's render-free, raw-URL,
   source-identity, and caller-owned annotation boundaries.)
 
+## layout and styling
+
+- [livery_flex_shorthand_plan](2026-08-25_livery_flex_shorthand_plan.md)
+  (**complete flex-shorthand slice; Row 18 remains in progress**: Livery now
+  expands `flex` and `flex-flow` into the longhand style fields already lowered
+  to Taffy. The exact 1,358-file flexbox map records 115 gains, three assigned
+  downstream false-pass losses, and the numeric-basis parser repair forced by
+  the first candidate.)
+
 ## inker_docs/ — the engine controller
 
 - [engine_picker_and_pluggability_plan](inker_docs/implementation_strategy/2026-06-15_engine_picker_and_pluggability_plan.md)
@@ -117,6 +126,6 @@ repatriated here from mere.
 
 ## Status
 
-Founded 2026-08-24. The active index now covers one flat Fleece plan plus eight
+Founded 2026-08-24. The active index now covers two flat plans plus eight
 documents in three area roots. The engine corpus in `docs/` is not indexed here
 and is not governed by the policy yet.
