@@ -201,7 +201,7 @@ fn microdata_preserves_roots_tokens_properties_nested_items_cycles_and_itemref()
         &["urn:custom:Cycle"],
         Some("#cycle"),
     );
-    assert_eq!(field(&related.value, "related"), &StructuredValue::Cycle);
+    assert_eq!(field(&related.value, "author"), &StructuredValue::Cycle);
 
     assert_identity(
         roots[1],

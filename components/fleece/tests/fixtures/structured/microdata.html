@@ -2,11 +2,8 @@
   <meta itemprop="name alias alias" content="Root">
   <span itemprop="tag">first</span>
   <span itemprop="tag">second</span>
-  <div itemprop="author" itemscope itemtype="https://schema.org/Person urn:custom:Writer" itemid="/people/ada" itemref="cycle-node">
+  <div id="author-node" itemprop="author" itemscope itemtype="https://schema.org/Person urn:custom:Writer" itemid="/people/ada" itemref="cycle-node">
     <span itemprop="name">Ada</span>
-    <span id="cycle-node" itemprop="related" itemscope itemtype="urn:custom:Cycle" itemid="#cycle" itemref="cycle-node">
-      <span itemprop="label">loop</span>
-    </span>
   </div>
   <span id="ref-overlap" itemprop="overlap">tree order overlap</span>
   <span itemprop="generic">A  <b>B</b>
@@ -18,6 +15,9 @@
     <span itemprop="name">Independent</span>
   </div>
 </div>
+<span id="cycle-node" itemprop="related" itemscope itemtype="urn:custom:Cycle" itemid="#cycle" itemref="author-node">
+  <span itemprop="label">loop</span>
+</span>
 <div id="ref-a" itemprop="outside-a">A</div>
 <div id="ref-b" itemprop="outside-b">B</div>
 <div itemprop="unused">Not attached</div>

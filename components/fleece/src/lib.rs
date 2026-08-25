@@ -1805,13 +1805,15 @@ mod tests {
         );
         let data = extract_structured_data(&doc);
         assert_eq!(data.len(), 2);
-        assert_eq!(data[0].kind, "Recipe");
+        assert_eq!(data[0].types, ["Recipe"]);
+        assert_eq!(data[0].id, None);
         assert_eq!(data[0].source, StructuredDataSource::JsonLd);
         assert_eq!(
             data[0].value.get("name").and_then(StructuredValue::as_str),
             Some("Tea")
         );
-        assert_eq!(data[1].kind, "Event");
+        assert_eq!(data[1].types, ["https://schema.org/Event"]);
+        assert_eq!(data[1].id, None);
         assert_eq!(data[1].source, StructuredDataSource::Microdata);
         assert_eq!(
             data[1]

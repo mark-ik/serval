@@ -207,7 +207,7 @@ fn microdata_item<D: LayoutDom>(
     debug_assert!(removed);
     StructuredData {
         types: attr(dom, root, "itemtype")
-            .map(|types| types.split_ascii_whitespace().map(str::to_string).collect())
+            .map(|types| html_tokens(&types).map(str::to_string).collect())
             .unwrap_or_default(),
         id: attr(dom, root, "itemid"),
         value: StructuredValue::Object(fields),
@@ -225,7 +225,7 @@ fn item_property_elements<D: LayoutDom>(
     let mut pending = VecDeque::new();
     pending.extend(element_children(dom, root));
     if let Some(itemref) = attr(dom, root, "itemref") {
-        for reference in itemref.split_ascii_whitespace() {
+        for reference in html_tokens(&itemref) {
             if let Some(target) = index.first_id.get(reference) {
                 pending.push_back(*target);
             }
@@ -253,11 +253,16 @@ fn item_property_names<D: LayoutDom>(dom: &D, id: D::NodeId) -> Vec<String> {
         return Vec::new();
     };
     let mut seen = HashSet::new();
-    properties
-        .split_ascii_whitespace()
+    html_tokens(&properties)
         .filter(|property| seen.insert(*property))
         .map(str::to_string)
         .collect()
+}
+
+fn html_tokens(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' '))
+        .filter(|token| !token.is_empty())
 }
 
 fn microdata_property_text<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
