@@ -26,7 +26,59 @@
 
 #![deny(unsafe_code)]
 
+use std::collections::HashMap;
+
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
+use unicode_segmentation::UnicodeSegmentation;
+
+/// The textual representation against which Fleece selectors are measured.
+///
+/// `FleeceDomTextV1` walks the supplied DOM in logical DOM order, excludes
+/// `head`, `script`, `style`, `template`, and `noscript` subtrees, removes markup,
+/// and collapses every Unicode whitespace run to one ASCII space. Text is decoded
+/// DOM text, never source bytes or visual/layout order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextNormalization {
+    #[default]
+    FleeceDomTextV1,
+}
+
+/// A half-open Unicode-code-point range in [`TextNormalization::FleeceDomTextV1`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextPositionSelector {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Quote evidence for one source segment. Prefix and suffix are adjacent context,
+/// not a refinement relationship with the position selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextQuoteSelector {
+    pub exact: String,
+    pub prefix: String,
+    pub suffix: String,
+}
+
+/// Sibling position and quote descriptions of one source segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAnchor {
+    pub position: TextPositionSelector,
+    pub quote: TextQuoteSelector,
+}
+
+/// Options for the selector-bearing extraction entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractionOptions {
+    /// Maximum Unicode code points retained on either side of a quote. The
+    /// resulting context is extended to whole grapheme clusters.
+    pub quote_context: usize,
+}
+
+impl Default for ExtractionOptions {
+    fn default() -> Self {
+        Self { quote_context: 32 }
+    }
+}
 
 /// One extracted hyperlink — the rect-free counterpart to a laid-out `LinkHit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +193,16 @@ pub struct TableRow {
     pub cells: Vec<TableCell>,
 }
 
+/// A reader block together with optional evidence in the canonical Fleece text.
+///
+/// A missing anchor means the reader block is synthetic or joins discontinuous
+/// source text. Consumers must not treat it as an unquoted source selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchoredBlock {
+    pub anchor: Option<TextAnchor>,
+    pub block: Block,
+}
+
 /// Structured reader blocks, independent of layout and paint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -153,10 +215,10 @@ pub enum Block {
     },
     List {
         ordered: bool,
-        items: Vec<Vec<Block>>,
+        items: Vec<Vec<AnchoredBlock>>,
     },
     Quote {
-        blocks: Vec<Block>,
+        blocks: Vec<AnchoredBlock>,
     },
     Code {
         language: Option<String>,
@@ -184,6 +246,8 @@ pub enum RootSelector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractionLineage {
     pub fleece_version: String,
+    /// The textual representation used by every selector in this article.
+    pub normalization: TextNormalization,
     pub root_selector: RootSelector,
     pub block_count: usize,
 }
@@ -198,7 +262,7 @@ pub struct Article {
     pub site: Option<String>,
     pub canonical: Option<String>,
     pub lead_image: Option<String>,
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<AnchoredBlock>,
     pub lineage: ExtractionLineage,
 }
 
@@ -240,11 +304,25 @@ pub struct PageExtract {
 /// Extract the structured content of `dom` without rendering it. The one-call entry
 /// for the eidetic sink; the field functions below are the à-la-carte pieces.
 pub fn extract<D: LayoutDom>(dom: &D) -> PageExtract {
-    extract_document(dom).page
+    extract_with_options(dom, ExtractionOptions::default())
+}
+
+/// Extract the flat index shape with caller-selected quote context.
+pub fn extract_with_options<D: LayoutDom>(dom: &D, options: ExtractionOptions) -> PageExtract {
+    extract_document_with_options(dom, options).page
 }
 
 /// Extract the flat index shape and structured reader shape together.
 pub fn extract_document<D: LayoutDom>(dom: &D) -> ExtractedDocument {
+    extract_document_with_options(dom, ExtractionOptions::default())
+}
+
+/// Extract both shapes with caller-selected quote context.
+pub fn extract_document_with_options<D: LayoutDom>(
+    dom: &D,
+    options: ExtractionOptions,
+) -> ExtractedDocument {
+    let text_index = FleeceTextIndex::build(dom);
     let selected = select_content(dom);
     let main_text = selected.as_ref().and_then(|selected| {
         let text = chrome_free_text(dom, &selected.roots);
@@ -254,18 +332,27 @@ pub fn extract_document<D: LayoutDom>(dom: &D) -> ExtractedDocument {
         title: extract_title(dom),
         metadata: extract_metadata(dom),
         headings: extract_headings(dom),
-        text: extract_text(dom),
+        text: text_index.text.clone(),
         main_text,
         links: extract_links(dom),
         structured_data: extract_structured_data(dom),
     };
-    let article = selected.and_then(|selected| extract_article_with_page(dom, &page, selected));
+    let article = selected
+        .and_then(|selected| extract_article_with_page(dom, &page, selected, &text_index, options));
     ExtractedDocument { page, article }
 }
 
 /// Extract only the structured reader shape.
 pub fn extract_article<D: LayoutDom>(dom: &D) -> Option<Article> {
-    extract_document(dom).article
+    extract_article_with_options(dom, ExtractionOptions::default())
+}
+
+/// Extract only the structured reader shape with caller-selected quote context.
+pub fn extract_article_with_options<D: LayoutDom>(
+    dom: &D,
+    options: ExtractionOptions,
+) -> Option<Article> {
+    extract_document_with_options(dom, options).article
 }
 
 /// Whether the document carries a script element.
@@ -375,11 +462,11 @@ fn walk_metadata<D: LayoutDom>(dom: &D, id: D::NodeId, md: &mut Metadata) {
             {
                 md.description = attr(dom, id, "content").filter(|c| !c.is_empty());
             }
-        },
+        }
         Some("link") if md.canonical.is_none() && rel_has(dom, id, "canonical") => {
             md.canonical = attr(dom, id, "href").filter(|h| !h.is_empty());
-        },
-        _ => {},
+        }
+        _ => {}
     }
     for child in dom.dom_children(id) {
         walk_metadata(dom, child, md);
@@ -401,9 +488,7 @@ fn rel_has<D: LayoutDom>(dom: &D, id: D::NodeId, token: &str) -> bool {
 /// *not* a main-content heuristic (which would drop nav/footer chrome); that
 /// readability pass is a later slice that can build on this.
 pub fn extract_text<D: LayoutDom>(dom: &D) -> String {
-    let mut out = String::new();
-    collect_visible_text(dom, dom.document(), &mut out);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    FleeceTextIndex::build(dom).text
 }
 
 /// Names of subtrees that carry no visible page text and are skipped wholesale.
@@ -411,16 +496,182 @@ fn is_non_rendered(name: &str) -> bool {
     matches!(name, "script" | "style" | "template" | "noscript" | "head")
 }
 
-fn collect_visible_text<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut String) {
-    if local_name(dom, id).is_some_and(is_non_rendered) {
-        return; // skip the whole subtree
+#[derive(Debug, Clone, Copy)]
+struct TextRange {
+    start: u64,
+    end: u64,
+}
+
+/// The one normalized page stream and the source-node ranges that contributed to
+/// it. Composite extraction builds this once so page text and reader anchors share
+/// one coordinate system.
+struct FleeceTextIndex<Id> {
+    text: String,
+    ranges: HashMap<Id, TextRange>,
+    pending_space: bool,
+}
+
+impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
+    fn append_text(&mut self, source: &str) -> TextRange {
+        let mut start = self.text.chars().count() as u64;
+        let mut wrote_content = false;
+        for character in source.chars() {
+            if character.is_whitespace() {
+                self.pending_space = true;
+            } else {
+                if self.pending_space && !self.text.is_empty() && !self.text.ends_with(' ') {
+                    self.text.push(' ');
+                    if !wrote_content {
+                        start = self.text.chars().count() as u64;
+                    }
+                }
+                self.text.push(character);
+                wrote_content = true;
+                self.pending_space = false;
+            }
+        }
+        TextRange {
+            start,
+            end: self.text.chars().count() as u64,
+        }
     }
-    if let Some(t) = dom.text(id) {
-        out.push_str(t);
-        out.push(' '); // separator so adjacent inline runs don't fuse
+
+    fn range_for<D: LayoutDom<NodeId = Id>>(&self, dom: &D, id: Id) -> Option<TextRange> {
+        if local_name(dom, id).is_some_and(is_non_rendered) {
+            return None;
+        }
+        if let Some(range) = self
+            .ranges
+            .get(&id)
+            .copied()
+            .filter(|range| range.start < range.end)
+        {
+            return Some(range);
+        }
+        let mut result: Option<TextRange> = None;
+        for child in dom.dom_children(id) {
+            let Some(child_range) = self.range_for(dom, child) else {
+                continue;
+            };
+            result = Some(match result {
+                Some(range) => TextRange {
+                    start: range.start.min(child_range.start),
+                    end: range.end.max(child_range.end),
+                },
+                None => child_range,
+            });
+        }
+        result
     }
-    for child in dom.dom_children(id) {
-        collect_visible_text(dom, child, out);
+}
+
+impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
+    fn build<D: LayoutDom<NodeId = Id>>(dom: &D) -> Self {
+        let mut index = Self {
+            text: String::new(),
+            ranges: HashMap::new(),
+            pending_space: false,
+        };
+        index.collect(dom, dom.document());
+        index
+    }
+
+    fn collect<D: LayoutDom<NodeId = Id>>(&mut self, dom: &D, id: Id) {
+        if local_name(dom, id).is_some_and(is_non_rendered) {
+            return;
+        }
+        if let Some(text) = dom.text(id) {
+            let range = self.append_text(text);
+            self.ranges.insert(id, range);
+            // Preserve Fleece 0.1's explicit separator between adjacent DOM text
+            // nodes, even where HTML source omitted whitespace between elements.
+            self.pending_space = true;
+        }
+        for child in dom.dom_children(id) {
+            self.collect(dom, child);
+        }
+    }
+}
+
+fn has_reader_excluded_descendant<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
+    local_name(dom, id).is_some_and(is_chrome_or_non_rendered)
+        || dom
+            .dom_children(id)
+            .any(|child| has_reader_excluded_descendant(dom, child))
+}
+
+fn text_slice(text: &str, start: u64, end: u64) -> String {
+    text.chars()
+        .skip(start as usize)
+        .take((end - start) as usize)
+        .collect()
+}
+
+fn prefix_context(text: &str, end: u64, limit: usize) -> String {
+    let before = text_slice(text, 0, end);
+    let mut remaining = limit;
+    let mut pieces = Vec::new();
+    for grapheme in UnicodeSegmentation::graphemes(before.as_str(), true).rev() {
+        let width = grapheme.chars().count();
+        if width > remaining {
+            break;
+        }
+        pieces.push(grapheme);
+        remaining -= width;
+    }
+    pieces.reverse();
+    pieces.concat()
+}
+
+fn suffix_context(text: &str, start: u64, limit: usize) -> String {
+    let after = text_slice(text, start, text.chars().count() as u64);
+    let mut remaining = limit;
+    let mut result = String::new();
+    for grapheme in UnicodeSegmentation::graphemes(after.as_str(), true) {
+        let width = grapheme.chars().count();
+        if width > remaining {
+            break;
+        }
+        result.push_str(grapheme);
+        remaining -= width;
+    }
+    result
+}
+
+fn anchor_for_node<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) -> Option<TextAnchor> {
+    if has_reader_excluded_descendant(dom, id) {
+        return None;
+    }
+    let range = text_index.range_for(dom, id)?;
+    let exact = text_slice(&text_index.text, range.start, range.end);
+    (!exact.is_empty()).then(|| TextAnchor {
+        position: TextPositionSelector {
+            start: range.start,
+            end: range.end,
+        },
+        quote: TextQuoteSelector {
+            prefix: prefix_context(&text_index.text, range.start, options.quote_context),
+            exact,
+            suffix: suffix_context(&text_index.text, range.end, options.quote_context),
+        },
+    })
+}
+
+fn anchored_block<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    block: Block,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) -> AnchoredBlock {
+    AnchoredBlock {
+        anchor: anchor_for_node(dom, id, text_index, options),
+        block,
     }
 }
 
@@ -677,10 +928,12 @@ fn extract_article_with_page<D: LayoutDom>(
     dom: &D,
     page: &PageExtract,
     selected: SelectedContent<D::NodeId>,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
 ) -> Option<Article> {
     let mut blocks = Vec::new();
     for root in &selected.roots {
-        collect_blocks(dom, *root, &mut blocks, true);
+        collect_blocks(dom, *root, &mut blocks, true, text_index, options);
     }
     if blocks.is_empty() {
         return None;
@@ -714,6 +967,7 @@ fn extract_article_with_page<D: LayoutDom>(
         blocks,
         lineage: ExtractionLineage {
             fleece_version: env!("CARGO_PKG_VERSION").to_string(),
+            normalization: TextNormalization::FleeceDomTextV1,
             root_selector: selected.selector,
             block_count,
         },
@@ -813,15 +1067,22 @@ fn first_attr<D: LayoutDom>(dom: &D, id: D::NodeId, tag: &str, attribute: &str) 
         .find_map(|child| first_attr(dom, child, tag, attribute))
 }
 
-fn count_block_tree(block: &Block) -> usize {
-    1 + match block {
+fn count_block_tree(block: &AnchoredBlock) -> usize {
+    1 + match &block.block {
         Block::List { items, .. } => items.iter().flatten().map(count_block_tree).sum::<usize>(),
         Block::Quote { blocks } => blocks.iter().map(count_block_tree).sum(),
         _ => 0,
     }
 }
 
-fn collect_blocks<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Block>, include_self: bool) {
+fn collect_blocks<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    out: &mut Vec<AnchoredBlock>,
+    include_self: bool,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) {
     let name = local_name(dom, id);
     if name.is_some_and(is_chrome_or_non_rendered) {
         return;
@@ -832,102 +1093,178 @@ fn collect_blocks<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Block>, in
                 out,
                 |runs| Block::Heading { level, runs },
                 inline_runs(dom, id),
+                dom,
+                id,
+                text_index,
+                options,
             );
             return;
         }
         match name {
             Some("p") => {
-                push_inline_block(out, |runs| Block::Paragraph { runs }, inline_runs(dom, id));
+                push_inline_block(
+                    out,
+                    |runs| Block::Paragraph { runs },
+                    inline_runs(dom, id),
+                    dom,
+                    id,
+                    text_index,
+                    options,
+                );
                 return;
-            },
+            }
             Some("ul" | "ol") => {
                 let ordered = name == Some("ol");
-                let items = list_items(dom, id);
+                let items = list_items(dom, id, text_index, options);
                 if !items.is_empty() {
-                    out.push(Block::List { ordered, items });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::List { ordered, items },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
-            },
+            }
             Some("blockquote") => {
                 let mut blocks = Vec::new();
                 for child in dom.dom_children(id) {
-                    collect_blocks(dom, child, &mut blocks, true);
+                    collect_blocks(dom, child, &mut blocks, true, text_index, options);
                 }
                 if blocks.is_empty() {
                     push_inline_block(
                         &mut blocks,
                         |runs| Block::Paragraph { runs },
                         inline_runs(dom, id),
+                        dom,
+                        id,
+                        text_index,
+                        options,
                     );
                 }
                 if !blocks.is_empty() {
-                    out.push(Block::Quote { blocks });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::Quote { blocks },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
-            },
+            }
             Some("pre") => {
                 let language = code_language(dom, id);
                 let text = text_of(dom, id);
                 if !text.is_empty() {
-                    out.push(Block::Code { language, text });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::Code { language, text },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
-            },
+            }
             Some("table") => {
                 let rows = table_rows(dom, id);
                 if !rows.is_empty() {
-                    out.push(Block::Table { rows });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::Table { rows },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
-            },
+            }
             Some("figure") => {
                 if let Some(figure) = figure_block(dom, id) {
-                    out.push(figure);
-                }
-                return;
-            },
-            Some("img") => {
-                if let Some(src) = attr(dom, id, "src").filter(|src| !src.is_empty()) {
-                    out.push(Block::Figure {
-                        src,
-                        alt: attr(dom, id, "alt").unwrap_or_default(),
-                        caption: None,
+                    let anchor_id = find_first(dom, id, "figcaption").unwrap_or(id);
+                    let anchor = matches!(
+                        &figure,
+                        Block::Figure {
+                            caption: Some(_),
+                            ..
+                        }
+                    )
+                    .then(|| anchor_for_node(dom, anchor_id, text_index, options))
+                    .flatten();
+                    out.push(AnchoredBlock {
+                        anchor,
+                        block: figure,
                     });
                 }
                 return;
-            },
-            Some("hr") => {
-                out.push(Block::Rule);
+            }
+            Some("img") => {
+                if let Some(src) = attr(dom, id, "src").filter(|src| !src.is_empty()) {
+                    out.push(AnchoredBlock {
+                        anchor: None,
+                        block: Block::Figure {
+                            src,
+                            alt: attr(dom, id, "alt").unwrap_or_default(),
+                            caption: None,
+                        },
+                    });
+                }
                 return;
-            },
-            _ => {},
+            }
+            Some("hr") => {
+                out.push(AnchoredBlock {
+                    anchor: None,
+                    block: Block::Rule,
+                });
+                return;
+            }
+            _ => {}
         }
     }
     for child in dom.dom_children(id) {
-        collect_blocks(dom, child, out, true);
+        collect_blocks(dom, child, out, true, text_index, options);
     }
 }
 
-fn push_inline_block(
-    out: &mut Vec<Block>,
+fn push_inline_block<D: LayoutDom>(
+    out: &mut Vec<AnchoredBlock>,
     make: impl FnOnce(Vec<Inline>) -> Block,
     runs: Vec<Inline>,
+    dom: &D,
+    id: D::NodeId,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
 ) {
     if !inline_plain_text(&runs).trim().is_empty() {
-        out.push(make(runs));
+        out.push(anchored_block(dom, id, make(runs), text_index, options));
     }
 }
 
-fn list_items<D: LayoutDom>(dom: &D, list: D::NodeId) -> Vec<Vec<Block>> {
+fn list_items<D: LayoutDom>(
+    dom: &D,
+    list: D::NodeId,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) -> Vec<Vec<AnchoredBlock>> {
     dom.dom_children(list)
         .filter(|child| local_name(dom, *child) == Some("li"))
         .filter_map(|item| {
             let mut blocks = Vec::new();
             let shallow = inline_runs_shallow(dom, item);
-            push_inline_block(&mut blocks, |runs| Block::Paragraph { runs }, shallow);
+            push_inline_block(
+                &mut blocks,
+                |runs| Block::Paragraph { runs },
+                shallow,
+                dom,
+                item,
+                text_index,
+                options,
+            );
             for child in dom.dom_children(item) {
                 if local_name(dom, child).is_some_and(is_structural_block) {
-                    collect_blocks(dom, child, &mut blocks, true);
+                    collect_blocks(dom, child, &mut blocks, true, text_index, options);
                 }
             }
             (!blocks.is_empty()).then_some(blocks)
@@ -1007,7 +1344,7 @@ fn collect_inline<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Inline>, s
             } else {
                 out.extend(runs);
             }
-        },
+        }
         Some("strong" | "b" | "em" | "i") => {
             let runs = nested(dom, id, shallow);
             if !runs.is_empty() {
@@ -1016,13 +1353,13 @@ fn collect_inline<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Inline>, s
                     runs,
                 });
             }
-        },
+        }
         Some("code") => {
             let text = text_of(dom, id);
             if !text.is_empty() {
                 out.push(Inline::Code(text));
             }
-        },
+        }
         Some("br") => push_text_run(out, "\n".to_string()),
         _ => out.extend(nested(dom, id, shallow)),
     }
@@ -1072,7 +1409,7 @@ fn inline_plain_text(runs: &[Inline]) -> String {
             Inline::Text(text) | Inline::Code(text) => out.push_str(text),
             Inline::Link { runs, .. } | Inline::Emphasis { runs, .. } => {
                 out.push_str(&inline_plain_text(runs));
-            },
+            }
         }
     }
     out
@@ -1167,7 +1504,7 @@ fn collect_json_ld(value: StructuredValue, out: &mut Vec<StructuredData>) {
             for value in values {
                 collect_json_ld(value, out);
             }
-        },
+        }
         StructuredValue::Object(entries) => {
             let value = StructuredValue::Object(entries);
             if let Some(kind) = json_ld_kind(&value) {
@@ -1182,8 +1519,8 @@ fn collect_json_ld(value: StructuredValue, out: &mut Vec<StructuredData>) {
                     collect_json_ld(child, out);
                 }
             }
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -1357,7 +1694,7 @@ impl<'a> JsonParser<'a> {
                         b'u' => out.push(self.unicode_escape()?),
                         _ => return None,
                     }
-                },
+                }
                 0x00..=0x1f => return None,
                 ascii if ascii.is_ascii() => out.push(ascii as char),
                 _ => {
@@ -1366,7 +1703,7 @@ impl<'a> JsonParser<'a> {
                     let character = tail.chars().next()?;
                     self.cursor += character.len_utf8();
                     out.push(character);
-                },
+                }
             }
         }
         None
@@ -1411,7 +1748,7 @@ impl<'a> JsonParser<'a> {
                 while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
                     self.cursor += 1;
                 }
-            },
+            }
             _ => return None,
         }
         if self.peek() == Some(b'.') {
@@ -1660,6 +1997,62 @@ mod tests {
     }
 
     #[test]
+    fn anchored_blocks_share_the_page_code_point_stream() {
+        let doc = StaticDocument::parse(
+            "<body><main><h1>Title 🙂</h1><p>First <em>e&#x301;</em> paragraph.</p>\
+             <blockquote><p>Nested quote.</p></blockquote></main></body>",
+        );
+        let extracted = extract_document_with_options(&doc, ExtractionOptions { quote_context: 4 });
+        assert_eq!(
+            extracted.page.text,
+            "Title 🙂 First é paragraph. Nested quote."
+        );
+        let article = extracted.article.expect("article");
+        let heading = article.blocks.first().expect("heading anchor");
+        let anchor = heading.anchor.as_ref().expect("source anchor");
+        assert_eq!(anchor.quote.exact, "Title 🙂");
+        assert_eq!(
+            text_slice(
+                &extracted.page.text,
+                anchor.position.start,
+                anchor.position.end
+            ),
+            anchor.quote.exact
+        );
+        assert_eq!(anchor.position.end - anchor.position.start, 7);
+        let quote = article.blocks.last().expect("quote block");
+        assert!(
+            quote.anchor.is_some(),
+            "contiguous parent quote is anchored"
+        );
+        let Block::Quote { blocks } = &quote.block else {
+            panic!("quote block");
+        };
+        assert!(blocks[0].anchor.is_some(), "nested child is anchored");
+    }
+
+    #[test]
+    fn quote_context_preserves_grapheme_boundaries() {
+        let doc = StaticDocument::parse(
+            "<body><main>e&#x301;<p>target text is long enough for the reader to retain as article prose.</p></main></body>",
+        );
+        let article = extract_article_with_options(&doc, ExtractionOptions { quote_context: 3 })
+            .expect("article");
+        let paragraph = article.blocks.last().expect("paragraph");
+        let anchor = paragraph.anchor.as_ref().expect("paragraph anchor");
+        assert_eq!(
+            anchor.quote.exact,
+            "target text is long enough for the reader to retain as article prose."
+        );
+        assert_eq!(anchor.quote.prefix, "é ");
+
+        let article = extract_article_with_options(&doc, ExtractionOptions { quote_context: 2 })
+            .expect("article");
+        let anchor = article.blocks.last().unwrap().anchor.as_ref().unwrap();
+        assert_eq!(anchor.quote.prefix, " ");
+    }
+
+    #[test]
     fn main_text_prefers_the_main_landmark_and_drops_chrome() {
         let doc = StaticDocument::parse(
             "<body>\
@@ -1786,9 +2179,10 @@ mod tests {
             .blocks
             .iter()
             .find_map(|block| match block {
-                Block::Paragraph { runs } if inline_plain_text(runs).contains("linked words") => {
-                    Some(runs)
-                },
+                AnchoredBlock {
+                    block: Block::Paragraph { runs },
+                    ..
+                } if inline_plain_text(runs).contains("linked words") => Some(runs),
                 _ => None,
             })
             .expect("rich paragraph");
@@ -1816,9 +2210,9 @@ mod tests {
             article
                 .blocks
                 .iter()
-                .any(|block| matches!(block, Block::Table { rows } if rows[0].header))
+                .any(|block| matches!(&block.block, Block::Table { rows } if rows[0].header))
         );
-        assert!(article.blocks.iter().any(|block| matches!(block, Block::Figure { src, caption: Some(_), .. } if src == "/figure.png")));
+        assert!(article.blocks.iter().any(|block| matches!(&block.block, Block::Figure { src, caption: Some(_), .. } if src == "/figure.png")));
     }
 
     #[test]
@@ -2047,7 +2441,7 @@ mod tests {
                     true_positive += actual_words.intersection(&expected_words).count();
                     false_positive += actual_words.difference(&expected_words).count();
                     false_negative += expected_words.difference(&actual_words).count();
-                },
+                }
             }
         }
         let precision = true_positive as f64 / (true_positive + false_positive) as f64;
