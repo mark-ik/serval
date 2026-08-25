@@ -33,6 +33,17 @@ pub struct DocumentLink {
     pub other: Vec<(String, String)>,
 }
 
+impl DocumentLink {
+    /// Compare a relation token without changing the spelling retained in
+    /// [`Self::rel`]. Registered names and extension relation IRIs are both
+    /// compared ASCII-case-insensitively.
+    pub fn has_relation(&self, relation: &str) -> bool {
+        self.rel
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(relation))
+    }
+}
+
 /// The document's self-description. Fleece observes DOM metadata only and
 /// resolves no URLs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -137,9 +148,11 @@ fn group_open_graph(pairs: &[(String, String)]) -> Vec<OpenGraphGroup> {
             if let Some(group) = groups.last_mut() {
                 if group.property == root {
                     group.structured.push((suffix.to_owned(), value.clone()));
-                    continue;
                 }
             }
+            // Keep malformed/orphan structured properties in raw evidence,
+            // without fabricating a grouped root for them.
+            continue;
         }
         groups.push(OpenGraphGroup {
             property: property.clone(),
