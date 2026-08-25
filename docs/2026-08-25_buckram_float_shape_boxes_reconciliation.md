@@ -132,10 +132,14 @@ The 38 red shape-box files are not one mechanism:
 - the wider Shapes corpus still lacks basic shapes, paths, image and gradient
   alpha maps, and threshold semantics.
 
-The next coherent Shapes primitive is horizontal rounded reference boxes.
-The 11 plain-box files need a separate inline/block reconciliation rather than
-a wider shape claim. Vertical contour transforms remain with the row 10/12
-boundary, and fragmentation remains K6.
+The horizontal rounded reference-box primitive is now complete in the
+[rounded reference-box reconciliation](2026-08-25_buckram_rounded_shape_boxes_reconciliation.md),
+with eight exact gains and zero loss. Its candidate leaves 30 red shape-box
+files: eight horizontal rounded cases coupled to inline/block residuals, eight
+vertical or sideways rounded cases, three `shape-margin` cases, and the eleven
+plain rectangular cases above. The next coherent slice is their shared
+inline/block reconciliation. Vertical contour transforms remain with the row
+10/12 boundary, and fragmentation remains K6.
 
 ## Done condition
 
