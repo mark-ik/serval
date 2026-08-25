@@ -2,9 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use layout_dom_api::LayoutDom;
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::{attr, collect_text, local_name};
+use layout_dom_api::{LayoutDom, NodeKind};
+
+use crate::{attr, local_name};
 
 /// One JSON value harvested from page-carried structured data.
 ///
@@ -18,6 +20,10 @@ pub enum StructuredValue {
     String(String),
     Array(Vec<StructuredValue>),
     Object(Vec<(String, StructuredValue)>),
+    /// A nested HTML Microdata item, including its own declared types and ID.
+    Item(Box<StructuredData>),
+    /// A nested Microdata item that would revisit an ancestor item.
+    Cycle,
 }
 
 impl StructuredValue {
@@ -40,11 +46,13 @@ impl StructuredValue {
     }
 }
 
-/// A typed block harvested from JSON-LD or HTML microdata.
+/// A JSON-LD object or HTML Microdata item harvested without semantic processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredData {
-    /// The declared schema type (`Recipe`, `Event`, `Person`, `Article`, ...).
-    pub kind: String,
+    /// Raw declared `@type` or `itemtype` values, in source order.
+    pub types: Vec<String>,
+    /// Raw string `@id` or `itemid`, if one was declared.
+    pub id: Option<String>,
     /// The harvested value, retaining fields fleece does not interpret.
     pub value: StructuredValue,
     /// The page syntax that supplied the value.
@@ -59,12 +67,18 @@ pub enum StructuredDataSource {
 
 /// Harvest JSON-LD and microdata without interpreting consumer policy.
 pub fn extract_structured_data<D: LayoutDom>(dom: &D) -> Vec<StructuredData> {
+    let index = DomIndex::build(dom);
     let mut out = Vec::new();
-    walk_structured_data(dom, dom.document(), &mut out);
+    walk_structured_data(dom, dom.document(), &index, &mut out);
     out
 }
 
-fn walk_structured_data<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<StructuredData>) {
+fn walk_structured_data<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    index: &DomIndex<D::NodeId>,
+    out: &mut Vec<StructuredData>,
+) {
     if local_name(dom, id) == Some("script")
         && attr(dom, id, "type").is_some_and(|value| {
             value
@@ -75,109 +89,245 @@ fn walk_structured_data<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Stru
     {
         let raw = raw_text_of(dom, id);
         if let Some(value) = JsonParser::new(&raw).parse() {
-            collect_json_ld(value, out);
+            collect_json_ld_root(value, out);
         }
     }
-    if attr(dom, id, "itemscope").is_some()
-        && let Some(data) = microdata_item(dom, id)
-    {
-        out.push(data);
+    if attr(dom, id, "itemscope").is_some() && attr(dom, id, "itemprop").is_none() {
+        out.push(microdata_item(dom, id, index, &mut HashSet::new()));
     }
     for child in dom.dom_children(id) {
-        walk_structured_data(dom, child, out);
+        walk_structured_data(dom, child, index, out);
     }
 }
 
-fn collect_json_ld(value: StructuredValue, out: &mut Vec<StructuredData>) {
+fn collect_json_ld_root(value: StructuredValue, out: &mut Vec<StructuredData>) {
     match value {
         StructuredValue::Array(values) => {
             for value in values {
-                collect_json_ld(value, out);
+                collect_json_ld_root(value, out);
             }
         },
         StructuredValue::Object(entries) => {
-            let value = StructuredValue::Object(entries);
-            if let Some(kind) = json_ld_kind(&value) {
-                out.push(StructuredData {
-                    kind,
-                    value: value.clone(),
-                    source: StructuredDataSource::JsonLd,
-                });
-            }
-            if let Some(StructuredValue::Array(graph)) = value.get("@graph") {
-                for child in graph.clone() {
-                    collect_json_ld(child, out);
-                }
-            }
+            collect_json_ld_object(StructuredValue::Object(entries), out);
         },
         _ => {},
     }
 }
 
-fn json_ld_kind(value: &StructuredValue) -> Option<String> {
-    match value.get("@type")? {
-        StructuredValue::String(kind) => Some(short_schema_type(kind)),
-        StructuredValue::Array(kinds) => kinds
-            .iter()
-            .find_map(StructuredValue::as_str)
-            .map(short_schema_type),
-        _ => None,
+fn collect_json_ld_object(value: StructuredValue, out: &mut Vec<StructuredData>) {
+    out.push(StructuredData {
+        types: json_ld_types(&value),
+        id: json_ld_id(&value),
+        value: value.clone(),
+        source: StructuredDataSource::JsonLd,
+    });
+
+    let StructuredValue::Object(entries) = value else {
+        return;
+    };
+    for (name, graph) in entries {
+        if name != "@graph" {
+            continue;
+        }
+        match graph {
+            StructuredValue::Object(_) => collect_json_ld_object(graph, out),
+            StructuredValue::Array(members) => {
+                for member in members {
+                    if matches!(member, StructuredValue::Object(_)) {
+                        collect_json_ld_object(member, out);
+                    }
+                }
+            },
+            _ => {},
+        }
     }
 }
 
-fn short_schema_type(value: &str) -> String {
-    value.rsplit(['/', '#']).next().unwrap_or(value).to_string()
+fn json_ld_types(value: &StructuredValue) -> Vec<String> {
+    let StructuredValue::Object(entries) = value else {
+        return Vec::new();
+    };
+    let mut types = Vec::new();
+    for (name, value) in entries {
+        if name != "@type" {
+            continue;
+        }
+        match value {
+            StructuredValue::String(value) => types.push(value.clone()),
+            StructuredValue::Array(values) => {
+                types.extend(
+                    values
+                        .iter()
+                        .filter_map(StructuredValue::as_str)
+                        .map(str::to_string),
+                );
+            },
+            _ => {},
+        }
+    }
+    types
 }
 
-fn microdata_item<D: LayoutDom>(dom: &D, root: D::NodeId) -> Option<StructuredData> {
-    let kind = attr(dom, root, "itemtype")
-        .and_then(|types| types.split_whitespace().next().map(short_schema_type))?;
-    let mut fields = Vec::new();
-    collect_microdata_fields(dom, root, root, &mut fields);
-    Some(StructuredData {
-        kind,
-        value: StructuredValue::Object(fields),
-        source: StructuredDataSource::Microdata,
+fn json_ld_id(value: &StructuredValue) -> Option<String> {
+    let StructuredValue::Object(entries) = value else {
+        return None;
+    };
+    entries.iter().find_map(|(name, value)| {
+        (name == "@id")
+            .then(|| value.as_str().map(str::to_string))
+            .flatten()
     })
 }
 
-fn collect_microdata_fields<D: LayoutDom>(
+fn microdata_item<D: LayoutDom>(
     dom: &D,
     root: D::NodeId,
-    id: D::NodeId,
-    fields: &mut Vec<(String, StructuredValue)>,
-) {
-    if id != root && attr(dom, id, "itemscope").is_some() {
-        if let Some(property) = attr(dom, id, "itemprop")
-            && let Some(item) = microdata_item(dom, id)
-        {
-            fields.push((property, item.value));
+    index: &DomIndex<D::NodeId>,
+    item_stack: &mut HashSet<D::NodeId>,
+) -> StructuredData {
+    let inserted = item_stack.insert(root);
+    debug_assert!(inserted);
+    let mut fields = Vec::new();
+    for property in item_property_elements(dom, root, index) {
+        let names = item_property_names(dom, property);
+        let value = if attr(dom, property, "itemscope").is_some() {
+            if item_stack.contains(&property) {
+                StructuredValue::Cycle
+            } else {
+                StructuredValue::Item(Box::new(microdata_item(dom, property, index, item_stack)))
+            }
+        } else {
+            StructuredValue::String(microdata_property_text(dom, property))
+        };
+        for name in names {
+            fields.push((name, value.clone()));
         }
-        return;
     }
-    if id != root
-        && let Some(property) = attr(dom, id, "itemprop")
-    {
-        let value = attr(dom, id, "content")
-            .or_else(|| attr(dom, id, "datetime"))
-            .or_else(|| attr(dom, id, "href"))
-            .or_else(|| attr(dom, id, "src"))
-            .unwrap_or_else(|| crate::text_of(dom, id));
-        if !value.is_empty() {
-            for property in property.split_whitespace() {
-                fields.push((property.to_string(), StructuredValue::String(value.clone())));
+    let removed = item_stack.remove(&root);
+    debug_assert!(removed);
+    StructuredData {
+        types: attr(dom, root, "itemtype")
+            .map(|types| types.split_ascii_whitespace().map(str::to_string).collect())
+            .unwrap_or_default(),
+        id: attr(dom, root, "itemid"),
+        value: StructuredValue::Object(fields),
+        source: StructuredDataSource::Microdata,
+    }
+}
+
+fn item_property_elements<D: LayoutDom>(
+    dom: &D,
+    root: D::NodeId,
+    index: &DomIndex<D::NodeId>,
+) -> Vec<D::NodeId> {
+    let mut memory = HashSet::new();
+    memory.insert(root);
+    let mut pending = VecDeque::new();
+    pending.extend(element_children(dom, root));
+    if let Some(itemref) = attr(dom, root, "itemref") {
+        for reference in itemref.split_ascii_whitespace() {
+            if let Some(target) = index.first_id.get(reference) {
+                pending.push_back(*target);
             }
         }
     }
-    for child in dom.dom_children(id) {
-        collect_microdata_fields(dom, root, child, fields);
+
+    let mut results = Vec::new();
+    while let Some(current) = pending.pop_front() {
+        if !memory.insert(current) {
+            continue;
+        }
+        if attr(dom, current, "itemscope").is_none() {
+            pending.extend(element_children(dom, current));
+        }
+        if !item_property_names(dom, current).is_empty() {
+            results.push(current);
+        }
+    }
+    results.sort_by_key(|id| index.order.get(id).copied().unwrap_or(usize::MAX));
+    results
+}
+
+fn item_property_names<D: LayoutDom>(dom: &D, id: D::NodeId) -> Vec<String> {
+    let Some(properties) = attr(dom, id, "itemprop") else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    properties
+        .split_ascii_whitespace()
+        .filter(|property| seen.insert(*property))
+        .map(str::to_string)
+        .collect()
+}
+
+fn microdata_property_text<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
+    match local_name(dom, id) {
+        Some("meta") => attr(dom, id, "content").unwrap_or_default(),
+        Some("a" | "area" | "link") => attr(dom, id, "href").unwrap_or_default(),
+        Some("audio" | "embed" | "iframe" | "img" | "source" | "track" | "video") => {
+            attr(dom, id, "src").unwrap_or_default()
+        },
+        Some("object") => attr(dom, id, "data").unwrap_or_default(),
+        Some("data" | "meter") => attr(dom, id, "value").unwrap_or_default(),
+        Some("time") => attr(dom, id, "datetime").unwrap_or_else(|| text_content(dom, id)),
+        _ => text_content(dom, id),
     }
 }
 
 fn raw_text_of<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
+    text_content(dom, id)
+}
+
+fn text_content<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
     let mut out = String::new();
-    collect_text(dom, id, &mut out);
+    collect_text_content(dom, id, &mut out);
     out
+}
+
+fn collect_text_content<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut String) {
+    if dom.kind(id) == NodeKind::Text {
+        if let Some(text) = dom.text(id) {
+            out.push_str(text);
+        }
+    }
+    for child in dom.dom_children(id) {
+        collect_text_content(dom, child, out);
+    }
+}
+
+fn element_children<D: LayoutDom>(dom: &D, id: D::NodeId) -> Vec<D::NodeId> {
+    dom.dom_children(id)
+        .filter(|child| local_name(dom, *child).is_some())
+        .collect()
+}
+
+struct DomIndex<N> {
+    order: HashMap<N, usize>,
+    first_id: HashMap<String, N>,
+}
+
+impl<N: Copy + Eq + std::hash::Hash> DomIndex<N> {
+    fn build<D: LayoutDom<NodeId = N>>(dom: &D) -> Self {
+        fn visit<D: LayoutDom>(dom: &D, id: D::NodeId, index: &mut DomIndex<D::NodeId>) {
+            let position = index.order.len();
+            index.order.insert(id, position);
+            if local_name(dom, id).is_some()
+                && let Some(value) = attr(dom, id, "id")
+            {
+                index.first_id.entry(value).or_insert(id);
+            }
+            for child in dom.dom_children(id) {
+                visit(dom, child, index);
+            }
+        }
+
+        let mut index = Self {
+            order: HashMap::new(),
+            first_id: HashMap::new(),
+        };
+        visit(dom, dom.document(), &mut index);
+        index
+    }
 }
 
 struct JsonParser<'a> {
