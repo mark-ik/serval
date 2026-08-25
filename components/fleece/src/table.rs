@@ -23,6 +23,25 @@ pub struct Table {
     pub width: u32,
     /// Computed number of grid rows.
     pub height: u32,
+    /// Deterministic table-model errors found while assigning cell slots.
+    pub errors: Vec<TableModelError>,
+}
+
+/// A recoverable error in HTML table-model formation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableModelError {
+    /// A later cell covers a slot already covered by an earlier cell.
+    OverlappingCells {
+        /// The doubly-covered grid slot.
+        x: u32,
+        y: u32,
+        /// Grid anchor of the cell that retains ownership of the slot.
+        existing_x: u32,
+        existing_y: u32,
+        /// Grid anchor of the later overlapping cell.
+        incoming_x: u32,
+        incoming_y: u32,
+    },
 }
 
 /// One table-model row group.
@@ -75,7 +94,10 @@ pub struct TableCell {
     pub id: Option<String>,
     /// Parsed `scope` state. Non-header cells remain `Auto`.
     pub scope: TableScope,
-    /// Raw `headers` tokens, split on ASCII whitespace with repeated tokens removed.
+    /// Raw `headers` tokens, split on HTML ASCII whitespace in declared order.
+    ///
+    /// Repeated tokens are preserved here. Resolution deduplicates only the
+    /// resulting associated header cells.
     pub headers: Vec<String>,
     /// Parsed `colspan`, normalized to the HTML range (minimum one).
     pub colspan: u32,
@@ -116,14 +138,24 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
     let mut row_cells = Vec::new();
     let mut row_group_indices = Vec::new();
     let mut group_starts = Vec::new();
-    let mut grid = vec![Vec::new(); groups.iter().map(|group| group.rows.len()).sum()];
-    let mut y = 0usize;
+    let mut group_rows = Vec::new();
+    let mut grid = Vec::new();
+    let mut errors = Vec::new();
 
     for (group_index, group) in groups.iter().enumerate() {
-        let group_start = y;
-        let group_end = y + group.rows.len();
+        let group_start = grid.len();
         group_starts.push(group_start);
-        for row in &group.rows {
+        let row_group = (group.kind != TableRowGroupKind::Implicit).then_some(group_index);
+        let mut grow_down = Vec::new();
+        for (source_y, row) in group.rows.iter().enumerate() {
+            let y = group_start + source_y;
+            ensure_rows(
+                &mut grid,
+                &mut row_cells,
+                &mut row_group_indices,
+                y + 1,
+                row_group,
+            );
             let mut row_cells_for_source = Vec::new();
             let mut x = 0usize;
             for cell in html_element_children(dom, *row)
@@ -135,11 +167,14 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
                 }
                 let colspan = cell_colspan(dom, cell) as usize;
                 let rowspan = cell_rowspan(dom, cell);
-                let height = if rowspan == 0 {
-                    group_end.saturating_sub(y).max(1)
-                } else {
-                    (rowspan as usize).min(group_end.saturating_sub(y).max(1))
-                };
+                let height = if rowspan == 0 { 1 } else { rowspan as usize };
+                ensure_rows(
+                    &mut grid,
+                    &mut row_cells,
+                    &mut row_group_indices,
+                    y + height,
+                    row_group,
+                );
                 let index = cells.len();
                 cells.push(CellWork {
                     node: cell,
@@ -154,21 +189,46 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
                     y,
                     width: colspan,
                     height,
-                    row_group: group_index,
-                    runs: inline_runs(dom, cell),
+                    row_group,
+                    runs: cell_inline_runs(dom, cell),
                     empty: cell_is_empty(dom, cell),
                 });
-                cover_cell(&mut grid, index, x, y, colspan, height);
+                cover_cell(&mut grid, &cells, &mut errors, index, x, y, colspan, height);
+                if rowspan == 0 {
+                    grow_down.push(index);
+                }
                 row_cells_for_source.push(index);
                 x += colspan;
             }
-            row_cells.push(row_cells_for_source);
-            row_group_indices.push(group_index);
-            y += 1;
+            row_cells[y] = row_cells_for_source;
         }
+
+        let group_end = grid.len();
+        for index in grow_down {
+            let height = group_end.saturating_sub(cells[index].y).max(1);
+            cells[index].height = height;
+            let cell = &cells[index];
+            cover_cell(
+                &mut grid,
+                &cells,
+                &mut errors,
+                index,
+                cell.x,
+                cell.y,
+                cell.width,
+                cell.height,
+            );
+        }
+        group_rows.push(group_end.saturating_sub(group_start));
     }
 
-    let width = grid.iter().map(Vec::len).max().unwrap_or(0);
+    let width = grid.iter().map(Vec::len).max().unwrap_or(0).max(
+        columns
+            .iter()
+            .map(|group| group.start.saturating_add(group.width))
+            .max()
+            .unwrap_or(0),
+    );
     for row in &mut grid {
         row.resize(width, None);
     }
@@ -191,7 +251,7 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
                 .map(|index| public_cell(&cells[index], &cells, &associations[index]))
                 .collect(),
             y: y as u32,
-            row_group: row_group_indices.get(y).copied(),
+            row_group: row_group_indices.get(y).copied().flatten(),
         })
         .collect::<Vec<_>>();
     let row_groups = groups
@@ -200,7 +260,7 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
         .map(|(index, group)| TableRowGroup {
             kind: group.kind,
             start: group_starts[index] as u32,
-            rows: (group_starts[index]..group_starts[index] + group.rows.len())
+            rows: (group_starts[index]..group_starts[index] + group_rows[index])
                 .map(|row| row as u32)
                 .collect(),
         })
@@ -213,6 +273,7 @@ pub fn extract_table<D: LayoutDom>(dom: &D, table: D::NodeId) -> Table {
         rows,
         width: width as u32,
         height: grid.len() as u32,
+        errors,
     }
 }
 
@@ -251,7 +312,8 @@ struct CellWork<N> {
     y: usize,
     width: usize,
     height: usize,
-    row_group: usize,
+    /// A real row-group element. Direct table rows have no group element.
+    row_group: Option<usize>,
     runs: Vec<Inline>,
     empty: bool,
 }
@@ -325,17 +387,17 @@ fn column_groups<D: LayoutDom>(dom: &D, table: D::NodeId) -> Vec<ColumnGroup> {
             columns
                 .into_iter()
                 .map(|column| positive_span(attr(dom, column, "span"), 1000))
-                .sum()
+                .sum::<usize>()
         };
         groups.push(ColumnGroup { start, width });
-        start += width;
+        start = start.saturating_add(width);
     }
     groups
 }
 
 fn first_document_ids<D: LayoutDom>(dom: &D) -> HashMap<String, D::NodeId> {
     fn visit<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut HashMap<String, D::NodeId>) {
-        if html_name(dom, id).is_some() {
+        if dom.kind(id) == NodeKind::Element {
             if let Some(value) = attr(dom, id, "id") {
                 out.entry(value).or_insert(id);
             }
@@ -350,19 +412,46 @@ fn first_document_ids<D: LayoutDom>(dom: &D) -> HashMap<String, D::NodeId> {
     ids
 }
 
-fn cover_cell(
+fn ensure_rows(
+    grid: &mut Vec<Vec<Option<usize>>>,
+    row_cells: &mut Vec<Vec<usize>>,
+    row_group_indices: &mut Vec<Option<usize>>,
+    len: usize,
+    row_group: Option<usize>,
+) {
+    while grid.len() < len {
+        grid.push(Vec::new());
+        row_cells.push(Vec::new());
+        row_group_indices.push(row_group);
+    }
+}
+
+fn cover_cell<N>(
     grid: &mut [Vec<Option<usize>>],
+    cells: &[CellWork<N>],
+    errors: &mut Vec<TableModelError>,
     cell: usize,
     x: usize,
     y: usize,
     width: usize,
     height: usize,
 ) {
-    for row in grid.iter_mut().skip(y).take(height) {
+    for (row_index, row) in grid.iter_mut().enumerate().skip(y).take(height) {
         row.resize((x + width).max(row.len()), None);
-        for slot in row.iter_mut().skip(x).take(width) {
-            if slot.is_none() {
-                *slot = Some(cell);
+        for (column, slot) in row.iter_mut().enumerate().skip(x).take(width) {
+            match *slot {
+                Some(existing) if existing != cell => {
+                    errors.push(TableModelError::OverlappingCells {
+                        x: column as u32,
+                        y: row_index as u32,
+                        existing_x: cells[existing].x as u32,
+                        existing_y: cells[existing].y as u32,
+                        incoming_x: cells[cell].x as u32,
+                        incoming_y: cells[cell].y as u32,
+                    })
+                },
+                None => *slot = Some(cell),
+                Some(_) => {},
             }
         }
     }
@@ -414,6 +503,7 @@ fn automatic_headers<N>(
     for (index, header) in cells.iter().enumerate() {
         if header.header
             && header.scope == TableScope::RowGroup
+            && header.row_group.is_some()
             && header.row_group == cell.row_group
             && header.x <= cell.x + cell.width - 1
             && header.y <= cell.y + cell.height - 1
@@ -580,10 +670,9 @@ fn header_tokens<D: LayoutDom>(dom: &D, cell: D::NodeId) -> Vec<String> {
     let Some(headers) = attr(dom, cell, "headers") else {
         return Vec::new();
     };
-    let mut seen = HashSet::new();
     headers
-        .split_ascii_whitespace()
-        .filter(|header| seen.insert(*header))
+        .split(is_html_ascii_space)
+        .filter(|header| !header.is_empty())
         .map(str::to_string)
         .collect()
 }
@@ -593,24 +682,186 @@ fn cell_colspan<D: LayoutDom>(dom: &D, cell: D::NodeId) -> u32 {
 }
 
 fn cell_rowspan<D: LayoutDom>(dom: &D, cell: D::NodeId) -> u32 {
-    attr(dom, cell, "rowspan")
-        .and_then(|span| span.trim().parse::<u32>().ok())
-        .filter(|span| *span <= 65534)
+    parsed_non_negative_integer(attr(dom, cell, "rowspan"))
+        .map(|span| span.min(65534) as u32)
         .unwrap_or(1)
 }
 
 fn positive_span(value: Option<String>, maximum: usize) -> usize {
-    value
-        .and_then(|span| span.trim().parse::<usize>().ok())
-        .filter(|span| (1..=maximum).contains(span))
+    parsed_non_negative_integer(value)
+        .map(|span| span.clamp(1, maximum))
         .unwrap_or(1)
+}
+
+/// HTML's parser for a non-negative integer: only leading HTML ASCII space is
+/// skipped and the first non-digit ends the integer.
+fn parsed_non_negative_integer(value: Option<String>) -> Option<usize> {
+    let value = value?;
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while bytes
+        .get(index)
+        .is_some_and(|byte| is_html_ascii_space(*byte as char))
+    {
+        index += 1;
+    }
+    if !bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+    let mut result = 0usize;
+    while let Some(byte) = bytes.get(index).filter(|byte| byte.is_ascii_digit()) {
+        result = result
+            .saturating_mul(10)
+            .saturating_add((byte - b'0') as usize);
+        index += 1;
+    }
+    Some(result)
+}
+
+fn is_html_ascii_space(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+    )
+}
+
+/// Inline extraction for one outer table cell. An HTML table starts a new table
+/// model, so its descendants cannot contribute runs to the containing cell.
+fn cell_inline_runs<D: LayoutDom>(dom: &D, cell: D::NodeId) -> Vec<Inline> {
+    let mut runs = Vec::new();
+    for child in dom.dom_children(cell) {
+        collect_cell_inline(dom, child, &mut runs);
+    }
+    trim_cell_inline_edges(&mut runs);
+    runs
+}
+
+fn collect_cell_inline<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Inline>) {
+    if let Some(text) = dom.text(id) {
+        let collapsed = collapse_cell_inline_text(text);
+        if !collapsed.is_empty() {
+            push_cell_text_run(out, collapsed);
+        }
+        return;
+    }
+    if html_name(dom, id) == Some("table") {
+        return;
+    }
+    let name = dom.element_name(id).map(|name| name.local.as_ref());
+    if name.is_some_and(is_cell_chrome_or_non_rendered) {
+        return;
+    }
+    let nested = |dom: &D, id| {
+        let mut runs = Vec::new();
+        for child in dom.dom_children(id) {
+            collect_cell_inline(dom, child, &mut runs);
+        }
+        trim_cell_inline_edges(&mut runs);
+        runs
+    };
+    match name {
+        Some("a") => {
+            let runs = nested(dom, id);
+            if let Some(href) = attr(dom, id, "href")
+                && !runs.is_empty()
+            {
+                out.push(Inline::Link { href, runs });
+            } else {
+                out.extend(runs);
+            }
+        },
+        Some("strong" | "b" | "em" | "i") => {
+            let runs = nested(dom, id);
+            if !runs.is_empty() {
+                out.push(Inline::Emphasis {
+                    strong: matches!(name, Some("strong" | "b")),
+                    runs,
+                });
+            }
+        },
+        Some("code") => {
+            let text = cell_text(dom, id);
+            if !text.is_empty() {
+                out.push(Inline::Code(text));
+            }
+        },
+        Some("br") => push_cell_text_run(out, "\n".to_string()),
+        _ => out.extend(nested(dom, id)),
+    }
+}
+
+fn is_cell_chrome_or_non_rendered(name: &str) -> bool {
+    matches!(
+        name,
+        "script"
+            | "style"
+            | "template"
+            | "noscript"
+            | "head"
+            | "nav"
+            | "header"
+            | "footer"
+            | "aside"
+    )
+}
+
+fn collapse_cell_inline_text(text: &str) -> String {
+    let leading = text.chars().next().is_some_and(char::is_whitespace);
+    let trailing = text.chars().next_back().is_some_and(char::is_whitespace);
+    let core = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if core.is_empty() {
+        return leading.then_some(" ".to_string()).unwrap_or_default();
+    }
+    format!(
+        "{}{}{}",
+        if leading { " " } else { "" },
+        core,
+        if trailing { " " } else { "" }
+    )
+}
+
+fn push_cell_text_run(out: &mut Vec<Inline>, text: String) {
+    if let Some(Inline::Text(previous)) = out.last_mut() {
+        previous.push_str(&text);
+    } else {
+        out.push(Inline::Text(text));
+    }
+}
+
+fn trim_cell_inline_edges(runs: &mut Vec<Inline>) {
+    if let Some(Inline::Text(first)) = runs.first_mut() {
+        *first = first.trim_start().to_string();
+    }
+    if let Some(Inline::Text(last)) = runs.last_mut() {
+        *last = last.trim_end().to_string();
+    }
+    runs.retain(|run| !matches!(run, Inline::Text(text) if text.is_empty()));
+}
+
+fn cell_text<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
+    fn collect<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut String) {
+        if html_name(dom, id) == Some("table") {
+            return;
+        }
+        if let Some(text) = dom.text(id) {
+            out.push_str(text);
+            out.push(' ');
+        }
+        for child in dom.dom_children(id) {
+            collect(dom, child, out);
+        }
+    }
+
+    let mut raw = String::new();
+    collect(dom, id, &mut raw);
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn cell_is_empty<D: LayoutDom>(dom: &D, cell: D::NodeId) -> bool {
     !has_element_descendant(dom, cell)
         && text_content(dom, cell)
             .bytes()
-            .all(|byte| byte.is_ascii_whitespace())
+            .all(|byte| is_html_ascii_space(byte as char))
 }
 
 fn has_element_descendant<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
@@ -662,6 +913,14 @@ mod tests {
         extract_table(&dom, table)
     }
 
+    fn xml_table(body: &str) -> Table {
+        let dom = StaticDocument::parse_xml(&format!(
+            "<table xmlns='http://www.w3.org/1999/xhtml'>{body}</table>"
+        ));
+        let table = find_html_element(&dom, dom.document(), "table").expect("table");
+        extract_table(&dom, table)
+    }
+
     fn find_html_element<D: LayoutDom>(dom: &D, id: D::NodeId, name: &str) -> Option<D::NodeId> {
         if html_name(dom, id) == Some(name) {
             return Some(id);
@@ -700,9 +959,10 @@ mod tests {
         assert_eq!(table.rows.len(), 1);
         assert_eq!(table.rows[0].cells.len(), 2);
         let data = &table.rows[0].cells[1];
-        assert_eq!(data.headers, ["outer"]);
+        assert_eq!(data.headers, ["outer", "outer"]);
         assert_eq!(data.associated_headers.len(), 1);
         assert_eq!(data.associated_headers[0].id.as_deref(), Some("outer"));
+        assert_eq!(data.runs, [Inline::Text("value".to_string())]);
     }
 
     #[test]
@@ -727,5 +987,126 @@ mod tests {
         assert_eq!(table.rows[1].cells[1].height, 2);
         assert_eq!(table.rows[2].cells[0].x, 0);
         assert_eq!(table.width, 4);
+    }
+
+    #[test]
+    fn puts_tfoot_last_and_creates_implied_rows_for_rowspans() {
+        let table = table(
+            "<table><tfoot><tr><td>foot</td></tr></tfoot><tbody><tr><td rowspan=3>body</td></tr></tbody></table>",
+        );
+        assert_eq!(
+            table
+                .row_groups
+                .iter()
+                .map(|group| group.kind)
+                .collect::<Vec<_>>(),
+            [TableRowGroupKind::Body, TableRowGroupKind::Foot]
+        );
+        assert_eq!(table.row_groups[0].rows, [0, 1, 2]);
+        assert_eq!(table.rows.len(), 4);
+        assert!(table.rows[1].cells.is_empty());
+        assert!(table.rows[2].cells.is_empty());
+        assert_eq!(
+            table.rows[3].cells[0].runs,
+            [Inline::Text("foot".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_html_spans_without_unicode_trim_and_clamps_their_ranges() {
+        let dom = StaticDocument::parse(
+            "<table><tr><td id=zero colspan=0 rowspan=0></td><td id=wide colspan=1001 rowspan=70000></td><td id=bad colspan='\u{00a0}2' rowspan='\u{00a0}2'></td></tr></table>",
+        );
+        let zero = find_html_element(&dom, dom.document(), "td").expect("zero cell");
+        let wide = dom
+            .dom_children(find_html_element(&dom, dom.document(), "tr").expect("row"))
+            .nth(1)
+            .expect("wide cell");
+        let bad = dom
+            .dom_children(find_html_element(&dom, dom.document(), "tr").expect("row"))
+            .nth(2)
+            .expect("bad cell");
+        assert_eq!(cell_colspan(&dom, zero), 1);
+        assert_eq!(cell_rowspan(&dom, zero), 0);
+        assert_eq!(cell_colspan(&dom, wide), 1000);
+        assert_eq!(cell_rowspan(&dom, wide), 65534);
+        assert_eq!(cell_colspan(&dom, bad), 1);
+        assert_eq!(cell_rowspan(&dom, bad), 1);
+    }
+
+    #[test]
+    fn explicit_headers_preserve_tokens_but_deduplicate_resolved_headers() {
+        let table = table(
+            "<table><tr><th id=h1>one</th><th id=h2>two</th><td headers='h2 h1 h2 missing h1'>value</td><td headers=missing>other</td></tr></table>",
+        );
+        let explicit = &table.rows[0].cells[2];
+        assert_eq!(explicit.headers, ["h2", "h1", "h2", "missing", "h1"]);
+        assert_eq!(
+            explicit
+                .associated_headers
+                .iter()
+                .map(|header| header.id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("h2"), Some("h1")]
+        );
+        assert!(
+            table.rows[0].cells[3].associated_headers.is_empty(),
+            "an invalid explicit list suppresses automatic headers"
+        );
+    }
+
+    #[test]
+    fn header_token_and_empty_header_rules_use_html_ascii_space_only() {
+        let table = table(
+            "<table><tr><th id=empty>\t\n\u{000c}\r </th><th id=vt>\u{000b}</th><td headers='empty vt vt'>value</td></tr></table>",
+        );
+        let data = &table.rows[0].cells[2];
+        assert_eq!(data.headers, ["empty", "vt", "vt"]);
+        assert_eq!(
+            data.associated_headers
+                .iter()
+                .map(|header| header.id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("vt")]
+        );
+        let dom = StaticDocument::parse("<table><tr><td headers='a\u{000b}b c'></td></tr></table>");
+        let cell = find_html_element(&dom, dom.document(), "td").expect("cell");
+        assert_eq!(header_tokens(&dom, cell), ["a\u{000b}b", "c"]);
+    }
+
+    #[test]
+    fn first_duplicate_id_shadows_a_later_same_table_header() {
+        let table = table(
+            "<svg><g id=h></g></svg><table><tr><th id=h>header</th><td headers=h>value</td></tr></table>",
+        );
+        assert!(table.rows[0].cells[1].associated_headers.is_empty());
+    }
+
+    #[test]
+    fn implicit_rows_do_not_supply_a_rowgroup_scope() {
+        let table = xml_table(
+            "<tr><th id='group' scope='rowgroup'>group</th><td>one</td></tr><tr><td>two</td></tr>",
+        );
+        assert_eq!(table.rows[0].row_group, None);
+        assert_eq!(table.rows[1].row_group, None);
+        assert!(table.rows[1].cells[0].associated_headers.is_empty());
+    }
+
+    #[test]
+    fn reports_overlapping_cells_without_reassigning_the_existing_slot() {
+        let table = table(
+            "<table><tbody><tr><td rowspan=2>a</td><td>b</td><td rowspan=2>c</td></tr><tr><td colspan=2>overlap</td></tr></tbody></table>",
+        );
+        assert_eq!(
+            table.errors,
+            [TableModelError::OverlappingCells {
+                x: 2,
+                y: 1,
+                existing_x: 2,
+                existing_y: 0,
+                incoming_x: 1,
+                incoming_y: 1,
+            }]
+        );
     }
 }

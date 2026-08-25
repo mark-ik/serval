@@ -1,4 +1,4 @@
-use fleece::{Block, ExtractionOptions, extract_document_with_options};
+use fleece::{Block, ExtractionOptions, Inline, extract_document_with_options};
 use genet_static_dom::StaticDocument;
 
 fn table_rows(html: &str) -> Vec<fleece::TableRow> {
@@ -39,9 +39,10 @@ fn reader_projection_keeps_spans_coordinates_and_excludes_nested_table_cells() {
         3,
         "nested table cells stay out of the outer row"
     );
-    assert_eq!(rows[1].cells[1].headers, ["total"]);
+    assert_eq!(rows[1].cells[1].headers, ["total", "total"]);
     assert_eq!(
         rows[1].cells[1].associated_headers[0].id.as_deref(),
         Some("total")
     );
+    assert_eq!(rows[1].cells[2].runs, [Inline::Text("units".to_string())]);
 }
