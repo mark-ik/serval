@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Profile-neutral DOM trait consumed by genet-layout and other read-only DOM walkers (reader-mode, serialization, selectors)."
+description = "Profile-neutral DOM trait consumed by Livery/Buckram and other read-only DOM walkers (reader mode, serialization, selectors)."
 
 [lib]
 name = "layout_dom_api"

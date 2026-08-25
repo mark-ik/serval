@@ -216,9 +216,180 @@ pub enum SessionClick {
     Miss,
 }
 
+/// Modifier state carried with host-neutral session input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionModifiers {
+    pub shift: bool,
+    pub control: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+/// Pointer buttons understood by a retained document session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionPointerButton {
+    Primary,
+    Secondary,
+    Auxiliary,
+}
+
+/// Press/release state shared by pointer and keyboard events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionButtonState {
+    Pressed,
+    Released,
+}
+
+/// Cursor requested by the retained content under the pointer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionCursor {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+}
+
+/// Keyboard keys with document-level meaning. Text-bearing keys retain the
+/// produced character string so this vocabulary does not assume ASCII.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionKey {
+    Character(String),
+    Enter,
+    Tab,
+    Backspace,
+    Delete,
+    Escape,
+    Space,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Unidentified,
+}
+
+/// Direction requested by focus traversal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionFocusDirection {
+    Forward,
+    Backward,
+}
+
+/// Platform composition lifecycle translated without exposing a windowing
+/// crate to document engines.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionIme {
+    Enabled,
+    Preedit {
+        text: String,
+        selection: Option<(usize, usize)>,
+    },
+    Commit(String),
+    Disabled,
+}
+
+/// Input delivered by a host to one retained session.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SessionInput {
+    PointerMoved {
+        x: f32,
+        y: f32,
+        modifiers: SessionModifiers,
+    },
+    PointerButton {
+        x: f32,
+        y: f32,
+        button: SessionPointerButton,
+        state: SessionButtonState,
+        modifiers: SessionModifiers,
+    },
+    Key {
+        key: SessionKey,
+        state: SessionButtonState,
+        modifiers: SessionModifiers,
+        repeat: bool,
+    },
+    Text(String),
+    Ime(SessionIme),
+    Focus(bool),
+    FocusMove(SessionFocusDirection),
+    Cancel,
+}
+
+/// The transport method requested by a form submission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionFormMethod {
+    #[default]
+    Get,
+    Post,
+}
+
+/// A form submission assembled by the engine from its retained form state.
+/// The host still owns URL resolution, transport, policy, and navigation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFormSubmission {
+    pub action: String,
+    pub method: SessionFormMethod,
+    pub fields: Vec<(String, String)>,
+}
+
+/// Semantic effect of one session input. Navigation remains a host action;
+/// sessions name the target or submission and never fetch a replacement page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionEffect {
+    Ignored,
+    Handled,
+    Navigate(String),
+    Submit(SessionFormSubmission),
+    Cancelled,
+}
+
+impl SessionEffect {
+    pub fn is_handled(&self) -> bool {
+        !matches!(self, Self::Ignored)
+    }
+}
+
+/// Complete result of one input dispatch, including presentation requests
+/// that belong to the host adapter rather than the document engine.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInputResult {
+    pub effect: SessionEffect,
+    pub cursor: Option<SessionCursor>,
+    /// `Some(true)` begins primary-pointer capture and `Some(false)` releases it.
+    pub capture: Option<bool>,
+    /// Whether keyboard defaults such as arrow-key scrolling must yield to an
+    /// editable control after this dispatch.
+    pub editable: bool,
+}
+
+impl SessionInputResult {
+    fn new(effect: SessionEffect, editable: bool) -> Self {
+        Self {
+            effect,
+            cursor: None,
+            capture: None,
+            editable,
+        }
+    }
+}
+
+/// Navigation commands owned by the host around a retained session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionNavigationCommand {
+    Address(String),
+    Reload,
+    Stop,
+    Back,
+    Forward,
+}
+
 /// Keyboard scroll intents, host-neutral. Adapters map these onto their
-/// layout engine's own key vocabulary (genet-layout's `ScrollKey` today);
-/// defined here so the contract does not drag a layout dependency in.
+/// document lane's own scroll vocabulary; this contract does not drag a
+/// layout dependency into Inker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionScrollKey {
     LineUp,
@@ -302,6 +473,151 @@ pub trait DocumentSession<F>: Any {
     /// collapsed.
     fn pointer_up(&mut self, _x: f32, _y: f32) -> SessionClick {
         SessionClick::Miss
+    }
+
+    /// Dispatch host-neutral input through the lane's retained interaction
+    /// hooks. Existing click/pointer implementations remain the compatibility
+    /// floor; richer lanes override the focused keyboard, text, IME, cursor,
+    /// and form hooks below.
+    fn input(&mut self, input: SessionInput) -> SessionInputResult {
+        match input {
+            SessionInput::PointerMoved { x, y, .. } => {
+                let cursor = self.cursor_at(x, y);
+                let effect = if self.pointer_move(x, y) {
+                    SessionEffect::Handled
+                } else {
+                    SessionEffect::Ignored
+                };
+                let mut result = SessionInputResult::new(effect, self.editable_focus());
+                result.cursor = Some(cursor);
+                result
+            },
+            SessionInput::PointerButton {
+                x,
+                y,
+                button: SessionPointerButton::Primary,
+                state,
+                ..
+            } => {
+                let cursor = self.cursor_at(x, y);
+                let click = match state {
+                    SessionButtonState::Pressed => self.pointer_down(x, y),
+                    SessionButtonState::Released => self.pointer_up(x, y),
+                };
+                let effect = self.effect_for_click(click);
+                let handled = effect.is_handled();
+                let mut result = SessionInputResult::new(effect, self.editable_focus());
+                result.cursor = Some(cursor);
+                result.capture = Some(matches!(state, SessionButtonState::Pressed) && handled);
+                result
+            },
+            SessionInput::PointerButton { x, y, .. } => {
+                let mut result =
+                    SessionInputResult::new(SessionEffect::Ignored, self.editable_focus());
+                result.cursor = Some(self.cursor_at(x, y));
+                result
+            },
+            SessionInput::Key {
+                key,
+                state,
+                modifiers,
+                repeat,
+            } => SessionInputResult::new(
+                self.key_input(key, state, modifiers, repeat),
+                self.editable_focus(),
+            ),
+            SessionInput::Text(text) => {
+                let effect = if self.text_input(&text) {
+                    SessionEffect::Handled
+                } else {
+                    SessionEffect::Ignored
+                };
+                SessionInputResult::new(effect, self.editable_focus())
+            },
+            SessionInput::Ime(ime) => {
+                let effect = if self.ime_input(ime) {
+                    SessionEffect::Handled
+                } else {
+                    SessionEffect::Ignored
+                };
+                SessionInputResult::new(effect, self.editable_focus())
+            },
+            SessionInput::Focus(focused) => {
+                self.focus_input(focused);
+                SessionInputResult::new(SessionEffect::Handled, self.editable_focus())
+            },
+            SessionInput::FocusMove(direction) => {
+                let effect = if self.focus_move(direction) {
+                    SessionEffect::Handled
+                } else {
+                    SessionEffect::Ignored
+                };
+                SessionInputResult::new(effect, self.editable_focus())
+            },
+            SessionInput::Cancel => {
+                let effect = if self.cancel_input() {
+                    SessionEffect::Cancelled
+                } else {
+                    SessionEffect::Ignored
+                };
+                SessionInputResult::new(effect, self.editable_focus())
+            },
+        }
+    }
+
+    fn effect_for_click(&mut self, click: SessionClick) -> SessionEffect {
+        match click {
+            SessionClick::Navigate(target) => SessionEffect::Navigate(target),
+            SessionClick::Submit(action) => SessionEffect::Submit(self.form_submission(&action)),
+            SessionClick::Handled => SessionEffect::Handled,
+            SessionClick::Miss => SessionEffect::Ignored,
+        }
+    }
+
+    fn key_input(
+        &mut self,
+        _key: SessionKey,
+        _state: SessionButtonState,
+        _modifiers: SessionModifiers,
+        _repeat: bool,
+    ) -> SessionEffect {
+        SessionEffect::Ignored
+    }
+
+    fn text_input(&mut self, _text: &str) -> bool {
+        false
+    }
+
+    fn ime_input(&mut self, ime: SessionIme) -> bool {
+        match ime {
+            SessionIme::Commit(text) => self.text_input(&text),
+            SessionIme::Enabled | SessionIme::Preedit { .. } | SessionIme::Disabled => false,
+        }
+    }
+
+    fn focus_input(&mut self, _focused: bool) {}
+
+    fn focus_move(&mut self, _direction: SessionFocusDirection) -> bool {
+        false
+    }
+
+    fn cancel_input(&mut self) -> bool {
+        false
+    }
+
+    fn editable_focus(&self) -> bool {
+        false
+    }
+
+    fn cursor_at(&self, _x: f32, _y: f32) -> SessionCursor {
+        SessionCursor::Default
+    }
+
+    fn form_submission(&mut self, action: &str) -> SessionFormSubmission {
+        SessionFormSubmission {
+            action: action.to_owned(),
+            ..Default::default()
+        }
     }
 
     /// Resolve the first laid-out occurrence of `text` to pointer endpoints.
@@ -569,6 +885,42 @@ mod tests {
         // Static-lane defaults: settled immediately, pump is a no-op.
         assert!(session.settled());
         session.pump(16.0);
+    }
+
+    #[test]
+    fn neutral_pointer_dispatch_preserves_navigation_cursor_and_capture() {
+        let mut registry = SessionRegistry::new();
+        registry.register(Box::new(EchoSessionEngine));
+        let mut session = registry
+            .spawn(
+                "echo.session",
+                &SessionSpawnRequest::new("https://example.test"),
+            )
+            .expect("spawns");
+
+        let pressed = session.input(SessionInput::PointerButton {
+            x: 5.0,
+            y: 5.0,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Pressed,
+            modifiers: SessionModifiers::default(),
+        });
+        assert_eq!(
+            pressed.effect,
+            SessionEffect::Navigate("gemini://example.test/".into())
+        );
+        assert_eq!(pressed.cursor, Some(SessionCursor::Default));
+        assert_eq!(pressed.capture, Some(true));
+
+        let released = session.input(SessionInput::PointerButton {
+            x: 5.0,
+            y: 5.0,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Released,
+            modifiers: SessionModifiers::default(),
+        });
+        assert_eq!(released.effect, SessionEffect::Ignored);
+        assert_eq!(released.capture, Some(false));
     }
 
     #[test]

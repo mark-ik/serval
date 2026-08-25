@@ -126,11 +126,7 @@ pub fn size_automatic_table_inline(
         table_offsets,
     )?;
     let assignable_column_inline_size = (used_grid_inline_size - undistributable).max(0.0);
-    let mut column_sizes = distribute_columns(
-        input.measures,
-        used_table_inline_size,
-        assignable_column_inline_size,
-    )?;
+    let mut column_sizes = distribute_columns(input.measures, assignable_column_inline_size)?;
     // K4f: a collapsed column is removed after the distribution, never before
     // it - the widths the other columns received are the widths they keep.
     let mut used_grid_inline_size = used_grid_inline_size;
@@ -284,7 +280,6 @@ fn resolve_constraint(
 
 fn distribute_columns(
     measures: &TableAutomaticColumnMeasures,
-    used_table_inline_size: f32,
     assignable_column_inline_size: f32,
 ) -> Result<Vec<f32>, TableInlineSizingError> {
     let mut sizes = measures
@@ -299,18 +294,77 @@ fn distribute_columns(
             actual: assignable_column_inline_size,
         });
     }
+
+    // K4c3 records the intrinsic increase made by each spanning cell. Remove
+    // those provisional shares before resolving percentages against the real
+    // table width: a percentage column's used width can itself satisfy the
+    // spanning minimum. Reapply only the span deficit that remains afterward.
+    for span in &measures.span_distributions {
+        let Some(end) = span
+            .column_start
+            .checked_add(span.column_span)
+            .filter(|end| *end <= sizes.len())
+        else {
+            return Err(TableInlineSizingError::InvalidColumnGroupRange {
+                start: span.column_start,
+                span: span.column_span,
+            });
+        };
+        if span.min_content_increase.len() != span.column_span {
+            return Err(TableInlineSizingError::InvalidColumnMeasure);
+        }
+        for (size, increase) in sizes[span.column_start..end]
+            .iter_mut()
+            .zip(&span.min_content_increase)
+        {
+            *size = (*size - *increase).max(0.0);
+        }
+    }
     let mut remaining = (assignable_column_inline_size - minimum_total).max(0.0);
+    remaining += minimum_total - sizes.iter().sum::<f32>();
 
     let percentage_demands = measures
         .columns
         .iter()
         .enumerate()
         .filter_map(|(index, column)| {
-            let target = (column.percentage * used_table_inline_size).max(0.0);
+            let target = (column.percentage * assignable_column_inline_size).max(0.0);
             (target > sizes[index]).then_some((index, target - sizes[index]))
         })
         .collect::<Vec<_>>();
     remaining = distribute_weighted(&mut sizes, &percentage_demands, remaining);
+
+    for span in &measures.span_distributions {
+        let end = span.column_start + span.column_span;
+        let current = sizes[span.column_start..end].iter().sum::<f32>();
+        let deficit = (span.min_content_required - current).max(0.0);
+        if deficit == 0.0 {
+            continue;
+        }
+        let total_increase = span.min_content_increase.iter().sum::<f32>();
+        let demands = span
+            .min_content_increase
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, increase)| {
+                let demand = if total_increase > 0.0 {
+                    deficit * increase / total_increase
+                } else {
+                    deficit / span.column_span as f32
+                };
+                (span.column_start + index, demand)
+            })
+            .collect::<Vec<_>>();
+        remaining = distribute_weighted(&mut sizes, &demands, remaining);
+        let current = sizes[span.column_start..end].iter().sum::<f32>();
+        if current + TableInlineSizingResult::SUBPIXEL_TOLERANCE < span.min_content_required {
+            return Err(TableInlineSizingError::GridSizeMismatch {
+                expected: span.min_content_required,
+                actual: current,
+            });
+        }
+    }
 
     let eligible = measures
         .columns
@@ -752,6 +806,42 @@ mod tests {
         assert_close(result.column_sizes[1], 80.0);
         assert_close(result.column_sizes[2], 200.0);
         assert_close(result.column_sizes.iter().sum(), 400.0);
+    }
+
+    #[test]
+    fn a_percentage_width_can_satisfy_a_spanning_cell_minimum() {
+        let grid = grid_with_column_count(FlowAxes::HORIZONTAL_LTR, 2);
+        let measures = TableAutomaticColumnMeasures {
+            columns: vec![
+                super::super::TableColumnMeasure {
+                    min_content: 0.0,
+                    max_content: 0.0,
+                    percentage: 0.9,
+                    constrained: false,
+                },
+                super::super::TableColumnMeasure {
+                    min_content: 340.0,
+                    max_content: 340.0,
+                    percentage: 0.0,
+                    constrained: false,
+                },
+            ],
+            span_distributions: vec![super::super::TableSpanMeasureDistribution {
+                source: grid.cells[0].source,
+                column_start: 0,
+                column_span: 2,
+                min_content_required: 340.0,
+                min_content_increase: vec![0.0, 340.0],
+                max_content_increase: vec![0.0, 340.0],
+            }],
+        };
+        let mut input = input(&grid, &measures);
+        input.sizing.table_constraints.preferred =
+            InlineSizeConstraint::Value(AffineLengthPercentage::px(400.0));
+        let result = sized(size_automatic_table_inline(&input).expect("spanning percentage"));
+
+        assert_close(result.column_sizes[0], 360.0);
+        assert_close(result.column_sizes[1], 40.0);
     }
 
     #[test]

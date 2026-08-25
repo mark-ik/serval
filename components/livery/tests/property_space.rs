@@ -99,12 +99,13 @@ fn parser_rejects_known_unimplemented_distinguishably() {
 
 #[test]
 fn aliases_resolve_to_their_canonical_entry() {
-    // word-wrap is the spec alias of overflow-wrap; both arrive via H0.
-    let canonical = unimplemented_longhand("overflow-wrap").expect("overflow-wrap pending");
     assert_eq!(
-        unimplemented_longhand("word-wrap").map(|entry| entry.name),
-        Some(canonical.name)
+        PropertyId::from_css_name("word-wrap"),
+        Some(PropertyId::OverflowWrap)
     );
+    assert_eq!(PropertyId::OverflowWrap.metadata().name, "overflow-wrap");
+    assert!(unimplemented_longhand("overflow-wrap").is_none());
+    assert!(unimplemented_longhand("word-wrap").is_none());
 }
 
 #[test]

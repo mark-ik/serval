@@ -7,6 +7,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   rust:
@@ -14,6 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libfontconfig1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
@@ -33,5 +39,14 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: Workspace tests
         run: cargo test --workspace --all-targets
-      - name: Layout wasm witness
-        run: cargo check -p genet-layout --target wasm32-unknown-unknown
+
+  wasm:
+    name: Livery and Buckram wasm witness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Check wasm composition
+        run: cargo check -p livery -p buckram --target wasm32-unknown-unknown

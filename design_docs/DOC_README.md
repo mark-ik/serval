@@ -23,13 +23,12 @@ repatriated here from mere.
 ## fleece — reader extraction
 
 - [fleece_standards_adoption_plan](2026-08-24_fleece_standards_adoption_plan.md)
-  (**planned 2026-08-24**: give Fleece 0.2 one canonical DOM-text coordinate
-  space, W3C Text Quote and Text Position selectors on article blocks, and an
-  optional Text Fragment projection. A serialized Terra-owned API seam feeds
-  disjoint Luna/Terra conformance, encoding, lowering, and consumer packets;
-  later independent phases harden JSON-LD/Microdata fidelity, Open Graph and
-  document links, and HTML table semantics without moving annotation or
-  source-identity authority into Fleece.)
+  (**complete 2026-08-25**: Fleece 0.2 shipped canonical DOM-text coordinates,
+  W3C Text Quote and Text Position selectors, and a Text Fragment projection;
+  0.3 hardened JSON-LD syntax harvesting and HTML Microdata; 0.4 added ordered
+  Open Graph grouping, DOM document links, and semantic HTML table grids and
+  header associations. The releases preserve Fleece's render-free, raw-URL,
+  source-identity, and caller-owned annotation boundaries.)
 
 ## inker_docs/ — the engine controller
 

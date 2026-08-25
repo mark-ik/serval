@@ -1,0 +1,15 @@
+<script type="application/ld+json">
+[
+  {"@context":["https://schema.org/",{"ex":"https://example.test/"}],"@id":"urn:person:1","@type":["https://schema.org/Person","urn:custom:Staff"],"name":"Ada","null":null,"flag":true,"nested":{"n":2}},
+  {"@id":"urn:array:2","@type":"urn:custom:Second","order":2}
+]
+</script>
+<script type="application/ld+json">
+{"@context":"https://schema.org/","@graph":[
+  {"@id":"#untyped","label":"graph wrapper"},
+  {"@id":"#third","@type":["https://example.test/Third","https://example.test/Fourth"],"order":3},
+  {"@id":"#fourth","@type":"https://example.test/Fifth","order":4}
+]}
+</script>
+<script type="application/ld+json">{"broken":</script>
+<script type="application/ld+json">{"@id":"urn:recovered","@type":"urn:custom:Recovered","ok":true}</script>

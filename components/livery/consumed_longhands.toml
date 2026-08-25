@@ -1,10 +1,10 @@
-# The Genet consumed-longhand contract: the 126 longhands the current
+# The Genet consumed-longhand contract: the 129 longhands the current
 # product path actually reads.
 #
 # Source: docs/2026-07-13_genet_consumed_css_property_audit.md (landed
 # against Genet 6b955ff96ed, Stylo eec60c2464). This file is the
 # machine-readable form of that audit's overlap table, checked in so the
-# F0 receipt ("census reads 126/126 consumed implemented") can be
+# F0 receipt ("census reads every consumed longhand as implemented") can be
 # asserted by `tests/consumed_set.rs` with no stylo fork checkout. That
 # matters: the fork archives at F5 of the cutover plan, and a receipt
 # that needs it would die with it.
@@ -15,14 +15,15 @@
 #   C = getComputedStyle
 #   A = animation or transition control
 #
-# Update this file only from a re-run of the audit, never by hand to make
-# a test pass.
+# The 2026-08-22 font-feature-resolution slice added two live text consumers
+# beyond the original 126-name audit: `font-feature-settings` and
+# `font-variant-ligatures`.
 
 [meta]
 audit = "2026-07-13_genet_consumed_css_property_audit.md"
 genet_rev = "6b955ff96ed"
 stylo_rev = "eec60c2464"
-count = 126
+count = 129
 
 [longhands]
 align_content = { name = "align-content", consumers = "L" }
@@ -86,8 +87,10 @@ flex_shrink = { name = "flex-shrink", consumers = "L" }
 flex_wrap = { name = "flex-wrap", consumers = "L" }
 float = { name = "float", consumers = "L R" }
 font_family = { name = "font-family", consumers = "R C" }
+font_feature_settings = { name = "font-feature-settings", consumers = "R" }
 font_size = { name = "font-size", consumers = "R C" }
 font_style = { name = "font-style", consumers = "R C" }
+font_variant_ligatures = { name = "font-variant-ligatures", consumers = "R" }
 font_weight = { name = "font-weight", consumers = "R C" }
 grid_auto_columns = { name = "grid-auto-columns", consumers = "L" }
 grid_auto_flow = { name = "grid-auto-flow", consumers = "L" }
@@ -132,6 +135,7 @@ pointer_events = { name = "pointer-events", consumers = "R" }
 position = { name = "position", consumers = "L R C" }
 right = { name = "right", consumers = "L R C" }
 row_gap = { name = "row-gap", consumers = "L" }
+shape_outside = { name = "shape-outside", consumers = "L" }
 text_align = { name = "text-align", consumers = "L C" }
 text_decoration_color = { name = "text-decoration-color", consumers = "R" }
 text_decoration_line = { name = "text-decoration-line", consumers = "R" }

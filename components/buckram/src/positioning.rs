@@ -47,6 +47,9 @@ pub struct ReplacedSize {
 pub struct PositionedBoxGeometry {
     pub logical_rect: LogicalRect,
     pub margin: LogicalSides<f32>,
+    /// A CSS rule, rather than the formatter's measured fallback, determined
+    /// the used block size and the formatter must receive it before reflow.
+    pub block_size_solved: bool,
 }
 
 /// Resolve the implemented absolute/fixed block box subset.
@@ -70,7 +73,9 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         .map(|replaced| resolve_replaced_size(style, replaced, input.containing_size))
         .unwrap_or_default();
 
-    let inline = solve_axis(
+    let inline_padding = padding_border.inline_start + padding_border.inline_end;
+    let block_padding = padding_border.block_start + padding_border.block_end;
+    let mut inline = solve_axis(
         input.containing_size.inline,
         input.static_rect.inline_start,
         input.measured_size.inline,
@@ -81,12 +86,13 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         dimensions.inline,
         minimums.inline,
         maximums.inline,
-        padding_border.inline_start + padding_border.inline_end,
+        inline_padding,
         style.box_sizing,
         input.intrinsic_inline,
         replaced.inline,
+        None,
     );
-    let block = solve_axis(
+    let mut block = solve_axis(
         input.containing_size.block,
         input.static_rect.block_start,
         input.measured_size.block,
@@ -97,11 +103,112 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
         dimensions.block,
         minimums.block,
         maximums.block,
-        padding_border.block_start + padding_border.block_end,
+        block_padding,
         style.box_sizing,
         None,
         replaced.block,
+        None,
     );
+    let mut block_size_solved = false;
+
+    if let Some(ratio) = logical_aspect_ratio(style).filter(|_| !style.replaced) {
+        let inline_auto = matches!(dimensions.inline, BlockSizeValue::Auto);
+        let block_auto = matches!(dimensions.block, BlockSizeValue::Auto);
+        if block_auto {
+            let ratio_block = transfer_border_box_size(
+                inline.size,
+                inline_padding,
+                block_padding,
+                style.box_sizing,
+                ratio.recip(),
+            );
+            let constrained_block = clamp_border_box(
+                ratio_block,
+                minimums.block,
+                maximums.block,
+                input.containing_size.block,
+                block_padding,
+                style.box_sizing,
+            );
+            if inline_auto && (constrained_block - ratio_block).abs() > 0.01 {
+                let transferred_inline = transfer_border_box_size(
+                    constrained_block,
+                    block_padding,
+                    inline_padding,
+                    style.box_sizing,
+                    ratio,
+                );
+                inline = solve_axis(
+                    input.containing_size.inline,
+                    input.static_rect.inline_start,
+                    input.measured_size.inline,
+                    insets.inline_start,
+                    insets.inline_end,
+                    margins.inline_start,
+                    margins.inline_end,
+                    dimensions.inline,
+                    minimums.inline,
+                    maximums.inline,
+                    inline_padding,
+                    style.box_sizing,
+                    input.intrinsic_inline,
+                    replaced.inline,
+                    Some(transferred_inline),
+                );
+            }
+            let ratio_block = transfer_border_box_size(
+                inline.size,
+                inline_padding,
+                block_padding,
+                style.box_sizing,
+                ratio.recip(),
+            );
+            block = solve_axis(
+                input.containing_size.block,
+                input.static_rect.block_start,
+                input.measured_size.block,
+                insets.block_start,
+                insets.block_end,
+                margins.block_start,
+                margins.block_end,
+                dimensions.block,
+                minimums.block,
+                maximums.block,
+                block_padding,
+                style.box_sizing,
+                None,
+                replaced.block,
+                Some(ratio_block),
+            );
+            block_size_solved = true;
+        } else if inline_auto {
+            let ratio_inline = transfer_border_box_size(
+                block.size,
+                block_padding,
+                inline_padding,
+                style.box_sizing,
+                ratio,
+            );
+            inline = solve_axis(
+                input.containing_size.inline,
+                input.static_rect.inline_start,
+                input.measured_size.inline,
+                insets.inline_start,
+                insets.inline_end,
+                margins.inline_start,
+                margins.inline_end,
+                dimensions.inline,
+                minimums.inline,
+                maximums.inline,
+                inline_padding,
+                style.box_sizing,
+                input.intrinsic_inline,
+                replaced.inline,
+                Some(ratio_inline),
+            );
+        }
+    }
+    block_size_solved |= (block.size - input.measured_size.block).abs() > 0.01;
 
     PositionedBoxGeometry {
         logical_rect: LogicalRect {
@@ -116,7 +223,31 @@ pub fn solve_positioned_box(style: BlockStyle, input: PositionedBoxInput) -> Pos
             block_start: block.margin_start,
             block_end: block.margin_end,
         },
+        block_size_solved,
     }
+}
+
+/// The preferred ratio expressed as logical inline size over logical block
+/// size in the containing flow.
+fn logical_aspect_ratio(style: BlockStyle) -> Option<f32> {
+    style.aspect_ratio.and_then(|ratio| {
+        (ratio.is_finite() && ratio > 0.0).then_some(if style.containing_flow.is_horizontal() {
+            ratio
+        } else {
+            ratio.recip()
+        })
+    })
+}
+
+fn transfer_border_box_size(
+    origin: f32,
+    origin_padding_border: f32,
+    destination_padding_border: f32,
+    box_sizing: BlockBoxSizing,
+    ratio: f32,
+) -> f32 {
+    let content = content_from_border_box(origin, origin_padding_border, box_sizing);
+    border_box_from_content(content * ratio, destination_padding_border, box_sizing)
 }
 
 #[derive(Clone, Copy)]
@@ -146,6 +277,7 @@ fn solve_axis(
     box_sizing: BlockBoxSizing,
     intrinsic: Option<IntrinsicSizes>,
     replaced_size: Option<f32>,
+    forced_size: Option<f32>,
 ) -> AxisGeometry {
     let start_auto = margin_start.is_none();
     let end_auto = margin_end.is_none();
@@ -154,38 +286,63 @@ fn solve_axis(
     let resolved_start = inset_start;
     let resolved_end = inset_end;
 
-    let mut size = specified_border_box(preferred, containing, padding_border, box_sizing)
-        .or_else(|| {
-            intrinsic.and_then(|intrinsic| {
-                intrinsic_border_box(preferred, containing, padding_border, box_sizing, intrinsic)
+    let mut size = forced_size.unwrap_or_else(|| {
+        specified_border_box(preferred, containing, padding_border, box_sizing)
+            .or_else(|| {
+                intrinsic.and_then(|intrinsic| {
+                    intrinsic_border_box(
+                        preferred,
+                        containing,
+                        padding_border,
+                        box_sizing,
+                        intrinsic,
+                    )
+                })
             })
-        })
-        .unwrap_or_else(|| {
-            if let Some(size) = replaced_size {
-                size
-            } else if let Some(intrinsic) = intrinsic {
-                let available = (containing
-                    - resolved_start.unwrap_or(0.0)
-                    - resolved_end.unwrap_or(0.0)
-                    - margin_start
-                    - margin_end
-                    - padding_border)
-                    .max(0.0);
-                if resolved_start.is_some() && resolved_end.is_some() {
-                    // CSS2 10.3.7 gives the auto inline size the remaining
-                    // space when both inline insets are definite.
-                    available + padding_border
-                } else {
-                    intrinsic
-                        .min_content
-                        .max(available)
-                        .min(intrinsic.max_content)
+            .unwrap_or_else(|| {
+                if let Some(size) = replaced_size {
+                    size
+                } else if let Some(intrinsic) = intrinsic {
+                    let available = (containing
+                        - resolved_start.unwrap_or(0.0)
+                        - resolved_end.unwrap_or(0.0)
+                        - margin_start
+                        - margin_end
+                        - padding_border)
+                        .max(0.0);
+                    if resolved_start.is_some() && resolved_end.is_some() {
+                        // CSS2 10.3.7 gives the auto inline size the remaining
+                        // space when both inline insets are definite.
+                        available + padding_border
+                    } else {
+                        intrinsic
+                            .min_content
+                            .max(available)
+                            .min(intrinsic.max_content)
+                            + padding_border
+                    }
+                } else if matches!(preferred, BlockSizeValue::Auto)
+                    && resolved_start.is_some()
+                    && resolved_end.is_some()
+                {
+                    // CSS2 10.6.4 gives a non-replaced absolutely positioned
+                    // box with an automatic block size and two definite block
+                    // insets the remaining containing-block space. The inline
+                    // axis reaches the same equation through its intrinsic
+                    // branch; the block axis has no intrinsic contribution.
+                    (containing
+                        - resolved_start.unwrap_or(0.0)
+                        - resolved_end.unwrap_or(0.0)
+                        - margin_start
+                        - margin_end
+                        - padding_border)
+                        .max(0.0)
                         + padding_border
+                } else {
+                    measured_size.max(padding_border)
                 }
-            } else {
-                measured_size.max(padding_border)
-            }
-        });
+            })
+    });
     size = clamp_border_box(
         size,
         minimum,
@@ -275,35 +432,39 @@ fn resolve_replaced_size(
     let ratio = style_ratio.or(intrinsic_ratio);
 
     let inline = specified_inline.or_else(|| {
-        specified_block
-            .and_then(|block| {
-                ratio.map(|ratio| {
-                    let block_content =
-                        content_from_border_box(block, block_padding, style.box_sizing);
-                    border_box_from_content(block_content * ratio, inline_padding, style.box_sizing)
-                })
+        specified_block.and_then(|block| {
+            ratio.map(|ratio| {
+                let block_content = content_from_border_box(
+                    block,
+                    block_padding,
+                    style.box_sizing,
+                );
+                border_box_from_content(block_content * ratio, inline_padding, style.box_sizing)
             })
-            .or_else(|| {
-                intrinsic.map(|size| {
-                    border_box_from_content(size.inline, inline_padding, style.box_sizing)
-                })
+        })
+        .or_else(|| {
+            intrinsic.map(|size| {
+                border_box_from_content(size.inline, inline_padding, style.box_sizing)
             })
+        })
     });
     let block = specified_block.or_else(|| {
-        specified_inline
-            .and_then(|inline| {
-                ratio.map(|ratio| {
-                    let inline_content =
-                        content_from_border_box(inline, inline_padding, style.box_sizing);
-                    border_box_from_content(inline_content / ratio, block_padding, style.box_sizing)
-                })
+        specified_inline.and_then(|inline| {
+            ratio.map(|ratio| {
+                let inline_content = content_from_border_box(
+                    inline,
+                    inline_padding,
+                    style.box_sizing,
+                );
+                border_box_from_content(inline_content / ratio, block_padding, style.box_sizing)
             })
-            .or_else(|| {
-                intrinsic.map(|size| {
-                    let content = style_ratio.map_or(size.block, |ratio| size.inline / ratio);
-                    border_box_from_content(content, block_padding, style.box_sizing)
-                })
+        })
+        .or_else(|| {
+            intrinsic.map(|size| {
+                let content = style_ratio.map_or(size.block, |ratio| size.inline / ratio);
+                border_box_from_content(content, block_padding, style.box_sizing)
             })
+        })
     });
     ReplacedAxisSize { inline, block }
 }
@@ -498,6 +659,17 @@ mod tests {
     }
 
     #[test]
+    fn definite_block_size_marks_a_changed_formatter_size_as_solved() {
+        let mut style = positioned();
+        style.size.height = BlockSizeValue::Length(FlowLength::percent(0.5));
+
+        let geometry = solve_positioned_box(style, input());
+
+        assert_eq!(geometry.logical_rect.block_size, 50.0);
+        assert!(geometry.block_size_solved);
+    }
+
+    #[test]
     fn automatic_size_keeps_automatic_margins_at_zero_for_static_fallback() {
         let mut style = positioned();
         style.margin.left = FlowLengthAuto::Auto;
@@ -534,6 +706,19 @@ mod tests {
 
         assert_eq!(geometry.logical_rect.inline_size, 170.0);
         assert_eq!(geometry.logical_rect.inline_start, 10.0);
+    }
+
+    #[test]
+    fn automatic_block_size_fills_between_definite_insets() {
+        let mut style = positioned();
+        style.inset.top = FlowLengthAuto::Value(FlowLength::px(10.0));
+        style.inset.bottom = FlowLengthAuto::Value(FlowLength::px(20.0));
+
+        let geometry = solve_positioned_box(style, input());
+
+        assert_eq!(geometry.logical_rect.block_size, 70.0);
+        assert_eq!(geometry.logical_rect.block_start, 10.0);
+        assert!(geometry.block_size_solved);
     }
 
     #[test]
@@ -574,5 +759,32 @@ mod tests {
 
         assert_eq!(geometry.logical_rect.inline_size, 80.0);
         assert_eq!(geometry.logical_rect.block_size, 32.0);
+    }
+
+    #[test]
+    fn aspect_ratio_derives_the_block_size_from_the_shrink_to_fit_inline_size() {
+        let mut style = positioned();
+        style.aspect_ratio = Some(2.0);
+        let mut input = input();
+        input.intrinsic_inline = IntrinsicSizes::new(20.0, 60.0);
+
+        let geometry = solve_positioned_box(style, input);
+
+        assert_eq!(geometry.logical_rect.inline_size, 60.0);
+        assert_eq!(geometry.logical_rect.block_size, 30.0);
+    }
+
+    #[test]
+    fn aspect_ratio_transfers_the_block_maximum_to_an_automatic_inline_size() {
+        let mut style = positioned();
+        style.aspect_ratio = Some(1.0);
+        style.max_size.height = BlockSizeValue::Length(FlowLength::percent(1.0));
+        let mut input = input();
+        input.intrinsic_inline = IntrinsicSizes::new(20.0, 200.0);
+
+        let geometry = solve_positioned_box(style, input);
+
+        assert_eq!(geometry.logical_rect.inline_size, 100.0);
+        assert_eq!(geometry.logical_rect.block_size, 100.0);
     }
 }

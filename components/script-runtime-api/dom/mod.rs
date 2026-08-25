@@ -182,7 +182,7 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     Ok(())
 }
 
-/// An HTML-namespaced element name (matches genet-layout's cascade keying).
+/// An HTML-namespaced element name matching the retained Livery cascade key.
 fn html_qual(local: &str) -> QualName {
     QualName::new(
         None,
@@ -384,6 +384,7 @@ pub struct StyleSheetImportOwner {
 pub enum StyleSheetRuleKind {
     Style,
     Import,
+    FontFace,
     Media,
     Container,
     Keyframes,
@@ -585,6 +586,7 @@ fn rule_kind_name(kind: StyleSheetRuleKind) -> &'static str {
     match kind {
         StyleSheetRuleKind::Style => "style",
         StyleSheetRuleKind::Import => "import",
+        StyleSheetRuleKind::FontFace => "font-face",
         StyleSheetRuleKind::Media => "media",
         StyleSheetRuleKind::Container => "container",
         StyleSheetRuleKind::Keyframes => "keyframes",

@@ -2,15 +2,16 @@ use std::fmt::Debug;
 
 use livery::media::{ViewportSize, ViewportSizes};
 use livery::values::{
-    Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundImage, BackgroundPosition,
-    BackgroundRepeat, BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide,
-    Clear, Color, Contain, CssValue, Direction, Display, Duration, EmptyCells, FlexDirection,
-    FlexFactor, FlexWrap, Float, FontFamily, FontSize, FontStyle, FontWeight, Gap, Inset,
-    LengthPercentage, LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow,
-    Padding, PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate,
-    Scale, Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode,
-    TimingFunction, Transform, TransitionProperty, TreeCounts, VerticalAlign, Visibility,
-    WhiteSpaceCollapse, ZIndex,
+    Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
+    BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
+    BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide, Clear, Color, Contain,
+    ContainIntrinsicSize, CssValue, Direction, Display, Duration, EmptyCells, FlexDirection,
+    FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize, FontStyle,
+    FontVariantLigatures, FontWeight, Gap, Inset, LengthPercentage, LengthUnit, LineHeight,
+    ListStyleType, Margin, Opacity, Order, Overflow, Padding, PointerEvents, Position, Radius,
+    RelativeLengthEnvironment, ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing,
+    TextAlign, TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty,
+    TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse, ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
@@ -26,6 +27,26 @@ where
     let reparsed = T::parse_css(&serialized)
         .unwrap_or_else(|error| panic!("{css} serialized as {serialized}: {error}"));
     assert_eq!(parsed, reparsed, "{css} serialized as {serialized}");
+}
+
+#[test]
+fn background_positions_and_single_candidate_image_set_round_trip() {
+    for value in [
+        "50% 50%",
+        "top right",
+        "top 25% left 25%",
+        "bottom 1px right 2px",
+    ] {
+        assert_round_trip::<BackgroundPosition>(value);
+    }
+    assert_eq!(
+        "image-set(linear-gradient(green, lightgreen) 1x)"
+            .parse::<BackgroundImage>()
+            .expect("single-candidate image-set selects its image"),
+        "linear-gradient(green, lightgreen)"
+            .parse::<BackgroundImage>()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -50,6 +71,7 @@ fn length_percentage_and_calc_values_round_trip() {
         "0",
         "12px",
         "-2em",
+        "5ch",
         "1.5rem",
         "37.5%",
         "calc(100% - 16px + 2em - 0.5rem)",
@@ -57,6 +79,46 @@ fn length_percentage_and_calc_values_round_trip() {
     ] {
         assert_round_trip::<LengthPercentage>(value);
     }
+}
+
+#[test]
+fn ch_lengths_wait_for_the_resolved_font_advance() {
+    let viewport = ViewportSizes::uniform(800.0, 600.0);
+    let value = "calc(2ch + 1px)"
+        .parse::<LengthPercentage>()
+        .expect("ch calc");
+
+    assert_eq!(value.to_string(), "calc(1px + 2ch)");
+    let unresolved = value.resolve_relative(RelativeLengthEnvironment::viewport(viewport));
+    assert_eq!(unresolved.to_string(), "calc(1px + 2ch)");
+    let resolved = unresolved
+        .resolve_relative(RelativeLengthEnvironment::viewport(viewport).with_ch_advance(12.0));
+    assert!((resolved.to_px(16.0, 16.0, 0.0) - 25.0).abs() < 0.001);
+}
+
+#[test]
+fn contain_intrinsic_size_round_trips_and_resolves_its_physical_pair() {
+    for value in ["none", "300px", "300px 150px"] {
+        assert_round_trip::<ContainIntrinsicSize>(value);
+    }
+    for invalid in ["auto", "-1px", "1px -2px", "1px 2px 3px"] {
+        assert!(
+            invalid.parse::<ContainIntrinsicSize>().is_err(),
+            "accepted {invalid}"
+        );
+    }
+
+    let value = "10vw 5vh"
+        .parse::<ContainIntrinsicSize>()
+        .expect("physical pair")
+        .resolve_relative_lengths(RelativeLengthEnvironment::uniform_viewport(800.0, 600.0));
+    let (width, height) = value.physical_lengths().expect("resolved pair");
+    assert_eq!((width.value, width.unit), (80.0, LengthUnit::Px));
+    assert_eq!((height.value, height.unit), (30.0, LengthUnit::Px));
+    assert_eq!(
+        canonicalize_specified_longhand("contain-intrinsic-size", "500px 500px").as_deref(),
+        Some("500px")
+    );
 }
 
 #[test]
@@ -158,6 +220,11 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<BackgroundImage>("url(data:image/png;base64,seed)");
     assert_round_trip::<BackgroundPosition>("center 10px");
     assert_round_trip::<BackgroundRepeat>("no-repeat");
+    assert_round_trip::<BackgroundRepeat>("space round");
+    assert_round_trip::<BackgroundSize>("40px auto");
+    assert_round_trip::<BackgroundSize>("cover");
+    assert_round_trip::<BackgroundBox>("content-box");
+    assert_round_trip::<BackgroundAttachment>("fixed");
     assert_round_trip::<Duration>("100ms");
     assert_round_trip::<AnimationName>("fade");
     assert_round_trip::<TimingFunction>("ease-in-out");
@@ -196,8 +263,14 @@ fn catalog_property_values_round_trip() {
     assert_round_trip::<Gap>("12px");
     assert_round_trip::<FontFamily>("system-ui");
     assert_round_trip::<FontFamily>("\"Atkinson Hyperlegible\"");
+    assert_round_trip::<FontFeatureSettings>("normal");
+    assert_round_trip::<FontFeatureSettings>("'liga' off, \"dlig\" 3");
     assert_round_trip::<FontSize>("1.5rem");
     assert_round_trip::<FontStyle>("italic");
+    assert_round_trip::<FontVariantLigatures>(
+        "common-ligatures no-discretionary-ligatures contextual",
+    );
+    assert_round_trip::<FontVariantLigatures>("none");
     assert_round_trip::<FontWeight>("700");
     assert_round_trip::<Size>("42rem");
     assert_round_trip::<Size>("fit-content(80%)");

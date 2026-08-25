@@ -743,7 +743,20 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             };
             #[cfg(feature = "detailed_layout_info")]
             positioned_items.push(DetailedGridPositionedItemInfo { node: child, grid_area });
-            let static_position_area = tree.grid_child_static_position_area(node, child, grid_area, content_box);
+            let static_position_area = tree.grid_child_static_position_area(
+                node,
+                child,
+                grid_area,
+                content_box,
+                Rect {
+                    left: maybe_col_indexes.start.is_none(),
+                    right: maybe_col_indexes.end.is_none(),
+                    top: maybe_row_indexes.start.is_none(),
+                    bottom: maybe_row_indexes.end.is_none(),
+                },
+                border,
+                container_border_box,
+            );
             drop(child_style);
 
             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)

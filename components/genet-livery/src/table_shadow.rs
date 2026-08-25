@@ -14,8 +14,8 @@
 use std::{collections::HashMap, hash::Hash};
 
 use buckram::{
-    AlgorithmNodeId, BoxId, CaptionMinContribution, CollapsedBorderMetrics, IntrinsicSizes,
-    ResolvedTableBorderGrid, TableAutomaticColumnMeasureInput,
+    AlgorithmNodeId, BoxId, BoxOrigin, CaptionMinContribution, CollapsedBorderMetrics,
+    IntrinsicSizes, ResolvedTableBorderGrid, TableAutomaticColumnMeasureInput,
     TableAutomaticInlineSizingIndefinite, TableAutomaticInlineSizingInput,
     TableAutomaticInlineSizingOutcome, TableBlockLayout, TableCellInlineMeasure, TableDeferral,
     TableFixedInlineSizingInput, TableFixedInlineSizingOutcome, TableGrid,
@@ -231,8 +231,7 @@ impl TableShadowLedger {
         self.honored += other.honored;
         self.divergences.extend(other.divergences.iter().copied());
         self.skipped.extend(other.skipped.iter().cloned());
-        self.positioning_gaps
-            .extend(other.positioning_gaps.iter().copied());
+        self.positioning_gaps.extend(other.positioning_gaps.iter().copied());
         self.block.merge(other.block.clone());
     }
 
@@ -264,7 +263,11 @@ impl TableShadowLedger {
     }
 }
 
-fn table_is_descendant_of<Id>(boxes: &buckram::CssBoxTree<Id>, table: BoxId, root: BoxId) -> bool
+fn table_is_descendant_of<Id>(
+    boxes: &buckram::CssBoxTree<Id>,
+    table: BoxId,
+    root: BoxId,
+) -> bool
 where
     Id: Copy + Eq + Hash,
 {
@@ -295,7 +298,8 @@ pub(crate) const LIVE_ROOT_FONT_SIZE: f32 = 16.0;
 /// before the main compute and verified against fragments after collection.
 pub struct PendingTable<Id> {
     pub table: BoxId,
-    pub node: Id,
+    pub node: Option<Id>,
+    pub table_style: ComputedValues,
     pub table_node: AlgorithmNodeId,
     /// The table wrapper box's node, once K4e1's wrapper has been built. It is
     /// built after the grid, so it registers itself here rather than arriving
@@ -706,14 +710,15 @@ where
     let axes = buckram::FlowAxes::HORIZONTAL_LTR;
     let mut cells = Vec::with_capacity(grid.cells.len());
     for (index, cell) in grid.cells.iter().enumerate() {
-        let Some(style) = boxes
-            .origin_node(cell.source)
-            .and_then(|node| styles.get(node))
-            .cloned()
-        else {
-            return Err(TableInlineSizingError::InvalidOffsets {
-                box_id: cell.source,
-            });
+        let style = match boxes[cell.source].origin {
+            BoxOrigin::Anonymous { .. } => ComputedValues::default(),
+            _ => boxes
+                .origin_node(cell.source)
+                .and_then(|node| styles.get(node))
+                .cloned()
+                .ok_or(TableInlineSizingError::InvalidOffsets {
+                    box_id: cell.source,
+                })?,
         };
         let lowered = match collapsed_border_metrics {
             Some(metrics) => collapsed_cell_inline_style(

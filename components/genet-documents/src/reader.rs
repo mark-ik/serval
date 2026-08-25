@@ -20,7 +20,7 @@ use crate::{SmolwebDocument, SmolwebTheme, resolve_href};
 /// The only three outcomes of the cheap static reader pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticArticleOutcome {
-    Article(Article),
+    Article(Box<Article>),
     NeedsScriptedDom,
     NotReadable,
 }
@@ -30,7 +30,7 @@ pub enum StaticArticleOutcome {
 pub fn extract_static_article(source: &str) -> StaticArticleOutcome {
     let dom = genet_static_dom::StaticDocument::parse(source);
     if let Some(article) = fleece::extract_article(&dom) {
-        StaticArticleOutcome::Article(article)
+        StaticArticleOutcome::Article(Box::new(article))
     } else if fleece::carries_script(&dom) {
         StaticArticleOutcome::NeedsScriptedDom
     } else {
@@ -73,8 +73,11 @@ pub fn lower_article(address: &str, article: &Article) -> EngineDocument {
     }
 }
 
-fn lower_block(address: &str, block: &fleece::Block, out: &mut Vec<Block>) {
-    match block {
+/// Reader rendering is intentionally anchor-blind: Fleece selector evidence remains
+/// available to annotation consumers, while this boundary preserves its portable
+/// document content.
+fn lower_block(address: &str, block: &fleece::AnchoredBlock, out: &mut Vec<Block>) {
+    match &block.block {
         fleece::Block::Heading { level, runs } => out.push(Block::Heading {
             level: *level,
             spans: lower_inline(address, runs),
@@ -106,7 +109,8 @@ fn lower_block(address: &str, block: &fleece::Block, out: &mut Vec<Block>) {
             language: language.clone(),
             text: text.clone(),
         }),
-        fleece::Block::Table { rows } => {
+        fleece::Block::Table { table } => {
+            let rows = &table.rows;
             let header_index = rows.iter().position(|row| row.header);
             let header = header_index
                 .map(|index| {

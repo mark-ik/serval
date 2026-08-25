@@ -4,8 +4,9 @@
 
 //! Compatibility shim for the renamed extraction lane.
 //!
-//! New consumers should depend on [`fleece`] directly. This crate remains for
-//! one release so existing downstream manifests continue to compile.
+//! New consumers should depend on [`fleece`] directly. This crate remains as a
+//! thin re-export for existing downstream manifests and follows Fleece's public
+//! API breaks with its own pre-1.0 minor releases.
 
 #![deny(unsafe_code)]
 

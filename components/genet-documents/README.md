@@ -14,11 +14,14 @@ session, take paint frames, scroll, click, settle).
   `genet.livery`): the owned script-free HTML implementation. It retains
   style/layout/text paint state and lowers the neutral PaintList into the same
   scene contract. It also routes bounded viewport scrolling, retained link
-  rectangles, pointer hit testing, fragment navigation, and focus state. The
-  session also exposes the retained animation clock for host-driven opacity
-  frames, bounded CSS opacity/background-color/color transitions, and opacity-only `@keyframes` with
-  named timing functions. Nested scroll chaining is routed through the retained
-  session and chains at its boundary. The session asks the host `ResourceFetcher`
+  rectangles, pointer hit testing, fragment navigation, focus state, text
+  editing, IME composition, and structured form submission. Script-free form
+  mutations reuse the retained DOM and travel through Livery restyle, Buckram
+  layout, and paint. The session also exposes the retained animation clock for
+  host-driven opacity frames, bounded CSS opacity/background-color/color
+  transitions, and opacity-only `@keyframes` with named timing functions.
+  Nested scroll chaining is routed through the retained session and chains at
+  its boundary. The session asks the host `ResourceFetcher`
   for CSS/DOM image URLs and feeds returned bytes into the neutral image side
   table. The bounded lane includes text color and border-top-color/border-bottom-color interpolation;
   broader transition-property lists/interpolation remain open. Livery's image gate

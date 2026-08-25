@@ -144,7 +144,7 @@ fn build_textarea(input: &TextInput) -> TextField {
 ///
 /// Lines are `\n`-delimited in the buffer; up/down navigate those hard lines with a
 /// sticky goal column. (Soft-wrap visual-line navigation needs the layout — the
-/// separate `genet_layout::caret_byte_vertical` path a host can wire instead.)
+/// separate retained-layout soft-wrap caret path a host can wire instead.)
 pub fn textarea(
     input: &TextInput,
 ) -> impl View<TextInput, (), GenetCtx, Element = GenetElement> + use<> {

@@ -296,6 +296,18 @@ impl FragmentTree {
         }
     }
 
+    /// Replace an earlier provisional record when a retained formatting
+    /// handoff publishes the authoritative source rectangle for the same box.
+    /// The caller must have already emitted both the box and its first record;
+    /// a missing entry is a broken handoff rather than an insertion route.
+    pub fn reconcile_static_position(&mut self, position: StaticPosition) {
+        let entry = self
+            .static_positions
+            .get_mut(&position.box_id)
+            .expect("static-position reconciliation requires an existing record");
+        *entry = position;
+    }
+
     pub fn len(&self) -> usize {
         self.fragments.len()
     }
@@ -370,6 +382,23 @@ impl FragmentTree {
         {
             fragment.containing_fragment = containing_fragment;
         }
+    }
+
+    /// Reattach a provisional fragment after its retained formatting context
+    /// has materialized the structural parent. This preserves the fragment's
+    /// identity while restoring tree order for paint and overflow propagation.
+    pub fn reconcile_parent(&mut self, id: FragmentId, parent: Option<FragmentId>) {
+        if let Some(parent) = parent {
+            assert!(
+                self.get(parent).is_some(),
+                "a reconciled parent must be live"
+            );
+        }
+        let Some(slot) = self.slots.get(&id).copied() else {
+            return;
+        };
+        self.fragments[slot].parent = parent;
+        self.recompute_overflow();
     }
 
     /// Replace one fragment's overflow and union it into every structural
@@ -484,11 +513,7 @@ impl FragmentTree {
         let retired_set = retired.iter().copied().collect::<HashSet<_>>();
         let retired_boxes = retired
             .iter()
-            .map(|id| {
-                self.get(*id)
-                    .expect("a live retired fragment has a box")
-                    .box_id
-            })
+            .map(|id| self.get(*id).expect("a live retired fragment has a box").box_id)
             .collect::<HashSet<_>>();
         let incoming = replacement.subtree_ids(replacement_root);
         let incoming_set = incoming.iter().copied().collect::<HashSet<_>>();
@@ -554,11 +579,7 @@ impl FragmentTree {
 
         let mut identifiers = HashMap::new();
         identifiers.insert(replacement_root, root);
-        for source in incoming
-            .iter()
-            .copied()
-            .filter(|id| *id != replacement_root)
-        {
+        for source in incoming.iter().copied().filter(|id| *id != replacement_root) {
             identifiers.insert(source, self.allocate_fragment_id());
         }
 
@@ -581,8 +602,7 @@ impl FragmentTree {
             imported.insert(fragment.id, fragment);
         }
 
-        let mut fragments =
-            Vec::with_capacity(self.fragments.len() - retired.len() + incoming.len());
+        let mut fragments = Vec::with_capacity(self.fragments.len() - retired.len() + incoming.len());
         let mut ids = Vec::with_capacity(fragments.capacity());
         for id in self.ids.clone() {
             if id == root {
@@ -592,11 +612,7 @@ impl FragmentTree {
                         .expect("the replacement root has one imported fragment"),
                 );
                 ids.push(root);
-                for source in incoming
-                    .iter()
-                    .copied()
-                    .filter(|id| *id != replacement_root)
-                {
+                for source in incoming.iter().copied().filter(|id| *id != replacement_root) {
                     let id = identifiers[&source];
                     fragments.push(
                         imported
@@ -606,11 +622,7 @@ impl FragmentTree {
                     ids.push(id);
                 }
             } else if !retired_set.contains(&id) {
-                fragments.push(
-                    self.get(id)
-                        .expect("a retained fragment stays live")
-                        .clone(),
-                );
+                fragments.push(self.get(id).expect("a retained fragment stays live").clone());
                 ids.push(id);
             }
         }
@@ -641,7 +653,11 @@ impl FragmentTree {
 
     /// Rekey dense construction identifiers against retained fragments after
     /// the owning box tree has already reconciled its own identities.
-    pub fn reconcile_identifiers(&mut self, previous: &Self, box_ids: &HashMap<BoxId, BoxId>) {
+    pub fn reconcile_identifiers(
+        &mut self,
+        previous: &Self,
+        box_ids: &HashMap<BoxId, BoxId>,
+    ) {
         self.remap_box_identifiers(box_ids);
 
         let mut mapping = HashMap::new();
@@ -651,26 +667,20 @@ impl FragmentTree {
                 !consumed.contains(candidate)
                     && same_fragment_context(
                         self.get(current).expect("a root fragment is live"),
-                        previous
-                            .get(*candidate)
-                            .expect("a retained root fragment is live"),
+                        previous.get(*candidate).expect("a retained root fragment is live"),
                     )
             });
             if let Some(candidate) = candidate {
-                self.match_retained_subtree(
-                    previous,
-                    current,
-                    candidate,
-                    &mut mapping,
-                    &mut consumed,
-                );
+                self.match_retained_subtree(previous, current, candidate, &mut mapping, &mut consumed);
             }
         }
 
-        let mut next = previous.ids.iter().map(|id| id.0).max().map_or(0, |id| {
-            id.checked_add(1)
-                .expect("a fragment tree exceeded u32::MAX fragments")
-        });
+        let mut next = previous
+            .ids
+            .iter()
+            .map(|id| id.0)
+            .max()
+            .map_or(0, |id| id.checked_add(1).expect("a fragment tree exceeded u32::MAX fragments"));
         for current in self.ids.clone() {
             mapping.entry(current).or_insert_with(|| {
                 let allocated = FragmentId(next);
@@ -708,9 +718,7 @@ impl FragmentTree {
                 !consumed.contains(candidate)
                     && same_fragment_context(
                         self.get(current_child).expect("a child fragment is live"),
-                        previous
-                            .get(*candidate)
-                            .expect("a retained child fragment is live"),
+                        previous.get(*candidate).expect("a retained child fragment is live"),
                     )
             });
             if let Some(candidate) = candidate {
@@ -778,7 +786,10 @@ impl FragmentTree {
             .into_values()
             .map(|mut position| {
                 position.box_id = box_ids[&position.box_id];
-                (position.box_id, position)
+                (
+                    position.box_id,
+                    position,
+                )
             })
             .collect();
     }
@@ -834,11 +845,10 @@ impl FragmentTree {
             if let Some(containing) = fragment.containing_fragment() {
                 assert!(self.slots.contains_key(&containing));
             }
-            assert!(
-                self.by_box
-                    .get(&fragment.box_id())
-                    .is_some_and(|ids| ids.contains(&id))
-            );
+            assert!(self
+                .by_box
+                .get(&fragment.box_id())
+                .is_some_and(|ids| ids.contains(&id)));
         }
         for (box_id, ids) in &self.by_box {
             let mut seen = HashSet::new();
@@ -1234,20 +1244,13 @@ mod tests {
             &[previous_child_fragment],
         );
         assert_eq!(
-            next.get(previous_child_fragment).and_then(Fragment::parent),
+            next.get(previous_child_fragment)
+                .and_then(Fragment::parent),
             Some(previous_root_fragment),
         );
         assert_eq!(next.roots(), &[inserted, previous_root_fragment]);
-        assert_eq!(
-            inserted_fragment.index(),
-            0,
-            "the test starts dense before reconciliation"
-        );
-        assert_eq!(
-            next_child_fragment.index(),
-            2,
-            "the test starts dense before reconciliation"
-        );
+        assert_eq!(inserted_fragment.index(), 0, "the test starts dense before reconciliation");
+        assert_eq!(next_child_fragment.index(), 2, "the test starts dense before reconciliation");
     }
 
     #[test]
@@ -1339,10 +1342,7 @@ mod tests {
             logical_rect: LogicalRect::default(),
             containing_block_area: None,
         });
-        assert_eq!(
-            tree.get(outer).map(|fragment| fragment.overflow.block_size),
-            Some(200.0)
-        );
+        assert_eq!(tree.get(outer).map(|fragment| fragment.overflow.block_size), Some(200.0));
 
         let mut replacement = FragmentTree::default();
         let replacement_root = replacement.push(
@@ -1384,10 +1384,7 @@ mod tests {
             containing_block_area: None,
         });
 
-        assert_eq!(
-            tree.replace_subtree(root, &replacement, replacement_root),
-            Some(root)
-        );
+        assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), Some(root));
         let new_child = tree.fragment_ids_for_box(child_box)[0];
 
         assert_ne!(new_child, old_child);
@@ -1399,10 +1396,7 @@ mod tests {
         assert_eq!(tree.fragment_ids_for_box(child_box), &[new_child]);
         assert_eq!(tree.fragment_ids_for_box(sibling_box), &[sibling]);
         assert_eq!(tree.get(root).and_then(Fragment::parent), Some(outer));
-        assert_eq!(
-            tree.get(root).and_then(Fragment::containing_fragment),
-            Some(outer)
-        );
+        assert_eq!(tree.get(root).and_then(Fragment::containing_fragment), Some(outer));
         assert_eq!(tree.get(new_child).and_then(Fragment::parent), Some(root));
         assert_eq!(
             tree.get(root).map(Fragment::physical_rect),
@@ -1413,10 +1407,7 @@ mod tests {
                 height: 30.0,
             })
         );
-        assert_eq!(
-            tree.get(outer).map(|fragment| fragment.overflow.block_size),
-            Some(47.0)
-        );
+        assert_eq!(tree.get(outer).map(|fragment| fragment.overflow.block_size), Some(47.0));
         assert_eq!(
             tree.static_position_for_box(child_box),
             Some(&StaticPosition {
@@ -1484,10 +1475,7 @@ mod tests {
             containing_block_area: None,
         });
 
-        assert_eq!(
-            tree.replace_subtree(root, &replacement, replacement_root),
-            None
-        );
+        assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), None);
         assert_eq!(tree.len(), 1);
         assert_eq!(
             tree.get(root).map(Fragment::physical_rect),
@@ -1531,10 +1519,7 @@ mod tests {
             containing_block_area: None,
         });
 
-        assert_eq!(
-            tree.replace_subtree(root, &replacement, replacement_root),
-            None
-        );
+        assert_eq!(tree.replace_subtree(root, &replacement, replacement_root), None);
         assert_eq!(tree.roots(), &[root, external]);
         assert_eq!(tree.len(), 2);
     }

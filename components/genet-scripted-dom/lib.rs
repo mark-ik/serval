@@ -6,16 +6,15 @@
 //!
 //! `ScriptedDom` is the mutable sibling of `genet-static-dom`'s `StaticDocument`:
 //! a `NodeId`-keyed arena that implements [`LayoutDom`] (read) and [`LayoutDomMut`]
-//! (mutate), recording each structural change as a [`DomMutation`] for
-//! genet-layout's scheduler to translate into invalidation. The arena owns the
+//! (mutate), recording each structural change as a [`DomMutation`] for the
+//! retained Livery document to translate into invalidation. The arena owns the
 //! node data; JS reflectors bridge back to it by `NodeId` (via
 //! `script-engine-api`'s `make_reflector`/`reflector_data`), so the engine never
 //! owns DOM data.
 //!
 //! Scope (2026-05-23): structural mutation + the mutation stream. The reflector
-//! bridge wiring and the DomMutation → genet-layout invalidation loop are the next
-//! pass (they need the `script-runtime-api` host layer and genet-layout's
-//! scheduler). `set_inner_html` is deferred — it needs html5ever fragment parsing.
+//! bridge and Livery invalidation consumer now live above this render-neutral
+//! arena. `set_inner_html` uses the shared fragment parser.
 
 #![deny(unsafe_code)]
 
@@ -30,9 +29,9 @@ mod serialize;
 
 /// Opaque node identity: a stable index into the arena (slots are never reused, so
 /// ids stay valid for the document's lifetime).
-// `usize`-backed (pointer-sized): genet-layout's Stylo style-sharing cache asserts
-// `size_of::<NodeId>() == size_of::<usize>()` (it packs the id into a pointer-shaped
-// `OpaqueElement`). A `u32` would fail that assertion.
+// `usize`-backed (pointer-sized) for the reflector bridge's raw identity. The
+// retired Stylo adapter also required this shape; keeping it avoids an ABI-like
+// identity migration without retaining that adapter.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct NodeId(usize);
 
@@ -61,10 +60,9 @@ impl NodeId {
 // so ids are the bare arena index exactly as before and behavior is
 // byte-identical. wasm32 has no room to pack (a `usize` is 32 bits there, all
 // of it spoken for by the index), and native debug runs already exercise the
-// bug class. The packed value rides opaquely through Stylo's `OpaqueElement`
-// (never dereferenced) and through the reflector bridge's `raw()`/`from_raw()`
-// u64 round-trip, so the tag survives both paths and the assert fires on
-// reconstructed ids too.
+// bug class. The packed value rides opaquely through `LayoutDom::opaque_id` and
+// the reflector bridge's `raw()`/`from_raw()` u64 round-trip, so the tag survives
+// both paths and the assert fires on reconstructed ids too.
 
 #[cfg(all(debug_assertions, target_pointer_width = "64"))]
 mod fence {
@@ -690,9 +688,9 @@ impl LayoutDom for ScriptedDom {
     }
 
     fn opaque_id(&self, id: NodeId) -> u64 {
-        // Assert ownership (the fence), then return the full packed id so the
-        // tag rides opaquely through Stylo's `OpaqueElement`. Off the fence
-        // this is just `id.0`, identical to before.
+        // Assert ownership (the fence), then return the full packed id through
+        // the render-neutral `LayoutDom` identity seam. Off the fence this is
+        // just `id.0`, identical to before.
         let _ = self.index(id);
         id.0 as u64
     }
@@ -818,9 +816,9 @@ impl LayoutDomMut for ScriptedDom {
 
     fn set_attribute(&mut self, node: NodeId, name: QualName, value: &str) {
         let attrs = &mut self.node_mut(node).attrs;
-        // Capture the prior value before overwriting — genet-layout needs
-        // it to build the Stylo snapshot at restyle time (the old value is
-        // gone from the live DOM once we mutate). `None` = newly added.
+        // Capture the prior value before overwriting so a retained style owner
+        // can classify the mutation after the old value is gone from the live
+        // DOM. `None` = newly added.
         let old_value;
         if let Some(existing) = attrs
             .iter_mut()

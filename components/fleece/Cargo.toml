@@ -1,6 +1,6 @@
 [package]
 name = "fleece"
-version = "0.1.0"
+version = "0.4.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ categories = ["parser-implementations", "text-processing"]
 
 [dependencies]
 layout_dom_api = { workspace = true }
+unicode-segmentation = { workspace = true }
 
 [dev-dependencies]
 genet-static-dom = { version = "0.1.0", path = "../genet-static-dom" }

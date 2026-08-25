@@ -11,13 +11,15 @@
 use std::fmt;
 use std::str::FromStr;
 
-pub mod input;
+pub mod navigation;
 pub mod settings;
+pub mod surface;
 pub mod tile;
 
-pub use input::{
-    ButtonState, CursorShape, FocusChange, HostEffect, HostInput, HostKey, InputModifiers,
-    NavigationCommand, PointerButton, TextComposition,
+pub use navigation::resolve_href;
+pub use surface::{
+    CapabilityId, PlacementHint, ProviderId, SourceKindId, SurfaceAvailability, SurfaceDescriptor,
+    SurfaceId, SurfaceMultiplicity, SurfaceRole, SurfaceSourceShape, SurfaceUnavailableReason,
 };
 
 /// Coarse engine selection for diagnostic hosts such as standalone Pelt.
@@ -26,20 +28,15 @@ pub use input::{
 /// deliberately names only the two HTML capabilities that still need a CLI
 /// override; windowing mode, protocol, and historical implementation names are
 /// separate concerns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EngineProfile {
     /// Script-free HTML through the owned Livery/Buckram engine. Its Inker
     /// identity is `genet.livery`.
+    #[default]
     Livery,
     /// Live HTML whose scripts mutate the DOM while Livery/Buckram retain style,
     /// layout, and paint state.
     Scripted,
-}
-
-impl Default for EngineProfile {
-    fn default() -> Self {
-        Self::Livery
-    }
 }
 
 impl fmt::Display for EngineProfile {

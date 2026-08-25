@@ -1,0 +1,379 @@
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use genet_host_api::tile::{
+    ContentSource, DocumentRef, SplitAxis, Tile, TileBranch, TileId, TileTree,
+};
+use inker::routing::{ENGINE_SCRYING_WEB, EngineRoutePolicy, EngineRouteRule, SurfaceContractMode};
+use inker::{
+    DocumentSession, EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent, SessionClick,
+    SessionEngine, SessionError, SessionRegistry, SessionScrollKey, SessionSpawnRequest,
+    SurfaceEngine, SurfaceEngineRegistry, SurfaceError, SurfaceFrame, SurfaceProducer,
+    SurfaceSettings, SurfaceSpawnRequest,
+};
+use pelt_core::{
+    PeltClock, PeltRegistries, PeltRouteSource, PeltRouteState, PeltTileRequest, PeltWorkspace,
+    WorkspaceRect,
+};
+
+#[derive(Default)]
+struct DocumentProbe {
+    spawns: Vec<(String, String)>,
+}
+
+struct FakeDocumentEngine {
+    id: &'static str,
+    probe: Arc<Mutex<DocumentProbe>>,
+    fail: bool,
+}
+
+impl SessionEngine<String> for FakeDocumentEngine {
+    fn engine_id(&self) -> &str {
+        self.id
+    }
+
+    fn spawn(
+        &self,
+        request: &SessionSpawnRequest,
+    ) -> Result<Box<dyn DocumentSession<String>>, SessionError> {
+        if self.fail {
+            return Err(SessionError::SpawnFailed("forced route failure".to_owned()));
+        }
+        self.probe
+            .lock()
+            .unwrap()
+            .spawns
+            .push((self.id.to_owned(), request.address.clone()));
+        Ok(Box::new(FakeDocument {
+            id: self.id,
+            address: request.address.clone(),
+        }))
+    }
+}
+
+struct FakeDocument {
+    id: &'static str,
+    address: String,
+}
+
+impl DocumentSession<String> for FakeDocument {
+    fn frame(&mut self, width: u32, height: u32) -> String {
+        format!("{}:{}@{width}x{height}", self.id, self.address)
+    }
+
+    fn scroll_by(&mut self, _dx: f32, _dy: f32) -> bool {
+        false
+    }
+
+    fn scroll_for_key(&mut self, _key: SessionScrollKey) -> bool {
+        false
+    }
+
+    fn click_at(&mut self, _x: f32, _y: f32) -> SessionClick {
+        SessionClick::Miss
+    }
+
+    fn links(&self) -> Vec<inker::SessionLink> {
+        Vec::new()
+    }
+
+    fn as_any_ref(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[derive(Default)]
+struct SurfaceProbe {
+    spawns: Vec<String>,
+    resizes: Vec<(u32, u32)>,
+    offsets: Vec<(i32, i32)>,
+    frames: usize,
+}
+
+struct FakeSurfaceEngine(Arc<Mutex<SurfaceProbe>>);
+
+impl SurfaceEngine for FakeSurfaceEngine {
+    fn engine_id(&self) -> &str {
+        "fake.surface"
+    }
+
+    fn spawn(
+        &self,
+        request: &SurfaceSpawnRequest,
+    ) -> Result<Box<dyn SurfaceProducer>, SurfaceError> {
+        self.0.lock().unwrap().spawns.push(request.url.clone());
+        Ok(Box::new(FakeSurface(self.0.clone())))
+    }
+}
+
+struct FakeSurface(Arc<Mutex<SurfaceProbe>>);
+
+impl SurfaceProducer for FakeSurface {
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), SurfaceError> {
+        self.0.lock().unwrap().resizes.push((width, height));
+        Ok(())
+    }
+
+    fn set_offset(&mut self, x: i32, y: i32) -> Result<(), SurfaceError> {
+        self.0.lock().unwrap().offsets.push((x, y));
+        Ok(())
+    }
+
+    fn acquire_frame(&mut self) -> Result<Option<SurfaceFrame>, SurfaceError> {
+        self.0.lock().unwrap().frames += 1;
+        Ok(None)
+    }
+
+    fn send_mouse_input(&mut self, _event: MouseEvent) -> Result<(), SurfaceError> {
+        Ok(())
+    }
+
+    fn send_pointer_input(&mut self, _event: inker::PointerEvent) -> Result<(), SurfaceError> {
+        Ok(())
+    }
+
+    fn send_keyboard_input(&mut self, _event: KeyboardEvent) -> Result<(), SurfaceError> {
+        Ok(())
+    }
+
+    fn move_focus(&mut self, _reason: FocusReason) -> Result<(), SurfaceError> {
+        Ok(())
+    }
+
+    fn poll_cursor_shape(&mut self) -> Option<inker::CursorShape> {
+        None
+    }
+
+    fn apply_settings(&mut self, _settings: &SurfaceSettings) -> Result<(), SurfaceError> {
+        Ok(())
+    }
+
+    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
+        Ok(Vec::new())
+    }
+}
+
+struct TestClock;
+
+impl PeltClock for TestClock {
+    fn now_ms(&self) -> f64 {
+        0.0
+    }
+}
+
+fn tile(id: u64) -> Tile {
+    Tile {
+        id: TileId(id),
+        title: format!("tile-{id}"),
+        content: ContentSource::Document(DocumentRef(format!("tile-{id}.html"))),
+        accent: None,
+    }
+}
+
+#[test]
+fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() {
+    let documents = Arc::new(Mutex::new(DocumentProbe::default()));
+    let surfaces = Arc::new(Mutex::new(SurfaceProbe::default()));
+    let mut sessions = SessionRegistry::new();
+    sessions.register(Box::new(FakeDocumentEngine {
+        id: "fake.static",
+        probe: documents.clone(),
+        fail: false,
+    }));
+    sessions.register(Box::new(FakeDocumentEngine {
+        id: "fake.scripted",
+        probe: documents.clone(),
+        fail: false,
+    }));
+    sessions.register(Box::new(FakeDocumentEngine {
+        id: "fake.fail",
+        probe: documents.clone(),
+        fail: true,
+    }));
+    let mut surface_engines = SurfaceEngineRegistry::new();
+    surface_engines.register(Box::new(FakeSurfaceEngine(surfaces.clone())));
+    let policy = EngineRoutePolicy {
+        rules: vec![
+            EngineRouteRule::new(
+                ["overlay"],
+                "fake.surface",
+                SurfaceContractMode::NativeOverlay,
+            ),
+            EngineRouteRule::new(["embed"], "fake.surface", SurfaceContractMode::EmbeddedHost),
+            EngineRouteRule::new(
+                ["fake"],
+                "fake.static",
+                SurfaceContractMode::CompositedTexture,
+            ),
+        ],
+        fallback: EngineRouteRule::new(
+            std::iter::empty::<&str>(),
+            "fake.static",
+            SurfaceContractMode::CompositedTexture,
+        ),
+        per_host_overrides: HashMap::new(),
+    };
+    let registries = PeltRegistries::new(
+        sessions,
+        surface_engines,
+        policy,
+        "pelt-test",
+        "fake.static",
+        EngineProfileBinding {
+            user_data_dir: "pelt-test-profile".to_owned(),
+        },
+    );
+    let tree = TileTree::split(
+        SplitAxis::Row,
+        (1..=6)
+            .map(|id| TileBranch::new(1.0 / 6.0, TileTree::single(tile(id))))
+            .collect(),
+    );
+    let mut workspace = PeltWorkspace::try_routed(
+        tree,
+        registries,
+        |tile| {
+            let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                unreachable!()
+            };
+            let address = match tile.id.0 {
+                5 => "overlay://tile-5",
+                6 => "embed://tile-6",
+                _ => address,
+            };
+            let request = PeltTileRequest::new(address, (800, 600));
+            Ok(match tile.id.0 {
+                1 => request.with_engine_override("fake.static"),
+                2 => request.with_engine_override("fake.scripted"),
+                3 => request.with_engine_override("fake.surface"),
+                4 => request.with_engine_override(ENGINE_SCRYING_WEB),
+                5 => request,
+                6 => request,
+                _ => unreachable!(),
+            })
+        },
+        || Box::new(TestClock),
+    )
+    .unwrap();
+
+    let tile1 = workspace.controller(TileId(1)).unwrap();
+    let tile2 = workspace.controller(TileId(2)).unwrap();
+    let tile4 = workspace.controller(TileId(4)).unwrap();
+    assert!(tile1.shares_registries_with(tile2));
+    assert!(tile1.shares_registries_with(tile4));
+    assert_eq!(
+        workspace.route(TileId(2)).unwrap().source,
+        PeltRouteSource::UserOverride
+    );
+    assert_eq!(
+        workspace.route(TileId(3)).unwrap().state,
+        PeltRouteState::Surface
+    );
+    assert!(matches!(
+        workspace.route(TileId(4)).unwrap().state,
+        PeltRouteState::Fallback { ref active_engine, .. } if active_engine == "fake.static"
+    ));
+    assert_eq!(
+        workspace.route(TileId(5)).unwrap().source,
+        PeltRouteSource::Automatic
+    );
+    assert!(matches!(
+        workspace.route(TileId(5)).unwrap().state,
+        PeltRouteState::Fallback { ref reason, .. } if reason.contains("NativeOverlay")
+    ));
+    assert!(matches!(
+        workspace.route(TileId(6)).unwrap().state,
+        PeltRouteState::Fallback { ref reason, .. } if reason.contains("EmbeddedHost")
+    ));
+    assert!(
+        workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .find(|tile| tile.id == TileId(4))
+            .unwrap()
+            .title
+            .contains("scrying.web → fake.static")
+    );
+    assert!(
+        workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .find(|tile| tile.id == TileId(3))
+            .unwrap()
+            .title
+            .contains("fake.surface")
+    );
+
+    workspace.set_content_rects([
+        (TileId(1), WorkspaceRect::new(0.0, 10.0, 100.0, 90.0)),
+        (TileId(2), WorkspaceRect::new(100.0, 10.0, 100.0, 90.0)),
+        (TileId(3), WorkspaceRect::new(200.0, 10.0, 120.0, 90.0)),
+        (TileId(4), WorkspaceRect::new(320.0, 10.0, 100.0, 90.0)),
+        (TileId(5), WorkspaceRect::new(420.0, 10.0, 100.0, 90.0)),
+        (TileId(6), WorkspaceRect::new(520.0, 10.0, 100.0, 90.0)),
+    ]);
+    workspace.set_surface_scale_factor(2.0);
+    let frame = workspace.frame();
+    assert_eq!(frame.tiles.len(), 5);
+    assert_eq!(frame.surfaces.len(), 1);
+    assert!(frame.surfaces[0].frame.as_ref().unwrap().is_none());
+    let surface_probe = surfaces.lock().unwrap();
+    assert_eq!(surface_probe.spawns, ["tile-3.html"]);
+    assert_eq!(surface_probe.resizes, [(240, 180)]);
+    assert_eq!(surface_probe.offsets, [(400, 20)]);
+    assert_eq!(surface_probe.frames, 1);
+    drop(surface_probe);
+    assert!(workspace.pump());
+
+    assert!(
+        workspace
+            .command_for(
+                TileId(1),
+                inker::SessionNavigationCommand::Address("next.html".to_owned()),
+            )
+            .navigated
+    );
+    assert!(
+        workspace
+            .set_route_override(TileId(1), Some("fake.scripted".to_owned()))
+            .unwrap()
+    );
+    assert_eq!(
+        workspace.route(TileId(1)).unwrap().active_engine(),
+        "fake.scripted"
+    );
+    assert_eq!(
+        workspace.controller(TileId(1)).unwrap().address(),
+        "next.html"
+    );
+    assert!(
+        workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .find(|tile| tile.id == TileId(1))
+            .unwrap()
+            .title
+            .contains("fake.scripted")
+    );
+    assert!(
+        workspace
+            .set_route_override(TileId(2), Some("fake.fail".to_owned()))
+            .is_err()
+    );
+    assert_eq!(
+        workspace.route(TileId(2)).unwrap().active_engine(),
+        "fake.scripted"
+    );
+    assert_eq!(
+        workspace.controller(TileId(2)).unwrap().engine_id(),
+        "fake.scripted"
+    );
+}

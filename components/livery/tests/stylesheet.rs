@@ -33,6 +33,40 @@ fn stylesheet_parser_recovers_rules_and_media_groups() {
 }
 
 #[test]
+fn stylesheet_retains_bounded_font_face_descriptors() {
+    let sheet = Stylesheet::parse(
+        "@font-face { font-family: test-face; src: local(ignored), url('/fonts/test.ttf') \
+         format('truetype'); font-feature-settings: 'liga' off; } \
+         .sample { font-family: test-face; font-feature-settings: 'liga' on; }",
+        Origin::Author,
+    );
+
+    assert!(sheet.diagnostics().is_empty(), "{:?}", sheet.diagnostics());
+    assert_eq!(sheet.font_faces().len(), 1);
+    let face = &sheet.font_faces()[0];
+    assert_eq!(face.family(), "test-face");
+    assert_eq!(face.sources(), [Box::<str>::from("/fonts/test.ttf")]);
+    assert_eq!(face.feature_settings().to_string(), "\"liga\" off");
+    assert!(face.is_host_loadable());
+    assert_eq!(sheet.rules().len(), 1);
+    assert!(matches!(sheet.items()[0], CssRule::FontFace(_)));
+}
+
+#[test]
+fn font_face_with_unimplemented_descriptors_is_retained_but_not_host_loadable() {
+    let sheet = Stylesheet::parse(
+        "@font-face { font-family: styled-face; src: url('/fonts/test.ttf'); \
+         font-style: italic; }",
+        Origin::Author,
+    );
+
+    assert!(sheet.diagnostics().is_empty(), "{:?}", sheet.diagnostics());
+    assert_eq!(sheet.font_faces().len(), 1);
+    assert!(!sheet.font_faces()[0].is_host_loadable());
+    assert!(matches!(sheet.items()[0], CssRule::FontFace(_)));
+}
+
+#[test]
 fn border_radius_shorthand_expands_to_corner_longhands() {
     let block = parse_declaration_block("border-radius: 2px 4px 6px 8px");
     assert!(block.errors.is_empty(), "{:?}", block.errors);

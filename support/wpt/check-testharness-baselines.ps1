@@ -108,11 +108,10 @@ foreach ($file in $liveryMathFiles) {
 
 foreach ($baseline in $baselines) {
     $expectations = Join-Path $repo $baseline.Expectations
-    $renderer = $baseline.Renderer
-    $label = if ($renderer) { "$($baseline.Subset) [$($baseline.Engine)/$renderer]" } else { "$($baseline.Subset) [$($baseline.Engine)]" }
+    $renderer = if ($baseline.Renderer) { $baseline.Renderer } else { "livery" }
+    $label = "$($baseline.Subset) [$($baseline.Engine)/$renderer]"
     Write-Output "Checking WPT testharness baseline: $label"
-    $extra = if ($renderer) { @("--renderer", $renderer) } else { @() }
-    & $runner testharness $baseline.Subset --engine $baseline.Engine @extra --expectations $expectations
+    & $runner testharness $baseline.Subset --engine $baseline.Engine --renderer $renderer --expectations $expectations
     if ($LASTEXITCODE -ne 0) {
         throw "WPT testharness baseline failed: $label"
     }

@@ -19,6 +19,9 @@ url = "https://www.w3.org/TR/css-fonts-4/"
 [sources.css_sizing_3]
 url = "https://www.w3.org/TR/css-sizing-3/"
 
+[sources.css_sizing_4]
+url = "https://www.w3.org/TR/css-sizing-4/"
+
 [sources.css_logical_properties_1]
 url = "https://www.w3.org/TR/css-logical-1/"
 
@@ -82,6 +85,15 @@ url = "https://www.w3.org/TR/css-writing-modes-4/"
 [sources.css2_2]
 url = "https://www.w3.org/TR/CSS22/visuren.html#flow-control"
 
+[sources.css_shapes_1]
+url = "https://www.w3.org/TR/css-shapes-1/#shape-outside-property"
+
+[shorthands.inset]
+longhands = ["top", "right", "bottom", "left"]
+grammar = "auto | <length-percentage>, one to four values"
+seed_values = ["px", "em", "zero"]
+source = "css_position_3"
+
 [shorthands.margin]
 longhands = ["margin-top", "margin-right", "margin-bottom", "margin-left"]
 grammar = "<length-percentage> | auto, one to four values"
@@ -95,9 +107,12 @@ seed_values = ["px", "rem", "zero"]
 source = "css_box_4"
 
 [shorthands.background]
-longhands = ["background-color"]
-grammar = "<color>"
-seed_values = ["hex", "named"]
+longhands = [
+    "background-color", "background-image", "background-position", "background-size",
+    "background-repeat", "background-attachment", "background-origin", "background-clip",
+]
+grammar = "<bg-image> || <bg-position> [ / <bg-size> ]? || <repeat-style> || <attachment> || <visual-box> || <visual-box> || <color>"
+seed_values = ["hex", "named", "url(support/a.png) top left / 100% auto no-repeat", "none"]
 source = "css_backgrounds_3"
 
 [shorthands.border]
@@ -160,7 +175,10 @@ seed_values = ["normal", "pre"]
 source = "css_text_4"
 
 [shorthands.font]
-longhands = ["font-style", "font-weight", "font-size", "line-height", "font-family"]
+longhands = [
+    "font-style", "font-variant-ligatures", "font-weight", "font-size",
+    "line-height", "font-family", "font-feature-settings",
+]
 grammar = "[ normal | italic | oblique ] || [ normal | bold | <number> ] || <font-size> [ / <line-height> ]? <font-family>"
 seed_values = ["20px/1 Ahem", "1em sans-serif"]
 source = "css_fonts_4"
@@ -286,8 +304,8 @@ name = "background-position"
 value_type = "background-position"
 inherited = false
 initial = "0% 0%"
-grammar = "[ left | center | right | <length-percentage> ] [ top | center | bottom | <length-percentage> ]?"
-seed_values = ["0% 0%", "center center", "px percentage"]
+grammar = "[ left | center | right | top | bottom | <length-percentage> ] | [ left | center | right | <length-percentage> ] [ top | center | bottom | <length-percentage> ] | [ center | [ left | right ] <length-percentage>? ] && [ center | [ top | bottom ] <length-percentage>? ]"
+seed_values = ["0% 0%", "center center", "px percentage", "right 10px bottom 20%"]
 animation = "by-computed-value"
 source = "css_backgrounds_3"
 
@@ -296,8 +314,49 @@ name = "background-repeat"
 value_type = "background-repeat"
 inherited = false
 initial = "repeat"
-grammar = "repeat | no-repeat | repeat-x | repeat-y"
-seed_values = ["repeat", "no-repeat"]
+grammar = "repeat-x | repeat-y | [ repeat | space | round | no-repeat ]{1,2}"
+seed_values = ["repeat", "no-repeat", "space round", "repeat-x"]
+animation = "discrete"
+source = "css_backgrounds_3"
+
+[[property]]
+name = "background-size"
+value_type = "background-size"
+inherited = false
+initial = "auto"
+grammar = "[ <length-percentage [0,inf]> | auto ]{1,2} | cover | contain"
+seed_values = ["auto", "cover", "contain", "50% auto", "10px 20px"]
+animation = "by-computed-value"
+source = "css_backgrounds_3"
+
+[[property]]
+name = "background-origin"
+value_type = "background-box"
+inherited = false
+initial = "padding-box"
+grammar = "border-box | padding-box | content-box"
+seed_values = ["padding-box", "content-box"]
+animation = "discrete"
+source = "css_backgrounds_3"
+
+[[property]]
+name = "background-clip"
+value_type = "background-box"
+inherited = false
+initial = "border-box"
+grammar = "[ border-box | padding-box | content-box | text ]#"
+seed_values = ["border-box", "padding-box", "content-box", "text"]
+animation = "discrete"
+source = "css_backgrounds_3"
+partial = "single box and a conservative innermost projection of box lists; text clips suppress background paint until glyph masks land"
+
+[[property]]
+name = "background-attachment"
+value_type = "background-attachment"
+inherited = false
+initial = "scroll"
+grammar = "scroll | fixed | local"
+seed_values = ["scroll", "fixed"]
 animation = "discrete"
 source = "css_backgrounds_3"
 
@@ -709,6 +768,92 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "bottom"
+
+[[property]]
+name = "block-size"
+value_type = "size"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage> | min-content | max-content | fit-content(<length-percentage>)"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "size"
+logical_axis = "block"
+
+[[property]]
+name = "margin-block-start"
+value_type = "margin"
+inherited = false
+initial = "0"
+grammar = "<length-percentage> | auto"
+seed_values = ["0", "px", "em", "auto"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "margin"
+logical_side = "block-start"
+
+[[property]]
+name = "margin-block-end"
+value_type = "margin"
+inherited = false
+initial = "0"
+grammar = "<length-percentage> | auto"
+seed_values = ["0", "px", "em", "auto"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "margin"
+logical_side = "block-end"
+
+[[property]]
+name = "inset-block-start"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "block-start"
+
+[[property]]
+name = "inset-block-end"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "block-end"
+
+[[property]]
+name = "inset-inline-start"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "inline-start"
+
+[[property]]
+name = "inset-inline-end"
+value_type = "inset"
+inherited = false
+initial = "auto"
+grammar = "auto | <length-percentage>"
+seed_values = ["auto", "px", "percentage"]
+animation = "by-computed-value"
+source = "css_logical_properties_1"
+logical_group = "inset"
+logical_side = "inline-end"
 
 [[property]]
 name = "color"
@@ -741,6 +886,17 @@ seed_values = ["none", "paint", "layout paint", "content", "strict"]
 animation = "none"
 source = "css_conditional_5"
 partial = "computed containment flags and the HTML body canvas-background propagation rule; containment effects on layout, sizing, style scoping, and paint clipping remain deferred"
+
+[[property]]
+name = "contain-intrinsic-size"
+value_type = "contain-intrinsic-size"
+inherited = false
+initial = "none"
+grammar = "none | <length>{1,2}"
+seed_values = ["none", "300px", "300px 150px"]
+animation = "discrete"
+source = "css_sizing_4"
+partial = "bounded physical substitute-size pair for positioned size containment; auto and general normal-flow substitution remain deferred"
 
 [[property]]
 name = "container-name"
@@ -849,6 +1005,26 @@ inherited = true
 initial = "depends-on-user-agent"
 grammar = "[ <font-family-name> | <generic-font-family> ]#"
 seed_values = ["system-ui"]
+animation = "discrete"
+source = "css_fonts_4"
+
+[[property]]
+name = "font-feature-settings"
+value_type = "font-feature-settings"
+inherited = true
+initial = "normal"
+grammar = "normal | <feature-tag-value>#"
+seed_values = ["normal", "'liga' on", "'dlig' off"]
+animation = "discrete"
+source = "css_fonts_4"
+
+[[property]]
+name = "font-variant-ligatures"
+value_type = "font-variant-ligatures"
+inherited = true
+initial = "normal"
+grammar = "normal | none | [ common-ligatures | no-common-ligatures ] || [ discretionary-ligatures | no-discretionary-ligatures ] || [ historical-ligatures | no-historical-ligatures ] || [ contextual | no-contextual ]"
+seed_values = ["normal", "common-ligatures", "no-common-ligatures", "discretionary-ligatures"]
 animation = "discrete"
 source = "css_fonts_4"
 
@@ -1045,6 +1221,8 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "left"
 
 [[property]]
 name = "justify-content"
@@ -1327,6 +1505,8 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "right"
 
 [[property]]
 name = "rotate"
@@ -1347,6 +1527,17 @@ grammar = "none | <number-percentage>"
 seed_values = ["none", "number", "percentage", "calc()"]
 animation = "by-computed-value"
 source = "css_transforms_1"
+
+[[property]]
+name = "shape-outside"
+value_type = "shape-outside"
+inherited = false
+initial = "none"
+grammar = "none | margin-box | border-box | padding-box | content-box"
+seed_values = ["none", "margin-box", "border-box", "padding-box", "content-box"]
+animation = "discrete"
+source = "css_shapes_1"
+partial = "horizontal box-valued reference boxes alter inline float exclusions and honor linear circular border-radius; nonlinear corner-radius math uses the default margin-box float area, while basic shapes, images, elliptical corner pairs, multi-contour curved line retry, shape-margin, shape-image-threshold, and vertical float-area transforms remain deferred"
 
 [[property]]
 name = "text-decoration-line"
@@ -1373,7 +1564,7 @@ name = "text-align"
 value_type = "text-align"
 inherited = true
 initial = "start"
-grammar = "start | end | left | right | center | justify"
+grammar = "start | end | left | right | center | justify | justify-all"
 seed_values = ["start", "left", "center"]
 animation = "discrete"
 source = "css_box_alignment_3"
@@ -1409,6 +1600,112 @@ animation = "discrete"
 source = "css_text_4"
 
 [[property]]
+name = "text-align-last"
+value_type = "text-align-last"
+inherited = true
+initial = "auto"
+grammar = "auto | start | end | left | right | center | justify"
+seed_values = ["auto", "center", "justify"]
+animation = "discrete"
+source = "css_text_4"
+
+[[property]]
+name = "text-justify"
+value_type = "text-justify"
+inherited = true
+initial = "auto"
+grammar = "auto | none | inter-word | inter-character | distribute"
+seed_values = ["auto", "none"]
+animation = "discrete"
+partial = "auto, none, and inter-word; inter-character and distribute justify between words"
+source = "css_text_4"
+
+[[property]]
+name = "hanging-punctuation"
+value_type = "hanging-punctuation"
+inherited = true
+initial = "none"
+grammar = "none | [ first || [ force-end | allow-end ] || last ]"
+seed_values = ["none", "first", "allow-end", "last"]
+animation = "discrete"
+partial = "first is applied; end-edge hanging is parsed and retained for the next line-edge slice"
+source = "css_text_4"
+
+[[property]]
+name = "text-indent"
+value_type = "text-indent"
+inherited = true
+initial = "0"
+grammar = "[ <length-percentage> ] && hanging? && each-line?"
+seed_values = ["0", "px", "percentage", "hanging"]
+animation = "by-computed-value"
+source = "css_text_4"
+
+[[property]]
+name = "text-transform"
+value_type = "text-transform"
+inherited = true
+initial = "none"
+grammar = "none | [ capitalize | uppercase | lowercase ] || full-width || full-size-kana | math-auto"
+seed_values = ["none", "uppercase", "capitalize"]
+animation = "discrete"
+partial = "case mapping is the Unicode default; language tailoring and math-auto are not built"
+source = "css_text_4"
+
+[[property]]
+name = "overflow-wrap"
+value_type = "overflow-wrap"
+inherited = true
+initial = "normal"
+grammar = "normal | break-word | anywhere"
+seed_values = ["normal", "break-word", "anywhere"]
+animation = "discrete"
+aliases = ["word-wrap"]
+source = "css_text_4"
+
+[[property]]
+name = "word-break"
+value_type = "word-break"
+inherited = true
+initial = "normal"
+grammar = "normal | keep-all | break-all | break-word"
+seed_values = ["normal", "break-all", "keep-all"]
+animation = "discrete"
+source = "css_text_4"
+
+[[property]]
+name = "line-break"
+value_type = "line-break"
+inherited = true
+initial = "auto"
+grammar = "auto | loose | normal | strict | anywhere"
+seed_values = ["auto", "anywhere"]
+animation = "discrete"
+partial = "anywhere; loose, normal, and strict use the shaper's default UAX14 segmentation"
+source = "css_text_4"
+
+[[property]]
+name = "hyphens"
+value_type = "hyphens"
+inherited = true
+initial = "manual"
+grammar = "none | manual | auto"
+seed_values = ["manual", "none"]
+animation = "discrete"
+partial = "none suppresses soft-hyphen opportunities; manual and auto break at soft hyphens without a hyphenate character"
+source = "css_text_4"
+
+[[property]]
+name = "tab-size"
+value_type = "tab-size"
+inherited = true
+initial = "8"
+grammar = "<number [0,∞]> | <length [0,∞]>"
+seed_values = ["8", "4", "px"]
+animation = "by-computed-value"
+source = "css_text_4"
+
+[[property]]
 name = "top"
 value_type = "inset"
 inherited = false
@@ -1417,6 +1714,8 @@ grammar = "auto | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_position_3"
+logical_group = "inset"
+physical_side = "top"
 
 [[property]]
 name = "transform"
@@ -1559,32 +1858,11 @@ source = "css_position_3"
 
 # group: background
 [[unimplemented]]
-name = "background-attachment"
-group = "background"
-inherited = false
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-attachment"
-
-[[unimplemented]]
 name = "background-blend-mode"
 group = "background"
 inherited = false
 animation = "discrete"
 spec = "https://drafts.fxtf.org/compositing/#background-blend-mode"
-
-[[unimplemented]]
-name = "background-clip"
-group = "background"
-inherited = false
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-clip"
-
-[[unimplemented]]
-name = "background-origin"
-group = "background"
-inherited = false
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-origin"
 
 [[unimplemented]]
 name = "background-position-x"
@@ -1599,13 +1877,6 @@ group = "background"
 inherited = false
 animation = "by-computed-value"
 spec = "https://drafts.csswg.org/css-backgrounds-4/#propdef-background-position-y"
-
-[[unimplemented]]
-name = "background-size"
-group = "background"
-inherited = false
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-backgrounds/#the-background-size"
 
 # group: border
 [[unimplemented]]
@@ -1932,13 +2203,6 @@ animation = "none"
 spec = "Internal (not web-exposed)"
 
 [[unimplemented]]
-name = "font-feature-settings"
-group = "font"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-fonts/#propdef-font-feature-settings"
-
-[[unimplemented]]
 name = "font-kerning"
 group = "font"
 inherited = true
@@ -1986,13 +2250,6 @@ group = "font"
 inherited = true
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-east-asian"
-
-[[unimplemented]]
-name = "font-variant-ligatures"
-group = "font"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-ligatures"
 
 [[unimplemented]]
 name = "font-variant-numeric"
@@ -2043,49 +2300,6 @@ animation = "discrete"
 spec = "https://drafts.csswg.org/css-text/#MISSING"
 
 [[unimplemented]]
-name = "line-break"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text-3/#line-break-property"
-
-[[unimplemented]]
-name = "overflow-wrap"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-aliases = ["word-wrap"]
-spec = "https://drafts.csswg.org/css-text/#propdef-overflow-wrap"
-
-[[unimplemented]]
-name = "tab-size"
-group = "inherited_text"
-inherited = true
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-text-3/#tab-size-property"
-
-[[unimplemented]]
-name = "text-align-last"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-align-last"
-
-[[unimplemented]]
-name = "text-indent"
-group = "inherited_text"
-inherited = true
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-indent"
-
-[[unimplemented]]
-name = "text-justify"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-justify"
-
-[[unimplemented]]
 name = "text-rendering"
 group = "inherited_text"
 inherited = true
@@ -2098,20 +2312,6 @@ group = "inherited_text"
 inherited = true
 animation = "by-computed-value"
 spec = "https://drafts.csswg.org/css-text-decor-3/#text-shadow-property"
-
-[[unimplemented]]
-name = "text-transform"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-text-transform"
-
-[[unimplemented]]
-name = "word-break"
-group = "inherited_text"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-text/#propdef-word-break"
 
 # group: inherited_ui
 [[unimplemented]]
@@ -2161,22 +2361,6 @@ animation = "discrete"
 spec = "https://drafts.csswg.org/css-content/#propdef-quotes"
 
 # group: margin
-[[unimplemented]]
-name = "margin-block-end"
-group = "margin"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-block-end"
-
-[[unimplemented]]
-name = "margin-block-start"
-group = "margin"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-margin-block-start"
-
 [[unimplemented]]
 name = "overflow-clip-margin"
 group = "margin"
@@ -2248,14 +2432,6 @@ spec = "https://drafts.csswg.org/css-logical-props/#propdef-padding-inline-start
 
 # group: position
 [[unimplemented]]
-name = "block-size"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-block-size"
-
-[[unimplemented]]
 name = "grid-auto-columns"
 group = "position"
 inherited = false
@@ -2275,38 +2451,6 @@ group = "position"
 inherited = false
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-grid/#propdef-grid-template-areas"
-
-[[unimplemented]]
-name = "inset-block-end"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-block-end"
-
-[[unimplemented]]
-name = "inset-block-start"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-block-start"
-
-[[unimplemented]]
-name = "inset-inline-end"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-inline-end"
-
-[[unimplemented]]
-name = "inset-inline-start"
-group = "position"
-inherited = false
-animation = "by-computed-value"
-logical = true
-spec = "https://drafts.csswg.org/css-logical-props/#propdef-inset-inline-start"
 
 [[unimplemented]]
 name = "max-block-size"
@@ -2700,11 +2844,6 @@ spec = "https://drafts.csswg.org/css-flexbox/#flex-flow-property"
 name = "font-variant"
 sub_properties = ["font-variant-caps", "font-variant-east-asian", "font-variant-ligatures", "font-variant-numeric", "font-variant-position"]
 spec = "https://drafts.csswg.org/css-fonts-3/#propdef-font-variant"
-
-[[unimplemented_shorthand]]
-name = "inset"
-sub_properties = ["top", "right", "bottom", "left"]
-spec = "https://drafts.csswg.org/css-logical/#propdef-inset"
 
 [[unimplemented_shorthand]]
 name = "inset-block"

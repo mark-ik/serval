@@ -2,20 +2,18 @@
 
 **Date:** 2026-08-08
 
-**Status:** Closed 2026-08-21 on PH0 through PH5, by ruling. PH0 through
-PH5 were implemented through 2026-08-14 and the checked-in census assigns
-every currently applicable HTML rendering surface. Table and table-part
-dimensions use HTML's legacy dimension algorithms, `table[align]` maps to
-float or harvested logical margins, and applicable legacy alignment owners
-carry HTML's separate `align descendants` policy to Buckram's generic
-used-margin solver. The 40-file `table-anonymous-objects-059` through `-098`
-family is no longer a condition of this plan: its 10/40 of 2026-08-12 was
-lost to a K5 positioning regression at the 2026-08-15 integration merge
-(0/40 on `main` from 2026-08-16 until the 2026-08-21 repair restored 10/40),
-and the remaining 30 are not hint work. They are recorded as conformance debt
-in the fullweb cutover register and in the master plan's K5 regression
-ledger; see the correction under PH1 below. Buckram owns the generic
-used-value calculation but not the HTML mappings or owner selection.
+**Status:** PH0 through PH5 were implemented locally through 2026-08-14.
+The checked-in census assigns every currently applicable HTML rendering
+surface, but the plan remains open at its stated K4 evidence wall.
+Table and table-part dimensions use HTML's
+legacy dimension algorithms, `table[align]` maps to float or harvested logical
+margins, and applicable legacy alignment owners carry HTML's separate
+`align descendants` policy to Buckram's generic used-margin solver. The PH1
+acceptance wall is not closed: the named 40-file WPT family measures **10/40**,
+exposing remaining CSS anonymous-table construction and sizing defects rather
+than another hint mapping (measured 2026-08-12). This remains an F0/F3
+conformance sidequest; Buckram owns the generic used-value calculation but not
+the HTML mappings or owner selection.
 
 **Parent:** [Livery fullweb cutover and the servo-* retirement](2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md)
 
@@ -182,28 +180,6 @@ family is measured at 10/40. That result is not credited as PH1 completion:
 the HTML comparison side now receives zero spacing and padding through computed
 CSS, while the remaining mismatches are on CSS anonymous-table construction
 and sizing and return to K4.
-
-**Correction, 2026-08-21.** The 30 could not return to K4: K4 had been
-accepted at `610df0981a8` on 2026-08-10, two days before that sentence was
-written. The 10/40 was also never reproducible from a committed tree. No
-ledger for the 08-12 or 08-14 run exists under `testing/genet/wpt-ledger`;
-the 2026-08-16 full-`css` ledgers, built after the 08-14 checkpoint
-`ec27260f08b` and on both sides of the taffy 0.13 move, record 0/40, and a
-fresh runner on `main` at `c3b57758a69` measured 0/40 again on 2026-08-21.
-Renders of 059 and 060 showed the two tables with identical geometry but the
-`position: absolute; top: 0` overlay laid out in normal flow below its
-sibling: the K5 integration merge (`27c2c87828f`, 2026-08-15) had made every
-block ancestor of a table fall back to Taffy, which was told that absolute
-boxes are `position: relative`. Repairing that fallback restored exactly
-10/40 (`testing/genet/wpt-ledger/2026-08-21_anonymous_table_remeasure/`,
-`post-fix-1-taffy-absolute`). The remaining 30 split by render: 059, 060,
-063, and 064 differ only at anti-aliasing level (`maxδ 64`, no red); 093
-through 098 fail because the *reference's* HTML `<col style="background">`
-does not paint while the test's CSS `table-column` backgrounds do; the other
-20 show anonymous first-row cells stacked in column 0 or duplicated rows,
-which is the anonymous-table construction defect this paragraph originally
-named. That residual is K4-model debt with no open gate, and is recorded in
-the fullweb cutover register rather than here.
 
 ### PH2. Dimensions and alignment
 
@@ -470,12 +446,10 @@ joint Clippy run still stops on the same 146 pre-existing Livery selector and
 color-space diagnostics; the shared-target cache alone had incorrectly made
 that command appear clean.
 
-PH5 is complete as an implementation and assignment gate. On 2026-08-14 the
-plan was held open because the done condition also required the 40-file
-anonymous-table family to pass for the attributed K4 reason; the rebuilt PH5
-runner had remeasured it at 10 passed and 30 failed that day. The 2026-08-21
-ruling removed that condition: the family's blocker was a K5 regression, not
-a hint, and its residual is not PH work (see the PH1 correction).
+PH5 is complete as an implementation and assignment gate. The overall plan is
+still unfinished because the done condition also requires the 40-file
+anonymous-table family to pass for the attributed K4 reason. The rebuilt PH5
+runner remeasured it unchanged at 10 passed and 30 failed on 2026-08-14.
 
 ## Verification ladder
 
@@ -513,8 +487,6 @@ movement and Stylo differential movement separately.
 The plan closes when every HTML presentational hint applicable to Genet's
 implemented static/fullweb elements is either represented at the correct
 cascade origin or assigned to a named property, element, quirks, or
-browsing-context gap, direct layout-side attribute overrides are deleted where
-computed CSS now owns them, and mutation/CSSOM receipts prove one authority.
-Met 2026-08-21. The table-anonymous family was a condition until that date;
-it was removed by ruling because its blocker and its residual are both
-outside this plan, and both are recorded where they are owned.
+browsing-context gap. The table-anonymous family passes for the attributed
+reason, direct layout-side attribute overrides are deleted where computed CSS
+now owns them, and mutation/CSSOM receipts prove one authority.

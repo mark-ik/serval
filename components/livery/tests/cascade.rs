@@ -3,8 +3,9 @@ use livery::cascade::{
     CascadeLayer, MatchedDeclaration, Origin, Specificity, cascade, parse_declaration_block,
 };
 use livery::values::{
-    Color, FontFamily, FontSize, FontStyle, FontWeight, Length, LengthPercentage, LineHeight,
-    Margin, Overflow, Size, TransitionProperty, VerticalAlign,
+    Color, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
+    Length, LengthPercentage, LineHeight, Margin, Overflow, Size, TextWrapMode, TransitionProperty,
+    VerticalAlign, WhiteSpaceCollapse,
 };
 
 fn matched(
@@ -27,6 +28,28 @@ fn matched(
 }
 
 #[test]
+fn font_feature_longhands_parse_as_independent_inherited_values() {
+    let block = parse_declaration_block(
+        "font-variant-ligatures: no-common-ligatures discretionary-ligatures; \
+         font-feature-settings: 'liga' on, 'dlig' off",
+    );
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 2);
+    assert!(matches!(
+        &block.declarations[0].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontVariantLigatures(
+            FontVariantLigatures { .. }
+        ))
+    ));
+    assert!(matches!(
+        &block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontFeatureSettings(
+            FontFeatureSettings::Settings(settings)
+        )) if settings.len() == 2
+    ));
+}
+
+#[test]
 fn declaration_parser_expands_the_lane_shorthands_and_recovers() {
     let block = parse_declaration_block(
         "margin: 1px 2px 3px 4px !important;\
@@ -44,6 +67,23 @@ fn declaration_parser_expands_the_lane_shorthands_and_recovers() {
         block.declarations[3].property.metadata().name,
         "margin-left"
     );
+}
+
+#[test]
+fn white_space_nowrap_expands_to_collapsing_unwrapped_text() {
+    let block = parse_declaration_block("white-space: nowrap");
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 2);
+    assert!(matches!(
+        block.declarations[0].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::WhiteSpaceCollapse(
+            WhiteSpaceCollapse::Collapse
+        ))
+    ));
+    assert!(matches!(
+        block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::TextWrapMode(TextWrapMode::Nowrap))
+    ));
 }
 
 #[test]
@@ -106,7 +146,7 @@ fn border_side_list_shorthands_expand_to_four_longhands() {
 fn background_color_shorthand_accepts_the_bounded_color_form() {
     let block = parse_declaration_block("background: black");
     assert!(block.errors.is_empty(), "{:?}", block.errors);
-    assert_eq!(block.declarations.len(), 1);
+    assert_eq!(block.declarations.len(), 8);
     assert_eq!(
         block.declarations[0].property.metadata().name,
         "background-color"
@@ -117,6 +157,54 @@ fn background_color_shorthand_accepts_the_bounded_color_form() {
         panic!("background-color did not parse as a color");
     };
     assert_eq!(color.to_srgb8(), Some((0, 0, 0, 255)));
+}
+
+#[test]
+fn background_shorthand_resets_and_expands_the_retained_image_layer() {
+    let block = parse_declaration_block(
+        "background: url(support/tile.png) right 10px bottom 20% / 40px auto space no-repeat content-box border-box fixed #123456",
+    );
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    assert_eq!(block.declarations.len(), 8);
+    let names = block
+        .declarations
+        .iter()
+        .map(|declaration| declaration.property.metadata().name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            "background-color",
+            "background-image",
+            "background-position",
+            "background-size",
+            "background-repeat",
+            "background-attachment",
+            "background-origin",
+            "background-clip",
+        ]
+    );
+    let values = block
+        .declarations
+        .iter()
+        .map(|declaration| match &declaration.value {
+            livery::cascade::DeclaredValue::Value(value) => value.to_css_string(),
+            _ => panic!("background shorthand emitted a non-value declaration"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        vec![
+            "rgb(18, 52, 86)",
+            "url(support/tile.png)",
+            "calc(100% - 10px) 80%",
+            "40px auto",
+            "space no-repeat",
+            "fixed",
+            "content-box",
+            "border-box",
+        ]
+    );
 }
 
 #[test]
@@ -158,29 +246,63 @@ fn overflow_shorthand_expands_one_or_two_axis_values() {
 fn font_shorthand_expands_size_line_height_and_family() {
     let block = parse_declaration_block("font: italic bold 20px/1.5 Ahem");
     assert!(block.errors.is_empty(), "{:?}", block.errors);
-    assert_eq!(block.declarations.len(), 5);
+    assert_eq!(block.declarations.len(), 7);
     assert!(matches!(
         &block.declarations[0].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontStyle(FontStyle::Italic))
     ));
     assert!(matches!(
-        &block.declarations[1].value,
+        &block.declarations[2].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontWeight(FontWeight::Bold))
     ));
     assert!(matches!(
-        &block.declarations[2].value,
+        &block.declarations[3].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontSize(FontSize::Value(_)))
     ));
     assert!(matches!(
-        &block.declarations[3].value,
+        &block.declarations[4].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::LineHeight(LineHeight::Number(value)))
             if (*value - 1.5).abs() < f32::EPSILON
     ));
     assert!(matches!(
-        &block.declarations[4].value,
+        &block.declarations[5].value,
         livery::cascade::DeclaredValue::Value(PropertyValue::FontFamily(FontFamily::Named(name)))
             if name.as_ref() == "Ahem"
     ));
+    assert!(matches!(
+        &block.declarations[1].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontVariantLigatures(
+            FontVariantLigatures { .. }
+        ))
+    ));
+    assert!(matches!(
+        &block.declarations[6].value,
+        livery::cascade::DeclaredValue::Value(PropertyValue::FontFeatureSettings(
+            FontFeatureSettings::Normal
+        ))
+    ));
+}
+
+#[test]
+fn font_family_retains_an_ordered_css_family_list() {
+    let block = parse_declaration_block("font-family: \"WOFF Test\", \"WOFF Test CFF Fallback\"");
+    assert!(block.errors.is_empty(), "{:?}", block.errors);
+    let livery::cascade::DeclaredValue::Value(value) = &block.declarations[0].value else {
+        panic!("expected a concrete font-family value");
+    };
+    assert!(matches!(
+        value,
+        PropertyValue::FontFamily(FontFamily::List(source))
+            if source.as_ref() == "\"WOFF Test\", \"WOFF Test CFF Fallback\""
+    ));
+    assert_eq!(
+        value.to_css_string(),
+        "\"WOFF Test\", \"WOFF Test CFF Fallback\""
+    );
+
+    let malformed = parse_declaration_block("font-family: primary,, fallback");
+    assert!(malformed.declarations.is_empty());
+    assert_eq!(malformed.errors.len(), 1);
 }
 
 #[test]

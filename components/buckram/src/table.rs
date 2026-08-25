@@ -282,12 +282,16 @@ impl TableGrid {
         }
 
         if let Some(wrapper) = table.wrapper {
-            table
-                .captions
-                .extend(boxes[wrapper].children().iter().copied().filter(|child| {
-                    boxes[*child].display.internal_table == Some(InternalTableRole::Caption)
-                        && boxes[*child].positioning.is_in_flow()
-                }));
+            table.captions.extend(
+                boxes[wrapper]
+                    .children()
+                    .iter()
+                    .copied()
+                    .filter(|child| {
+                        boxes[*child].display.internal_table == Some(InternalTableRole::Caption)
+                            && boxes[*child].positioning.is_in_flow()
+                    }),
+            );
         }
 
         let mut headers = Vec::new();
@@ -898,11 +902,7 @@ mod tests {
                 vec![node(
                     3,
                     InternalTableRole::Row,
-                    vec![
-                        node(4, InternalTableRole::Cell, vec![]),
-                        detached_cell,
-                        detached_row,
-                    ],
+                    vec![node(4, InternalTableRole::Cell, vec![]), detached_cell, detached_row],
                 )],
             ),
             detached_group,
@@ -914,10 +914,7 @@ mod tests {
         assert_eq!(grid.rows.len(), 1);
         assert_eq!(grid.columns.len(), 1);
         assert_eq!(
-            grid.cells
-                .iter()
-                .map(|cell| cell.source)
-                .collect::<Vec<_>>(),
+            grid.cells.iter().map(|cell| cell.source).collect::<Vec<_>>(),
             vec![tree.principal_box(4).expect("in-flow cell")]
         );
         assert_eq!(
@@ -938,7 +935,11 @@ mod tests {
             InternalTableRole::RowGroup,
             vec![node(3, InternalTableRole::Row, vec![detached_cell])],
         )]);
-        let grid = TableGrid::from_box_tree(&tree, grid(&tree), &TableGridInputs::default());
+        let grid = TableGrid::from_box_tree(
+            &tree,
+            grid(&tree),
+            &TableGridInputs::default(),
+        );
 
         assert_eq!(grid.rows.len(), 1);
         assert!(grid.cells.is_empty());

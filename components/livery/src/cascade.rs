@@ -7,9 +7,11 @@ use crate::custom::{
 };
 use crate::media::{Device, SystemPalette};
 use crate::values::{
-    AnimationDelay, AnimationName, BackgroundImage, BorderStyle, BorderWidth, BoxShadow,
-    ColorScheme, ComputedColor, Duration, FontFamily, FontSize, FontStyle, FontWeight, LineHeight,
-    Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty, UsedColorContext,
+    AnimationDelay, AnimationName, BackgroundAttachment, BackgroundBox, BackgroundImage,
+    BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderStyle, BorderWidth, BoxShadow,
+    ColorScheme, ComputedColor, Duration, FontFamily, FontFeatureSettings, FontSize, FontStyle,
+    FontVariantLigatures, FontWeight, Inset, LineHeight, Margin, Padding, Radius, SystemColor,
+    TimingFunction, TransitionProperty, UsedColorContext,
 };
 use crate::{ComputedValues, PropertyId, PropertyValue, ShorthandId};
 
@@ -300,6 +302,13 @@ fn expand_box_shorthand(
             .ok()
             .and_then(|values| box_sides(&values))
             .map(|values| values.map(|value| DeclaredValue::Value(PropertyValue::Margin(value)))),
+        ShorthandId::Inset => split_components(value)
+            .into_iter()
+            .map(str::parse::<Inset>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+            .and_then(|values| box_sides(&values))
+            .map(|values| values.map(|value| DeclaredValue::Value(PropertyValue::Inset(value)))),
         ShorthandId::Padding => split_components(value)
             .into_iter()
             .map(str::parse::<Padding>)
@@ -708,8 +717,202 @@ fn expand_border(
     }
 }
 
+struct BackgroundLayer {
+    color: ComputedColor,
+    image: BackgroundImage,
+    position: BackgroundPosition,
+    size: BackgroundSize,
+    repeat: BackgroundRepeat,
+    attachment: BackgroundAttachment,
+    origin: BackgroundBox,
+    clip: BackgroundBox,
+}
+
+fn background_components(value: &str) -> Vec<&str> {
+    let mut components = Vec::new();
+    let mut start = None;
+    let mut depth = 0_u32;
+    let mut quote = None;
+    for (index, ch) in value.char_indices() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                start.get_or_insert(index);
+                quote = Some(ch);
+            },
+            '(' => {
+                start.get_or_insert(index);
+                depth += 1;
+            },
+            ')' => depth = depth.saturating_sub(1),
+            '/' if depth == 0 => {
+                if let Some(component_start) = start.take() {
+                    components.push(&value[component_start..index]);
+                }
+                components.push("/");
+            },
+            _ if ch.is_ascii_whitespace() && depth == 0 => {
+                if let Some(component_start) = start.take() {
+                    components.push(&value[component_start..index]);
+                }
+            },
+            _ => {
+                start.get_or_insert(index);
+            },
+        }
+    }
+    if let Some(component_start) = start {
+        components.push(&value[component_start..]);
+    }
+    components
+}
+
+fn is_background_image_component(component: &str) -> bool {
+    let lower = component.to_ascii_lowercase();
+    lower == "none" || lower.starts_with("url(") || lower.contains("-gradient(")
+}
+
+fn is_background_position_component(component: &str) -> bool {
+    matches!(
+        component.to_ascii_lowercase().as_str(),
+        "left" | "right" | "top" | "bottom" | "center"
+    ) || component.parse::<crate::values::LengthPercentage>().is_ok()
+}
+
+fn is_background_size_component(component: &str) -> bool {
+    component
+        .parse::<crate::values::BackgroundSizeComponent>()
+        .is_ok()
+}
+
+fn parse_background_layer(value: &str) -> Option<BackgroundLayer> {
+    if split_top_level(value, ',').len() != 1 {
+        return None;
+    }
+    let components = background_components(value.trim());
+    if components.is_empty() {
+        return None;
+    }
+    let mut color = None;
+    let mut image = None;
+    let mut position = None;
+    let mut size = None;
+    let mut repeat = None;
+    let mut attachment = None;
+    let mut boxes = Vec::new();
+    let mut index = 0;
+    while index < components.len() {
+        let component = components[index];
+        if component == "/" {
+            return None;
+        }
+        if image.is_none() && is_background_image_component(component) {
+            image = Some(component.parse::<BackgroundImage>().ok()?);
+            index += 1;
+            continue;
+        }
+        if repeat.is_none() && component.parse::<BackgroundRepeat>().is_ok() {
+            let mut end = index + 1;
+            if end < components.len()
+                && component.parse::<crate::values::RepeatStyle>().is_ok()
+                && components[end]
+                    .parse::<crate::values::RepeatStyle>()
+                    .is_ok()
+            {
+                end += 1;
+            }
+            repeat = Some(components[index..end].join(" ").parse().ok()?);
+            index = end;
+            continue;
+        }
+        if attachment.is_none()
+            && let Ok(parsed) = component.parse::<BackgroundAttachment>()
+        {
+            attachment = Some(parsed);
+            index += 1;
+            continue;
+        }
+        if boxes.len() < 2
+            && let Ok(parsed) = component.parse::<BackgroundBox>()
+        {
+            boxes.push(parsed);
+            index += 1;
+            continue;
+        }
+        if position.is_none() && is_background_position_component(component) {
+            let mut end = index + 1;
+            while end < components.len()
+                && end - index < 4
+                && is_background_position_component(components[end])
+            {
+                end += 1;
+            }
+            let parsed = loop {
+                if let Ok(parsed) = components[index..end]
+                    .join(" ")
+                    .parse::<BackgroundPosition>()
+                {
+                    break Some((parsed, end));
+                }
+                if end - index == 1 {
+                    break None;
+                }
+                end -= 1;
+            };
+            let (parsed, run_end) = parsed?;
+            position = Some(parsed);
+            index = run_end;
+            if index < components.len() && components[index] == "/" {
+                let start = index + 1;
+                let mut end = start;
+                while end < components.len()
+                    && end - start < 2
+                    && is_background_size_component(components[end])
+                {
+                    end += 1;
+                }
+                let candidate = if end == start {
+                    components.get(start).copied()?.to_owned()
+                } else {
+                    components[start..end].join(" ")
+                };
+                size = Some(candidate.parse::<BackgroundSize>().ok()?);
+                index = if end == start { start + 1 } else { end };
+            }
+            continue;
+        }
+        if color.is_none()
+            && let Ok(parsed) = component.parse::<ComputedColor>()
+        {
+            color = Some(parsed);
+            index += 1;
+            continue;
+        }
+        return None;
+    }
+    Some(BackgroundLayer {
+        color: color.unwrap_or(ComputedColor::TRANSPARENT),
+        image: image.unwrap_or(BackgroundImage::None),
+        position: position.unwrap_or(BackgroundPosition::ZERO),
+        size: size.unwrap_or(BackgroundSize::AUTO),
+        repeat: repeat.unwrap_or(BackgroundRepeat::REPEAT),
+        attachment: attachment.unwrap_or(BackgroundAttachment::Scroll),
+        origin: boxes.first().copied().unwrap_or(BackgroundBox::PaddingBox),
+        clip: boxes
+            .get(1)
+            .or(boxes.first())
+            .copied()
+            .unwrap_or(BackgroundBox::BorderBox),
+    })
+}
+
 fn expand_background(block: &mut DeclarationBlock, value: &str, important: bool) {
-    let Ok(color) = value.trim().parse::<ComputedColor>() else {
+    let Some(layer) = parse_background_layer(value) else {
         block.errors.push(DeclarationError {
             name: "background".to_owned(),
             value: value.to_owned(),
@@ -717,16 +920,52 @@ fn expand_background(block: &mut DeclarationBlock, value: &str, important: bool)
         });
         return;
     };
-    block.declarations.push(Declaration {
-        property: PropertyId::BackgroundColor,
-        value: DeclaredValue::Value(PropertyValue::Color(color)),
-        important,
-    });
+    for (property, value) in [
+        (
+            PropertyId::BackgroundColor,
+            PropertyValue::Color(layer.color),
+        ),
+        (
+            PropertyId::BackgroundImage,
+            PropertyValue::BackgroundImage(layer.image),
+        ),
+        (
+            PropertyId::BackgroundPosition,
+            PropertyValue::BackgroundPosition(layer.position),
+        ),
+        (
+            PropertyId::BackgroundSize,
+            PropertyValue::BackgroundSize(layer.size),
+        ),
+        (
+            PropertyId::BackgroundRepeat,
+            PropertyValue::BackgroundRepeat(layer.repeat),
+        ),
+        (
+            PropertyId::BackgroundAttachment,
+            PropertyValue::BackgroundAttachment(layer.attachment),
+        ),
+        (
+            PropertyId::BackgroundOrigin,
+            PropertyValue::BackgroundBox(layer.origin),
+        ),
+        (
+            PropertyId::BackgroundClip,
+            PropertyValue::BackgroundBox(layer.clip),
+        ),
+    ] {
+        block.declarations.push(Declaration {
+            property,
+            value: DeclaredValue::Value(value),
+            important,
+        });
+    }
 }
 
 fn expand_white_space(block: &mut DeclarationBlock, value: &str, important: bool) {
     let (collapse, wrap) = match value.trim().to_ascii_lowercase().as_str() {
         "normal" => ("collapse", "wrap"),
+        "nowrap" => ("collapse", "nowrap"),
         "pre" => ("preserve", "nowrap"),
         "pre-wrap" => ("preserve", "wrap"),
         "pre-line" => ("preserve-breaks", "wrap"),
@@ -822,6 +1061,10 @@ fn expand_font(block: &mut DeclarationBlock, value: &str, important: bool) {
     };
     for (property, value) in [
         (PropertyId::FontStyle, PropertyValue::FontStyle(style)),
+        (
+            PropertyId::FontVariantLigatures,
+            PropertyValue::FontVariantLigatures(FontVariantLigatures::NORMAL),
+        ),
         (PropertyId::FontWeight, PropertyValue::FontWeight(weight)),
         (PropertyId::FontSize, PropertyValue::FontSize(size)),
         (
@@ -829,6 +1072,10 @@ fn expand_font(block: &mut DeclarationBlock, value: &str, important: bool) {
             PropertyValue::LineHeight(line_height),
         ),
         (PropertyId::FontFamily, PropertyValue::FontFamily(family)),
+        (
+            PropertyId::FontFeatureSettings,
+            PropertyValue::FontFeatureSettings(FontFeatureSettings::Normal),
+        ),
     ] {
         block.declarations.push(Declaration {
             property,

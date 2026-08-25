@@ -6,8 +6,9 @@ edition.workspace = true
 rust-version = "1.92"
 license = "MPL-2.0"
 repository = "https://github.com/merely-made/genet"
-# Same posture as the winit event source: it rides genet-layout, which inherits
-# genet's publish = false. Consumers take it from genet.git by branch.
+# Same posture as the winit event source: it rides Genet's retained
+# Livery/Buckram host integration, which remains unpublished. Consumers take it
+# from genet.git by branch.
 publish = false
 
 [dependencies]

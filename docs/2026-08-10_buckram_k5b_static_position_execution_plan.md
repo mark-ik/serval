@@ -13,6 +13,14 @@ rules remain open.
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5b. **Prerequisite:** [K5a containing-block graph](2026-08-10_buckram_k5a_containing_blocks_execution_plan.md).
 
+**Current-main reconciliation, 2026-08-24:** the grid static-rectangle sublane
+is complete on accepted main. Both `grid_abspos` receipts, the K5a-selected
+content-box versus grid-area path, and its Buckram and Livery provider tests
+are recorded in the
+[current-main reconciliation](2026-08-24_k5b_grid_static_rectangle_reconciliation.md).
+This closes row 4 of the lane program, not the broader K5b source-context
+matrix or private-provider replacement.
+
 ## Question
 
 An out-of-flow box can be placed against a containing block different from its
@@ -112,28 +120,6 @@ The retained inline formatter emits an inline-origin positioned child against
 its owning line fragment, and K4h table structural fragments emit wrapper and
 part records from their own logical rectangles. The remaining K5b work is the
 unadmitted source-context matrix, not a second grid-area implementation.
-
-**Fallback correction, 2026-08-21.** Until this date the scratch formatter
-received every box as Taffy `position: relative`, so a block parent that fell
-back to Taffy laid its absolute children out in flow: the box consumed
-normal-flow space, its siblings moved, and its recorded static position was
-that in-flow location. Any table under a block triggers that fallback through
-the whole ancestor chain. The fallback now presents its own absolute and fixed
-children to Taffy as `Position::Absolute` only while it runs
-(`with_out_of_flow_children_excluded`), so Taffy excludes them and its
-`static_location` is the hypothetical in-flow position K5b needs; the
-children's backend role is restored afterwards, and the Buckram owned block
-path, the flex/grid provider, and the inline route are unchanged. A permanent
-role change was measured and rejected: it reached each child's own leaf
-layout and regressed aspect-ratio and ruby absolute-positioning files.
-Receipts are in `positioned_block_children.rs` and the master plan's K5
-regression ledger. The ledger also names the remaining block-source gap: an
-absolute box with an `auto` block inset that precedes an in-flow table takes
-its static position after the table. It further records that both
-`tests/grid_abspos.rs` receipts cited above are red on `main` at
-`c3b57758a69`, with or without the fallback correction; the direct-grid
-paragraphs above describe the intended behavior, not the measured one, until
-they pass again.
 
 K5b does not calculate final absolute or fixed geometry. K5d now consumes the
 wrapper, caption, row-group, row, and cell records through the shared

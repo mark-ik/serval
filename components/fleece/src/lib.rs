@@ -26,7 +26,76 @@
 
 #![deny(unsafe_code)]
 
+use std::collections::{HashMap, HashSet};
+
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
+use unicode_segmentation::UnicodeSegmentation;
+
+mod metadata;
+mod structured;
+mod table;
+mod text_fragment;
+
+pub use metadata::{DocumentLink, Metadata, OpenGraphGroup, extract_metadata};
+pub use structured::{
+    StructuredData, StructuredDataSource, StructuredValue, extract_structured_data,
+};
+pub use table::{
+    Table, TableCell, TableHeader, TableModelError, TableRow, TableRowGroup, TableRowGroupKind,
+    TableScope, extract_table,
+};
+pub use text_fragment::{TextFragment, text_fragment};
+
+/// The textual representation against which Fleece selectors are measured.
+///
+/// `FleeceDomTextV1` walks the supplied DOM in logical DOM order, excludes
+/// `head`, `script`, `style`, `template`, and `noscript` subtrees, removes markup,
+/// and collapses every Unicode whitespace run to one ASCII space. Each contributing
+/// DOM text node is separated from the next by one ASCII space; element boundaries
+/// add no other characters. Text is decoded DOM text, never source bytes or
+/// visual/layout order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextNormalization {
+    #[default]
+    FleeceDomTextV1,
+}
+
+/// A half-open Unicode-code-point range in [`TextNormalization::FleeceDomTextV1`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextPositionSelector {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Quote evidence for one source segment. Prefix and suffix are adjacent context,
+/// not a refinement relationship with the position selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextQuoteSelector {
+    pub exact: String,
+    pub prefix: String,
+    pub suffix: String,
+}
+
+/// Sibling position and quote descriptions of one source segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAnchor {
+    pub position: TextPositionSelector,
+    pub quote: TextQuoteSelector,
+}
+
+/// Options for the selector-bearing extraction entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractionOptions {
+    /// Maximum Unicode code points retained on either side of a quote. The
+    /// resulting context is extended to whole grapheme clusters.
+    pub quote_context: usize,
+}
+
+impl Default for ExtractionOptions {
+    fn default() -> Self {
+        Self { quote_context: 32 }
+    }
+}
 
 /// One extracted hyperlink — the rect-free counterpart to a laid-out `LinkHit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,72 +120,6 @@ pub struct Heading {
     pub text: String,
 }
 
-/// The document's self-description: the metadata a page declares about itself. All
-/// values are **unresolved** (a `canonical` href is the raw attribute). `Default` is
-/// "nothing declared".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Metadata {
-    /// `<meta name="description">` content — the page's own summary.
-    pub description: Option<String>,
-    /// `<link rel="canonical" href>` — the canonical URL the page claims (raw).
-    pub canonical: Option<String>,
-    /// OpenGraph `<meta property="og:*">` pairs with the `og:` prefix stripped, in
-    /// document order: `("title", …)`, `("description", …)`, `("image", …)`,
-    /// `("site_name", …)`, `("type", …)`, `("url", …)`, and the long tail.
-    pub open_graph: Vec<(String, String)>,
-}
-
-/// One JSON value harvested from page-carried structured data.
-///
-/// Fleece keeps this small value model locally so JSON-LD does not add a
-/// parser dependency to the render-free extraction cone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StructuredValue {
-    Null,
-    Bool(bool),
-    Number(String),
-    String(String),
-    Array(Vec<StructuredValue>),
-    Object(Vec<(String, StructuredValue)>),
-}
-
-impl StructuredValue {
-    /// Return an object member by name.
-    pub fn get(&self, name: &str) -> Option<&StructuredValue> {
-        let Self::Object(entries) = self else {
-            return None;
-        };
-        entries
-            .iter()
-            .find_map(|(key, value)| (key == name).then_some(value))
-    }
-
-    /// Return this value as a string.
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Self::String(value) => Some(value),
-            _ => None,
-        }
-    }
-}
-
-/// A typed block harvested from JSON-LD or HTML microdata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StructuredData {
-    /// The declared schema type (`Recipe`, `Event`, `Person`, `Article`, ...).
-    pub kind: String,
-    /// The harvested value, retaining fields fleece does not interpret.
-    pub value: StructuredValue,
-    /// The page syntax that supplied the value.
-    pub source: StructuredDataSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StructuredDataSource {
-    JsonLd,
-    Microdata,
-}
-
 /// A rich inline run in a reader article. URLs remain raw attributes; callers
 /// resolve them against the source document address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,18 +130,14 @@ pub enum Inline {
     Code(String),
 }
 
-/// One table cell. `header` records whether the source used `<th>`.
+/// A reader block together with optional evidence in the canonical Fleece text.
+///
+/// A missing anchor means the reader block is synthetic or joins discontinuous
+/// source text. Consumers must not treat it as an unquoted source selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableCell {
-    pub header: bool,
-    pub runs: Vec<Inline>,
-}
-
-/// One table row. A row is a header row when every non-empty cell is a header.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableRow {
-    pub header: bool,
-    pub cells: Vec<TableCell>,
+pub struct AnchoredBlock {
+    pub anchor: Option<TextAnchor>,
+    pub block: Block,
 }
 
 /// Structured reader blocks, independent of layout and paint.
@@ -153,17 +152,17 @@ pub enum Block {
     },
     List {
         ordered: bool,
-        items: Vec<Vec<Block>>,
+        items: Vec<Vec<AnchoredBlock>>,
     },
     Quote {
-        blocks: Vec<Block>,
+        blocks: Vec<AnchoredBlock>,
     },
     Code {
         language: Option<String>,
         text: String,
     },
     Table {
-        rows: Vec<TableRow>,
+        table: Table,
     },
     Figure {
         src: String,
@@ -184,6 +183,8 @@ pub enum RootSelector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractionLineage {
     pub fleece_version: String,
+    /// The textual representation used by every selector in this article.
+    pub normalization: TextNormalization,
     pub root_selector: RootSelector,
     pub block_count: usize,
 }
@@ -198,7 +199,7 @@ pub struct Article {
     pub site: Option<String>,
     pub canonical: Option<String>,
     pub lead_image: Option<String>,
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<AnchoredBlock>,
     pub lineage: ExtractionLineage,
 }
 
@@ -240,11 +241,25 @@ pub struct PageExtract {
 /// Extract the structured content of `dom` without rendering it. The one-call entry
 /// for the eidetic sink; the field functions below are the à-la-carte pieces.
 pub fn extract<D: LayoutDom>(dom: &D) -> PageExtract {
-    extract_document(dom).page
+    extract_with_options(dom, ExtractionOptions::default())
+}
+
+/// Extract the flat index shape with caller-selected quote context.
+pub fn extract_with_options<D: LayoutDom>(dom: &D, options: ExtractionOptions) -> PageExtract {
+    extract_document_with_options(dom, options).page
 }
 
 /// Extract the flat index shape and structured reader shape together.
 pub fn extract_document<D: LayoutDom>(dom: &D) -> ExtractedDocument {
+    extract_document_with_options(dom, ExtractionOptions::default())
+}
+
+/// Extract both shapes with caller-selected quote context.
+pub fn extract_document_with_options<D: LayoutDom>(
+    dom: &D,
+    options: ExtractionOptions,
+) -> ExtractedDocument {
+    let text_index = FleeceTextIndex::build(dom);
     let selected = select_content(dom);
     let main_text = selected.as_ref().and_then(|selected| {
         let text = chrome_free_text(dom, &selected.roots);
@@ -254,18 +269,27 @@ pub fn extract_document<D: LayoutDom>(dom: &D) -> ExtractedDocument {
         title: extract_title(dom),
         metadata: extract_metadata(dom),
         headings: extract_headings(dom),
-        text: extract_text(dom),
+        text: text_index.text.clone(),
         main_text,
         links: extract_links(dom),
         structured_data: extract_structured_data(dom),
     };
-    let article = selected.and_then(|selected| extract_article_with_page(dom, &page, selected));
+    let article = selected
+        .and_then(|selected| extract_article_with_page(dom, &page, selected, &text_index, options));
     ExtractedDocument { page, article }
 }
 
 /// Extract only the structured reader shape.
 pub fn extract_article<D: LayoutDom>(dom: &D) -> Option<Article> {
-    extract_document(dom).article
+    extract_article_with_options(dom, ExtractionOptions::default())
+}
+
+/// Extract only the structured reader shape with caller-selected quote context.
+pub fn extract_article_with_options<D: LayoutDom>(
+    dom: &D,
+    options: ExtractionOptions,
+) -> Option<Article> {
+    extract_document_with_options(dom, options).article
 }
 
 /// Whether the document carries a script element.
@@ -350,62 +374,13 @@ fn heading_level(name: &str) -> Option<u8> {
     }
 }
 
-/// The page's declared [`Metadata`]: `<meta name="description">`, the
-/// `<link rel="canonical">` href, and OpenGraph `<meta property="og:*">` pairs.
-/// Walks the whole tree (not just `<head>`) since pages place these loosely.
-pub fn extract_metadata<D: LayoutDom>(dom: &D) -> Metadata {
-    let mut md = Metadata::default();
-    walk_metadata(dom, dom.document(), &mut md);
-    md
-}
-
-fn walk_metadata<D: LayoutDom>(dom: &D, id: D::NodeId, md: &mut Metadata) {
-    match local_name(dom, id) {
-        Some("meta") => {
-            // OpenGraph (`property="og:*"`) takes precedence over `name`; a `<meta>`
-            // carries one or the other. Only the *first* description wins.
-            if let Some(prop) = attr(dom, id, "property") {
-                if let Some(key) = prop.strip_prefix("og:") {
-                    if let Some(content) = attr(dom, id, "content") {
-                        md.open_graph.push((key.to_string(), content));
-                    }
-                }
-            } else if attr(dom, id, "name").as_deref() == Some("description") {
-                if md.description.is_none() {
-                    md.description = attr(dom, id, "content").filter(|c| !c.is_empty());
-                }
-            }
-        },
-        Some("link") => {
-            if md.canonical.is_none() && rel_has(dom, id, "canonical") {
-                md.canonical = attr(dom, id, "href").filter(|h| !h.is_empty());
-            }
-        },
-        _ => {},
-    }
-    for child in dom.dom_children(id) {
-        walk_metadata(dom, child, md);
-    }
-}
-
-/// Whether `id`'s `rel` attribute contains the (space-separated, case-insensitive)
-/// token `token` — `rel` is a token list (`"stylesheet preload"`, `"canonical"`).
-fn rel_has<D: LayoutDom>(dom: &D, id: D::NodeId, token: &str) -> bool {
-    attr(dom, id, "rel").is_some_and(|rel| {
-        rel.split_whitespace()
-            .any(|t| t.eq_ignore_ascii_case(token))
-    })
-}
-
 /// The page's full **visible text**, whitespace-collapsed: every text node except
 /// those under non-rendered elements (`<script>` / `<style>` / `<template>` /
 /// `<noscript>` / the document `<head>`). The indexing/corpus text — deliberately
 /// *not* a main-content heuristic (which would drop nav/footer chrome); that
 /// readability pass is a later slice that can build on this.
 pub fn extract_text<D: LayoutDom>(dom: &D) -> String {
-    let mut out = String::new();
-    collect_visible_text(dom, dom.document(), &mut out);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    FleeceTextIndex::build(dom).text
 }
 
 /// Names of subtrees that carry no visible page text and are skipped wholesale.
@@ -413,16 +388,195 @@ fn is_non_rendered(name: &str) -> bool {
     matches!(name, "script" | "style" | "template" | "noscript" | "head")
 }
 
-fn collect_visible_text<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut String) {
-    if local_name(dom, id).is_some_and(is_non_rendered) {
-        return; // skip the whole subtree
+#[derive(Debug, Clone, Copy)]
+struct TextRange {
+    start: u64,
+    end: u64,
+}
+
+/// The one normalized page stream and the source-node ranges that contributed to
+/// it. Composite extraction builds this once so page text and reader anchors share
+/// one coordinate system.
+struct FleeceTextIndex<Id> {
+    text: String,
+    ranges: HashMap<Id, TextRange>,
+    grapheme_boundaries: HashSet<u64>,
+    pending_space: bool,
+}
+
+impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
+    fn append_text(&mut self, source: &str) -> TextRange {
+        let mut start = self.text.chars().count() as u64;
+        let mut wrote_content = false;
+        for character in source.chars() {
+            if character.is_whitespace() {
+                self.pending_space = true;
+            } else {
+                if self.pending_space && !self.text.is_empty() && !self.text.ends_with(' ') {
+                    self.text.push(' ');
+                    if !wrote_content {
+                        start = self.text.chars().count() as u64;
+                    }
+                }
+                self.text.push(character);
+                wrote_content = true;
+                self.pending_space = false;
+            }
+        }
+        TextRange {
+            start,
+            end: self.text.chars().count() as u64,
+        }
     }
-    if let Some(t) = dom.text(id) {
-        out.push_str(t);
-        out.push(' '); // separator so adjacent inline runs don't fuse
+
+    fn range_for<D: LayoutDom<NodeId = Id>>(&self, dom: &D, id: Id) -> Option<TextRange> {
+        if local_name(dom, id).is_some_and(is_non_rendered) {
+            return None;
+        }
+        if let Some(range) = self
+            .ranges
+            .get(&id)
+            .copied()
+            .filter(|range| range.start < range.end)
+        {
+            return Some(range);
+        }
+        let mut result: Option<TextRange> = None;
+        for child in dom.dom_children(id) {
+            let Some(child_range) = self.range_for(dom, child) else {
+                continue;
+            };
+            result = Some(match result {
+                Some(range) => TextRange {
+                    start: range.start.min(child_range.start),
+                    end: range.end.max(child_range.end),
+                },
+                None => child_range,
+            });
+        }
+        result
     }
-    for child in dom.dom_children(id) {
-        collect_visible_text(dom, child, out);
+}
+
+impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
+    fn build<D: LayoutDom<NodeId = Id>>(dom: &D) -> Self {
+        let mut index = Self {
+            text: String::new(),
+            ranges: HashMap::new(),
+            grapheme_boundaries: HashSet::new(),
+            pending_space: false,
+        };
+        index.collect(dom, dom.document());
+        let mut boundary = 0_u64;
+        index.grapheme_boundaries.insert(boundary);
+        for grapheme in UnicodeSegmentation::graphemes(index.text.as_str(), true) {
+            boundary += grapheme.chars().count() as u64;
+            index.grapheme_boundaries.insert(boundary);
+        }
+        index
+    }
+
+    fn collect<D: LayoutDom<NodeId = Id>>(&mut self, dom: &D, id: Id) {
+        if local_name(dom, id).is_some_and(is_non_rendered) {
+            return;
+        }
+        if let Some(text) = dom.text(id) {
+            let range = self.append_text(text);
+            self.ranges.insert(id, range);
+            // Preserve Fleece 0.1's explicit separator between adjacent DOM text
+            // nodes, even where HTML source omitted whitespace between elements.
+            self.pending_space = true;
+        }
+        for child in dom.dom_children(id) {
+            self.collect(dom, child);
+        }
+    }
+}
+
+fn has_reader_excluded_descendant<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
+    local_name(dom, id).is_some_and(is_chrome_or_non_rendered)
+        || dom
+            .dom_children(id)
+            .any(|child| has_reader_excluded_descendant(dom, child))
+}
+
+fn text_slice(text: &str, start: u64, end: u64) -> String {
+    text.chars()
+        .skip(start as usize)
+        .take((end - start) as usize)
+        .collect()
+}
+
+fn prefix_context(text: &str, end: u64, limit: usize) -> String {
+    let before = text_slice(text, 0, end);
+    let mut remaining = limit;
+    let mut pieces = Vec::new();
+    for grapheme in UnicodeSegmentation::graphemes(before.as_str(), true).rev() {
+        let width = grapheme.chars().count();
+        if width > remaining {
+            break;
+        }
+        pieces.push(grapheme);
+        remaining -= width;
+    }
+    pieces.reverse();
+    pieces.concat()
+}
+
+fn suffix_context(text: &str, start: u64, limit: usize) -> String {
+    let after = text_slice(text, start, text.chars().count() as u64);
+    let mut remaining = limit;
+    let mut result = String::new();
+    for grapheme in UnicodeSegmentation::graphemes(after.as_str(), true) {
+        let width = grapheme.chars().count();
+        if width > remaining {
+            break;
+        }
+        result.push_str(grapheme);
+        remaining -= width;
+    }
+    result
+}
+
+fn anchor_for_node<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) -> Option<TextAnchor> {
+    if has_reader_excluded_descendant(dom, id) {
+        return None;
+    }
+    let range = text_index.range_for(dom, id)?;
+    if !text_index.grapheme_boundaries.contains(&range.start)
+        || !text_index.grapheme_boundaries.contains(&range.end)
+    {
+        return None;
+    }
+    let exact = text_slice(&text_index.text, range.start, range.end);
+    (!exact.is_empty()).then(|| TextAnchor {
+        position: TextPositionSelector {
+            start: range.start,
+            end: range.end,
+        },
+        quote: TextQuoteSelector {
+            prefix: prefix_context(&text_index.text, range.start, options.quote_context),
+            exact,
+            suffix: suffix_context(&text_index.text, range.end, options.quote_context),
+        },
+    })
+}
+
+fn anchored_block<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    block: Block,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) -> AnchoredBlock {
+    AnchoredBlock {
+        anchor: anchor_for_node(dom, id, text_index, options),
+        block,
     }
 }
 
@@ -679,10 +833,12 @@ fn extract_article_with_page<D: LayoutDom>(
     dom: &D,
     page: &PageExtract,
     selected: SelectedContent<D::NodeId>,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
 ) -> Option<Article> {
     let mut blocks = Vec::new();
     for root in &selected.roots {
-        collect_blocks(dom, *root, &mut blocks, true);
+        collect_blocks(dom, *root, &mut blocks, true, text_index, options);
     }
     if blocks.is_empty() {
         return None;
@@ -716,6 +872,7 @@ fn extract_article_with_page<D: LayoutDom>(
         blocks,
         lineage: ExtractionLineage {
             fleece_version: env!("CARGO_PKG_VERSION").to_string(),
+            normalization: TextNormalization::FleeceDomTextV1,
             root_selector: selected.selector,
             block_count,
         },
@@ -815,15 +972,22 @@ fn first_attr<D: LayoutDom>(dom: &D, id: D::NodeId, tag: &str, attribute: &str) 
         .find_map(|child| first_attr(dom, child, tag, attribute))
 }
 
-fn count_block_tree(block: &Block) -> usize {
-    1 + match block {
+fn count_block_tree(block: &AnchoredBlock) -> usize {
+    1 + match &block.block {
         Block::List { items, .. } => items.iter().flatten().map(count_block_tree).sum::<usize>(),
         Block::Quote { blocks } => blocks.iter().map(count_block_tree).sum(),
         _ => 0,
     }
 }
 
-fn collect_blocks<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Block>, include_self: bool) {
+fn collect_blocks<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    out: &mut Vec<AnchoredBlock>,
+    include_self: bool,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) {
     let name = local_name(dom, id);
     if name.is_some_and(is_chrome_or_non_rendered) {
         return;
@@ -834,36 +998,64 @@ fn collect_blocks<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Block>, in
                 out,
                 |runs| Block::Heading { level, runs },
                 inline_runs(dom, id),
+                dom,
+                id,
+                text_index,
+                options,
             );
             return;
         }
         match name {
             Some("p") => {
-                push_inline_block(out, |runs| Block::Paragraph { runs }, inline_runs(dom, id));
+                push_inline_block(
+                    out,
+                    |runs| Block::Paragraph { runs },
+                    inline_runs(dom, id),
+                    dom,
+                    id,
+                    text_index,
+                    options,
+                );
                 return;
             },
             Some("ul" | "ol") => {
                 let ordered = name == Some("ol");
-                let items = list_items(dom, id);
+                let items = list_items(dom, id, text_index, options);
                 if !items.is_empty() {
-                    out.push(Block::List { ordered, items });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::List { ordered, items },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
             },
             Some("blockquote") => {
                 let mut blocks = Vec::new();
                 for child in dom.dom_children(id) {
-                    collect_blocks(dom, child, &mut blocks, true);
+                    collect_blocks(dom, child, &mut blocks, true, text_index, options);
                 }
                 if blocks.is_empty() {
                     push_inline_block(
                         &mut blocks,
                         |runs| Block::Paragraph { runs },
                         inline_runs(dom, id),
+                        dom,
+                        id,
+                        text_index,
+                        options,
                     );
                 }
                 if !blocks.is_empty() {
-                    out.push(Block::Quote { blocks });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::Quote { blocks },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
             },
@@ -871,65 +1063,118 @@ fn collect_blocks<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<Block>, in
                 let language = code_language(dom, id);
                 let text = text_of(dom, id);
                 if !text.is_empty() {
-                    out.push(Block::Code { language, text });
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::Code { language, text },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
             },
             Some("table") => {
-                let rows = table_rows(dom, id);
-                if !rows.is_empty() {
-                    out.push(Block::Table { rows });
+                let table = extract_table(dom, id);
+                if !table.rows.is_empty() {
+                    out.push(anchored_block(
+                        dom,
+                        id,
+                        Block::Table { table },
+                        text_index,
+                        options,
+                    ));
                 }
                 return;
             },
             Some("figure") => {
                 if let Some(figure) = figure_block(dom, id) {
-                    out.push(figure);
+                    let anchor_id = find_first(dom, id, "figcaption").unwrap_or(id);
+                    let anchor = matches!(
+                        &figure,
+                        Block::Figure {
+                            caption: Some(_),
+                            ..
+                        }
+                    )
+                    .then(|| anchor_for_node(dom, anchor_id, text_index, options))
+                    .flatten();
+                    out.push(AnchoredBlock {
+                        anchor,
+                        block: figure,
+                    });
                 }
                 return;
             },
             Some("img") => {
                 if let Some(src) = attr(dom, id, "src").filter(|src| !src.is_empty()) {
-                    out.push(Block::Figure {
-                        src,
-                        alt: attr(dom, id, "alt").unwrap_or_default(),
-                        caption: None,
+                    out.push(AnchoredBlock {
+                        anchor: None,
+                        block: Block::Figure {
+                            src,
+                            alt: attr(dom, id, "alt").unwrap_or_default(),
+                            caption: None,
+                        },
                     });
                 }
                 return;
             },
             Some("hr") => {
-                out.push(Block::Rule);
+                out.push(AnchoredBlock {
+                    anchor: None,
+                    block: Block::Rule,
+                });
                 return;
             },
             _ => {},
         }
     }
     for child in dom.dom_children(id) {
-        collect_blocks(dom, child, out, true);
+        collect_blocks(dom, child, out, true, text_index, options);
     }
 }
 
-fn push_inline_block(
-    out: &mut Vec<Block>,
+fn push_inline_block<D: LayoutDom>(
+    out: &mut Vec<AnchoredBlock>,
     make: impl FnOnce(Vec<Inline>) -> Block,
     runs: Vec<Inline>,
+    dom: &D,
+    id: D::NodeId,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
 ) {
     if !inline_plain_text(&runs).trim().is_empty() {
-        out.push(make(runs));
+        out.push(anchored_block(dom, id, make(runs), text_index, options));
     }
 }
 
-fn list_items<D: LayoutDom>(dom: &D, list: D::NodeId) -> Vec<Vec<Block>> {
+fn list_items<D: LayoutDom>(
+    dom: &D,
+    list: D::NodeId,
+    text_index: &FleeceTextIndex<D::NodeId>,
+    options: ExtractionOptions,
+) -> Vec<Vec<AnchoredBlock>> {
     dom.dom_children(list)
         .filter(|child| local_name(dom, *child) == Some("li"))
         .filter_map(|item| {
             let mut blocks = Vec::new();
             let shallow = inline_runs_shallow(dom, item);
-            push_inline_block(&mut blocks, |runs| Block::Paragraph { runs }, shallow);
+            if !inline_plain_text(&shallow).trim().is_empty() {
+                let has_structural_child = dom
+                    .dom_children(item)
+                    .any(|child| local_name(dom, child).is_some_and(is_structural_block));
+                blocks.push(AnchoredBlock {
+                    // The shallow paragraph skips structural children. Once one
+                    // exists, the contributing inline ranges are not represented
+                    // by the full `li` range and may be discontinuous around it.
+                    anchor: (!has_structural_child)
+                        .then(|| anchor_for_node(dom, item, text_index, options))
+                        .flatten(),
+                    block: Block::Paragraph { runs: shallow },
+                });
+            }
             for child in dom.dom_children(item) {
                 if local_name(dom, child).is_some_and(is_structural_block) {
-                    collect_blocks(dom, child, &mut blocks, true);
+                    collect_blocks(dom, child, &mut blocks, true, text_index, options);
                 }
             }
             (!blocks.is_empty()).then_some(blocks)
@@ -1035,7 +1280,11 @@ fn collapse_inline_text(text: &str) -> String {
     let trailing = text.chars().next_back().is_some_and(char::is_whitespace);
     let core = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if core.is_empty() {
-        return leading.then_some(" ".to_string()).unwrap_or_default();
+        return if leading {
+            " ".to_string()
+        } else {
+            String::new()
+        };
     }
     format!(
         "{}{}{}",
@@ -1087,32 +1336,6 @@ fn code_language<D: LayoutDom>(dom: &D, pre: D::NodeId) -> Option<String> {
     })
 }
 
-fn table_rows<D: LayoutDom>(dom: &D, table: D::NodeId) -> Vec<TableRow> {
-    fn walk<D: LayoutDom>(dom: &D, id: D::NodeId, rows: &mut Vec<TableRow>) {
-        if local_name(dom, id) == Some("tr") {
-            let cells = dom
-                .dom_children(id)
-                .filter(|cell| matches!(local_name(dom, *cell), Some("th" | "td")))
-                .map(|cell| TableCell {
-                    header: local_name(dom, cell) == Some("th"),
-                    runs: inline_runs(dom, cell),
-                })
-                .collect::<Vec<_>>();
-            if !cells.is_empty() {
-                let header = cells.iter().all(|cell| cell.header);
-                rows.push(TableRow { header, cells });
-            }
-            return;
-        }
-        for child in dom.dom_children(id) {
-            walk(dom, child, rows);
-        }
-    }
-    let mut rows = Vec::new();
-    walk(dom, table, &mut rows);
-    rows
-}
-
 fn figure_block<D: LayoutDom>(dom: &D, figure: D::NodeId) -> Option<Block> {
     let image = find_first(dom, figure, "img")?;
     let src = attr(dom, image, "src").filter(|src| !src.is_empty())?;
@@ -1124,335 +1347,6 @@ fn figure_block<D: LayoutDom>(dom: &D, figure: D::NodeId) -> Option<Block> {
         alt: attr(dom, image, "alt").unwrap_or_default(),
         caption,
     })
-}
-
-// ---- structured-data harvest -------------------------------------------------
-
-/// Harvest JSON-LD and microdata without interpreting consumer policy.
-pub fn extract_structured_data<D: LayoutDom>(dom: &D) -> Vec<StructuredData> {
-    let mut out = Vec::new();
-    walk_structured_data(dom, dom.document(), &mut out);
-    out
-}
-
-fn walk_structured_data<D: LayoutDom>(dom: &D, id: D::NodeId, out: &mut Vec<StructuredData>) {
-    if local_name(dom, id) == Some("script")
-        && attr(dom, id, "type").is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/ld+json"))
-        })
-    {
-        let raw = raw_text_of(dom, id);
-        if let Some(value) = JsonParser::new(&raw).parse() {
-            collect_json_ld(value, out);
-        }
-    }
-    if attr(dom, id, "itemscope").is_some()
-        && let Some(data) = microdata_item(dom, id)
-    {
-        out.push(data);
-    }
-    for child in dom.dom_children(id) {
-        walk_structured_data(dom, child, out);
-    }
-}
-
-fn collect_json_ld(value: StructuredValue, out: &mut Vec<StructuredData>) {
-    match value {
-        StructuredValue::Array(values) => {
-            for value in values {
-                collect_json_ld(value, out);
-            }
-        },
-        StructuredValue::Object(entries) => {
-            let value = StructuredValue::Object(entries);
-            if let Some(kind) = json_ld_kind(&value) {
-                out.push(StructuredData {
-                    kind,
-                    value: value.clone(),
-                    source: StructuredDataSource::JsonLd,
-                });
-            }
-            if let Some(StructuredValue::Array(graph)) = value.get("@graph") {
-                for child in graph.clone() {
-                    collect_json_ld(child, out);
-                }
-            }
-        },
-        _ => {},
-    }
-}
-
-fn json_ld_kind(value: &StructuredValue) -> Option<String> {
-    match value.get("@type")? {
-        StructuredValue::String(kind) => Some(short_schema_type(kind)),
-        StructuredValue::Array(kinds) => kinds
-            .iter()
-            .find_map(StructuredValue::as_str)
-            .map(short_schema_type),
-        _ => None,
-    }
-}
-
-fn short_schema_type(value: &str) -> String {
-    value.rsplit(['/', '#']).next().unwrap_or(value).to_string()
-}
-
-fn microdata_item<D: LayoutDom>(dom: &D, root: D::NodeId) -> Option<StructuredData> {
-    let kind = attr(dom, root, "itemtype")
-        .and_then(|types| types.split_whitespace().next().map(short_schema_type))?;
-    let mut fields = Vec::new();
-    collect_microdata_fields(dom, root, root, &mut fields);
-    Some(StructuredData {
-        kind,
-        value: StructuredValue::Object(fields),
-        source: StructuredDataSource::Microdata,
-    })
-}
-
-fn collect_microdata_fields<D: LayoutDom>(
-    dom: &D,
-    root: D::NodeId,
-    id: D::NodeId,
-    fields: &mut Vec<(String, StructuredValue)>,
-) {
-    if id != root && attr(dom, id, "itemscope").is_some() {
-        if let Some(property) = attr(dom, id, "itemprop")
-            && let Some(item) = microdata_item(dom, id)
-        {
-            fields.push((property, item.value));
-        }
-        return;
-    }
-    if id != root
-        && let Some(property) = attr(dom, id, "itemprop")
-    {
-        let value = attr(dom, id, "content")
-            .or_else(|| attr(dom, id, "datetime"))
-            .or_else(|| attr(dom, id, "href"))
-            .or_else(|| attr(dom, id, "src"))
-            .unwrap_or_else(|| text_of(dom, id));
-        if !value.is_empty() {
-            for property in property.split_whitespace() {
-                fields.push((property.to_string(), StructuredValue::String(value.clone())));
-            }
-        }
-    }
-    for child in dom.dom_children(id) {
-        collect_microdata_fields(dom, root, child, fields);
-    }
-}
-
-fn raw_text_of<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
-    let mut out = String::new();
-    collect_text(dom, id, &mut out);
-    out
-}
-
-struct JsonParser<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
-
-impl<'a> JsonParser<'a> {
-    fn new(source: &'a str) -> Self {
-        Self {
-            bytes: source.as_bytes(),
-            cursor: 0,
-        }
-    }
-
-    fn parse(mut self) -> Option<StructuredValue> {
-        self.skip_ws();
-        let value = self.value()?;
-        self.skip_ws();
-        (self.cursor == self.bytes.len()).then_some(value)
-    }
-
-    fn value(&mut self) -> Option<StructuredValue> {
-        self.skip_ws();
-        match self.peek()? {
-            b'n' => self.literal(b"null", StructuredValue::Null),
-            b't' => self.literal(b"true", StructuredValue::Bool(true)),
-            b'f' => self.literal(b"false", StructuredValue::Bool(false)),
-            b'"' => self.string().map(StructuredValue::String),
-            b'[' => self.array(),
-            b'{' => self.object(),
-            b'-' | b'0'..=b'9' => self.number().map(StructuredValue::Number),
-            _ => None,
-        }
-    }
-
-    fn literal(&mut self, literal: &[u8], value: StructuredValue) -> Option<StructuredValue> {
-        let end = self.cursor.checked_add(literal.len())?;
-        (self.bytes.get(self.cursor..end)? == literal).then(|| {
-            self.cursor = end;
-            value
-        })
-    }
-
-    fn array(&mut self) -> Option<StructuredValue> {
-        self.take(b'[')?;
-        let mut values = Vec::new();
-        self.skip_ws();
-        if self.take(b']').is_some() {
-            return Some(StructuredValue::Array(values));
-        }
-        loop {
-            values.push(self.value()?);
-            self.skip_ws();
-            if self.take(b']').is_some() {
-                break;
-            }
-            self.take(b',')?;
-        }
-        Some(StructuredValue::Array(values))
-    }
-
-    fn object(&mut self) -> Option<StructuredValue> {
-        self.take(b'{')?;
-        let mut entries = Vec::new();
-        self.skip_ws();
-        if self.take(b'}').is_some() {
-            return Some(StructuredValue::Object(entries));
-        }
-        loop {
-            self.skip_ws();
-            let key = self.string()?;
-            self.skip_ws();
-            self.take(b':')?;
-            entries.push((key, self.value()?));
-            self.skip_ws();
-            if self.take(b'}').is_some() {
-                break;
-            }
-            self.take(b',')?;
-        }
-        Some(StructuredValue::Object(entries))
-    }
-
-    fn string(&mut self) -> Option<String> {
-        self.take(b'"')?;
-        let mut out = String::new();
-        while let Some(byte) = self.peek() {
-            self.cursor += 1;
-            match byte {
-                b'"' => return Some(out),
-                b'\\' => {
-                    let escaped = self.peek()?;
-                    self.cursor += 1;
-                    match escaped {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{0008}'),
-                        b'f' => out.push('\u{000c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
-                        b'u' => out.push(self.unicode_escape()?),
-                        _ => return None,
-                    }
-                },
-                0x00..=0x1f => return None,
-                ascii if ascii.is_ascii() => out.push(ascii as char),
-                _ => {
-                    self.cursor -= 1;
-                    let tail = std::str::from_utf8(&self.bytes[self.cursor..]).ok()?;
-                    let character = tail.chars().next()?;
-                    self.cursor += character.len_utf8();
-                    out.push(character);
-                },
-            }
-        }
-        None
-    }
-
-    fn unicode_escape(&mut self) -> Option<char> {
-        let first = self.hex_quad()?;
-        if (0xd800..=0xdbff).contains(&first) {
-            self.take(b'\\')?;
-            self.take(b'u')?;
-            let second = self.hex_quad()?;
-            if !(0xdc00..=0xdfff).contains(&second) {
-                return None;
-            }
-            let scalar =
-                0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00);
-            char::from_u32(scalar)
-        } else {
-            char::from_u32(u32::from(first))
-        }
-    }
-
-    fn hex_quad(&mut self) -> Option<u16> {
-        let mut value = 0u16;
-        for _ in 0..4 {
-            let digit = (self.peek()? as char).to_digit(16)? as u16;
-            self.cursor += 1;
-            value = value.checked_mul(16)?.checked_add(digit)?;
-        }
-        Some(value)
-    }
-
-    fn number(&mut self) -> Option<String> {
-        let start = self.cursor;
-        if self.peek() == Some(b'-') {
-            self.cursor += 1;
-        }
-        match self.peek()? {
-            b'0' => self.cursor += 1,
-            b'1'..=b'9' => {
-                self.cursor += 1;
-                while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-                    self.cursor += 1;
-                }
-            },
-            _ => return None,
-        }
-        if self.peek() == Some(b'.') {
-            self.cursor += 1;
-            let fraction = self.cursor;
-            while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-                self.cursor += 1;
-            }
-            if self.cursor == fraction {
-                return None;
-            }
-        }
-        if self.peek().is_some_and(|byte| matches!(byte, b'e' | b'E')) {
-            self.cursor += 1;
-            if self.peek().is_some_and(|byte| matches!(byte, b'+' | b'-')) {
-                self.cursor += 1;
-            }
-            let exponent = self.cursor;
-            while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-                self.cursor += 1;
-            }
-            if self.cursor == exponent {
-                return None;
-            }
-        }
-        std::str::from_utf8(&self.bytes[start..self.cursor])
-            .ok()
-            .map(str::to_string)
-    }
-
-    fn skip_ws(&mut self) {
-        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
-            self.cursor += 1;
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.cursor).copied()
-    }
-
-    fn take(&mut self, expected: u8) -> Option<()> {
-        (self.peek()? == expected).then(|| self.cursor += 1)
-    }
 }
 
 // ---- small DOM helpers (rect-free, allocation-light) --------------------------
@@ -1658,6 +1552,62 @@ mod tests {
     }
 
     #[test]
+    fn anchored_blocks_share_the_page_code_point_stream() {
+        let doc = StaticDocument::parse(
+            "<body><main><h1>Title 🙂</h1><p>First <em>e&#x301;</em> paragraph.</p>\
+             <blockquote><p>Nested quote.</p></blockquote></main></body>",
+        );
+        let extracted = extract_document_with_options(&doc, ExtractionOptions { quote_context: 4 });
+        assert_eq!(
+            extracted.page.text,
+            "Title 🙂 First é paragraph. Nested quote."
+        );
+        let article = extracted.article.expect("article");
+        let heading = article.blocks.first().expect("heading anchor");
+        let anchor = heading.anchor.as_ref().expect("source anchor");
+        assert_eq!(anchor.quote.exact, "Title 🙂");
+        assert_eq!(
+            text_slice(
+                &extracted.page.text,
+                anchor.position.start,
+                anchor.position.end
+            ),
+            anchor.quote.exact
+        );
+        assert_eq!(anchor.position.end - anchor.position.start, 7);
+        let quote = article.blocks.last().expect("quote block");
+        assert!(
+            quote.anchor.is_some(),
+            "contiguous parent quote is anchored"
+        );
+        let Block::Quote { blocks } = &quote.block else {
+            panic!("quote block");
+        };
+        assert!(blocks[0].anchor.is_some(), "nested child is anchored");
+    }
+
+    #[test]
+    fn quote_context_preserves_grapheme_boundaries() {
+        let doc = StaticDocument::parse(
+            "<body><main>e&#x301;<p>target text is long enough for the reader to retain as article prose.</p></main></body>",
+        );
+        let article = extract_article_with_options(&doc, ExtractionOptions { quote_context: 3 })
+            .expect("article");
+        let paragraph = article.blocks.last().expect("paragraph");
+        let anchor = paragraph.anchor.as_ref().expect("paragraph anchor");
+        assert_eq!(
+            anchor.quote.exact,
+            "target text is long enough for the reader to retain as article prose."
+        );
+        assert_eq!(anchor.quote.prefix, "é ");
+
+        let article = extract_article_with_options(&doc, ExtractionOptions { quote_context: 2 })
+            .expect("article");
+        let anchor = article.blocks.last().unwrap().anchor.as_ref().unwrap();
+        assert_eq!(anchor.quote.prefix, " ");
+    }
+
+    #[test]
     fn main_text_prefers_the_main_landmark_and_drops_chrome() {
         let doc = StaticDocument::parse(
             "<body>\
@@ -1784,9 +1734,10 @@ mod tests {
             .blocks
             .iter()
             .find_map(|block| match block {
-                Block::Paragraph { runs } if inline_plain_text(runs).contains("linked words") => {
-                    Some(runs)
-                },
+                AnchoredBlock {
+                    block: Block::Paragraph { runs },
+                    ..
+                } if inline_plain_text(runs).contains("linked words") => Some(runs),
                 _ => None,
             })
             .expect("rich paragraph");
@@ -1811,12 +1762,11 @@ mod tests {
                 .any(|run| matches!(run, Inline::Code(code) if code == "inline()"))
         );
         assert!(
-            article
-                .blocks
-                .iter()
-                .any(|block| matches!(block, Block::Table { rows } if rows[0].header))
+            article.blocks.iter().any(
+                |block| matches!(&block.block, Block::Table { table } if table.rows[0].header)
+            )
         );
-        assert!(article.blocks.iter().any(|block| matches!(block, Block::Figure { src, caption: Some(_), .. } if src == "/figure.png")));
+        assert!(article.blocks.iter().any(|block| matches!(&block.block, Block::Figure { src, caption: Some(_), .. } if src == "/figure.png")));
     }
 
     #[test]
@@ -1855,13 +1805,15 @@ mod tests {
         );
         let data = extract_structured_data(&doc);
         assert_eq!(data.len(), 2);
-        assert_eq!(data[0].kind, "Recipe");
+        assert_eq!(data[0].types, ["Recipe"]);
+        assert_eq!(data[0].id, None);
         assert_eq!(data[0].source, StructuredDataSource::JsonLd);
         assert_eq!(
             data[0].value.get("name").and_then(StructuredValue::as_str),
             Some("Tea")
         );
-        assert_eq!(data[1].kind, "Event");
+        assert_eq!(data[1].types, ["https://schema.org/Event"]);
+        assert_eq!(data[1].id, None);
         assert_eq!(data[1].source, StructuredDataSource::Microdata);
         assert_eq!(
             data[1]

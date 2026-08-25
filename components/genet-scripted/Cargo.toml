@@ -30,8 +30,9 @@ scripted-nova = ["dep:script-engine-nova"]
 livery = ["dep:genet-livery", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
 
 [lints.rust]
-# `document.rs` and `capture.rs` retain inert pre-L7 source blocks for history
-# while their public route is removed. Git history is the long-term archive.
+# `document.rs` and `capture.rs` still contain bounded pre-L7 donor blocks while
+# their useful recorder/view-state contracts are evaluated for Livery or Verso.
+# No `render` feature exists, so the retired incumbent route cannot compile.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("render"))'] }
 
 [dependencies]

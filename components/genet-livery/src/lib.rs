@@ -1,8 +1,8 @@
 //! Genet's concrete integration path for the clean-room Livery engine.
 //!
-//! The shared boundary is [`layout_dom_api::LayoutDom`]. Livery values remain
-//! concrete on this side of the document router; the Stylo-backed Fullweb path
-//! remains concrete inside `genet-layout`.
+//! The shared boundary is [`layout_dom_api::LayoutDom`]. Livery owns cascade
+//! values and Buckram owns CSS geometry on this side of the document router.
+//! The retired Stylo / `genet-layout` compatibility cone is not in the build.
 
 #![forbid(unsafe_code)]
 
@@ -44,7 +44,7 @@ pub use layout::{
 };
 pub use livery::media::{Device, ViewportSize, ViewportSizes};
 pub use livery::selector::StatePseudoClass;
-pub use livery::stylesheet::{CssomRule, CssomRuleKind, RuleMutationError};
+pub use livery::stylesheet::{CssomRule, CssomRuleKind, FontFaceRule, RuleMutationError};
 pub use livery::{PropertyId, canonicalize_specified_longhand, canonicalize_specified_value};
 pub use paint::{
     LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system,
@@ -62,8 +62,8 @@ pub use text::{TextRange, TextRect, TextSelection, TextSystem};
 
 /// Clean-room UA defaults for the bounded Cambium structural lane.
 ///
-/// This deliberately follows the lane contract rather than importing
-/// `genet-layout`'s larger Stylo-oriented sheet.
+/// This deliberately follows the lane contract rather than importing the
+/// retired Stylo route's larger UA sheet.
 pub const CAMBIUM_UA_DEFAULTS: &str = r#"
 html, body, main, section, article, header, footer, nav, aside,
 div, blockquote, h1, h2, h3, h4, h5, h6, p, ul, ol, pre {

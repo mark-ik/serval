@@ -45,9 +45,8 @@ use meristem::View;
 use crate::runner::RunnerTree;
 use crate::{DomHandle, GenetCtx, GenetElement, KeyEvent, PointerClick, PointerEvent, WheelEvent};
 
-/// The class marking a forest-dom window-root element (matches
-/// `genet_layout::WINDOW_ROOT_CLASS`, so a host can find window roots the
-/// same way on the layout side).
+/// The class marking a forest-DOM window-root element, so a host can find and
+/// re-root each window consistently on the layout side.
 pub const WINDOW_ROOT_CLASS: &str = "window-root";
 
 /// A stable handle to one projection (one OS window's tree). Handles stay
@@ -129,7 +128,7 @@ where
     /// projections in one runner is allowed but pointless; pick one per runner.
     ///
     /// The host lays out each window from [`window_root`](Self::window_root) at
-    /// its own size via `genet_layout::layout_subtree` / `ForestDom`.
+    /// its own size through its retained Livery subtree adapter.
     pub fn push_forest_projection(&mut self, dom: DomHandle, mut logic: Logic) -> ProjectionId {
         let window_root = {
             let mut d = dom.borrow_mut();

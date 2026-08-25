@@ -5,7 +5,7 @@
   "tests": {
     "css/css-values/hypot-pow-sqrt-computed.html": {
       "status": "fail",
-      "subtests_passed": 45,
+      "subtests_passed": 46,
       "subtests_total": 47
     }
   },

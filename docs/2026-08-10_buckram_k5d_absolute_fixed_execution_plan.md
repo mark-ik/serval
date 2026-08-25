@@ -2,9 +2,10 @@
 
 **Date:** 2026-08-10
 
-**Status:** In progress. K5a and K5b are committed. The first live route owns
-ordinary non-table placement across the implemented writing modes; the
-remaining sizing and table work stays explicit below.
+**Status:** In progress. K5a and K5b are committed, and the current-main K5d
+sizing and logical-inset residual inventory is reconciled. The first live route
+owns ordinary non-table placement across the implemented writing modes; the
+remaining routes and ownership work stay explicit below.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K5d.
@@ -102,16 +103,9 @@ insets and percentages.
 carrier independently of final child placement. The remaining grid K5b work is
 the static-rectangle rule, not this containing-block substitution.
 
-Taffy excludes the out-of-flow box from flow, and remains the measured
-fallback for unadmitted descendants, the non-replaced block axis, flex/grid
-roots, and replaced non-leaves or missing contributions. That exclusion was
-only true of the flex/grid provider until 2026-08-21: a Taffy *block*
-fallback received absolute boxes as `position: relative` and laid them out in
-flow, which is what had emptied the `table-anonymous-objects` family and
-several `css/css-position` files since the K5 integration merge. The fallback
-now flips its out-of-flow children to Taffy's absolute role only while it
-runs. The K5b plan and the master plan's K5 regression ledger carry the
-correction and its receipts. The retained inline formatter
+Taffy still excludes the out-of-flow box, and remains the measured fallback
+for unadmitted descendants, the non-replaced block axis, flex/grid roots, and
+replaced non-leaves or missing contributions. The retained inline formatter
 now omits each outermost absolute or fixed descendant from its enclosing line,
 then gives that descendant a separate local block-formatting root. Its
 structural fragment parent remains the enclosing inline line, so K5b keeps the
@@ -123,6 +117,19 @@ records to the shared K5d path; detached row-group, row, and cell subtrees are
 formatted only after K4d track work. K5d remains open until the remaining
 routes and out-of-flow participation itself are Buckram-owned. Those gaps are
 not treated as final K5 behavior.
+
+## 2026-08-24 current-main reconciliation
+
+The lane-program row 5+6 inventory is complete. All eight named
+aspect-ratio, nested-inline, font-feature, and pre-wrap reftests pass on
+current main. The inherited 33-file shapes count was stale: 36 current files
+use the repaired logical longhands in their references, and all 36 remain
+honest failures owned by absent `shape-outside` exclusions in lane 12. The
+nine native logical-inset receipts are green. See the
+[current-main reconciliation](2026-08-24_k5d_sizing_logical_insets_reconciliation.md).
+
+This closes the residual inventory, not K5d as a whole. The wider formatting
+routes and out-of-flow ownership described above remain open.
 
 ## Work
 

@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Mutable scripted-DOM provider: LayoutDom + LayoutDomMut over a NodeId arena, recording DomMutations for genet-layout invalidation."
+description = "Mutable scripted-DOM provider: LayoutDom + LayoutDomMut over a NodeId arena, recording DomMutations for retained Livery invalidation."
 
 [lib]
 name = "genet_scripted_dom"

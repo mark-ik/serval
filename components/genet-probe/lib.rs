@@ -102,12 +102,11 @@ impl Selector {
     }
 }
 
-/// A resolved hit: which surface it landed on, the window-space rectangle, and
-/// the centre point ready to hand to the app's pointer delivery.
+/// A resolved hit: which surface it landed on and the window-space centre of the
+/// matched element, ready to hand to the app's pointer delivery.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit {
     pub surface: &'static str,
-    pub rect: [f32; 4],
     pub point: (f32, f32),
 }
 
@@ -212,12 +211,6 @@ pub fn resolve(surfaces: &[ProbeSurface], sel: &Selector) -> Option<Hit> {
             if let Some(rect) = layout.get(node) {
                 return Some(Hit {
                     surface: surface.name,
-                    rect: [
-                        surface.rect[0] + rect.x,
-                        surface.rect[1] + rect.y,
-                        rect.width,
-                        rect.height,
-                    ],
                     point: (
                         surface.rect[0] + rect.x + rect.width / 2.0,
                         surface.rect[1] + rect.y + rect.height / 2.0,

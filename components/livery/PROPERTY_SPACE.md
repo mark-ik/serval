@@ -17,15 +17,15 @@ Regenerate after fork realignments or livery property additions.
 
 The property space above is the whole servo lane. F0 of the
 [cutover plan](../../docs/2026-07-24_livery_fullweb_cutover_and_servo_retirement_plan.md)
-bars on a much smaller set: the 126 longhands the current Genet product
-path actually reads, per `consumed_longhands.toml`. That is the number
-the default flip waits on, so it is reported separately here.
+bars on a much smaller set: the 128 longhands the current Genet product
+path actually reads, per `consumed_longhands.toml`. That is the live F0
+catalog ratchet, so it is reported separately here.
 
 | consumed-set parity | longhands |
 | --- | --- |
-| consumed contract (the F0 bar) | 126 |
-| implemented | 91 |
-| **remaining** | **35** |
+| consumed contract (the F0 bar) | 128 |
+| implemented | 97 |
+| **remaining** | **31** |
 
 `tests/consumed_set.rs` asserts this intersection as a ratchet and
 needs no fork checkout, so the receipt outlives the fork's archival
@@ -33,7 +33,6 @@ at F5. This table is the readable half of the same check.
 
 Remaining consumed longhands, the F0 worklist:
 
-- `animation-delay`
 - `animation-direction`
 - `animation-fill-mode`
 - `animation-iteration-count`
@@ -49,11 +48,8 @@ Remaining consumed longhands, the F0 worklist:
 - `border-image-slice`
 - `border-image-source`
 - `border-image-width`
-- `clear`
 - `clip-path`
-- `contain`
 - `content`
-- `direction`
 - `filter`
 - `grid-auto-columns`
 - `grid-auto-rows`
@@ -68,6 +64,11 @@ Remaining consumed longhands, the F0 worklist:
 - `transition-timing-function`
 - `translate`
 - `will-change`
+
+Current receipt: `cargo test -p livery --test consumed_set --offline`
+reported 97/128 implemented on 2026-08-24. The contract grew from the
+original 126-name audit when two live font-feature consumers were added;
+both already resolve in the catalog.
 
 Livery-local names are livery catalog entries with no same-name servo-lane
 longhand or shorthand (bounded simplifications such as a single `overflow`

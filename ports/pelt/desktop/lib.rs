@@ -8,8 +8,16 @@
 //! dialogs, filesystem integration, and platform event-loop glue. It stays
 //! above `genet-host-api` and below the UI chrome crate.
 
+#[cfg(all(feature = "livery", target_os = "windows"))]
+mod dx12_surface;
+#[cfg(feature = "livery")]
+mod frisket_surface;
 mod profile;
+#[cfg(all(feature = "livery", target_os = "windows"))]
+mod scrying_receipt;
 mod static_viewer;
+#[cfg(feature = "livery")]
+mod workspace_viewer;
 
 /// The host of an absolute URL, without userinfo or port. `None` for anything
 /// without an authority, which includes every local filesystem path.
@@ -72,6 +80,7 @@ mod smoke_windows;
 
 #[cfg(any(feature = "scripted", feature = "smolweb"))]
 pub use href::resolve_href;
+pub use pelt_core::{PeltClock, PeltController, PeltControllerConfig, PeltHostEffect};
 pub use profile::{DesktopHostProfile, WindowingMode};
 #[cfg(feature = "macos-present")]
 pub use smoke_macos::{
@@ -95,6 +104,10 @@ pub use static_viewer::run_livery_viewer;
 #[cfg(feature = "reader")]
 pub use static_viewer::run_reader_viewer;
 pub use static_viewer::{StaticViewerConfig, StaticViewerOutcome, run_static_viewer};
+#[cfg(feature = "livery")]
+pub use workspace_viewer::{
+    WorkspaceViewerConfig, WorkspaceViewerOutcome, run_livery_workspace_viewer,
+};
 // `ScriptResourceFetcher` is `genet_scripted::ResourceFetcher` (the external-script
 // byte seam `ScriptedDocument::from_body` takes), distinct from `genet_host_api::
 // ResourceFetcher` (the shell-level fetch contract); re-exported so a host can impl

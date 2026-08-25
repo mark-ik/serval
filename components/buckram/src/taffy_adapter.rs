@@ -15,6 +15,7 @@ use taffy::{
 };
 
 use crate::block::FloatContextState;
+use crate::block::solve_in_flow_inline_size_for_border_box;
 use crate::{
     Baselines, BlockBoxSizing, BlockContainingBlock, BlockDeferral, BlockFormattingContext,
     BlockMarginState, BlockSizeValue, BlockStyle, ClearSide, CollapsedMargin, FloatLineConstraints,
@@ -134,6 +135,7 @@ struct AlgorithmNode<S, Context, Source> {
     float_avoidance_enabled: bool,
     intrinsic_shrink_to_fit_enabled: bool,
     intrinsic_inline_sizes: Option<IntrinsicSizes>,
+    table_wrapper_inline_size: Option<f32>,
     style: S,
     context: Option<Context>,
     source: Source,
@@ -143,6 +145,12 @@ struct AlgorithmNode<S, Context, Source> {
     unrounded_layout: Layout,
     final_layout: Layout,
     grid_info: Option<DetailedGridInfo>,
+    /// CSS Grid §9.2: a direct absolute or fixed child's static position is
+    /// aligned in the grid container's content box unless that grid also
+    /// generates the child's containing block, in which case the §9.1 grid
+    /// area applies. The renderer sets this from the K5a box graph; the
+    /// adapter never derives it from backend positioning.
+    grid_static_position_uses_grid_area: bool,
     baselines: Baselines,
 }
 
@@ -241,6 +249,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             float_avoidance_enabled: false,
             intrinsic_shrink_to_fit_enabled: false,
             intrinsic_inline_sizes: None,
+            table_wrapper_inline_size: None,
             style,
             context,
             source,
@@ -250,6 +259,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             grid_info: None,
+            grid_static_position_uses_grid_area: false,
             baselines: Baselines::default(),
         });
         for child in children {
@@ -306,8 +316,45 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         })
     }
 
+    /// Count Taffy block runs by their named Buckram deferral.
+    ///
+    /// This keeps CSS-facing fallback distinct from scratch measurement in
+    /// [`BlockDeferral::BackendSizingMode`]. A table cell's intrinsic pass may
+    /// use the latter without causing any block ancestor to abandon Buckram.
+    pub fn block_deferral_count(&self, deferral: BlockDeferral) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| {
+                node.block_algorithm == Some(BlockAlgorithm::Taffy)
+                    && node.block_deferral == Some(deferral)
+            })
+            .count()
+    }
+
     pub fn style_mut(&mut self, id: AlgorithmNodeId) -> &mut S {
         &mut self.nodes[id.index()].style
+    }
+
+    /// Publish a table algorithm's used grid width to its generated wrapper.
+    ///
+    /// Backend root setup may offer the containing width as a provisional
+    /// known dimension. The table grid is the standards-owned authority for
+    /// its wrapper's border-edge width, so this explicit carrier outranks that
+    /// provisional value when Buckram admits the wrapper as a block child.
+    pub fn set_table_wrapper_inline_size(&mut self, id: AlgorithmNodeId, size: f32) {
+        assert!(
+            size.is_finite() && size >= 0.0,
+            "a table wrapper inline size must be finite and non-negative"
+        );
+        let node = &mut self.nodes[id.index()];
+        node.table_wrapper_inline_size = Some(size);
+        let size = BlockSizeValue::Length(FlowLength::px(size));
+        if node.block_style.flow.is_horizontal() {
+            node.block_style.size.width = size;
+        } else {
+            node.block_style.size.height = size;
+        }
+        node.cache.clear();
     }
 
     /// Admit this direct flex/grid child to the renderer's static-position
@@ -343,6 +390,31 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             taffy::Position::Absolute;
     }
 
+    /// Select this direct grid child's finalized grid area as its
+    /// static-position alignment container (CSS Grid §9.2, second sentence).
+    /// Callers make this selection only when the K5a containing-block graph
+    /// chose this same grid as the child's containing block; otherwise the
+    /// provider keeps the grid's content box. With `auto` grid lines the area
+    /// is bounded by the grid's padding edges, as §9.1 requires.
+    pub fn use_grid_area_for_static_position(&mut self, id: AlgorithmNodeId) {
+        let parent = self.nodes[id.index()]
+            .parent
+            .expect("a grid static-position area requires an attached direct child");
+        assert_eq!(
+            self.nodes[parent.index()].kind,
+            AlgorithmKind::Grid,
+            "only a direct grid child can use a grid-area static-position rectangle"
+        );
+        assert!(
+            matches!(
+                self.nodes[id.index()].block_style.position,
+                crate::BlockPosition::Absolute | crate::BlockPosition::Fixed
+            ),
+            "the grid-area static-position rectangle requires an absolute or fixed child"
+        );
+        self.nodes[id.index()].grid_static_position_uses_grid_area = true;
+    }
+
     /// Supply the resolved CSS inline size to a detached absolute/fixed
     /// formatting root before its second formatting pass. The positioned
     /// solver owns the value; this scratch-tree setter merely gives the local
@@ -359,6 +431,22 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             style.size.width = size;
         } else {
             style.size.height = size;
+        }
+    }
+
+    /// Supply a standards-resolved block size to a detached absolute/fixed
+    /// formatting root before its constrained second formatting pass.
+    pub fn set_positioned_block_size(&mut self, id: AlgorithmNodeId, size: f32) {
+        assert!(
+            size.is_finite() && size >= 0.0,
+            "a positioned formatting block size must be finite and non-negative"
+        );
+        let style = &mut self.nodes[id.index()].block_style;
+        let size = BlockSizeValue::Length(FlowLength::px(size));
+        if style.flow.is_horizontal() {
+            style.size.height = size;
+        } else {
+            style.size.width = size;
         }
     }
 
@@ -509,7 +597,13 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         }
 
         let original_style = self.nodes[id.index()].block_style;
-        self.nodes[id.index()].block_style.position = crate::BlockPosition::Static;
+        {
+            let root_style = &mut self.nodes[id.index()].block_style;
+            root_style.position = crate::BlockPosition::Static;
+            // The intrinsic query measures the root's contents. K5d applies
+            // the root's preferred ratio to those contributions afterwards.
+            root_style.aspect_ratio = None;
+        }
         if !self.intrinsic_inline_subtree_is_admitted(id, true) {
             self.nodes[id.index()].block_style = original_style;
             return None;
@@ -521,9 +615,10 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             line_constraints: None,
             nested_float_state: None,
             resolved_shrink_to_fit: None,
+            fixed_leaf_intrinsics_enabled: false,
             marker: PhantomData,
         };
-        let result = run.measure_intrinsic_inline_subtree(id).ok();
+        let result = run.measure_intrinsic_inline_subtree(id, None).ok();
         run.tree.nodes[id.index()].block_style = original_style;
         result
     }
@@ -710,25 +805,27 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             let children = self.nodes[index].children.clone();
             let first = children.iter().copied().find_map(|child| {
                 let child_node = &self.nodes[child.index()];
-                (child_node.block_style.float == FloatSide::None)
-                    .then(|| {
-                        child_node
-                            .baselines
-                            .first
-                            .map(|baseline| child_node.final_layout.location.y + baseline)
-                    })
-                    .flatten()
+                (child_node.block_style.float == FloatSide::None
+                    && !child_node.block_style.is_out_of_flow())
+                .then(|| {
+                    child_node
+                        .baselines
+                        .first
+                        .map(|baseline| child_node.final_layout.location.y + baseline)
+                })
+                .flatten()
             });
             let last = children.iter().rev().copied().find_map(|child| {
                 let child_node = &self.nodes[child.index()];
-                (child_node.block_style.float == FloatSide::None)
-                    .then(|| {
-                        child_node
-                            .baselines
-                            .last
-                            .map(|baseline| child_node.final_layout.location.y + baseline)
-                    })
-                    .flatten()
+                (child_node.block_style.float == FloatSide::None
+                    && !child_node.block_style.is_out_of_flow())
+                .then(|| {
+                    child_node
+                        .baselines
+                        .last
+                        .map(|baseline| child_node.final_layout.location.y + baseline)
+                })
+                .flatten()
             });
             if first.is_some() || last.is_some() {
                 self.nodes[index].baselines = Baselines::new(first, last)
@@ -752,6 +849,49 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source>
 where
     S: AlgorithmStyle,
 {
+    /// Run scratch layout with the root's renderer-owned positioned children
+    /// presented to Taffy as out of flow.
+    ///
+    /// Buckram retains their CSS position and final geometry separately. This
+    /// adapter role only prevents a direct absolute or fixed child from
+    /// contributing to an intrinsic or table-cell measurement while preserving
+    /// the backend node for later formatting and fragment collection.
+    pub fn compute_layout_with_measure_excluding_out_of_flow_children<Measure>(
+        &mut self,
+        root: AlgorithmNodeId,
+        available: AlgorithmSize<AlgorithmAvailableSpace>,
+        measure: Measure,
+    ) where
+        Measure: FnMut(
+            AlgorithmSize<Option<f32>>,
+            AlgorithmSize<AlgorithmAvailableSpace>,
+            AlgorithmNodeId,
+            Option<&mut Context>,
+            Option<&FloatLineConstraints>,
+        ) -> AlgorithmSize<f32>,
+    {
+        let children = self.nodes[root.index()].children.clone();
+        let mut flipped = Vec::new();
+        for child in children {
+            if !self.nodes[child.index()].block_style.is_out_of_flow() {
+                continue;
+            }
+            let style =
+                sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[child.index()].style);
+            flipped.push((child, style.position));
+            style.position = taffy::Position::Absolute;
+        }
+        self.clear_layout_cache();
+        self.compute_layout_with_measure(root, available, measure);
+        for (child, previous) in flipped {
+            sealed::AlgorithmStyle::as_taffy_style_mut(&mut self.nodes[child.index()].style)
+                .position = previous;
+        }
+        // The next ordinary run must not reuse a cache entry made while those
+        // private backend roles were temporarily different.
+        self.clear_layout_cache();
+    }
+
     pub fn compute_layout_with_measure<Measure>(
         &mut self,
         root: AlgorithmNodeId,
@@ -776,6 +916,7 @@ where
             line_constraints: None,
             nested_float_state: None,
             resolved_shrink_to_fit: None,
+            fixed_leaf_intrinsics_enabled: false,
             marker: PhantomData,
         };
         compute_root_layout(&mut run, root.into_taffy(), available);
@@ -962,6 +1103,15 @@ fn to_taffy_rect(sides: PhysicalSides<f32>) -> taffy::Rect<f32> {
     }
 }
 
+/// Whether a box is opaque to the block formatting context it participates
+/// in: it establishes an independent formatting context and is not a float,
+/// so CSS 2.1 section 9.4.1 gives it its own algorithm and nothing inside it
+/// interacts with the outside. Floats keep their existing walk because their
+/// placement is the parent's decision (section 9.5).
+fn is_opaque_formatting_root(style: BlockStyle) -> bool {
+    style.establishes_bfc && style.float == FloatSide::None
+}
+
 struct ChildIter<'a>(slice::Iter<'a, AlgorithmNodeId>);
 
 impl Iterator for ChildIter<'_> {
@@ -978,6 +1128,7 @@ struct AlgorithmRun<'a, S, Context, Source, Measure> {
     line_constraints: Option<FloatLineConstraints>,
     nested_float_state: Option<FloatContextState>,
     resolved_shrink_to_fit: Option<AlgorithmNodeId>,
+    fixed_leaf_intrinsics_enabled: bool,
     marker: PhantomData<&'a mut Context>,
 }
 
@@ -1048,8 +1199,10 @@ where
             .iter()
             .copied()
             .any(|child| {
-                self.tree.nodes[child.index()].inline_context_float
-                    || self.contains_inline_context_float(child)
+                let child_node = &self.tree.nodes[child.index()];
+                child_node.inline_context_float
+                    || (!is_opaque_formatting_root(child_node.block_style)
+                        && self.contains_inline_context_float(child))
             })
     }
 
@@ -1078,20 +1231,6 @@ where
                     return Some(deferral);
                 }
             }
-            if child_style.establishes_bfc
-                && child_style.float == FloatSide::None
-                && !self.owns_direct_float_lane(child)
-                // K3g admitted block/leaf BFCs generally. Flex and grid use
-                // this lane only when float exclusion actually needs it, so
-                // ordinary parents retain their established dispatch.
-                && !(child_node.float_avoidance_enabled
-                    && (matches!(child_node.kind, AlgorithmKind::Leaf | AlgorithmKind::Block)
-                        || *active_left_float
-                        || *active_right_float))
-            {
-                return Some(BlockDeferral::IndependentFormattingContext);
-            }
-
             // Float exclusions live in their owning BFC's logical axes. Do
             // not copy physical left/right state into an orthogonal child;
             // only same-flow continuation is admitted until that transform
@@ -1140,55 +1279,61 @@ where
             }
 
             let floats_are_active = *active_left_float || *active_right_float;
-            let exports_float_state = child_node.kind == AlgorithmKind::Block
-                && !child_style.establishes_bfc
-                && self.exports_float_state(child);
-            let contains_clearance = child_node.kind == AlgorithmKind::Block
-                && !child_style.establishes_bfc
-                && self.contains_clearance(child);
+            if is_opaque_formatting_root(child_style) {
+                // CSS 2.1 section 9.4.1: a box that establishes an independent
+                // formatting context is opaque to this one. Its own algorithm
+                // lays it out (Buckram's block path, the table pipeline, flex,
+                // grid, or Taffy's block algorithm when its own root defers),
+                // and only its border box and margins take part in this flow,
+                // so nothing inside it is walked here. The one parent-level
+                // rule is section 9.5: beside an active float its border box
+                // may not overlap the float. That needs Livery's avoidance
+                // opt-in (K3g) and otherwise stays a named deferral.
+                if floats_are_active && !child_node.float_avoidance_enabled {
+                    return Some(BlockDeferral::FloatFormattingContextAvoidance);
+                }
+                // Flex and grid keep their established dispatch until their
+                // own lane measures the change: without a float that needs
+                // the K3g lane, an ordinary parent still defers for them.
+                if !floats_are_active
+                    && matches!(child_node.kind, AlgorithmKind::Flex | AlgorithmKind::Grid)
+                {
+                    return Some(BlockDeferral::IndependentFormattingContext);
+                }
+                continue;
+            }
+
+            // From here on the child participates in this block formatting
+            // context: floats, clearance, and line boxes inside it are this
+            // context's concern.
+            let exports_float_state =
+                child_node.kind == AlgorithmKind::Block && self.exports_float_state(child);
+            let contains_clearance =
+                child_node.kind == AlgorithmKind::Block && self.contains_clearance(child);
             if exports_float_state && let Some(deferral) = self.nested_float_state_deferral(child) {
                 return Some(deferral);
             }
             if child_node.kind == AlgorithmKind::Block
-                && !child_style.establishes_bfc
                 && !self.shares_parent_float_context(child, child_style)
                 && (floats_are_active || exports_float_state || contains_clearance)
             {
                 return Some(BlockDeferral::NestedFloatState);
             }
             if floats_are_active
-                && child_style.establishes_bfc
-                && !child_node.float_avoidance_enabled
-            {
-                return Some(BlockDeferral::FloatFormattingContextAvoidance);
-            }
-            if floats_are_active
-                && !child_style.establishes_bfc
                 && self.has_line_boxes_in_same_bfc(child)
                 && !self.accepts_float_line_constraints_in_same_bfc(child)
             {
                 return Some(BlockDeferral::FloatLineExclusion);
             }
 
-            if child_node.kind == AlgorithmKind::Block {
-                let deferral = if child_style.establishes_bfc {
-                    let mut isolated_left = false;
-                    let mut isolated_right = false;
-                    self.block_subtree_deferral_with_float_state(
-                        child,
-                        &mut isolated_left,
-                        &mut isolated_right,
-                    )
-                } else {
-                    self.block_subtree_deferral_with_float_state(
-                        child,
-                        active_left_float,
-                        active_right_float,
-                    )
-                };
-                if let Some(deferral) = deferral {
-                    return Some(deferral);
-                }
+            if child_node.kind == AlgorithmKind::Block
+                && let Some(deferral) = self.block_subtree_deferral_with_float_state(
+                    child,
+                    active_left_float,
+                    active_right_float,
+                )
+            {
+                return Some(deferral);
             }
         }
         None
@@ -1241,12 +1386,8 @@ where
             })
     }
 
-    fn owns_direct_float_lane(&self, node: AlgorithmNodeId) -> bool {
-        self.tree.nodes[node.index()]
-            .children
-            .iter()
-            .copied()
-            .any(|child| self.tree.nodes[child.index()].block_style.float != FloatSide::None)
+    fn table_wrapper_inline_size(&self, node: AlgorithmNodeId) -> Option<f32> {
+        self.tree.nodes[node.index()].table_wrapper_inline_size
     }
 
     fn has_line_boxes_in_same_bfc(&self, node: AlgorithmNodeId) -> bool {
@@ -1400,71 +1541,176 @@ where
     fn measure_intrinsic_inline_subtree(
         &mut self,
         node: AlgorithmNodeId,
+        orthogonal_inline_constraint: Option<f32>,
     ) -> Result<IntrinsicSizes, BlockDeferral> {
-        if let Some(sizes) = self.tree.nodes[node.index()].intrinsic_inline_sizes {
+        if orthogonal_inline_constraint.is_none()
+            && let Some(sizes) = self.tree.nodes[node.index()].intrinsic_inline_sizes
+        {
             return Ok(sizes);
         }
 
         let kind = self.tree.nodes[node.index()].kind;
         let style = self.tree.nodes[node.index()].block_style;
-        let sizes = match kind {
-            // K4d6 supplies table intrinsics from the accepted K4c query
-            // contract; nothing constructs the tag before then.
-            AlgorithmKind::Hidden | AlgorithmKind::Table => {
-                IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
-            },
-            AlgorithmKind::Leaf if self.tree.nodes[node.index()].context.is_none() => {
-                IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
-            },
-            AlgorithmKind::Leaf => {
-                let min_content = self
-                    .measure_inline_intrinsic(node, IntrinsicSizeKind::MinContent)
-                    .ok_or(BlockDeferral::IntrinsicSize)?;
-                let max_content = self
-                    .measure_inline_intrinsic(node, IntrinsicSizeKind::MaxContent)
-                    .ok_or(BlockDeferral::IntrinsicSize)?;
-                IntrinsicSizes::new(min_content, max_content).ok_or(BlockDeferral::IntrinsicSize)?
-            },
-            AlgorithmKind::Block => {
-                if let Some(content_size) = intrinsic_definite_inline_content_size(style)? {
-                    IntrinsicSizes::new(content_size, content_size)
+        let definite_content_size = if kind == AlgorithmKind::Block
+            || (kind == AlgorithmKind::Leaf && self.fixed_leaf_intrinsics_enabled)
+        {
+            intrinsic_definite_inline_content_size(style)?
+        } else {
+            None
+        };
+        let sizes = if let Some(content_size) = definite_content_size {
+            IntrinsicSizes::new(content_size, content_size).ok_or(BlockDeferral::IntrinsicSize)?
+        } else {
+            match kind {
+                // K4d6 supplies table intrinsics from the accepted K4c query
+                // contract; nothing constructs the tag before then.
+                AlgorithmKind::Hidden | AlgorithmKind::Table => {
+                    IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
+                },
+                AlgorithmKind::Leaf if self.tree.nodes[node.index()].context.is_none() => {
+                    IntrinsicSizes::new(0.0, 0.0).expect("zero intrinsic sizes are valid")
+                },
+                AlgorithmKind::Leaf => {
+                    if orthogonal_inline_constraint.is_some() && !style.flow.is_horizontal() {
+                        return Err(BlockDeferral::IntrinsicSize);
+                    }
+                    let min_content = self
+                        .measure_inline_intrinsic(node, IntrinsicSizeKind::MinContent)
+                        .ok_or(BlockDeferral::IntrinsicSize)?;
+                    let max_content = self
+                        .measure_inline_intrinsic(node, IntrinsicSizeKind::MaxContent)
+                        .ok_or(BlockDeferral::IntrinsicSize)?;
+                    IntrinsicSizes::new(min_content, max_content)
                         .ok_or(BlockDeferral::IntrinsicSize)?
-                } else {
+                },
+                AlgorithmKind::Block => {
                     let children = self.tree.nodes[node.index()].children.clone();
                     let mut min_content = 0.0_f32;
                     let mut max_content = 0.0_f32;
                     for child in children {
-                        let child_sizes = self.intrinsic_inline_outer_contribution(child)?;
+                        let child_style = self.tree.nodes[child.index()].block_style;
+                        let child_sizes =
+                            if style.flow.is_horizontal() == child_style.flow.is_horizontal() {
+                                self.intrinsic_inline_outer_contribution(
+                                    child,
+                                    orthogonal_inline_constraint,
+                                )?
+                            } else {
+                                self.measure_orthogonal_block_outer_contribution(
+                                    child,
+                                    orthogonal_inline_constraint,
+                                )?
+                            };
                         min_content = min_content.max(child_sizes.min_content);
                         max_content = max_content.max(child_sizes.max_content);
                     }
                     IntrinsicSizes::new(min_content, max_content)
                         .ok_or(BlockDeferral::IntrinsicSize)?
-                }
-            },
-            // Flex and grid retain their formatting roles. Taffy is queried
-            // in its intrinsic mode for these admitted algorithm subtrees;
-            // Buckram never reads a completed normal-flow layout back as the
-            // browser-facing intrinsic answer.
-            AlgorithmKind::Flex | AlgorithmKind::Grid => {
-                self.measure_admitted_algorithm_inline_intrinsic(node, style)?
-            },
+                },
+                // Flex and grid retain their formatting roles. Taffy is queried
+                // in its intrinsic mode for these admitted algorithm subtrees;
+                // Buckram never reads a completed normal-flow layout back as the
+                // browser-facing intrinsic answer.
+                AlgorithmKind::Flex | AlgorithmKind::Grid => {
+                    self.measure_admitted_algorithm_inline_intrinsic(node, style)?
+                },
+            }
         };
-        self.tree.nodes[node.index()].intrinsic_inline_sizes = Some(sizes);
+        if orthogonal_inline_constraint.is_none() {
+            self.tree.nodes[node.index()].intrinsic_inline_sizes = Some(sizes);
+        }
         Ok(sizes)
     }
 
     fn intrinsic_inline_outer_contribution(
         &mut self,
         node: AlgorithmNodeId,
+        orthogonal_inline_constraint: Option<f32>,
     ) -> Result<IntrinsicSizes, BlockDeferral> {
         let style = self.tree.nodes[node.index()].block_style;
-        let sizes = self.measure_intrinsic_inline_subtree(node)?;
+        let sizes = self.measure_intrinsic_inline_subtree(node, orthogonal_inline_constraint)?;
         let (padding_border_start, padding_border_end) = intrinsic_inline_padding_border(style)?;
         let (margin_start, margin_end) = intrinsic_inline_margins(style)?;
         let outer = padding_border_start + padding_border_end + margin_start + margin_end;
         IntrinsicSizes::new(sizes.min_content + outer, sizes.max_content + outer)
             .ok_or(BlockDeferral::IntrinsicSize)
+    }
+
+    /// Resolve the contribution of a perpendicular child to this formatting
+    /// root's intrinsic inline size. Writing Modes requires the child's sizing
+    /// phase to run first: its auto inline size becomes fit-content, then its
+    /// used block size contributes to the parent's min/max-content query.
+    ///
+    /// The query temporarily treats the child as the root of its own flow and
+    /// accepts only a Buckram block result (or a formatter leaf). A Taffy block
+    /// fallback therefore cannot become an intrinsic answer.
+    fn measure_orthogonal_block_outer_contribution(
+        &mut self,
+        node: AlgorithmNodeId,
+        orthogonal_inline_constraint: Option<f32>,
+    ) -> Result<IntrinsicSizes, BlockDeferral> {
+        let constraint = orthogonal_inline_constraint
+            .filter(|size| size.is_finite() && *size >= 0.0)
+            .ok_or(BlockDeferral::IndefiniteInlineSize)?;
+        let original_style = self.tree.nodes[node.index()].block_style;
+        let kind = self.tree.nodes[node.index()].kind;
+        if !matches!(kind, AlgorithmKind::Block | AlgorithmKind::Leaf)
+            || original_style.position != crate::BlockPosition::Static
+            || original_style.float != FloatSide::None
+            || original_style.replaced
+            || original_style.aspect_ratio.is_some()
+            || original_style.size_containment.width
+            || original_style.size_containment.height
+            || original_style.has_nonlinear_lengths
+        {
+            return Err(BlockDeferral::IntrinsicSize);
+        }
+
+        let mut query_style = original_style;
+        query_style.containing_flow = query_style.flow;
+        self.tree.nodes[node.index()].block_style = query_style;
+        let result = (|| {
+            let intrinsic = self.measure_intrinsic_inline_subtree(node, Some(constraint))?;
+            let mut sizing_style = query_style;
+            sizing_style.shrink_to_fit = true;
+            let used_inline = solve_shrink_to_fit_inline_size(sizing_style, constraint, intrinsic);
+            self.clear_subtree_backend_cache(node);
+            let output = self.compute_block_child(
+                node,
+                BlockChildInput {
+                    containing_flow: query_style.flow,
+                    border_box_inline_size: Some(used_inline.border_box),
+                    containing_size: LogicalOptionalSize {
+                        inline: Some(constraint),
+                        block: None,
+                    },
+                    available_size: AlgorithmSize::new(
+                        AlgorithmAvailableSpace::Definite(constraint),
+                        AlgorithmAvailableSpace::MaxContent,
+                    ),
+                },
+                None,
+                None,
+            );
+            if kind == AlgorithmKind::Block
+                && self.tree.nodes[node.index()].block_algorithm != Some(BlockAlgorithm::Buckram)
+            {
+                return Err(BlockDeferral::IntrinsicSize);
+            }
+            let block_size = query_style
+                .flow
+                .logical_size(PhysicalSize {
+                    width: output.size.width,
+                    height: output.size.height,
+                })
+                .block;
+            let (margin_start, margin_end) = intrinsic_inline_margins(original_style)?;
+            let outer = block_size + margin_start + margin_end;
+            IntrinsicSizes::new(outer, outer).ok_or(BlockDeferral::IntrinsicSize)
+        })();
+        self.tree.nodes[node.index()].block_style = original_style;
+        self.clear_subtree_cache(node);
+        result
     }
 
     fn measure_admitted_algorithm_inline_intrinsic(
@@ -1527,12 +1773,70 @@ where
         style: BlockStyle,
         containing_inline_size: f32,
     ) -> Result<crate::UsedInlineSize, BlockDeferral> {
-        let intrinsic = self.measure_intrinsic_inline_subtree(node)?;
+        // Auto-width floats and atomic inline roots need fixed-size leaf
+        // descendants in their intrinsic contribution. Positioned queries
+        // keep their separately admitted empty-leaf contract.
+        let previous = std::mem::replace(&mut self.fixed_leaf_intrinsics_enabled, true);
+        let intrinsic = self.measure_intrinsic_inline_subtree(node, None);
+        self.fixed_leaf_intrinsics_enabled = previous;
+        let intrinsic = intrinsic?;
         Ok(solve_shrink_to_fit_inline_size(
             style,
             containing_inline_size,
             intrinsic,
         ))
+    }
+
+    fn resolve_orthogonal_auto_inline_size(
+        &mut self,
+        node: AlgorithmNodeId,
+        style: BlockStyle,
+        constraint: f32,
+    ) -> Result<f32, BlockDeferral> {
+        if !constraint.is_finite()
+            || constraint < 0.0
+            || style.flow.is_horizontal() == style.containing_flow.is_horizontal()
+            // The vertical-host half of this first slice sizes a direct
+            // perpendicular block contribution. Walking through same-flow
+            // wrappers can reach a nested horizontal atomic inline while an
+            // adjacent vertical text run remains unsupported, producing two
+            // different answers for otherwise equivalent subtrees.
+            || (!style.flow.is_horizontal()
+                && !self.tree.nodes[node.index()].children.iter().any(|child| {
+                    let child_kind = self.tree.nodes[child.index()].kind;
+                    let child_style = self.tree.nodes[child.index()].block_style;
+                    matches!(child_kind, AlgorithmKind::Block)
+                        && child_style.position == crate::BlockPosition::Static
+                        && child_style.float == FloatSide::None
+                        && child_style.flow.is_horizontal()
+                            != style.flow.is_horizontal()
+                }))
+            || !matches!(
+                intrinsic_inline_dimension(style.size, style.flow),
+                BlockSizeValue::Auto
+            )
+        {
+            return Err(BlockDeferral::IntrinsicSize);
+        }
+
+        let original_style = self.tree.nodes[node.index()].block_style;
+        let mut query_style = style;
+        query_style.containing_flow = query_style.flow;
+        // This first slice admits only absolute padding and margins. Their
+        // percentage basis differs across the sizing and positioning phases;
+        // accepting percentages here would silently choose the wrong phase.
+        intrinsic_inline_padding_border(query_style)?;
+        intrinsic_inline_margins(query_style)?;
+        self.tree.nodes[node.index()].block_style = query_style;
+        let result = self
+            .measure_intrinsic_inline_subtree(node, Some(constraint))
+            .map(|intrinsic| {
+                let mut sizing_style = query_style;
+                sizing_style.shrink_to_fit = true;
+                solve_shrink_to_fit_inline_size(sizing_style, constraint, intrinsic).border_box
+            });
+        self.tree.nodes[node.index()].block_style = original_style;
+        result
     }
 
     fn clear_subtree_cache(&mut self, node: AlgorithmNodeId) {
@@ -1559,19 +1863,23 @@ where
         child_size: PhysicalSize,
         containing_inline_size: f32,
         containing_block_size: Option<f32>,
-    ) -> Result<BlockMarginState, BlockDeferral> {
-        if self.tree.nodes[child.index()].kind == AlgorithmKind::Block {
-            let child_node = &self.tree.nodes[child.index()];
-            if let Some(deferral) = child_node.block_deferral {
-                return Err(deferral);
-            }
-            return Ok(child_node
-                .block_margins
-                .expect("an admitted Buckram block child must return a modeled margin state"));
+    ) -> BlockMarginState {
+        let child_node = &self.tree.nodes[child.index()];
+        if child_node.kind == AlgorithmKind::Block
+            && child_node.block_deferral.is_none()
+            && let Some(margins) = child_node.block_margins
+        {
+            return margins;
         }
 
+        // A leaf, an algorithm-owned context (table, flex, grid), or a block
+        // that Taffy laid out for its own reasons contributes margins modeled
+        // from its style and used size. Taffy receives such a block with
+        // `vertical_margins_are_collapsible: FALSE`, so the margins of its
+        // own children lie inside the border box it returned; only an empty
+        // box with no block-axis separator collapses through.
         let child_size_logical = child_style.containing_flow.logical_size(child_size);
-        let child_has_line_boxes = self.tree.nodes[child.index()].context.is_some();
+        let child_has_line_boxes = child_node.context.is_some();
         let child_collapses_through = child_style.can_collapse_through(
             containing_inline_size,
             containing_block_size,
@@ -1579,7 +1887,7 @@ where
             child_has_line_boxes,
             true,
         ) && child_size_logical.block == 0.0;
-        Ok(BlockMarginState::from_box(
+        BlockMarginState::from_box(
             child_style,
             containing_inline_size,
             CollapsedMargin::ZERO,
@@ -1591,17 +1899,39 @@ where
                 true,
             ),
             child_collapses_through,
-        ))
+        )
     }
 
     fn shares_parent_float_context(&self, child: AlgorithmNodeId, child_style: BlockStyle) -> bool {
+        // Relative positioning preserves the box's normal-flow BFC geometry;
+        // its retained visual offset is applied after this layout.
         self.tree.nodes[child.index()].nested_float_state_enabled
             && self.tree.nodes[child.index()].kind == AlgorithmKind::Block
             && !child_style.establishes_bfc
-            && child_style.position == crate::BlockPosition::Static
+            && matches!(
+                child_style.position,
+                crate::BlockPosition::Static | crate::BlockPosition::Relative
+            )
             && child_style.float == FloatSide::None
             && !child_style.replaced
-            && child_style.flow == child_style.containing_flow
+            // Capability admission decides whether a horizontal direction
+            // boundary may use this transform. Once admitted, the block axis
+            // is unchanged and Buckram mirrors the inline geometry.
+            && (child_style.flow == child_style.containing_flow
+                || child_style.flow.is_horizontal()
+                    && child_style.containing_flow.is_horizontal())
+    }
+
+    fn child_content_inline_size(
+        child_style: BlockStyle,
+        child_size: PhysicalSize,
+        containing_inline_size: f32,
+    ) -> f32 {
+        let padding_border = child_style.content_logical_padding_border(containing_inline_size);
+        (child_style.flow.logical_size(child_size).inline
+            - padding_border.inline_start
+            - padding_border.inline_end)
+            .max(0.0)
     }
 
     fn predicted_child_content_origin(
@@ -1715,10 +2045,35 @@ where
             )
         });
         let mut outer_logical = logical_optional_size(style.flow, outer);
-        outer_logical.inline = outer_logical.inline.or(match own_available.width {
-            AlgorithmAvailableSpace::Definite(size) => Some(size),
-            AlgorithmAvailableSpace::MinContent | AlgorithmAvailableSpace::MaxContent => None,
-        });
+        // A table wrapper box that nobody else sized (a layout root or an
+        // out-of-flow root) takes its grid's border-edge inline size rather
+        // than filling the available space.
+        let table_wrapper_inline = self.table_wrapper_inline_size(node);
+        let orthogonal_auto_inline = if table_wrapper_inline.is_none()
+            && outer_logical.inline.is_none()
+            && style.flow.is_horizontal() != style.containing_flow.is_horizontal()
+            && matches!(
+                intrinsic_inline_dimension(style.size, style.flow),
+                BlockSizeValue::Auto
+            ) {
+            let constraint = own_parent.inline.or(match own_available.width {
+                AlgorithmAvailableSpace::Definite(size) => Some(size),
+                AlgorithmAvailableSpace::MinContent | AlgorithmAvailableSpace::MaxContent => None,
+            });
+            constraint.and_then(|constraint| {
+                self.resolve_orthogonal_auto_inline_size(node, style, constraint)
+                    .ok()
+            })
+        } else {
+            None
+        };
+        outer_logical.inline = table_wrapper_inline
+            .or(outer_logical.inline)
+            .or(orthogonal_auto_inline)
+            .or(match own_available.width {
+                AlgorithmAvailableSpace::Definite(size) => Some(size),
+                AlgorithmAvailableSpace::MinContent | AlgorithmAvailableSpace::MaxContent => None,
+            });
         let content_padding_border = style.content_logical_padding_border(containing_inline);
         let content_inline = outer_logical
             .inline
@@ -1770,10 +2125,16 @@ where
                 logical_optional_size(child_style.flow, content_physical).block;
             let inline = if self.tree.nodes[child.index()].intrinsic_shrink_to_fit_enabled {
                 self.resolve_intrinsic_shrink_to_fit(child, child_style, content_inline)?
-            } else if child_style.float == FloatSide::None {
-                solve_in_flow_inline_size(child_style, content_inline)
-            } else {
+            } else if child_style.float != FloatSide::None {
                 solve_float_inline_size(child_style, content_inline)
+            } else if let Some(grid_inline_size) = self.table_wrapper_inline_size(child) {
+                solve_in_flow_inline_size_for_border_box(
+                    child_style,
+                    content_inline,
+                    grid_inline_size,
+                )
+            } else {
+                solve_in_flow_inline_size(child_style, content_inline)
             };
             let provisional_margin_state = BlockMarginState::from_box(
                 child_style,
@@ -1824,7 +2185,7 @@ where
                     child_size,
                     content_inline,
                     child_containing_block_size,
-                )?;
+                );
                 let static_logical_rect = LogicalRect {
                     inline_start: inline.margin_start,
                     block_start: formatting_context
@@ -1929,7 +2290,7 @@ where
                         child_size,
                         content_inline,
                         child_containing_block_size,
-                    )?;
+                    );
                     let origin = Self::predicted_child_content_origin(
                         &formatting_context,
                         child_style,
@@ -1937,8 +2298,14 @@ where
                         inline,
                         content_inline,
                     );
-                    let float_state =
-                        formatting_context.float_state_for_descendant(origin.0, origin.1);
+                    let child_content_inline_size =
+                        Self::child_content_inline_size(child_style, child_size, content_inline);
+                    let float_state = formatting_context.float_state_for_descendant(
+                        origin.0,
+                        origin.1,
+                        child_style.flow,
+                        child_content_inline_size,
+                    );
                     self.clear_subtree_cache(child);
                     let next_output = self.compute_block_child(
                         child,
@@ -1956,7 +2323,7 @@ where
                         next_size,
                         content_inline,
                         child_containing_block_size,
-                    )?;
+                    );
                     let next_origin = Self::predicted_child_content_origin(
                         &formatting_context,
                         child_style,
@@ -1986,7 +2353,7 @@ where
                 child_size,
                 content_inline,
                 child_containing_block_size,
-            )?;
+            );
             let placement = if child_style.float != FloatSide::None {
                 formatting_context.place_float(child_style, child_size)
             } else {
@@ -1998,10 +2365,11 @@ where
                         float_avoiding_placement,
                     )
                 } else {
-                    formatting_context.place_in_flow_with_margins(
+                    formatting_context.place_in_flow_with_used_inline(
                         child_style,
                         child_size,
                         child_margin_state,
+                        inline,
                     )
                 }
             };
@@ -2014,6 +2382,8 @@ where
                     float_state,
                     placement.logical_rect.inline_start + padding_border.inline_start,
                     placement.logical_rect.block_start + padding_border.block_start,
+                    child_style.flow,
+                    Self::child_content_inline_size(child_style, child_size, content_inline),
                 );
             }
             let child_padding = child_style.resolved_padding(content_inline);
@@ -2548,17 +2918,85 @@ where
 
     fn grid_child_static_position_area(
         &self,
-        _container_node_id: NodeId,
+        container_node_id: NodeId,
         child_node_id: NodeId,
-        _grid_area: taffy::geometry::Rect<f32>,
+        grid_area: taffy::geometry::Rect<f32>,
         content_box: taffy::geometry::Rect<f32>,
+        grid_area_auto: taffy::geometry::Rect<bool>,
+        container_border: taffy::geometry::Rect<f32>,
+        container_border_box: taffy::Size<f32>,
     ) -> taffy::geometry::Rect<f32> {
-        let _ = child_node_id;
-        // CSS Grid §9.2 treats the direct absolute child as the sole grid item
-        // in an area formed by the grid container's content edges. Its
-        // grid-placement area still belongs to the positioned containing-block
-        // calculation, which is retained separately in `grid_positioned_area`.
-        content_box
+        // CSS Grid §9.2 aligns the direct absolute child as the sole grid item
+        // in an area formed by the grid container's content edges, unless the
+        // grid container also generates the child's containing block; then
+        // the §9.1 grid area applies, an `auto` line being the padding edge.
+        // The renderer records that K5a relationship through
+        // `use_grid_area_for_static_position`. Either way the placement area
+        // stays available to the containing-block route in
+        // `grid_positioned_area`.
+        if self.tree.nodes[AlgorithmNodeId::from_taffy(child_node_id).index()]
+            .grid_static_position_uses_grid_area
+        {
+            let container =
+                &self.tree.nodes[AlgorithmNodeId::from_taffy(container_node_id).index()];
+            let container_size = PhysicalSize {
+                width: container_border_box.width,
+                height: container_border_box.height,
+            };
+            let logical_padding_box = container.block_style.flow.logical_rect(
+                PhysicalRect {
+                    x: container_border.left,
+                    y: container_border.top,
+                    width: (container_border_box.width
+                        - container_border.left
+                        - container_border.right)
+                        .max(0.0),
+                    height: (container_border_box.height
+                        - container_border.top
+                        - container_border.bottom)
+                        .max(0.0),
+                },
+                container_size,
+            );
+            let inline_start = if grid_area_auto.left {
+                logical_padding_box.inline_start
+            } else {
+                grid_area.left
+            };
+            let inline_end = if grid_area_auto.right {
+                logical_padding_box.inline_start + logical_padding_box.inline_size
+            } else {
+                grid_area.right
+            };
+            let block_start = if grid_area_auto.top {
+                logical_padding_box.block_start
+            } else {
+                grid_area.top
+            };
+            let block_end = if grid_area_auto.bottom {
+                logical_padding_box.block_start + logical_padding_box.block_size
+            } else {
+                grid_area.bottom
+            };
+            let track_area = LogicalRect {
+                inline_start,
+                block_start,
+                inline_size: (inline_end - inline_start).max(0.0),
+                block_size: (block_end - block_start).max(0.0),
+            };
+            let physical = container
+                .block_style
+                .flow
+                .physical_rect(track_area, container_size);
+            taffy::geometry::Rect {
+                left: physical.x,
+                right: physical.x + physical.width,
+                top: physical.y,
+                bottom: physical.y + physical.height,
+            }
+        } else {
+            content_box
+        }
     }
 
     fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
@@ -2836,6 +3274,137 @@ mod tests {
                 height: 60.0,
             }),
             "the grid area remains available to the positioned containing-block route"
+        );
+    }
+
+    #[test]
+    fn grid_static_layout_uses_the_grid_area_when_the_grid_is_the_containing_block() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                grid_column: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                grid_row: taffy::Line {
+                    start: line(2),
+                    end: line(3),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                padding: Rect {
+                    left: length(10.0_f32),
+                    right: length(30.0_f32),
+                    top: length(5.0_f32),
+                    bottom: length(25.0_f32),
+                },
+                grid_template_columns: vec![length(80.0_f32), length(80.0_f32)],
+                grid_template_rows: vec![length(40.0_f32), length(30.0_f32)],
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+        tree.use_grid_area_for_static_position(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        // Column 2 starts at padding 10 + 80 and row 2 at padding 5 + 40: the
+        // static location is the start of the placed area, not the content
+        // origin (10, 5) the unselected provider would report.
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
+            (90.0, 45.0)
+        );
+        assert_eq!(
+            tree.grid_positioned_area(positioned),
+            Some(PhysicalRect {
+                x: 90.0,
+                y: 45.0,
+                width: 80.0,
+                height: 30.0,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_static_layout_auto_lines_align_in_the_padding_box_when_selected() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let positioned = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::length(30.0),
+                    height: Dimension::length(20.0),
+                },
+                align_self: Some(AlignItems::CENTER),
+                justify_self: Some(AlignItems::CENTER),
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let root = tree.new_with_children(
+            AlgorithmKind::Grid,
+            Style {
+                display: Display::Grid,
+                size: taffy::Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                padding: Rect {
+                    left: length(10.0_f32),
+                    right: length(30.0_f32),
+                    top: length(5.0_f32),
+                    bottom: length(25.0_f32),
+                },
+                ..Style::default()
+            },
+            &[positioned],
+            0,
+        );
+        tree.enable_flex_grid_static_position_provider(positioned);
+        tree.use_grid_area_for_static_position(positioned);
+
+        tree.compute_layout_with_measure(root, available(200.0, 100.0), zero_measure);
+
+        // `auto` lines bound the area at the padding edges, so centering uses
+        // the 200 x 100 padding box: (85, 40). Centering in the asymmetric
+        // 160 x 70 content box would give (75, 30).
+        assert_eq!(
+            (
+                tree.static_layout(positioned).x,
+                tree.static_layout(positioned).y
+            ),
+            (85.0, 40.0)
         );
     }
 
@@ -4170,7 +4739,7 @@ mod tests {
     }
 
     #[test]
-    fn buckram_exports_nested_negative_margin_floats_through_ordinary_blocks() {
+    fn buckram_exports_nested_negative_margin_floats_through_a_relative_wrapper() {
         let mut tree = AlgorithmTree::<Style, (), u8>::new();
         let nested_float = tree.new_with_children_and_block_style(
             AlgorithmKind::Leaf,
@@ -4212,7 +4781,10 @@ mod tests {
         tree.enable_nested_float_state(inner);
         let outer = tree.new_with_children_and_block_style(
             AlgorithmKind::Block,
-            BlockStyle::default(),
+            BlockStyle {
+                position: crate::BlockPosition::Relative,
+                ..BlockStyle::default()
+            },
             Style {
                 display: Display::Block,
                 ..Style::default()
@@ -4763,6 +5335,24 @@ mod tests {
     #[test]
     fn adapter_propagates_declared_bfc_baselines_without_backend_child_walks() {
         let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let absolute = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                position: crate::BlockPosition::Absolute,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                size: taffy::Size {
+                    width: Dimension::length(80.0),
+                    height: Dimension::length(5.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            3,
+        );
         let flex = tree.new_with_children_and_block_style(
             AlgorithmKind::Flex,
             BlockStyle {
@@ -4797,6 +5387,24 @@ mod tests {
             &[],
             2,
         );
+        let fixed = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                position: crate::BlockPosition::Fixed,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                size: taffy::Size {
+                    width: Dimension::length(80.0),
+                    height: Dimension::length(5.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            4,
+        );
         let root = tree.new_with_children_and_block_style(
             AlgorithmKind::Block,
             BlockStyle {
@@ -4811,7 +5419,7 @@ mod tests {
                 },
                 ..Style::default()
             },
-            &[flex, grid],
+            &[absolute, flex, grid, fixed],
             0,
         );
 
@@ -4823,6 +5431,14 @@ mod tests {
         tree.set_baselines(
             grid,
             Baselines::new(Some(11.0), Some(13.0)).expect("grid baselines"),
+        );
+        tree.set_baselines(
+            absolute,
+            Baselines::new(Some(1.0), Some(2.0)).expect("absolute baselines"),
+        );
+        tree.set_baselines(
+            fixed,
+            Baselines::new(Some(40.0), Some(50.0)).expect("fixed baselines"),
         );
         tree.propagate_declared_baselines();
 
@@ -4932,6 +5548,146 @@ mod tests {
                 "the backend overwrote a rectangle the table algorithm owns"
             );
         }
+    }
+
+    #[test]
+    fn orthogonal_auto_inline_uses_intrinsic_child_block_contribution() {
+        use crate::{Direction, WritingMode};
+
+        let horizontal = FlowAxes::HORIZONTAL_LTR;
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let text = tree.new_leaf_with_context_and_block_style(
+            BlockStyle::anonymous(horizontal, horizontal),
+            Style::default(),
+            (),
+            2,
+        );
+        let line = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle::anonymous(horizontal, vertical),
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[text],
+            1,
+        );
+        let root = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: horizontal,
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[line],
+            0,
+        );
+
+        tree.compute_layout_with_measure(
+            root,
+            available(300.0, 200.0),
+            |known, available, node, _context, _line_constraints| {
+                assert_eq!(node, text);
+                let width = known.width.unwrap_or_else(|| match available.width {
+                    AlgorithmAvailableSpace::Definite(width) => 120.0_f32.min(width),
+                    AlgorithmAvailableSpace::MinContent => 40.0,
+                    AlgorithmAvailableSpace::MaxContent => 120.0,
+                });
+                AlgorithmSize::new(width, known.height.unwrap_or(20.0))
+            },
+        );
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.block_algorithm(line), Some(BlockAlgorithm::Buckram));
+        assert_eq!(
+            tree.layout(root),
+            AlgorithmLayout {
+                width: 120.0,
+                height: 20.0,
+                ..AlgorithmLayout::default()
+            }
+        );
+        assert_eq!(
+            tree.layout(line),
+            AlgorithmLayout {
+                width: 120.0,
+                height: 20.0,
+                ..AlgorithmLayout::default()
+            }
+        );
+    }
+
+    #[test]
+    fn orthogonal_auto_inline_rejects_a_nested_flow_boundary() {
+        use crate::{Direction, WritingMode};
+
+        let horizontal = FlowAxes::HORIZONTAL_LTR;
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let text = tree.new_leaf_with_context_and_block_style(
+            BlockStyle::anonymous(horizontal, horizontal),
+            Style::default(),
+            (),
+            3,
+        );
+        let line = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle::anonymous(horizontal, vertical),
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[text],
+            2,
+        );
+        let same_flow_wrapper = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle::anonymous(vertical, vertical),
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[line],
+            1,
+        );
+        let root = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                flow: vertical,
+                containing_flow: horizontal,
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                ..Style::default()
+            },
+            &[same_flow_wrapper],
+            0,
+        );
+
+        tree.compute_layout_with_measure(
+            root,
+            available(300.0, 200.0),
+            |known, available, node, _context, _line_constraints| {
+                assert_eq!(node, text);
+                let width = known.width.unwrap_or_else(|| match available.width {
+                    AlgorithmAvailableSpace::Definite(width) => 120.0_f32.min(width),
+                    AlgorithmAvailableSpace::MinContent => 40.0,
+                    AlgorithmAvailableSpace::MaxContent => 120.0,
+                });
+                AlgorithmSize::new(width, known.height.unwrap_or(20.0))
+            },
+        );
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.layout(root).height, 200.0);
     }
 
     #[test]
@@ -5291,5 +6047,385 @@ mod tests {
             tree.block_deferral(child),
             Some(BlockDeferral::BackendSizingMode)
         );
+    }
+
+    fn leaf_with_height(
+        tree: &mut AlgorithmTree<Style, (), u8>,
+        height: f32,
+        source: u8,
+    ) -> AlgorithmNodeId {
+        tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                size: crate::BlockDimensions::new(
+                    BlockSizeValue::Auto,
+                    BlockSizeValue::Length(crate::FlowLength::px(height)),
+                ),
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::auto(),
+                    height: Dimension::length(height),
+                },
+                ..Style::default()
+            },
+            &[],
+            source,
+        )
+    }
+
+    fn bfc_root_with_children(
+        tree: &mut AlgorithmTree<Style, (), u8>,
+        width: f32,
+        children: &[AlgorithmNodeId],
+    ) -> AlgorithmNodeId {
+        tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                size: taffy::Size {
+                    width: Dimension::length(width),
+                    height: Dimension::auto(),
+                },
+                ..Style::default()
+            },
+            children,
+            0,
+        )
+    }
+
+    /// Lane 8 (2026-08-21): a table wrapper box is an opaque block child of
+    /// the owned block formatter. Its `auto` inline size is the grid's
+    /// border-edge inline size (CSS Tables 3 section 2.2.1), so `margin: auto`
+    /// centers it by that width, and neither it nor its parent falls back to
+    /// Taffy because the grid establishes its own formatting context.
+    #[test]
+    fn buckram_admits_a_table_wrapper_as_an_opaque_block_sized_by_its_grid() {
+        let mut tree: AlgorithmTree<Style, (), u8> = AlgorithmTree::new();
+        let cells = (0..2)
+            .map(|index| {
+                tree.new_with_children_and_block_style(
+                    AlgorithmKind::Block,
+                    BlockStyle::default(),
+                    Style::default(),
+                    &[],
+                    index,
+                )
+            })
+            .collect::<Vec<_>>();
+        let grid = tree.new_with_children_and_block_style(
+            AlgorithmKind::Table,
+            BlockStyle {
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style::default(),
+            &cells,
+            9,
+        );
+        // The wrapper carries the table's margins (CSS 2.1 section 17.4).
+        let wrapper = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                establishes_bfc: true,
+                margin: PhysicalSides {
+                    top: FlowLengthAuto::ZERO,
+                    right: FlowLengthAuto::Auto,
+                    bottom: FlowLengthAuto::ZERO,
+                    left: FlowLengthAuto::Auto,
+                },
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                margin: Rect {
+                    left: taffy::LengthPercentageAuto::auto(),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    top: taffy::LengthPercentageAuto::length(0.0),
+                    bottom: taffy::LengthPercentageAuto::length(0.0),
+                },
+                ..Style::default()
+            },
+            &[grid],
+            10,
+        );
+        let after = leaf_with_height(&mut tree, 10.0, 11);
+        let root = bfc_root_with_children(&mut tree, 200.0, &[wrapper, after]);
+        let decided = [
+            AlgorithmLayout {
+                x: 0.0,
+                y: 0.0,
+                width: 60.0,
+                height: 25.0,
+            },
+            AlgorithmLayout {
+                x: 60.0,
+                y: 0.0,
+                width: 40.0,
+                height: 25.0,
+            },
+        ];
+        for (cell, layout) in cells.iter().zip(decided) {
+            tree.set_layout(*cell, layout);
+        }
+        tree.set_layout(
+            grid,
+            AlgorithmLayout {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 25.0,
+            },
+        );
+        tree.set_table_wrapper_inline_size(wrapper, 100.0);
+
+        tree.compute_layout_with_measure(root, available(200.0, 200.0), zero_measure);
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.block_algorithm(wrapper), Some(BlockAlgorithm::Buckram));
+        assert_eq!(
+            tree.layout(wrapper),
+            AlgorithmLayout {
+                x: 50.0,
+                y: 0.0,
+                width: 100.0,
+                height: 25.0,
+            },
+            "the wrapper is as wide as its grid and centered by its auto margins"
+        );
+        assert_eq!(
+            tree.layout(grid),
+            AlgorithmLayout {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 25.0,
+            }
+        );
+        for (cell, expected) in cells.iter().zip(decided) {
+            assert_eq!(tree.layout(*cell), expected);
+        }
+        assert_eq!(tree.layout(after).y, 25.0);
+        assert_eq!(tree.layout(root).height, 35.0);
+    }
+
+    /// A flow-root whose own subtree defers (a replaced child) is laid out by
+    /// Taffy on its own, and its parent places it with margins modeled from
+    /// its style: 30px below the previous sibling's margin, not deferred.
+    #[test]
+    fn a_deferred_flow_root_child_does_not_defer_its_buckram_parent() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let replaced = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                replaced: true,
+                size: crate::BlockDimensions::new(
+                    BlockSizeValue::Length(crate::FlowLength::px(50.0)),
+                    BlockSizeValue::Length(crate::FlowLength::px(30.0)),
+                ),
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::length(50.0),
+                    height: Dimension::length(30.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let flow_root = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                establishes_bfc: true,
+                margin: PhysicalSides {
+                    top: FlowLengthAuto::Value(crate::FlowLength::px(10.0)),
+                    right: FlowLengthAuto::ZERO,
+                    bottom: FlowLengthAuto::Value(crate::FlowLength::px(20.0)),
+                    left: FlowLengthAuto::ZERO,
+                },
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                margin: Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::length(0.0),
+                    top: taffy::LengthPercentageAuto::length(10.0),
+                    bottom: taffy::LengthPercentageAuto::length(20.0),
+                },
+                ..Style::default()
+            },
+            &[replaced],
+            2,
+        );
+        let before = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                size: crate::BlockDimensions::new(
+                    BlockSizeValue::Auto,
+                    BlockSizeValue::Length(crate::FlowLength::px(40.0)),
+                ),
+                margin: PhysicalSides {
+                    top: FlowLengthAuto::ZERO,
+                    right: FlowLengthAuto::ZERO,
+                    bottom: FlowLengthAuto::Value(crate::FlowLength::px(30.0)),
+                    left: FlowLengthAuto::ZERO,
+                },
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::auto(),
+                    height: Dimension::length(40.0),
+                },
+                margin: Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::length(0.0),
+                    top: taffy::LengthPercentageAuto::length(0.0),
+                    bottom: taffy::LengthPercentageAuto::length(30.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            3,
+        );
+        let after = leaf_with_height(&mut tree, 10.0, 4);
+        let root = bfc_root_with_children(&mut tree, 200.0, &[before, flow_root, after]);
+
+        tree.compute_layout_with_measure(root, available(200.0, 200.0), zero_measure);
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.block_algorithm(flow_root), Some(BlockAlgorithm::Taffy));
+        assert_eq!(
+            tree.block_deferral(flow_root),
+            Some(BlockDeferral::Replaced)
+        );
+        assert_eq!(
+            tree.layout(flow_root),
+            AlgorithmLayout {
+                x: 0.0,
+                y: 70.0,
+                width: 200.0,
+                height: 30.0,
+            },
+            "30px bottom margin and 10px top margin collapse to 30px below a 40px sibling"
+        );
+        assert_eq!(tree.layout(after).y, 120.0);
+        assert_eq!(tree.layout(root).height, 130.0);
+    }
+
+    /// CSS 2.1 section 9.5 still applies: beside an active float, a BFC child
+    /// without the avoidance opt-in defers with the float deferral, not with a
+    /// formatting-context deferral, and the parent falls back as before.
+    #[test]
+    fn a_table_beside_an_active_float_still_defers_to_float_avoidance() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let float = tree.new_with_children_and_block_style(
+            AlgorithmKind::Leaf,
+            BlockStyle {
+                size: crate::BlockDimensions::new(
+                    BlockSizeValue::Length(crate::FlowLength::px(80.0)),
+                    BlockSizeValue::Length(crate::FlowLength::px(40.0)),
+                ),
+                float: FloatSide::Left,
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style {
+                size: taffy::Size {
+                    width: Dimension::length(80.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Style::default()
+            },
+            &[],
+            1,
+        );
+        let grid = tree.new_with_children_and_block_style(
+            AlgorithmKind::Table,
+            BlockStyle {
+                establishes_bfc: true,
+                ..BlockStyle::default()
+            },
+            Style::default(),
+            &[],
+            2,
+        );
+        tree.set_layout(
+            grid,
+            AlgorithmLayout {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 25.0,
+            },
+        );
+        let root = bfc_root_with_children(&mut tree, 200.0, &[float, grid]);
+
+        tree.compute_layout_with_measure(root, available(200.0, 200.0), zero_measure);
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Taffy));
+        assert_eq!(
+            tree.block_deferral(root),
+            Some(BlockDeferral::FloatFormattingContextAvoidance)
+        );
+    }
+
+    /// A relatively positioned scroll container establishes a BFC but is not
+    /// a float-avoidance candidate in Livery; without an active float it is an
+    /// ordinary opaque block child.
+    #[test]
+    fn a_relatively_positioned_scroll_container_is_an_opaque_block_child() {
+        let mut tree = AlgorithmTree::<Style, (), u8>::new();
+        let inner = leaf_with_height(&mut tree, 10.0, 1);
+        let scroll = tree.new_with_children_and_block_style(
+            AlgorithmKind::Block,
+            BlockStyle {
+                establishes_bfc: true,
+                position: crate::BlockPosition::Relative,
+                margin: PhysicalSides {
+                    top: FlowLengthAuto::Value(crate::FlowLength::px(10.0)),
+                    right: FlowLengthAuto::ZERO,
+                    bottom: FlowLengthAuto::ZERO,
+                    left: FlowLengthAuto::ZERO,
+                },
+                ..BlockStyle::default()
+            },
+            Style {
+                display: Display::Block,
+                margin: Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::length(0.0),
+                    top: taffy::LengthPercentageAuto::length(10.0),
+                    bottom: taffy::LengthPercentageAuto::length(0.0),
+                },
+                ..Style::default()
+            },
+            &[inner],
+            2,
+        );
+        let root = bfc_root_with_children(&mut tree, 200.0, &[scroll]);
+
+        tree.compute_layout_with_measure(root, available(200.0, 200.0), zero_measure);
+
+        assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+        assert_eq!(tree.block_algorithm(scroll), Some(BlockAlgorithm::Buckram));
+        assert_eq!(
+            tree.layout(scroll),
+            AlgorithmLayout {
+                x: 0.0,
+                y: 10.0,
+                width: 200.0,
+                height: 10.0,
+            }
+        );
+        assert_eq!(tree.layout(root).height, 20.0);
     }
 }

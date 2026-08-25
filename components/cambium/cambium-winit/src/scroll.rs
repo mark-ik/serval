@@ -5,7 +5,7 @@
 //! Shared scroll *policy* for Cambium winit hosts: the desktop input
 //! conventions and chrome timing that every app wants identical, kept out of
 //! each host's event loop. The scroll *mechanism* (routing a delta to a
-//! container, thumb geometry) lives in the engine (`genet-layout`); this module
+//! container, thumb geometry) lives in the retained Livery/Buckram host; this module
 //! only decides how gestures map to axes and when overlay scrollbars show.
 
 use std::collections::HashMap;

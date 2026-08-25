@@ -1,7 +1,7 @@
 {
   "command": "testharness",
   "engine": "boa",
-  "renderer": "stylo",
+  "renderer": "livery",
   "tests": {
     "css/mediaqueries/aspect-ratio-001.html": {
       "reason": "non-testharness",
@@ -28,8 +28,8 @@
       "status": "skip"
     },
     "css/mediaqueries/aspect-ratio-serialization.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "css/mediaqueries/at-custom-media-basic.html": {
@@ -64,7 +64,7 @@
     },
     "css/mediaqueries/display-mode.html": {
       "status": "fail",
-      "subtests_passed": 6,
+      "subtests_passed": 5,
       "subtests_total": 17
     },
     "css/mediaqueries/display-mode.tentative.html": {
@@ -78,7 +78,7 @@
     },
     "css/mediaqueries/dynamic-range.html": {
       "status": "fail",
-      "subtests_passed": 11,
+      "subtests_passed": 3,
       "subtests_total": 23
     },
     "css/mediaqueries/forced-colors.html": {
@@ -92,8 +92,8 @@
       "subtests_total": 15
     },
     "css/mediaqueries/match-media-parsing.html": {
-      "status": "pass",
-      "subtests_passed": 34,
+      "status": "fail",
+      "subtests_passed": 9,
       "subtests_total": 34
     },
     "css/mediaqueries/media-queries-001.xht": {
@@ -231,8 +231,9 @@
       "status": "skip"
     },
     "css/mediaqueries/mq-invalid-media-type-005.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "css/mediaqueries/mq-invalid-media-type-006.html": {
       "reason": "non-testharness",
@@ -243,8 +244,9 @@
       "status": "skip"
     },
     "css/mediaqueries/mq-invalid-media-type-layer-002.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "css/mediaqueries/mq-negative-range-001.html": {
       "reason": "non-testharness",
@@ -269,7 +271,7 @@
     },
     "css/mediaqueries/navigation-controls.tentative.html": {
       "status": "fail",
-      "subtests_passed": 2,
+      "subtests_passed": 0,
       "subtests_total": 8
     },
     "css/mediaqueries/negation-001.html": {
@@ -282,7 +284,7 @@
     },
     "css/mediaqueries/overflow-media-features.html": {
       "status": "fail",
-      "subtests_passed": 13,
+      "subtests_passed": 5,
       "subtests_total": 28
     },
     "css/mediaqueries/preferences-colorScheme.tentative.https.html": {
@@ -332,7 +334,7 @@
     },
     "css/mediaqueries/prefers-color-scheme.html": {
       "status": "fail",
-      "subtests_passed": 8,
+      "subtests_passed": 7,
       "subtests_total": 18
     },
     "css/mediaqueries/prefers-contrast.html": {
@@ -342,7 +344,7 @@
     },
     "css/mediaqueries/prefers-reduced-data.html": {
       "status": "fail",
-      "subtests_passed": 7,
+      "subtests_passed": 1,
       "subtests_total": 17
     },
     "css/mediaqueries/prefers-reduced-motion.html": {
@@ -386,7 +388,7 @@
     },
     "css/mediaqueries/scripting.html": {
       "status": "fail",
-      "subtests_passed": 5,
+      "subtests_passed": 4,
       "subtests_total": 12
     },
     "css/mediaqueries/test_media_queries.html": {
@@ -395,7 +397,7 @@
     },
     "css/mediaqueries/update-media-feature.html": {
       "status": "fail",
-      "subtests_passed": 7,
+      "subtests_passed": 6,
       "subtests_total": 14
     },
     "css/mediaqueries/viewport-script-dynamic.html": {

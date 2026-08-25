@@ -55,6 +55,11 @@ pub struct LaneSummary {
     pub observed_tests: usize,
     pub missing_hostable_tests: usize,
     pub statuses: StatusCounts,
+    /// Pixel passes whose result metadata says the reference comparison does
+    /// not verify the capability under test. Kept inside `statuses.pass` for
+    /// result-format compatibility and subtracted for capability credit.
+    #[serde(default)]
+    pub reference_unverified_passes: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtests: Option<SubtestSummary>,
 }
@@ -391,6 +396,14 @@ fn load_lane_results(
                 continue;
             }
             let record = parse_result_record(&url, value)?;
+            if record.reason.as_deref() == Some("reference-unverified")
+                && (lane != Lane::Reftest || record.status != "pass")
+            {
+                return Err(format!(
+                    "{} marks `{url}` as reference-unverified outside a passing reftest result",
+                    path.display()
+                ));
+            }
             if test.is_worker() {
                 if record.status != "skip" {
                     return Err(format!(
@@ -534,6 +547,12 @@ fn summarize_lane(
         if let Some(record) = records.get(&url) {
             summary.observed_tests += 1;
             summary.statuses.record(&record.status)?;
+            if lane == Lane::Reftest
+                && record.status == "pass"
+                && record.reason.as_deref() == Some("reference-unverified")
+            {
+                summary.reference_unverified_passes += 1;
+            }
             if let Some(subtests) = summary.subtests.as_mut() {
                 if let Some((passed, total)) = record.subtests {
                     subtests.passed += passed;
@@ -605,6 +624,14 @@ impl ConformanceReport {
                 path.display()
             ));
         }
+        if report.testharness.reference_unverified_passes != 0
+            || report.reftest.reference_unverified_passes > report.reftest.statuses.pass
+        {
+            return Err(format!(
+                "{} has inconsistent reference-verification accounting",
+                path.display()
+            ));
+        }
         Ok(report)
     }
 
@@ -626,7 +653,7 @@ impl ConformanceReport {
                files: pass {}  fail {}  skip {}  error {}  no-results {}\n\
                subtests: {}/{} passed; {} observed files had no subtest counts\n\
              reftest: observed {}/{} hostable, unhostable {}, missing {}\n\
-               files: pass {}  fail {}  skip {}  error {}\n\
+               files: pass {} (verified {}, reference-unverified {})  fail {}  skip {}  error {}\n\
              unsupported manifest kinds: {}",
             self.subset,
             self.testharness_cssom,
@@ -662,6 +689,11 @@ impl ConformanceReport {
             reftest.unhostable_manifest_tests,
             reftest.missing_hostable_tests,
             reftest.statuses.pass,
+            reftest
+                .statuses
+                .pass
+                .saturating_sub(reftest.reference_unverified_passes),
+            reftest.reference_unverified_passes,
             reftest.statuses.fail,
             reftest.statuses.skip,
             reftest.statuses.error,
@@ -732,7 +764,8 @@ impl ConformanceReport {
              testharness total subtests observed: {:+}\n\
              testharness passing files: {:+}\n\
              testharness missing hostable files: {:+}\n\
-             reftest passing files: {:+}\n\
+             reftest verified passing files: {:+}\n\
+             reftest reference-unverified passing files: {:+}\n\
              reftest missing hostable files: {:+}\n\
              unsupported manifest kinds: {:+}",
             yes_no(self.provenance.manifest_sha256 != baseline.provenance.manifest_sha256),
@@ -754,7 +787,21 @@ impl ConformanceReport {
                 self.testharness.missing_hostable_tests,
                 baseline.testharness.missing_hostable_tests,
             ),
-            signed_delta(self.reftest.statuses.pass, baseline.reftest.statuses.pass),
+            signed_delta(
+                self.reftest
+                    .statuses
+                    .pass
+                    .saturating_sub(self.reftest.reference_unverified_passes),
+                baseline
+                    .reftest
+                    .statuses
+                    .pass
+                    .saturating_sub(baseline.reftest.reference_unverified_passes),
+            ),
+            signed_delta(
+                self.reftest.reference_unverified_passes,
+                baseline.reftest.reference_unverified_passes,
+            ),
             signed_delta(
                 self.reftest.missing_hostable_tests,
                 baseline.reftest.missing_hostable_tests,
@@ -898,6 +945,48 @@ mod tests {
         );
         assert_eq!(report.reftest.missing_hostable_tests, 1);
         assert_eq!(report.unsupported_manifest_tests, 1);
+        let _ = fs::remove_file(harness_path);
+        let _ = fs::remove_file(reftest_path);
+    }
+
+    #[test]
+    fn reference_unverified_passes_are_reported_without_capability_credit() {
+        let tests = vec![
+            manifest_test("/css/a.html", "css/a.html", TestKind::Testharness),
+            manifest_test("/css/b.html", "css/b.html", TestKind::Reftest),
+        ];
+        let harness_path = write_results(
+            &temp_path("reference-verification-harness"),
+            "testharness",
+            serde_json::json!({"css/a.html": "pass"}),
+        );
+        let reftest_path = write_results(
+            &temp_path("reference-verification-reftest"),
+            "reftest",
+            serde_json::json!({
+                "css/b.html": {
+                    "status": "pass",
+                    "reason": "reference-unverified"
+                }
+            }),
+        );
+        let report = build_report(
+            &tests,
+            inputs(
+                std::slice::from_ref(&reftest_path),
+                std::slice::from_ref(&harness_path),
+            ),
+        )
+        .expect("reference-unverified result remains a complete report");
+        assert_eq!(report.reftest.statuses.pass, 1);
+        assert_eq!(report.reftest.reference_unverified_passes, 1);
+        assert!(
+            report
+                .human_summary()
+                .contains("pass 1 (verified 0, reference-unverified 1)"),
+            "{}",
+            report.human_summary()
+        );
         let _ = fs::remove_file(harness_path);
         let _ = fs::remove_file(reftest_path);
     }

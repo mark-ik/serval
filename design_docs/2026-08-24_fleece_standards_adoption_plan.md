@@ -1,8 +1,11 @@
 # Plan: fleece standards-shaped extraction
 
-**Date:** 2026-08-24  
-**Status:** planned 2026-08-24; parallel execution map added 2026-08-24. Phase
-A is the next executable slice. The completed 0.1 reader/extraction work remains recorded in the
+**Date:** 2026-08-24
+**Status:** Complete 2026-08-25. Fleece 0.4 metadata/link and table semantics
+landed on Genet `main` through `dcb5c4ab4c3`; Phases E-F are complete. The
+Fleece 0.2 selector release and Knot consumer receipt, H0 module split, and
+Fleece 0.3 structured-data release remain green. The completed 0.1
+reader/extraction work remains recorded in the
 [original scope and receipt](../docs/2026-08-22_fleece_reader_extraction_scope.md).
 
 ## Purpose
@@ -194,6 +197,10 @@ remain unchanged. After H0, these packets may run together:
 change, the Fleece and reader gates match their pre-split receipts, and each
 later packet's write fence is physically separate from the others.
 
+**H0 receipt:** complete in `5f360157068`. The structured-data, metadata, and
+table implementations now have separate modules and the pre-split 35-test
+Fleece receipt remained unchanged.
+
 | Packet | Agent | Write fence | Phase |
 |---|---|---|---|
 | **TD: structured-data fidelity** | Terra | `structured.rs` plus new `tests/structured_data.rs` and `tests/fixtures/structured/**` | D |
@@ -331,6 +338,14 @@ value-carrying element, and preservation of non-schema.org identifiers. The
 public documentation makes the JSON-LD and raw-URL limits impossible to mistake
 for full semantic processing.
 
+**Receipt:** complete in Genet `2d94ef09490`; published as `fleece = "0.3.0"`
+and re-exported by `genet-extract = "0.2.0"`. The implementation preserves
+complete declared types, identifiers, contexts, uninterpreted JSON-LD values,
+and explicit `@graph` members. Microdata follows HTML-namespace traversal,
+tree-ordered `itemref`, tokenization, nested-item/cycle, and element-value rules
+while deliberately retaining raw URL attributes. All 40 tests passed both in
+the workspace and from the generated package source.
+
 ## Phase E: document links and Open Graph grouping
 
 Retain the ordered raw Open Graph pairs as evidence and add a grouped view in
@@ -346,6 +361,13 @@ document order; unknown properties survive; mixed-case registered relations,
 multiple relation tokens, and extension relation IRIs have fixtures; and HTTP
 header links remain absent from the Fleece contract.
 
+**Receipt:** complete in Genet `dcb5c4ab4c3`; published as `fleece = "0.4.0"`
+and re-exported by `genet-extract = "0.3.0"`. Fleece retains ordered raw Open
+Graph pairs and adds root/structured groups without inventing groups for
+orphan properties. Document links preserve raw DOM values and attribute order;
+registered relation tokens compare ASCII-case-insensitively while extension
+IRIs retain their source spelling. HTTP `Link` headers remain outside Fleece.
+
 ## Phase F: HTML table semantics
 
 Replace `Block::Table { rows }`'s shallow cell model with a table value that
@@ -354,10 +376,22 @@ can retain caption, row groups, a declared source `id`, `scope`, `headers`,
 HTML table-forming and header-association behavior over the extracted table.
 Keep presentation and layout measurements out of Fleece.
 
-**Done when:** hand-labelled fixtures cover row and column spans, all `scope`
-values, explicit `headers` references, row groups, captions, irregular tables,
-and associated-header results for each data cell. Reader lowering still renders
-the same text while accessibility/semantic consumers receive the richer shape.
+**Done when:** hand-labelled fixtures cover row and column spans, `rowspan=0`,
+HTML integer parsing and clamping, every `scope` value, explicit `headers`
+references, row and column groups, captions, irregular tables, nested-table
+boundaries, and deterministic overlap errors. Header-association fixtures cover
+document-wide duplicate-ID shadowing, same-table header filtering, explicit
+header precedence, empty-header filtering, and stable ordered deduplication.
+Reader lowering still renders the same text while accessibility/semantic
+consumers receive the richer shape.
+
+**Receipt:** complete in Genet `dcb5c4ab4c3`; published as `fleece = "0.4.0"`.
+`Block::Table` now exposes caption, source ID, model-order row groups, implied
+rows, computed grid coordinates, spans, scopes, declared header tokens,
+associated headers, and deterministic overlap evidence. Nested tables neither
+contribute cells nor leak text into the outer table. The real
+`genet-documents` reader lowering preserves rendered table text and passed its
+five reader-feature tests.
 
 ## Phase G: consumer proof and publication
 
@@ -412,6 +446,25 @@ or worktree remains.
 - Text Fragment Directives remain a draft and deliberately have browser privacy
   and activation behavior beyond string generation. That behavior cannot be
   smuggled into Fleece's render-free extraction contract.
+- The grapheme gate cannot be met with Rust's standard library alone. Genet
+  already carries `unicode-segmentation` in its workspace and lockfile, so T0
+  consumes that existing package rather than growing a private Unicode table.
+
+### 2026-08-25
+
+- Open Graph grouping must remain a projection over ordered raw pairs. Orphan
+  structured properties stay raw rather than being attached to an invented
+  root, and unknown root/structured names remain observable.
+- HTML link relation matching and tokenization use ASCII rules. Keeping raw
+  extension-IRI spelling and exposing case-insensitive lookup avoids turning
+  Fleece into a relation registry or URL resolver.
+- Table semantics require a model grid, not only richer cell fields. Span
+  clamping, implied rows, row-group model order, document-wide ID lookup,
+  same-table header filtering, and deterministic overlap evidence all affect
+  the associations a semantic consumer observes.
+- Nested-table exclusion applies to both the row/cell walk and extracted text;
+  guarding only the structural walk silently leaks inner-table runs into the
+  outer cell.
 
 ## Progress
 
@@ -423,3 +476,52 @@ or worktree remains.
   Fleece API break under one owner, parallelizes conformance, Text Fragment,
   lowering, and consumer packets behind a frozen contract, and requires a
   semantics-preserving module split before later standards lanes run together.
+- **2026-08-24:** T0 committed as `83deb2a7524` on pinned base `2507e9f1e52` in
+  the detached integration worktree. It adds `FleeceDomTextV1`, sibling quote
+  and position selectors, recursive `AnchoredBlock`, configurable grapheme-safe
+  context, and normalization lineage. Fleece passed 23 tests and the unchanged
+  20-page corpus. The commit is not yet on `origin/main`; L0, L1, and T1 are
+  active against the frozen pre-amend contract and will be integrated onto it.
+- **2026-08-25:** Replayed the complete selector wave twice as `origin/main`
+  advanced, then pushed Genet `063249e2332`. Fleece 0.2.0 is published on
+  crates.io. The release includes canonical code-point coordinates, grapheme-safe
+  anchors and context, conservative unanchoring for split/discontinuous ranges,
+  recursive reader lowering, and the pinned Text Fragment projection.
+- **2026-08-25:** Release gates passed: 23 Fleece unit tests, eight independent
+  anchor-conformance tests, four Text Fragment tests including repeated-quote
+  resolution, the unchanged 20-page corpus, static/scripted profile equivalence,
+  `genet-documents` 2/2, Inker reader routing 1/1, `genet-extract`, Pelt's reader
+  feature, packaged-source verification, and the render-free dependency-tree
+  receipt (`layout-dom-api` plus `unicode-segmentation`).
+- **2026-08-25:** Knot's Web Annotation target serializer landed on Mere `main`
+  as `29db0a2e`, followed by the published dependency update `a8f1e568`. Its exact
+  serializer module and independent selector-resolution fixture passed against a
+  downloaded `fleece = "=0.2.0"`. The full Knot package and Turnstone checks did
+  not reach compilation because their lockless dependency resolvers backtracked
+  for more than an hour under concurrent workspace load; this is recorded as an
+  environment gate, not a passing receipt.
+- **2026-08-25:** H0 landed as `5f360157068`, splitting structured data,
+  metadata, and table extraction into physically separate modules without
+  changing the 35-test baseline.
+- **2026-08-25:** Phase D landed on Genet `main` through `2d94ef09490` and was
+  published as Fleece 0.3.0. Four structured-data conformance tests cover
+  JSON-LD identity and `@graph`, the Microdata item model and `itemref`, the
+  element value matrix, HTML namespaces, exact whitespace, nested items, and
+  cycles. The full 40-test suite and clippy passed; the generated package source
+  independently passed the same 40 tests.
+- **2026-08-25:** `genet-extract = "0.2.0"` was packaged against the downloaded
+  crates.io Fleece 0.3.0 release and then published. `genet-documents`, the
+  extraction shim, Pelt's reader feature, static/scripted equivalence, and the
+  Inker reader route remained green before publication.
+- **2026-08-25:** LE and TF ran in parallel from pinned Genet
+  `2d94ef09490` in disposable detached worktrees. LE added ordered Open Graph
+  grouping and DOM document links. TF implemented the HTML table model,
+  including span/grid formation, row-group ordering, scoped and explicit
+  header association, nested-table boundaries, and deterministic overlap
+  evidence. Independent conformance review tightened HTML whitespace, span
+  clamping, duplicate-ID, orphan-property, and association-order behavior.
+- **2026-08-25:** The six focused Phase E/F commits were replayed over current
+  `origin/main` and pushed through `dcb5c4ab4c3`. All 53 Fleece tests, strict
+  clippy, the generated package-source suite, crates.io dry-run, and the real
+  five-test `genet-documents` reader seam passed. Fleece 0.4.0 and the thin
+  `genet-extract` 0.3.0 re-export were published from that source.

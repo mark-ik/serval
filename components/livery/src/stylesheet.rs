@@ -10,7 +10,9 @@ use crate::cascade::{
 use crate::custom::CustomProperties;
 use crate::media::{Device, MediaParseError, MediaQueryList};
 use crate::selector::{Element, SelectorList, SelectorParseError};
-use crate::values::{ContainerType, LengthPercentage, RelativeLengthEnvironment, WritingMode};
+use crate::values::{
+    ContainerType, FontFeatureSettings, LengthPercentage, RelativeLengthEnvironment, WritingMode,
+};
 
 /// A recoverable stylesheet parse diagnostic. Invalid rules are dropped while
 /// later rules continue parsing, matching CSS's rule-level recovery model.
@@ -28,6 +30,7 @@ pub struct StylesheetDiagnostic {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CssRule {
     Style(StyleRule),
+    FontFace(FontFaceRule),
     Media(MediaRule),
     Container(ContainerRule),
     Keyframes(Keyframes),
@@ -40,6 +43,7 @@ pub enum CssRule {
 pub enum CssomRuleKind {
     Style,
     Import,
+    FontFace,
     Media,
     Container,
     Keyframes,
@@ -87,6 +91,7 @@ impl CssRule {
     pub fn cssom_rule(&self) -> CssomRule {
         match self {
             Self::Style(rule) => rule.cssom_rule(),
+            Self::FontFace(rule) => rule.cssom_rule(),
             Self::Media(rule) => {
                 let children = rule
                     .rules
@@ -140,6 +145,66 @@ impl CssRule {
                 }
             },
             Self::Keyframes(rule) => rule.cssom_rule(),
+        }
+    }
+}
+
+/// The bounded `@font-face` descriptors consumed by Genet-Livery's host font
+/// bridge. Source fetching remains outside the stylesheet parser.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FontFaceRule {
+    family: Box<str>,
+    sources: Box<[Box<str>]>,
+    feature_settings: FontFeatureSettings,
+    host_loadable: bool,
+}
+
+impl FontFaceRule {
+    pub fn family(&self) -> &str {
+        &self.family
+    }
+
+    pub fn sources(&self) -> &[Box<str>] {
+        &self.sources
+    }
+
+    pub fn feature_settings(&self) -> &FontFeatureSettings {
+        &self.feature_settings
+    }
+
+    /// Whether Genet-Livery can register this face without ignoring a
+    /// descriptor that changes face selection or metrics.
+    pub fn is_host_loadable(&self) -> bool {
+        self.host_loadable
+    }
+
+    fn cssom_rule(&self) -> CssomRule {
+        let family = if self.family.contains(char::is_whitespace) {
+            format!("\"{}\"", self.family)
+        } else {
+            self.family.to_string()
+        };
+        let sources = self
+            .sources
+            .iter()
+            .map(|source| format!("url(\"{source}\")"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let features = if matches!(&self.feature_settings, FontFeatureSettings::Normal) {
+            String::new()
+        } else {
+            format!(" font-feature-settings: {};", self.feature_settings)
+        };
+        let style_text = format!("font-family: {family}; src: {sources};{features}");
+        CssomRule {
+            kind: CssomRuleKind::FontFace,
+            css_text: format!("@font-face {{ {style_text} }}"),
+            selector_text: None,
+            style_text: Some(style_text),
+            condition_text: None,
+            name: Some(self.family.to_string()),
+            key_text: None,
+            children: Vec::new(),
         }
     }
 }
@@ -358,6 +423,7 @@ pub struct Stylesheet {
     source_order_offset: u64,
     generation: u64,
     rules: Vec<StyleRule>,
+    font_faces: Vec<FontFaceRule>,
     keyframes: Vec<Keyframes>,
     diagnostics: Vec<StylesheetDiagnostic>,
 }
@@ -370,6 +436,7 @@ impl Default for Stylesheet {
             source_order_offset: 0,
             generation: 0,
             rules: Vec::new(),
+            font_faces: Vec::new(),
             keyframes: Vec::new(),
             diagnostics: Vec::new(),
         }
@@ -467,6 +534,7 @@ impl Stylesheet {
     fn reindex(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.rules.clear();
+        self.font_faces.clear();
         self.keyframes.clear();
         for item in &self.items {
             match item {
@@ -477,6 +545,7 @@ impl Stylesheet {
                         .saturating_add(self.rules.len() as u64);
                     self.rules.push(rule);
                 },
+                CssRule::FontFace(font_face) => self.font_faces.push(font_face.clone()),
                 CssRule::Media(media) => {
                     for rule in &media.rules {
                         let mut rule = rule.clone();
@@ -522,6 +591,10 @@ impl Stylesheet {
         &self.diagnostics
     }
 
+    pub fn font_faces(&self) -> &[FontFaceRule] {
+        &self.font_faces
+    }
+
     pub fn keyframes(&self) -> &[Keyframes] {
         &self.keyframes
     }
@@ -539,6 +612,7 @@ fn apply_document_media(items: &mut [CssRule], media: &MediaQueryList) {
     for item in items {
         match item {
             CssRule::Style(rule) => rule.document_media = Some(media.clone()),
+            CssRule::FontFace(_) => {},
             CssRule::Media(group) => {
                 for rule in &mut group.rules {
                     rule.document_media = Some(media.clone());
@@ -1352,7 +1426,15 @@ fn parse_rule_list(input: &str, origin: Origin, source_order_offset: u64, sheet:
         };
         let body = &input[open + 1..close];
 
-        if let Some(name) = keyframes_name(prelude) {
+        if prelude.eq_ignore_ascii_case("@font-face") {
+            match parse_font_face(body) {
+                Ok(font_face) => sheet.items.push(CssRule::FontFace(font_face)),
+                Err(message) => sheet.diagnostics.push(StylesheetDiagnostic {
+                    prelude: prelude.to_owned(),
+                    message,
+                }),
+            }
+        } else if let Some(name) = keyframes_name(prelude) {
             if let Some(keyframes) = parse_keyframes(name, body, sheet) {
                 sheet.items.push(CssRule::Keyframes(keyframes));
             }
@@ -1413,6 +1495,125 @@ fn parse_rule_list(input: &str, origin: Origin, source_order_offset: u64, sheet:
         }
         cursor = close + 1;
     }
+}
+
+fn parse_font_face(input: &str) -> Result<FontFaceRule, String> {
+    let mut family = None;
+    let mut sources = Vec::new();
+    let mut feature_settings = FontFeatureSettings::Normal;
+    let mut host_loadable = true;
+    for declaration in split_descriptor_list(input, ';') {
+        let declaration = declaration.trim();
+        if declaration.is_empty() {
+            continue;
+        }
+        let parts = split_descriptor_list(declaration, ':');
+        let Some(name) = parts.first().map(|part| part.trim().to_ascii_lowercase()) else {
+            continue;
+        };
+        let colon = parts.first().map_or(0, |part| part.len());
+        if colon == declaration.len() {
+            continue;
+        }
+        let value = declaration[colon + 1..].trim();
+        match name.as_str() {
+            "font-family" => {
+                if value.is_empty() || value.contains(',') {
+                    return Err("@font-face requires one font-family name".to_owned());
+                }
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .or_else(|| {
+                        value
+                            .strip_prefix('\'')
+                            .and_then(|value| value.strip_suffix('\''))
+                    })
+                    .unwrap_or(value)
+                    .trim();
+                if value.is_empty() {
+                    return Err("@font-face requires a nonempty font-family".to_owned());
+                }
+                family = Some(Box::<str>::from(value));
+            },
+            "src" => sources.extend(font_face_urls(value)),
+            "font-feature-settings" => {
+                feature_settings = value.parse::<FontFeatureSettings>().map_err(|error| {
+                    format!("invalid @font-face font-feature-settings: {error}")
+                })?;
+            },
+            _ => host_loadable = false,
+        }
+    }
+    let family = family.ok_or_else(|| "@font-face is missing font-family".to_owned())?;
+    if sources.is_empty() {
+        return Err("@font-face has no supported url() source".to_owned());
+    }
+    Ok(FontFaceRule {
+        family,
+        sources: sources.into_boxed_slice(),
+        feature_settings,
+        host_loadable,
+    })
+}
+
+fn font_face_urls(input: &str) -> Vec<Box<str>> {
+    let lower = input.to_ascii_lowercase();
+    let mut urls: Vec<Box<str>> = Vec::new();
+    let mut cursor = 0;
+    while let Some(offset) = lower[cursor..].find("url(") {
+        let start = cursor + offset + 4;
+        let Some(close) = input[start..].find(')') else {
+            break;
+        };
+        let raw = input[start..start + close].trim();
+        let url = raw
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| {
+                raw.strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+            })
+            .unwrap_or(raw)
+            .trim();
+        if !url.is_empty() && !urls.iter().any(|seen| seen.as_ref() == url) {
+            urls.push(Box::<str>::from(url));
+        }
+        cursor = start + close + 1;
+    }
+    urls
+}
+
+fn split_descriptor_list(input: &str, delimiter: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0_u32;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, character) in input.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if character == delimiter && depth == 0 => {
+                parts.push(&input[start..index]);
+                start = index + character.len_utf8();
+            },
+            _ => {},
+        }
+    }
+    parts.push(&input[start..]);
+    parts
 }
 
 /// Parse the style rules nested in one `@media` group. Each nested rule

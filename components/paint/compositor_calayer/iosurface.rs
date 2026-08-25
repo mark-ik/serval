@@ -190,6 +190,7 @@ pub(super) fn wgpu_texture_from_iosurface_mtl(
                     usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 },
+                wgpu::TextureUses::UNINITIALIZED,
             )
     }
 }

@@ -59,7 +59,7 @@ Meristem's scoped diff is 2,682 net lines smaller. Public traits fell from 16
 to 10. Receipts: `cargo check -p meristem -p cambium -p sprigging
 -p cambium-genet-winit-host -p cambium-nematic -p cambium-winit` passes with
 pre-existing workspace warnings; the meristem suite passes and its five ignored
-doctests compile; cambium's 176 tests pass, including the component proof and
+doctests compile; cambium's 168 tests pass, including the component proof and
 the keyed and portable-move update-policy gates; the component-catalog example's
 two acceptance tests pass with all features enabled.
 
@@ -67,8 +67,8 @@ Kept deliberately:
 
 - `Count`: part of the `ViewSequence` contract here, unlike Faure's xilem
   candidate.
-- `meristem` is versioned 0.2.0 in the workspace for the removed public API;
-  crates.io publication remains a separate release operation.
+- Before the next `meristem` publish: bump 0.1.x to 0.2.0 (public API
+  removed).
 
 ## The lesson that still lands: the composition boundary
 
@@ -111,7 +111,7 @@ component(
     init_local,
     reconcile_local,
     body,       // (&Props, &Local) -> ComponentView<Local, Event>
-    on_event,   // (&mut State, Event) -> (), Action, or Option<Action>
+    on_event,   // (&mut State, Event) -> Action
 )
 .probe_id("caller-owned-id")
 ```
@@ -120,8 +120,7 @@ component(
 child's view state. `AnyView` erases the concrete child tree and view-state
 representation; it does not erase `Local` or `Event`. `DynMessage` remains the
 inbound raw-message envelope. The child returns `MessageResult<Event>` and the
-boundary maps that result through Cambium's `OptionalAction`: a returned action
-becomes `MessageResult<Action>`; `()` or `None` becomes `MessageResult::Nop`.
+boundary maps that result statically into `MessageResult<Action>`.
 
 Settled design points:
 
@@ -132,23 +131,20 @@ Settled design points:
   `keyed` and Meristem routing remain authoritative. Probe identity is the
   separate, optional `data-cambium-component` attribute supplied by the caller.
 - Events vs actions: `Event` is the child's public vocabulary; `on_event`
-  translating or swallowing it is the only place the child event and parent
-  action types meet.
+  translating to the parent's `Action` is the only place both types meet.
 
 Validation receipts:
 
 - The command-picker proof moves local selection, reconciles a changed parent
   label without resetting it, emits a typed activation into parent state and
-  action, swallows Dismiss without minting a no-op action, and exposes the
-  caller-owned probe id on the root.
+  action, and exposes the caller-owned probe id on the root.
 - The catalog counter specimen (2026-08-12) is the boundary's second consumer
   and its acceptance-surface receipt: component-owned count survives a
   parent-controlled step change, a typed Report event lowers into catalog
   state, unmount drops the local state, remount reinitializes it, and the
   probe id is asserted at both specimen widths. The probe stamp is now
   idempotent on rebuild, so a probed component no longer records a spurious
-  attribute mutation per parent rebuild. A direct mutation-stream test proves
-  zero writes for an unchanged stamp and exactly one for change and removal.
+  attribute mutation per parent rebuild.
 - Turnstone disproved `caret_text_field` as the consumer: its omnibar is a
   controlled app-truth mirror whose keys must remain on the Action spine.
   Cambium instead exposes `caret_field_children`, the non-editing projection

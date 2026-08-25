@@ -1,9 +1,9 @@
 //! F0's receipt: the consumed-longhand contract, asserted.
 //!
 //! The cutover plan's F0 stage closes the gap between Livery's catalog and the
-//! 126 longhands the current Genet product path actually reads
+//! 128 longhands the current Genet product path actually reads
 //! (`docs/2026-07-13_genet_consumed_css_property_audit.md`). Its receipt is
-//! "the census reads 126/126 consumed implemented".
+//! "the census reads 128/128 consumed implemented".
 //!
 //! That receipt lives here rather than only in `tools/import-stylo-db` on
 //! purpose. The tool needs a stylo fork checkout to run at all, and the fork
@@ -88,7 +88,7 @@ fn partial_properties_declare_the_subset_they_build() {
 }
 
 #[test]
-fn the_consumed_set_is_the_audits_126_longhands() {
+fn the_consumed_set_is_the_current_129_longhands() {
     let consumed = consumed_set();
     let declared = {
         let table: toml::Table = CONSUMED.parse().expect("parses");
@@ -104,8 +104,8 @@ fn the_consumed_set_is_the_audits_126_longhands() {
     );
     assert_eq!(
         consumed.len(),
-        126,
-        "the audit's contract is 126 longhands; re-run the audit before changing this",
+        129,
+        "the original audit plus live font-feature and shape-outside consumers is 129",
     );
     let unique: BTreeSet<&str> = consumed.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(unique.len(), consumed.len(), "duplicate consumed names");
@@ -133,8 +133,10 @@ fn the_consumed_set_is_the_audits_126_longhands() {
 /// assertion and F0's receipt is closed.
 ///
 /// 38 as of 2026-07-25; 35 as of 2026-07-26 (the grid/alignment
-/// stragglers landed: align-self, justify-items, justify-self).
-const MAX_REMAINING: usize = 35;
+/// stragglers landed); 31 as of 2026-08-24 (animation-delay, clear,
+/// contain, and direction landed); 27 as of 2026-08-25 after the current
+/// catalog reconciliation and the shape-outside consumer landed.
+const MAX_REMAINING: usize = 27;
 
 /// F0's receipt, as a ratchet. Prints the exact remaining worklist with the
 /// catalog group for each name, so a failure message is the next slice.

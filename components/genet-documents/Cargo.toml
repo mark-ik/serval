@@ -13,7 +13,10 @@ path = "src/lib.rs"
 [features]
 default = []
 # Clean-room Livery implementation of the static HTML session lane.
-livery = ["dep:genet-livery", "dep:paint_list_render", "dep:url"]
+livery = [
+    "dep:genet-livery", "dep:genet-scripted-dom", "dep:paint_list_render",
+    "dep:unicode-segmentation", "dep:url",
+]
 # Remote http(s) loading for LocalFetcher via the netfetcher engine.
 netfetch = ["dep:netfetcher", "dep:tokio", "dep:bytes", "dep:url"]
 # Reader-mode HTML extraction lowered into the existing portable document canvas.
@@ -45,6 +48,7 @@ genet-static-dom = { path = "../genet-static-dom" }
 layout_dom_api = { workspace = true }
 serde_json = { workspace = true }
 genet-livery = { path = "../genet-livery", optional = true }
+genet-scripted-dom = { path = "../genet-scripted-dom", optional = true }
 paint_list_render = { workspace = true, optional = true }
 data-url = { workspace = true }
 
@@ -61,9 +65,13 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"], option
 bytes = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
+unicode-segmentation = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Offline mock HTTP server for the netfetch integration test (moved with
 # net_fetch.rs from pelt); runs without a live network.
 mockito = "1"
 wgpu = { workspace = true }
+# Livery resource tests encode small PNG fixtures even when the smolweb
+# feature (which owns the optional production dependency) is disabled.
+image = { workspace = true }

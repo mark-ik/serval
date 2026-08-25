@@ -19,7 +19,7 @@ path = "lib.rs"
 [dependencies]
 script-engine-api = { path = "../script-engine-api" }
 # The DOM the host surface scripts against: a NodeId arena implementing
-# LayoutDom + LayoutDomMut, recording DomMutations for genet-layout.
+# LayoutDom + LayoutDomMut, recording DomMutations for retained Livery hosts.
 genet-scripted-dom = { path = "../genet-scripted-dom" }
 # QualName / Namespace / LocalName for create_element.
 layout-dom-api = { path = "../shared/layout-dom" }

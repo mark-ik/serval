@@ -374,6 +374,7 @@ impl MacosCALayerBackend {
                         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                         view_formats: &[],
                     },
+                    wgpu::TextureUses::UNINITIALIZED,
                 )
         };
         let master_view = master.create_view(&wgpu::TextureViewDescriptor::default());

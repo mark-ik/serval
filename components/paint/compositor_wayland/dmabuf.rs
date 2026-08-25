@@ -307,6 +307,7 @@ fn wrap_vk_image_as_wgpu(
                         | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 },
+                wgpu::TextureUses::UNINITIALIZED,
             )
     };
 

@@ -193,6 +193,7 @@ pub struct TableSpanMeasureDistribution {
     pub source: BoxId,
     pub column_start: usize,
     pub column_span: usize,
+    pub min_content_required: f32,
     pub min_content_increase: Vec<f32>,
     pub max_content_increase: Vec<f32>,
 }
@@ -311,6 +312,7 @@ pub fn measure_automatic_columns(
             source: cell.source,
             column_start: cell.column,
             column_span: cell.column_span,
+            min_content_required: contribution.min_content,
             min_content_increase,
             max_content_increase,
         });

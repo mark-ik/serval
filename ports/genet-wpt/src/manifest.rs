@@ -367,7 +367,9 @@ impl Manifest {
             .and_then(|e| e.get("timeout"))
             .and_then(Value::as_str)
             == Some("long");
-        let fuzzy = extras.and_then(|e| e.get("fuzzy")).and_then(parse_fuzzy);
+        let fuzzy = extras
+            .and_then(|e| e.get("fuzzy"))
+            .and_then(|value| parse_fuzzy(value, &url, refs.first()));
         Some(ManifestTest {
             source_path: prefix.to_string(),
             url,
@@ -408,10 +410,15 @@ fn parse_refs(value: Option<&Value>) -> Vec<(String, RefMatch)> {
         .collect()
 }
 
-/// Parse the `fuzzy` extras into `((max_diff_lo, max_diff_hi), (total_lo, total_hi))`.
-/// The manifest shape is `[[ [maxDiff_lo, maxDiff_hi], [total_lo, total_hi] ]]` (or
-/// the same keyed by a ref pair); take the first range pair, a best-effort first cut.
-fn parse_fuzzy(value: &Value) -> Option<((u32, u32), (u32, u32))> {
+/// Select the fuzzy metadata for the reference this runner will compare.
+/// Entries can be unkeyed, reference-keyed, or keyed by the exact
+/// `(test, reference, relation)` triple. Wptrunner gives the exact key
+/// precedence over the reference-only and unkeyed forms.
+fn parse_fuzzy(
+    value: &Value,
+    test_url: &str,
+    reference: Option<&(String, RefMatch)>,
+) -> Option<((u32, u32), (u32, u32))> {
     fn range_pair(v: &Value) -> Option<((u32, u32), (u32, u32))> {
         let a = v.as_array()?;
         // `a` is `[[lo,hi],[lo,hi]]`: the maxDifference range and totalPixels range.
@@ -423,11 +430,52 @@ fn parse_fuzzy(value: &Value) -> Option<((u32, u32), (u32, u32))> {
             (n(total.first())?, n(total.get(1))?),
         ))
     }
-    // `value` is a list; an entry is either the range pair directly, or
-    // `[ref_pair, range_pair]` when keyed by reference. Probe both.
     let list = value.as_array()?;
-    let first = list.first()?;
-    range_pair(first).or_else(|| range_pair(first.as_array()?.get(1)?))
+    let mut unkeyed = None;
+    let mut reference_only = None;
+    let mut exact = None;
+    for entry in list {
+        if let Some(range) = range_pair(entry) {
+            unkeyed.get_or_insert(range);
+            continue;
+        }
+        let keyed = entry.as_array()?;
+        let key = keyed.first()?;
+        let range = range_pair(keyed.get(1)?)?;
+        match key {
+            Value::String(ref_url)
+                if reference.is_some_and(|(selected, _)| same_url(ref_url, selected)) =>
+            {
+                reference_only.get_or_insert(range);
+            },
+            Value::Array(parts) if parts.len() == 3 => {
+                let keyed_test = parts.first()?.as_str()?;
+                let keyed_ref = parts.get(1)?.as_str()?;
+                let keyed_relation = parts.get(2)?.as_str()?;
+                if same_url(keyed_test, test_url)
+                    && reference.is_some_and(|(selected_ref, selected_relation)| {
+                        same_url(keyed_ref, selected_ref)
+                            && keyed_relation
+                                == match selected_relation {
+                                    RefMatch::Equal => "==",
+                                    RefMatch::NotEqual => "!=",
+                                }
+                    })
+                {
+                    exact.get_or_insert(range);
+                }
+            },
+            Value::Null => {
+                unkeyed.get_or_insert(range);
+            },
+            _ => {},
+        }
+    }
+    exact.or(reference_only).or(unkeyed)
+}
+
+fn same_url(a: &str, b: &str) -> bool {
+    a.trim_start_matches('/') == b.trim_start_matches('/')
 }
 
 #[cfg(test)]
@@ -524,6 +572,30 @@ mod tests {
             vec![("/css/ref-ref.html".to_string(), RefMatch::Equal)]
         );
         assert_eq!(r.fuzzy, Some(((0, 2), (0, 40))));
+    }
+
+    #[test]
+    fn selects_exact_fuzzy_metadata_for_the_chosen_reference() {
+        let value = serde_json::json!([
+            [[0, 1], [0, 2]],
+            ["/css/ref.html", [[1, 2], [3, 4]]],
+            [
+                ["/css/test.html", "/css/ref.html", "=="],
+                [[2, 3], [10, 15]]
+            ],
+            [
+                ["/css/test.html", "/css/other.html", "=="],
+                [[9, 9], [9, 9]]
+            ]
+        ]);
+        assert_eq!(
+            parse_fuzzy(
+                &value,
+                "/css/test.html",
+                Some(&("/css/ref.html".to_string(), RefMatch::Equal))
+            ),
+            Some(((2, 3), (10, 15)))
+        );
     }
 
     #[test]

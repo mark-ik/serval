@@ -16,10 +16,10 @@ use livery::{
         parse_declaration_block,
     },
     custom::CustomProperties,
-    media::Device,
+    media::{Device, ViewportSizes},
     stylesheet::{
-        ContainerSnapshot, CssomRule, Keyframes, RuleMutationError, StyleRule, Stylesheet,
-        StylesheetDiagnostic,
+        ContainerSnapshot, CssomRule, FontFaceRule, Keyframes, RuleMutationError, StyleRule,
+        Stylesheet, StylesheetDiagnostic,
     },
     values::{
         BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FontSize, Length,
@@ -161,6 +161,7 @@ pub struct StyleSet {
     ua: Stylesheet,
     authors: Vec<AuthorStylesheet>,
     rules: Vec<StyleRule>,
+    font_faces: Vec<FontFaceRule>,
     keyframes: Vec<Keyframes>,
     diagnostics: Vec<StylesheetDiagnostic>,
     generation: u64,
@@ -305,16 +306,19 @@ impl StyleSet {
     /// author source order running across sheets in document order.
     fn rebuild(&mut self) {
         self.rules.clear();
+        self.font_faces.clear();
         self.keyframes.clear();
         self.diagnostics.clear();
         self.diagnostics.extend_from_slice(self.ua.diagnostics());
         self.rules.extend(self.ua.reindexed_rules(0));
+        self.font_faces.extend(self.ua.font_faces().iter().cloned());
         self.keyframes.extend(self.ua.keyframes().iter().cloned());
         let mut source_order = 0_u64;
         for author in &self.authors {
             self.diagnostics.extend_from_slice(author.diagnostics());
             self.rules.extend(author.reindexed_rules(source_order));
             source_order = source_order.saturating_add(author.rules().len() as u64);
+            self.font_faces.extend(author.font_faces().iter().cloned());
             self.keyframes.extend(author.keyframes().iter().cloned());
         }
         self.generation = self.generation.saturating_add(1);
@@ -511,6 +515,12 @@ impl StyleSet {
 
     pub fn rules(&self) -> &[StyleRule] {
         &self.rules
+    }
+
+    /// Author and UA font faces in stylesheet order. The host resolves each
+    /// retained source URL and supplies bytes to the document separately.
+    pub fn font_faces(&self) -> &[FontFaceRule] {
+        &self.font_faces
     }
 
     pub fn diagnostics(&self) -> &[StylesheetDiagnostic] {
@@ -836,6 +846,22 @@ where
         environment: livery::values::RelativeLengthEnvironment,
     ) {
         if let Some(computed) = self.values.get_mut(&id) {
+            resolve_relative_lengths(computed, environment);
+        }
+    }
+
+    /// Resolve `ch` after the retained text owner has the document's complete
+    /// font ledger. Earlier cascade passes deliberately leave this metric
+    /// deferred because `Device` does not own font resources.
+    pub(crate) fn resolve_ch_lengths(
+        &mut self,
+        text: &mut crate::TextSystem,
+        viewport: ViewportSizes,
+    ) {
+        for computed in self.values.values_mut() {
+            let environment = livery::values::RelativeLengthEnvironment::viewport(viewport)
+                .with_vertical_writing(computed.writing_mode.is_vertical())
+                .with_ch_advance(text.ch_advance(computed));
             resolve_relative_lengths(computed, environment);
         }
     }

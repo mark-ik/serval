@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Scrying native surface</title>
+<style>
+  body { margin: 0; font: 700 20px sans-serif; color: white; background: #4a0878; }
+  main { margin: 18px; padding: 18px; border: 8px solid #36f1cd; background: #b3126f; }
+  code { color: #fff36d; }
+  #pulse { display: inline-block; width: 24px; height: 24px; background: #36f1cd; }
+</style>
+<main>
+  <h1>Scrying native surface</h1>
+  <p><code>scrying.web</code> supplied this WebView2 texture.</p>
+  <p><span id="pulse"></span> capture <span id="tick">0</span></p>
+</main>
+<script>
+  let tick = 0;
+  setInterval(() => {
+    tick += 1;
+    document.querySelector('#tick').textContent = tick;
+    document.querySelector('#pulse').style.transform = `translateX(${tick % 2 ? 24 : 0}px)`;
+  }, 80);
+</script>

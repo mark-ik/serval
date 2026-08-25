@@ -13,6 +13,7 @@ cssparser.workspace = true
 data-url = { workspace = true }
 genet-document-resources = { workspace = true }
 euclid.workspace = true
+fontsan.workspace = true
 image = { workspace = true }
 layout-dom-api = { version = "0.1.0", path = "../shared/layout-dom" }
 livery = { version = "0.0.2", path = "../livery" }

@@ -20,11 +20,7 @@
 
 #![cfg_attr(target_arch = "wasm32", allow(unused_crate_dependencies))]
 
-#[cfg(feature = "render")]
-use genet_layout::{FragmentPlane, render};
 use genet_scripted_dom::{NodeId, ScriptedDom};
-#[cfg(feature = "render")]
-use layout_dom_api::LayoutDomMut;
 use script_engine_api::ScriptEngine;
 
 mod capture;
@@ -71,35 +67,6 @@ fn has_scheme(url: &str) -> bool {
         _ => false,
     }
 }
-
-/// Retired incumbent compatibility export. The block remains unreachable so
-/// the mixed source file can be split independently of dependency retirement.
-#[cfg(feature = "render")]
-pub use genet_layout::{Applied, IncrementalLayout};
-
-/// Retired incumbent coarse-relayout oracle. Drain the DOM's
-/// pending [`DomMutation`](layout_dom_api::DomMutation)s; if anything changed, re-run
-/// the *whole* layout pipeline and return the fresh fragment plane. Correct by
-/// construction (a full recompute can't be stale), so it is the ground truth the
-/// incremental engine ([`IncrementalLayout`]) is diff-tested against. The live path
-/// uses `IncrementalLayout`; this stays as the oracle. Engine-agnostic (DOM + layout
-/// only), so it lives at the crate root, not the Nova module.
-#[cfg(feature = "render")]
-pub fn relayout_if_dirty(
-    dom: &mut ScriptedDom,
-    stylesheets: &[&str],
-    width: f32,
-    height: f32,
-) -> Option<FragmentPlane<NodeId>> {
-    let mut mutations = Vec::new();
-    dom.drain_mutations(&mut mutations);
-    if mutations.is_empty() {
-        return None;
-    }
-    Some(render(dom, stylesheets, width, height))
-}
-
-// The retained Livery CSSOM session is the live relayout owner.
 
 /// The reflector-pin table (G1 reflector liveness) now lives next to the
 /// collector it feeds, in `genet-scripted-dom` as [`Pins`] (keyed on `NodeId`).
@@ -308,108 +275,4 @@ mod drain_tests {
         pins.clear();
         assert!(pins.is_empty());
     }
-}
-
-#[cfg(all(test, feature = "render"))]
-mod relayout_tests {
-    use super::*;
-    use layout_dom_api::{LayoutDom, LocalName, Namespace, QualName};
-
-    fn html_el(local: &str) -> QualName {
-        QualName::new(
-            None,
-            Namespace::from("http://www.w3.org/1999/xhtml"),
-            LocalName::from(local),
-        )
-    }
-
-    /// The #2(a) oracle: mutating the DOM and re-running the full pipeline yields an
-    /// updated layout — three stacked paragraphs are taller than one.
-    #[test]
-    fn coarse_relayout_reflects_mutation() {
-        const SHEET: &[&str] = &["html, body, p { display: block; margin: 0; padding: 0; }"];
-
-        let mut dom = ScriptedDom::new();
-        let root = dom.document();
-        let html = dom.create_element(html_el("html"));
-        dom.append_child(root, html);
-        let body = dom.create_element(html_el("body"));
-        dom.append_child(html, body);
-        let p = dom.create_element(html_el("p"));
-        dom.append_child(body, p);
-        let text = dom.create_text("Hi");
-        dom.append_child(p, text);
-
-        // Initial layout (drains the build mutations) — the single <p> is laid out.
-        let frags1 = relayout_if_dirty(&mut dom, SHEET, 800.0, 600.0).expect("initial layout");
-        assert!(frags1.rect_of(p).is_some(), "initial <p> laid out");
-
-        // Mutate via innerHTML, then relayout: the three new paragraphs must stack
-        // vertically — a deterministic signal that the relayout reflects the mutation.
-        dom.set_inner_html(body, "<p>one</p><p>two</p><p>three</p>");
-        let frags2 =
-            relayout_if_dirty(&mut dom, SHEET, 800.0, 600.0).expect("relayout after mutation");
-
-        let kids: Vec<_> = dom.dom_children(body).collect();
-        assert_eq!(kids.len(), 3, "innerHTML produced three paragraphs");
-        let ys: Vec<f32> = kids
-            .iter()
-            .map(|&k| frags2.rect_of(k).expect("paragraph laid out").location.y)
-            .collect();
-        assert!(
-            ys[0] < ys[1] && ys[1] < ys[2],
-            "paragraphs should stack vertically after relayout: {ys:?}",
-        );
-
-        // Gating: no mutation since the last relayout → None.
-        assert!(relayout_if_dirty(&mut dom, SHEET, 800.0, 600.0).is_none());
-    }
-
-    /// #2(b) first scoped-execution check: laying out only `body`'s subtree (via the
-    /// re-rooted `SubtreeView`) must reproduce the *relative interior* layout that the
-    /// coarse full-document pass produces. This is the diff-test guarding scoped
-    /// recompute against the coarse oracle (for the inheritance-neutral case).
-    #[test]
-    fn scoped_relayout_matches_coarse_interior() {
-        const SHEET: &[&str] = &["html, body, p { display: block; margin: 0; padding: 0; }"];
-
-        let mut dom = ScriptedDom::new();
-        let root = dom.document();
-        let html = dom.create_element(html_el("html"));
-        dom.append_child(root, html);
-        let body = dom.create_element(html_el("body"));
-        dom.append_child(html, body);
-        dom.set_inner_html(body, "<p>one</p><p>two</p><p>three</p>");
-
-        let coarse = genet_layout::render(&dom, SHEET, 800.0, 600.0);
-        let scoped = genet_layout::render_subtree(&dom, body, SHEET, 800.0, 600.0);
-
-        let kids: Vec<_> = dom.dom_children(body).collect();
-        assert_eq!(kids.len(), 3);
-        let coarse_y: Vec<f32> = kids
-            .iter()
-            .map(|&k| coarse.rect_of(k).expect("coarse paragraph").location.y)
-            .collect();
-        let scoped_y: Vec<f32> = kids
-            .iter()
-            .map(|&k| scoped.rect_of(k).expect("scoped paragraph").location.y)
-            .collect();
-
-        // Relative stacking within the subtree must match (absolute origin differs:
-        // scoped lays the subtree out at its own root).
-        for i in 1..3 {
-            let coarse_rel = coarse_y[i] - coarse_y[0];
-            let scoped_rel = scoped_y[i] - scoped_y[0];
-            assert!(
-                (coarse_rel - scoped_rel).abs() < 0.5,
-                "paragraph {i} relative offset: coarse={coarse_rel} scoped={scoped_rel}",
-            );
-        }
-    }
-
-    // The splice/absolute-position correctness check moved with the engine:
-    // `genet_layout::incremental::tests::inner_html_replace_splices_matching_full`
-    // (IncrementalLayout over the persistent StylePlane). `relayout_if_dirty`
-    // (the coarse oracle) and the SubtreeView relative-geometry check above
-    // stay here.
 }

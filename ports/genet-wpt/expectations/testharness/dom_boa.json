@@ -1,7 +1,7 @@
 {
   "command": "testharness",
   "engine": "boa",
-  "renderer": "stylo",
+  "renderer": "livery",
   "tests": {
     "dom/abort/AbortSignal.any.html": {
       "status": "pass",
@@ -369,7 +369,7 @@
     },
     "dom/events/EventListener-invoke-legacy.html": {
       "status": "fail",
-      "subtests_passed": 2,
+      "subtests_passed": 0,
       "subtests_total": 6
     },
     "dom/events/EventListenerOptions-capture.html": {
@@ -521,8 +521,8 @@
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/non-passive-mousewheel-event-listener-on-div.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/non-passive-mousewheel-event-listener-on-document.html": {
@@ -596,8 +596,8 @@
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/non-passive-wheel-event-listener-on-div.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/non-passive-wheel-event-listener-on-document.html": {
@@ -621,8 +621,8 @@
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/passive-mousewheel-event-listener-on-div.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/passive-mousewheel-event-listener-on-document.html": {
@@ -696,8 +696,8 @@
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/passive-wheel-event-listener-on-div.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/events/non-cancelable-when-passive/passive-wheel-event-listener-on-document.html": {
@@ -1880,9 +1880,8 @@
       "subtests_total": 29
     },
     "dom/nodes/Node-textContent.html": {
-      "status": "fail",
-      "subtests_passed": 10,
-      "subtests_total": 81
+      "reason": "panic",
+      "status": "error"
     },
     "dom/nodes/NodeList-Iterable.html": {
       "status": "pass",
@@ -2362,13 +2361,13 @@
       "status": "skip"
     },
     "dom/nodes/moveBefore/continue-css-animation-left.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/continue-css-animation-transform.html": {
-      "status": "pass",
-      "subtests_passed": 1,
+      "status": "fail",
+      "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/continue-css-transition-left-pseudo.html": {
@@ -2504,8 +2503,8 @@
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-selector-matching.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-shadow-inside.html": {
@@ -2519,8 +2518,8 @@
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-size-query.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/mutation-observer.html": {

@@ -672,6 +672,7 @@ where
         return children;
     }
 
+    let children = discard_irrelevant_whitespace(children, false);
     let mut fixed = Vec::new();
     let mut table_parts = Vec::new();
     let flush = |fixed: &mut Vec<ProtoBox<Id>>, table_parts: &mut Vec<ProtoBox<Id>>| {
@@ -689,7 +690,7 @@ where
     };
 
     for child in children {
-        if child.positioning.is_in_flow() && is_table_part(child.display.internal_table) {
+        if is_in_flow_table_part(&child) {
             table_parts.push(child);
         } else {
             flush(&mut fixed, &mut table_parts);
@@ -698,6 +699,45 @@ where
     }
     flush(&mut fixed, &mut table_parts);
     fixed
+}
+
+fn is_in_flow_table_part<Id>(child: &ProtoBox<Id>) -> bool {
+    child.positioning.is_in_flow() && is_table_part(child.display.internal_table)
+}
+
+/// CSS 2.1 section 17.2.1 rules 1.3 and 1.4. Whitespace whose nearest
+/// non-whitespace siblings are table parts is irrelevant. Inside a tabular
+/// container, the start and end edges count as table parts too.
+fn discard_irrelevant_whitespace<Id>(
+    children: Vec<ProtoBox<Id>>,
+    edges_count: bool,
+) -> Vec<ProtoBox<Id>>
+where
+    Id: Copy,
+{
+    let whitespace = children
+        .iter()
+        .map(ProtoBox::is_only_collapsible_whitespace)
+        .collect::<Vec<_>>();
+    let part_or_edge = |index: Option<usize>| match index {
+        Some(index) => is_in_flow_table_part(&children[index]),
+        None => edges_count,
+    };
+    let keep = (0..children.len())
+        .map(|index| {
+            if !whitespace[index] {
+                return true;
+            }
+            let previous = (0..index).rev().find(|&other| !whitespace[other]);
+            let next = (index + 1..children.len()).find(|&other| !whitespace[other]);
+            !(part_or_edge(previous) && part_or_edge(next))
+        })
+        .collect::<Vec<_>>();
+    children
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(child, keep)| keep.then_some(child))
+        .collect()
 }
 
 fn parent_accepts_table_parts(display: DisplayRole) -> bool {
@@ -797,39 +837,13 @@ where
 {
     let owner = proto.owner();
     let flow = proto.flow;
-    let children = std::mem::take(&mut proto.children);
+    let children = discard_irrelevant_whitespace(std::mem::take(&mut proto.children), true);
     let mut fixed = Vec::new();
-    let mut improper = Vec::new();
-    let mut cells = Vec::new();
+    let mut run = Vec::new();
 
-    let flush = |fixed: &mut Vec<ProtoBox<Id>>, improper: &mut Vec<ProtoBox<Id>>| {
-        if improper.is_empty() {
-            return;
-        }
-        let cell = anonymous_table_box(
-            owner,
-            AnonymousBoxKind::TableCell,
-            InternalTableRole::Cell,
-            flow,
-            std::mem::take(improper),
-        );
-        let row = anonymous_table_box(
-            owner,
-            AnonymousBoxKind::TableRow,
-            InternalTableRole::Row,
-            flow,
-            vec![cell],
-        );
-        fixed.push(anonymous_table_box(
-            owner,
-            AnonymousBoxKind::TableRowGroup,
-            InternalTableRole::RowGroup,
-            flow,
-            vec![row],
-        ));
-    };
-    let flush_cells = |fixed: &mut Vec<ProtoBox<Id>>, cells: &mut Vec<ProtoBox<Id>>| {
-        if cells.is_empty() {
+    let flush = |fixed: &mut Vec<ProtoBox<Id>>, run: &mut Vec<ProtoBox<Id>>| {
+        if run.iter().all(ProtoBox::is_only_collapsible_whitespace) {
+            run.clear();
             return;
         }
         let row = anonymous_table_box(
@@ -837,7 +851,7 @@ where
             AnonymousBoxKind::TableRow,
             InternalTableRole::Row,
             flow,
-            std::mem::take(cells),
+            std::mem::take(run),
         );
         fixed.push(anonymous_table_box(
             owner,
@@ -849,49 +863,37 @@ where
     };
 
     for child in children {
-        if child.is_only_collapsible_whitespace() {
-            continue;
-        }
         if !child.positioning.is_in_flow() {
-            flush(&mut fixed, &mut improper);
-            flush_cells(&mut fixed, &mut cells);
+            flush(&mut fixed, &mut run);
             fixed.push(child);
             continue;
         }
-        if matches!(
-            child.display.internal_table,
+        match child.display.internal_table {
             Some(
                 InternalTableRole::RowGroup
-                    | InternalTableRole::HeaderGroup
-                    | InternalTableRole::FooterGroup
-                    | InternalTableRole::Caption
-                    | InternalTableRole::ColumnGroup
-                    | InternalTableRole::Column
-            )
-        ) {
-            flush(&mut fixed, &mut improper);
-            flush_cells(&mut fixed, &mut cells);
-            fixed.push(child);
-        } else if child.display.internal_table == Some(InternalTableRole::Row) {
-            flush(&mut fixed, &mut improper);
-            flush_cells(&mut fixed, &mut cells);
-            fixed.push(anonymous_table_box(
-                owner,
-                AnonymousBoxKind::TableRowGroup,
-                InternalTableRole::RowGroup,
-                flow,
-                vec![child],
-            ));
-        } else if child.display.internal_table == Some(InternalTableRole::Cell) {
-            flush(&mut fixed, &mut improper);
-            cells.push(child);
-        } else {
-            flush_cells(&mut fixed, &mut cells);
-            improper.push(child);
+                | InternalTableRole::HeaderGroup
+                | InternalTableRole::FooterGroup
+                | InternalTableRole::Caption
+                | InternalTableRole::ColumnGroup
+                | InternalTableRole::Column,
+            ) => {
+                flush(&mut fixed, &mut run);
+                fixed.push(child);
+            },
+            Some(InternalTableRole::Row) => {
+                flush(&mut fixed, &mut run);
+                fixed.push(anonymous_table_box(
+                    owner,
+                    AnonymousBoxKind::TableRowGroup,
+                    InternalTableRole::RowGroup,
+                    flow,
+                    vec![child],
+                ));
+            },
+            _ => run.push(child),
         }
     }
-    flush(&mut fixed, &mut improper);
-    flush_cells(&mut fixed, &mut cells);
+    flush(&mut fixed, &mut run);
     proto.children = fixed;
 }
 
@@ -910,11 +912,15 @@ where
 {
     let owner = proto.owner();
     let flow = proto.flow;
-    let children = std::mem::take(&mut proto.children);
+    let children = discard_irrelevant_whitespace(std::mem::take(&mut proto.children), true);
     let mut fixed = Vec::new();
     let mut improper = Vec::new();
     let flush = |fixed: &mut Vec<ProtoBox<Id>>, improper: &mut Vec<ProtoBox<Id>>| {
-        if improper.is_empty() {
+        if improper
+            .iter()
+            .all(ProtoBox::is_only_collapsible_whitespace)
+        {
+            improper.clear();
             return;
         }
         fixed.push(anonymous_table_box(
@@ -927,9 +933,6 @@ where
     };
 
     for child in children {
-        if child.is_only_collapsible_whitespace() {
-            continue;
-        }
         if !child.positioning.is_in_flow() {
             flush(&mut fixed, &mut improper);
             fixed.push(child);
@@ -953,26 +956,41 @@ where
 {
     let owner = proto.owner();
     let flow = proto.flow;
-    let children = std::mem::take(&mut proto.children);
-    proto.children = children
-        .into_iter()
-        .filter(|child| !child.is_only_collapsible_whitespace())
-        .map(|child| {
-            if !child.positioning.is_in_flow()
-                || child.display.internal_table == Some(InternalTableRole::Cell)
-            {
-                child
-            } else {
-                anonymous_table_box(
-                    owner,
-                    AnonymousBoxKind::TableCell,
-                    InternalTableRole::Cell,
-                    flow,
-                    vec![child],
-                )
-            }
-        })
-        .collect();
+    let children = discard_irrelevant_whitespace(std::mem::take(&mut proto.children), true);
+    let mut fixed = Vec::new();
+    let mut improper = Vec::new();
+    let flush = |fixed: &mut Vec<ProtoBox<Id>>, improper: &mut Vec<ProtoBox<Id>>| {
+        if improper
+            .iter()
+            .all(ProtoBox::is_only_collapsible_whitespace)
+        {
+            improper.clear();
+            return;
+        }
+        fixed.push(anonymous_table_box(
+            owner,
+            AnonymousBoxKind::TableCell,
+            InternalTableRole::Cell,
+            flow,
+            std::mem::take(improper),
+        ));
+    };
+
+    for child in children {
+        if !child.positioning.is_in_flow() {
+            flush(&mut fixed, &mut improper);
+            fixed.push(child);
+            continue;
+        }
+        if child.display.internal_table == Some(InternalTableRole::Cell) {
+            flush(&mut fixed, &mut improper);
+            fixed.push(child);
+        } else {
+            improper.push(child);
+        }
+    }
+    flush(&mut fixed, &mut improper);
+    proto.children = fixed;
     proto.formatting_context = Some(FormattingContextKind::Table);
 }
 
@@ -1034,15 +1052,21 @@ fn anonymous_table_box<Id>(
 where
     Id: Copy,
 {
+    let display = DisplayRole {
+        generation: BoxGeneration::Normal,
+        outside: None,
+        inside: None,
+        list_item: false,
+        internal_table: Some(role),
+    };
+    let children = if matches!(role, InternalTableRole::Cell | InternalTableRole::Caption) {
+        repair_missing_table_parents(children, owner, flow, display)
+    } else {
+        children
+    };
     let mut proto = ProtoBox {
         origin: BoxOrigin::Anonymous { owner, kind },
-        display: DisplayRole {
-            generation: BoxGeneration::Normal,
-            outside: None,
-            inside: None,
-            list_item: false,
-            internal_table: Some(role),
-        },
+        display,
         flow,
         positioning: PositioningScheme::Static,
         containing_block_establishment: ContainingBlockEstablishment::NONE,
@@ -1256,10 +1280,7 @@ where
         self.boxes.push(css_box);
         self.ids.push(id);
         let previous = self.slots.insert(id, self.boxes.len() - 1);
-        assert!(
-            previous.is_none(),
-            "a generated box id cannot occupy two slots"
-        );
+        assert!(previous.is_none(), "a generated box id cannot occupy two slots");
 
         if let Some(parent) = parent {
             self[parent].children.push(id);
@@ -1291,25 +1312,25 @@ where
         let mut consumed = HashSet::new();
 
         for current in self.roots.clone() {
-            let candidate = previous.roots.iter().copied().find(|candidate| {
-                !consumed.contains(candidate)
-                    && same_generation_context(&self[current], &previous[*candidate])
-            });
+            let candidate = previous
+                .roots
+                .iter()
+                .copied()
+                .find(|candidate| {
+                    !consumed.contains(candidate)
+                        && same_generation_context(&self[current], &previous[*candidate])
+                });
             if let Some(candidate) = candidate {
-                self.match_retained_subtree(
-                    previous,
-                    current,
-                    candidate,
-                    &mut mapping,
-                    &mut consumed,
-                );
+                self.match_retained_subtree(previous, current, candidate, &mut mapping, &mut consumed);
             }
         }
 
-        let mut next = previous.ids.iter().map(|id| id.0).max().map_or(0, |id| {
-            id.checked_add(1)
-                .expect("a CSS box tree exceeded u32::MAX boxes")
-        });
+        let mut next = previous
+            .ids
+            .iter()
+            .map(|id| id.0)
+            .max()
+            .map_or(0, |id| id.checked_add(1).expect("a CSS box tree exceeded u32::MAX boxes"));
         for current in self.ids.clone() {
             mapping.entry(current).or_insert_with(|| {
                 let allocated = BoxId(next);
@@ -1354,7 +1375,11 @@ where
     fn remap_identifiers(&mut self, mapping: &HashMap<BoxId, BoxId>) {
         for css_box in &mut self.boxes {
             css_box.parent = css_box.parent.map(|id| mapping[&id]);
-            css_box.children = css_box.children.iter().map(|id| mapping[id]).collect();
+            css_box.children = css_box
+                .children
+                .iter()
+                .map(|id| mapping[id])
+                .collect();
             css_box.containing_block = match css_box.containing_block {
                 ContainingBlock::Initial => ContainingBlock::Initial,
                 ContainingBlock::Box(id) => ContainingBlock::Box(mapping[&id]),
@@ -2180,6 +2205,220 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn table_part(role: InternalTableRole) -> DisplayRole {
+        DisplayRole {
+            generation: BoxGeneration::Normal,
+            outside: None,
+            inside: None,
+            list_item: false,
+            internal_table: Some(role),
+        }
+    }
+
+    fn role_of(tree: &CssBoxTree<u8>, box_id: BoxId) -> Option<InternalTableRole> {
+        tree[box_id].display.internal_table
+    }
+
+    fn anonymous_kind(tree: &CssBoxTree<u8>, box_id: BoxId) -> Option<AnonymousBoxKind> {
+        match tree[box_id].origin {
+            BoxOrigin::Anonymous { kind, .. } => Some(kind),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn whitespace_between_table_parts_does_not_split_the_missing_parent_run() {
+        let cell = table_part(InternalTableRole::Cell);
+        let tree = generate_box_tree([input(
+            BoxOrigin::Element(1),
+            DisplayRole::BLOCK_FLOW,
+            vec![
+                text(10, true),
+                input(BoxOrigin::Element(2), cell, Vec::new()),
+                text(11, true),
+                input(BoxOrigin::Element(3), cell, Vec::new()),
+                text(12, true),
+                input(
+                    BoxOrigin::Element(4),
+                    table_part(InternalTableRole::RowGroup),
+                    vec![input(
+                        BoxOrigin::Element(5),
+                        table_part(InternalTableRole::Row),
+                        vec![input(BoxOrigin::Element(6), cell, Vec::new())],
+                    )],
+                ),
+                text(13, true),
+            ],
+        )]);
+        let parent = tree.principal_box(1).expect("flow parent");
+        let children = tree[parent].children();
+        assert_eq!(children.len(), 1, "one anonymous table wrapper");
+        let wrapper = children[0];
+        assert_eq!(role_of(&tree, wrapper), Some(InternalTableRole::Wrapper));
+        let grid = tree[wrapper].children()[0];
+        assert_eq!(role_of(&tree, grid), Some(InternalTableRole::Grid));
+        let groups = tree[grid].children();
+        assert_eq!(groups.len(), 2);
+        let inferred_row = tree[groups[0]].children()[0];
+        assert_eq!(
+            anonymous_kind(&tree, inferred_row),
+            Some(AnonymousBoxKind::TableRow)
+        );
+        let inferred_cells = tree[inferred_row].children();
+        assert_eq!(inferred_cells.len(), 2);
+        assert_eq!(tree.origin_node(inferred_cells[0]), Some(2));
+        assert_eq!(tree.origin_node(inferred_cells[1]), Some(3));
+        assert_eq!(tree.origin_node(groups[1]), Some(4));
+    }
+
+    #[test]
+    fn consecutive_non_cell_children_of_a_row_share_one_anonymous_cell() {
+        let cell = table_part(InternalTableRole::Cell);
+        let tree = generate_box_tree([input(
+            BoxOrigin::Element(9),
+            DisplayRole::BLOCK_FLOW,
+            vec![input(
+                BoxOrigin::Element(1),
+                table_part(InternalTableRole::Row),
+                vec![
+                    text(10, true),
+                    text(2, false),
+                    text(11, true),
+                    input(
+                        BoxOrigin::Element(3),
+                        DisplayRole::INLINE_FLOW,
+                        vec![text(4, false)],
+                    ),
+                    text(12, true),
+                    input(BoxOrigin::Element(5), cell, Vec::new()),
+                    text(13, true),
+                    input(BoxOrigin::Element(6), cell, Vec::new()),
+                    text(14, true),
+                    input(
+                        BoxOrigin::Element(7),
+                        DisplayRole::INLINE_FLOW,
+                        vec![text(8, false)],
+                    ),
+                    text(15, true),
+                ],
+            )],
+        )]);
+        let parent = tree.principal_box(9).expect("flow parent");
+        let wrapper = tree[parent].children()[0];
+        let grid = tree[wrapper].children()[0];
+        let group = tree[grid].children()[0];
+        let row = tree[group].children()[0];
+        let cells = tree[row].children();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(
+            anonymous_kind(&tree, cells[0]),
+            Some(AnonymousBoxKind::TableCell)
+        );
+        assert_eq!(tree.origin_node(cells[1]), Some(5));
+        assert_eq!(tree.origin_node(cells[2]), Some(6));
+        assert_eq!(
+            anonymous_kind(&tree, cells[3]),
+            Some(AnonymousBoxKind::TableCell)
+        );
+        let first_run = tree[cells[0]]
+            .children()
+            .iter()
+            .map(|child| tree.origin_node(*child))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            first_run,
+            vec![Some(10), Some(2), Some(11), Some(3), Some(12)]
+        );
+        let last_run = tree[cells[3]]
+            .children()
+            .iter()
+            .map(|child| tree.origin_node(*child))
+            .collect::<Vec<_>>();
+        assert_eq!(last_run, vec![Some(14), Some(7), Some(15)]);
+    }
+
+    #[test]
+    fn non_proper_children_of_a_table_share_one_anonymous_row() {
+        let table = DisplayRole {
+            generation: BoxGeneration::Normal,
+            outside: Some(DisplayOutside::Block),
+            inside: Some(DisplayInside::Table),
+            list_item: false,
+            internal_table: None,
+        };
+        let cell = table_part(InternalTableRole::Cell);
+        let tree = generate_box_tree([input(
+            BoxOrigin::Element(1),
+            table,
+            vec![
+                input(BoxOrigin::Element(2), cell, Vec::new()),
+                text(3, false),
+                input(BoxOrigin::Element(4), cell, Vec::new()),
+                input(
+                    BoxOrigin::Element(5),
+                    table_part(InternalTableRole::RowGroup),
+                    Vec::new(),
+                ),
+            ],
+        )]);
+        let grid = tree.principal_box(1).expect("table grid");
+        let groups = tree[grid].children();
+        assert_eq!(groups.len(), 2);
+        let rows = tree[groups[0]].children();
+        assert_eq!(rows.len(), 1);
+        let cells = tree[rows[0]].children();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(tree.origin_node(cells[0]), Some(2));
+        assert_eq!(
+            anonymous_kind(&tree, cells[1]),
+            Some(AnonymousBoxKind::TableCell)
+        );
+        assert_eq!(tree.origin_node(tree[cells[1]].children()[0]), Some(3));
+        assert_eq!(tree.origin_node(cells[2]), Some(4));
+        assert_eq!(tree.origin_node(groups[1]), Some(5));
+    }
+
+    #[test]
+    fn table_parts_inside_an_anonymous_cell_get_their_missing_parents() {
+        let cell = table_part(InternalTableRole::Cell);
+        let tree = generate_box_tree([input(
+            BoxOrigin::Element(1),
+            table_part(InternalTableRole::Row),
+            vec![
+                input(BoxOrigin::Element(2), cell, Vec::new()),
+                text(10, true),
+                input(
+                    BoxOrigin::Element(3),
+                    table_part(InternalTableRole::Row),
+                    vec![text(4, false)],
+                ),
+            ],
+        )]);
+        let outer_row = tree.principal_box(1).expect("outer row");
+        let cells = tree[outer_row].children();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(
+            anonymous_kind(&tree, cells[1]),
+            Some(AnonymousBoxKind::TableCell)
+        );
+        let inner = tree[cells[1]].children();
+        assert_eq!(inner.len(), 1);
+        assert_eq!(
+            anonymous_kind(&tree, inner[0]),
+            Some(AnonymousBoxKind::TableWrapper)
+        );
+        let grid = tree[inner[0]].children()[0];
+        let group = tree[grid].children()[0];
+        let inner_row = tree[group].children()[0];
+        assert_eq!(tree.origin_node(inner_row), Some(3));
+        let inner_cell = tree[inner_row].children()[0];
+        assert_eq!(
+            anonymous_kind(&tree, inner_cell),
+            Some(AnonymousBoxKind::TableCell)
+        );
+        assert_eq!(tree.origin_node(tree[inner_cell].children()[0]), Some(4));
     }
 
     #[test]

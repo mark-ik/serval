@@ -7,6 +7,8 @@ mod viewer;
 
 pub const VERSION: &str = concat!("Pelt ", env!("CARGO_PKG_VERSION"));
 
+pub use pelt_core::{PeltClock, PeltController, PeltControllerConfig, PeltHostEffect};
+
 pub fn main() {
     #[cfg(feature = "viewer-engine")]
     viewer::main();
