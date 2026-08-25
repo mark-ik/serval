@@ -38,7 +38,7 @@ def is_beneath(path: pathlib.Path, parent: pathlib.Path) -> bool:
 def assert_fleece_cone() -> None:
     manifest = load_toml(ROOT / "components" / "fleece" / "Cargo.toml")
     deps = dependency_names(manifest.get("dependencies", {}))
-    expected = {"layout_dom_api"}
+    expected = {"layout_dom_api", "unicode-segmentation"}
     if deps != expected:
         fail(f"fleece dependencies are {sorted(deps)}, expected {sorted(expected)}")
     build_deps = dependency_names(manifest.get("build-dependencies", {}))
