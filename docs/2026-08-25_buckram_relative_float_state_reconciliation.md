@@ -106,21 +106,20 @@ All maps and frozen runners are under
 
 ## Remaining row 12 work
 
-The exact shape-box map has 23 red files:
+This receipt's 23 red files were a historical count, not one atomic line-height
+family. The following [horizontal direction reconciliation](2026-08-25_buckram_horizontal_float_direction_reconciliation.md)
+proved that eight were LTR/RTL float-state boundaries and repaired them.
 
-- 4 rectangular cases use `line-height: 0` with atomic inline children;
-- 8 horizontal rounded cases share that provisional atomic-line height seam;
-- 8 vertical or sideways rounded cases need a vertical contour transform; and
-- 3 use `shape-margin` and need an expanded contour.
-
-The next coherent slice is the atomic inline line-height reconciliation. It can
-repair the four rectangular and eight horizontal rounded cases without widening
-the vertical-flow or shape-expansion claims.
+The current exact shape-box map has 15 red files: two horizontal padding-box
+paint/overlap cases, two rounded split-inline float cases, eight vertical or
+sideways rounded cases, and three `shape-margin` cases. Those families retain
+separate owners and done conditions.
 
 ## Done condition
 
 This slice is complete because relative normal-flow blocks retain float state,
 the exposed zero-height and fixed-leaf boundaries have focused native receipts,
 all five focused maps have no loss, and the complete-CSS map has 21 exact gains
-with zero loss. Row 12 remains in progress for the 23 residual shape-box files
-and the wider basic-shape and image families.
+with zero loss. Row 12 remains in progress; its current 15 shape-box residuals
+and wider basic-shape and image families are assigned in the
+[horizontal direction reconciliation](2026-08-25_buckram_horizontal_float_direction_reconciliation.md).
