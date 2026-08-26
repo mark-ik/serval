@@ -541,20 +541,17 @@ parley = { path = "support/patches/parley" }
 # runtime-rng on wasm (native keeps it), so the wasm graph carries no getrandom 0.3
 # and needs no getrandom patch. Retire when ahash ships a release on getrandom 0.4.
 sonic-rs = { path = "support/patches/sonic-rs-0.5.8" }
-# taffy fork, re-vendored 2026-07-12 onto the newest STABLE release (0.12.1 —
-# `float_layout` graduated from experimental, ending the need to ride the
-# experimental-cache-fix line). Carries three patches, each upstreamed at our
-# own pace (see support/patches/taffy/GENET_PATCHES.md + UPSTREAM_PR.md):
-# `find_content_slot` width-fit (a full-width float yielded a zero-width slot
-# at its right edge, placing a fixed-width BFC child there instead of below
-# the float — present on taffy `main` too), a float exclusion-band accessor
-# (feeds genet's parley-measured inline float wrap), and flex `order` (taffy
-# does not model CSS `order`). Buckram consumes this independently of the
-# deleted Stylo compatibility cone. See
+# Taffy fork, re-vendored 2026-08-16 onto upstream 0.13.0 and published under
+# the `genet-taffy` identity. Carries the complete reproducible fork delta plus
+# focused upstream patch records (see support/patches/taffy/GENET_PATCHES.md +
+# UPSTREAM_PR.md): a float exclusion-band accessor, flex `order`, physical-axis
+# size containment, positioned-grid diagnostics, and Buckram's formatter/static
+# position seams. Buckram consumes this independently of the deleted Stylo
+# compatibility cone. See
 # docs/2026-07-12_ring3_fork_rename_publish_plan.md (T0) and
 # docs/2026-05-31_css_rendering_conformance_plan.md (floats × BFC, the
 # original patch's context).
-taffy = { path = "support/patches/taffy" }
+genet-taffy = { path = "support/patches/taffy" }
 # Vano fork (genet-embedder branch on github.com/merely-made/vano). Carries the
 # EmbedderObject native-data patch plus the reflector-liveness weak-ref API
 # (`EmbedderObject::into_weak_ref`/`from_weak_ref` + `clear_weak_ref_kept_objects`,

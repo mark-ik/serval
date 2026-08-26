@@ -71,8 +71,8 @@ console_error_panic_hook = "0.1"
 # render-neutral DOM contracts instead of a previously published graph.
 genet-scripted-dom = { path = "../../components/genet-scripted-dom" }
 layout-dom-api = { path = "../../components/shared/layout-dom" }
-# taffy fork re-vendored on 0.12.1 (float fixes + flex `order`).
-taffy = { path = "../../support/patches/taffy" }
+# Published Genet Taffy fork, locally patched to this checkout for smoke builds.
+genet-taffy = { path = "../../support/patches/taffy" }
 # ahash runtime-rng/getrandom-0.3 drop for the wasm graph.
 sonic-rs = { path = "../../support/patches/sonic-rs-0.5.8" }
 # netrender pulls vello, and upstream vello 0.10 still requires wgpu 29.

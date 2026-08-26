@@ -12,8 +12,8 @@
 [package]
 edition = "2021"
 rust-version = "1.71"
-name = "taffy"
-version = "0.13.0"
+name = "genet-taffy"
+version = "0.13.1"
 authors = [
     "Alice Cecile <alice.i.cecile@gmail.com>",
     "Johnathan Kelley <jkelleyrtp@gmail.com>",
@@ -25,13 +25,15 @@ include = [
     "examples/**/*",
     "Cargo.toml",
     "README.md",
+    "GENET_PATCHES.md",
+    "*.patch",
 ]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "A flexible UI layout library "
+description = "Genet-maintained Taffy fork with CSS float, flex order, and positioned-grid layout support"
 readme = "README.md"
 keywords = [
     "cross-platform",
@@ -42,7 +44,7 @@ keywords = [
 ]
 categories = ["gui"]
 license = "MIT"
-repository = "https://github.com/DioxusLabs/taffy"
+repository = "https://github.com/merely-made/genet"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -1,17 +1,17 @@
 # genet's taffy fork — patch log
 
-This is a vendored copy of `taffy 0.13.0` — re-vendored 2026-08-16 from the
+This is `genet-taffy 0.13.1`, a vendored copy of upstream `taffy 0.13.0` —
+re-vendored 2026-08-16 from the
 prior `0.12.1` (itself re-vendored 2026-07-12 from
 `0.11.0-experimental-cache-fix.3`, when `float_layout` graduated from
 experimental to stable in 0.12; see
 `docs/2026-07-12_ring3_fork_rename_publish_plan.md`, T0). The 0.13 bump
 retired patch 0001, which upstream fixed. Note that 0.12.2 was skipped.
 
-It is wired in via `[patch.crates-io] taffy = { path =
-"support/patches/taffy" }` in the workspace `Cargo.toml`, and redirects the
-`0.13.0` requirement (buckram + genet-layout + genet-livery + paint +
-genet-render + genet-wpt + the vendored `stylo_taffy`); the workspace's plain
-`taffy 0.10.1` is unaffected.
+It is wired in via `[patch.crates-io] genet-taffy = { path =
+"support/patches/taffy" }` in the workspace `Cargo.toml`. Buckram and
+genet-livery depend on the published package under the local dependency key
+`taffy`; the workspace's separate plain `taffy 0.10.1` is unaffected.
 
 It exists because taffy's float / BFC / table layout is still incomplete in
 places, and genet pushes on exactly those paths as CSS conformance climbs.
@@ -29,6 +29,15 @@ upstream plus that one file reproduces the vendored `src/` byte for byte. It is
 generated mechanically, so it cannot drift from the tree. The per-feature
 patches below exist for upstreaming individual fixes and are **not** a
 reproduction record — see the accuracy note at the end of this section.
+
+**0.13.1 release refresh (2026-08-26).** Regenerated `0000` against the
+published upstream `taffy 0.13.0` source after the grid static-position
+callback gained its auto-edge, container-border, and border-box inputs. A
+packaged-source all-feature test also exposed a missing `size_containment`
+field in upstream's explicit `Style` default fixture; the fixture now records
+the fork field's `false`/`false` default. A clean round trip reproduced all 50
+vendored `src/` files byte for byte. The resulting patch SHA-256 is
+`B54137572659DEA2384129C9A1BF13C31EC48313D8F035A7209ED12747C04521`.
 
 To bump taffy:
 
@@ -241,11 +250,10 @@ keeps CSS containing-block selection and used geometry outside Taffy.
 
 ### 0006 — positioned grid static-position area (`0006-grid-static-position-area.patch`)
 
-> **Its `.patch` file is stale** (noted 2026-08-16): 2 of 3 hunks in
-> `grid/alignment.rs` no longer apply even to pristine 0.12.1, so the file
-> records an earlier shape of this change rather than what the tree carries.
-> Take the change from `0000-complete-fork-delta.patch` and regenerate this
-> file after the 0.13 bump.
+> **Its `.patch` file is historical and must not be applied**: 2 of 3 hunks in
+> `grid/alignment.rs` no longer apply even to pristine 0.12.1, and the callback
+> gained three more inputs after the 0.13 bump. The current 0.13.1 source is
+> recorded by `0000-complete-fork-delta.patch`.
 
 
 **Files:** `src/tree/traits.rs`, `src/compute/grid/mod.rs`,
@@ -262,11 +270,13 @@ the grid area for both jobs, which cannot express that rule for an embedding
 engine with its own containing-block graph.
 
 This adds a backwards-compatible `LayoutGridContainer` callback. It receives
-the direct child, the finalized grid area, and the grid content box, then
-returns the alignment area used only to calculate `Layout::static_location`.
-Its default keeps prior Taffy behavior. Buckram selects the content box unless
-K5a selected the same grid as the actual containing block; detailed grid-area
-diagnostics and ordinary absolute layout remain unchanged.
+the direct child, finalized grid area, grid content box, which grid-area edges
+came from `auto`, and the container's border inputs, then returns the alignment
+area used only to calculate `Layout::static_location`. Its default keeps prior
+Taffy behavior. Buckram selects the content box unless K5a selected the same
+grid as the actual containing block; in that case, each `auto` grid line uses
+the corresponding padding edge. Detailed grid-area diagnostics and ordinary
+absolute layout remain unchanged.
 
 ## What upstream support does *not* cover
 

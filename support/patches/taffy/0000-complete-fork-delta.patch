@@ -1,7 +1,8 @@
 diff --git a/src/compute/block.rs b/src/compute/block.rs
+index 6127476..0427f51 100644
 --- a/src/compute/block.rs
 +++ b/src/compute/block.rs
-@@ -15,7 +15,7 @@
+@@ -15,7 +15,7 @@ use crate::{
  };
  
  #[cfg(feature = "float_layout")]
@@ -10,7 +11,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
  #[cfg(feature = "float_layout")]
  use crate::{Clear, Float, FloatDirection};
  
-@@ -180,6 +180,36 @@
+@@ -180,6 +180,36 @@ impl BlockContext<'_> {
          slot
      }
  
@@ -47,7 +48,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
      /// Search for a space suitable for laying out a box that establishes an independent
      /// formatting context (whose border box must not overlap floats)
      pub fn find_bfc_slot(
-@@ -436,6 +466,7 @@
+@@ -436,6 +466,7 @@ fn compute_inner(
      let raw_border = style.border();
      let raw_margin = style.margin();
      let aspect_ratio = style.aspect_ratio();
@@ -55,7 +56,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
      let padding = raw_padding.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
      let border = raw_border.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
      let direction = style.direction();
-@@ -486,10 +517,14 @@
+@@ -486,10 +517,14 @@ fn compute_inner(
      // while probing intrinsic sizes, so measure passes stay content-based. Only a
      // newly-filled axis is adopted (and clamped); an incoming known size is left
      // as the parent resolved it (re-clamping would undo padding/border overrides).
@@ -71,7 +72,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
      let container_content_box_size = known_dimensions.maybe_sub(content_box_inset.sum_axes());
  
      let overflow = style.overflow();
-@@ -498,11 +533,15 @@
+@@ -498,11 +533,15 @@ fn compute_inner(
      // Determine margin collapsing behaviour
      let own_margins_collapse_with_children = Line {
          start: vertical_margins_are_collapsible.start
@@ -87,7 +88,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
              && !is_scroll_container
              && style.position() == Position::Relative
              && padding.bottom == 0.0
-@@ -511,6 +550,8 @@
+@@ -511,6 +550,8 @@ fn compute_inner(
      };
      let has_styles_preventing_being_collapsed_through = !style.is_block()
          || block_ctx.is_bfc_root()
@@ -96,7 +97,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
          || is_scroll_container
          || style.position() == Position::Absolute
          || padding.top > 0.0
-@@ -530,8 +571,12 @@
+@@ -530,8 +571,12 @@ fn compute_inner(
      // 2. Compute container width
      let container_outer_width = known_dimensions.width.unwrap_or_else(|| {
          let available_width = available_space.width.maybe_sub(content_box_inset.horizontal_axis_sum());
@@ -111,7 +112,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
          intrinsic_width.maybe_clamp(min_size.width, max_size.width).maybe_max(Some(padding_border_size.width))
      });
  
-@@ -1013,6 +1058,7 @@
+@@ -1013,6 +1058,7 @@ fn perform_final_layout_on_in_flow_children(
                          content_size: item_layout.content_size,
                          scrollbar_size,
                          location,
@@ -119,7 +120,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
                          padding: item.padding,
                          border: item.border,
                          margin: item_non_auto_margin,
-@@ -1363,6 +1409,7 @@
+@@ -1363,6 +1409,7 @@ fn perform_final_layout_on_in_flow_children(
                  content_size: item_layout.content_size,
                  scrollbar_size,
                  location,
@@ -127,7 +128,7 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
                  padding: item.padding,
                  border: item.border,
                  margin: resolved_margin,
-@@ -1676,6 +1723,7 @@
+@@ -1676,6 +1723,7 @@ fn perform_absolute_layout_on_absolute_children(
                  content_size: layout_output.content_size,
                  scrollbar_size,
                  location,
@@ -136,9 +137,10 @@ diff --git a/src/compute/block.rs b/src/compute/block.rs
                  border,
                  margin: resolved_margin,
 diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
+index ce4d990..4df8113 100644
 --- a/src/compute/flexbox.rs
 +++ b/src/compute/flexbox.rs
-@@ -27,6 +27,12 @@
+@@ -27,6 +27,12 @@ struct FlexItem {
      /// The order of the node relative to it's siblings
      order: u32,
  
@@ -151,7 +153,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
      /// The base size of this item
      size: Size<Option<f32>>,
      /// The minimum allowable size of this item
-@@ -178,6 +184,7 @@
+@@ -178,6 +184,7 @@ pub fn compute_flexbox_layout(
      let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
      let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
      let padding_border_sum = padding.sum_axes() + border.sum_axes();
@@ -159,7 +161,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
      let box_sizing_adjustment =
          if style.box_sizing() == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
  
-@@ -209,8 +216,17 @@
+@@ -209,8 +216,17 @@ pub fn compute_flexbox_layout(
      });
  
      // The size of the container should be floored by the padding and border
@@ -179,7 +181,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
  
      // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
      // is ComputeSize (and thus the container's size is all that we're interested in)
-@@ -256,6 +272,12 @@
+@@ -256,6 +272,12 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
      debug_log!("generate_anonymous_flex_items");
      let mut flex_items = generate_anonymous_flex_items(tree, node, &constants);
  
@@ -192,7 +194,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
      // 9.2. Line Length Determination
  
      // 2. Determine the available main and cross space for the flex items
-@@ -539,6 +561,7 @@
+@@ -539,6 +561,7 @@ fn generate_anonymous_flex_items(
              FlexItem {
                  node: child,
                  order: index as u32,
@@ -200,7 +202,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
                  size: child_style
                      .size()
                      .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-@@ -2067,6 +2090,7 @@
+@@ -2067,6 +2090,7 @@ fn calculate_flex_item(
              content_size,
              scrollbar_size,
              location,
@@ -208,7 +210,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
              padding: item.padding,
              border: item.border,
              margin: item.margin,
-@@ -2401,8 +2425,72 @@
+@@ -2401,8 +2425,72 @@ fn perform_absolute_layout_on_absolute_children(
          let cross_end_scrollbar_offset =
              if cross_is_rtl { 0.0 } else { constants.scrollbar_gutter.cross(constants.dir) };
  
@@ -283,7 +285,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
          let offset_main = if start_main.is_some() || end_main.is_some() {
              if main_is_rtl && end_main.is_some() {
                  constants.container_size.main(constants.dir)
-@@ -2425,90 +2513,14 @@
+@@ -2425,90 +2513,14 @@ fn perform_absolute_layout_on_absolute_children(
                      - resolved_margin.main_end(constants.dir)
              }
          } else {
@@ -378,7 +380,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
              let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
                  > constants.container_size.cross(constants.dir)
                      - constants.content_box_inset.cross_axis_sum(constants.dir);
-@@ -2562,6 +2574,31 @@
+@@ -2562,6 +2574,31 @@ fn perform_absolute_layout_on_absolute_children(
              }
          };
  
@@ -410,7 +412,7 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
          let location = match constants.is_row {
              true => Point { x: offset_main, y: offset_cross },
              false => Point { x: offset_cross, y: offset_main },
-@@ -2579,6 +2616,10 @@
+@@ -2579,6 +2616,10 @@ fn perform_absolute_layout_on_absolute_children(
                  content_size: layout_output.content_size,
                  scrollbar_size,
                  location,
@@ -422,9 +424,10 @@ diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
                  border,
                  margin: resolved_margin,
 diff --git a/src/compute/float.rs b/src/compute/float.rs
+index 08ce35e..7254ad3 100644
 --- a/src/compute/float.rs
 +++ b/src/compute/float.rs
-@@ -734,6 +734,51 @@
+@@ -734,6 +734,51 @@ impl FloatContext {
              },
          }
      }
@@ -477,9 +480,10 @@ diff --git a/src/compute/float.rs b/src/compute/float.rs
  
  /// Context for computing the intrinsic width contribution of a set of floats
 diff --git a/src/compute/grid/alignment.rs b/src/compute/grid/alignment.rs
+index 04578fa..13ebe92 100644
 --- a/src/compute/grid/alignment.rs
 +++ b/src/compute/grid/alignment.rs
-@@ -82,6 +82,7 @@
+@@ -82,6 +82,7 @@ pub(super) fn align_and_position_item(
      node: NodeId,
      order: u32,
      grid_area: Rect<f32>,
@@ -487,7 +491,7 @@ diff --git a/src/compute/grid/alignment.rs b/src/compute/grid/alignment.rs
      container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
      baseline_shim: f32,
      direction: Direction,
-@@ -282,6 +283,26 @@
+@@ -282,6 +283,26 @@ pub(super) fn align_and_position_item(
          baseline_shim,
          Direction::Ltr,
      );
@@ -514,7 +518,7 @@ diff --git a/src/compute/grid/alignment.rs b/src/compute/grid/alignment.rs
  
      let scrollbar_size = Size {
          width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
-@@ -295,6 +316,7 @@
+@@ -295,6 +316,7 @@ pub(super) fn align_and_position_item(
          &Layout {
              order,
              location: Point { x, y },
@@ -523,9 +527,10 @@ diff --git a/src/compute/grid/alignment.rs b/src/compute/grid/alignment.rs
              #[cfg(feature = "content_size")]
              content_size: layout_output.content_size,
 diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
+index 8bfc240..348067e 100644
 --- a/src/compute/grid/mod.rs
 +++ b/src/compute/grid/mod.rs
-@@ -57,6 +57,7 @@
+@@ -57,6 +57,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
      let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
      let padding_border = padding + border;
      let padding_border_size = padding_border.sum_axes();
@@ -533,7 +538,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
      let box_sizing_adjustment =
          if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
  
-@@ -107,8 +108,13 @@
+@@ -107,8 +108,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
      let grid_auto_columns = style.grid_auto_columns();
      let grid_auto_rows = style.grid_auto_rows();
  
@@ -549,7 +554,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
          .map(|size| size.map(AvailableSpace::Definite))
          .unwrap_or(available_space)
          .maybe_clamp(min_size, max_size)
-@@ -124,7 +130,7 @@
+@@ -124,7 +130,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
      };
  
      let outer_node_size =
@@ -558,7 +563,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
  
      // The track sizing algorithm operates on the grid container's content box, so the min/max sizes
      // (which are border-box sizes) need converting to content-box sizes before being passed to it
-@@ -350,7 +356,7 @@
+@@ -350,7 +356,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
      debug_log!(dbg: rows.iter().map(|track| track.base_size).collect::<Vec<_>>());
  
      // 6. Compute container size
@@ -567,7 +572,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
      let mut container_border_box = Size {
          width: resolved_style_size
              .get(AbstractAxis::Inline)
-@@ -614,6 +620,7 @@
+@@ -614,6 +620,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
              item.node,
              index as u32,
              grid_area,
@@ -575,7 +580,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
              container_alignment_styles,
              item.baseline_shim,
              direction,
-@@ -629,8 +636,18 @@
+@@ -629,8 +636,18 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
          }
      }
  
@@ -595,17 +600,30 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
      (0..tree.child_count(node)).for_each(|index| {
          let child = tree.get_child_id(node, index);
          let child_style = tree.get_grid_child_style(child);
-@@ -724,6 +741,9 @@
+@@ -724,6 +741,22 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                      }
                  }),
              };
 +            #[cfg(feature = "detailed_layout_info")]
 +            positioned_items.push(DetailedGridPositionedItemInfo { node: child, grid_area });
-+            let static_position_area = tree.grid_child_static_position_area(node, child, grid_area, content_box);
++            let static_position_area = tree.grid_child_static_position_area(
++                node,
++                child,
++                grid_area,
++                content_box,
++                Rect {
++                    left: maybe_col_indexes.start.is_none(),
++                    right: maybe_col_indexes.end.is_none(),
++                    top: maybe_row_indexes.start.is_none(),
++                    bottom: maybe_row_indexes.end.is_none(),
++                },
++                border,
++                container_border_box,
++            );
              drop(child_style);
  
              // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
-@@ -733,6 +753,7 @@
+@@ -733,6 +766,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                  child,
                  order,
                  grid_area,
@@ -613,7 +631,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
                  container_alignment_styles,
                  0.0,
                  direction,
-@@ -756,6 +777,7 @@
+@@ -756,6 +790,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
              rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
              columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
              items: items.iter().map(DetailedGridItemsInfo::from_grid_item).collect(),
@@ -621,7 +639,7 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
          },
      );
  
-@@ -864,6 +886,19 @@
+@@ -864,6 +899,19 @@ pub struct DetailedGridInfo {
      pub columns: DetailedGridTracksInfo,
      /// <https://drafts.csswg.org/css-grid-1/#grid-items>
      pub items: Vec<DetailedGridItemsInfo>,
@@ -642,9 +660,10 @@ diff --git a/src/compute/grid/mod.rs b/src/compute/grid/mod.rs
  
  /// Information from the computation of grids tracks
 diff --git a/src/compute/mod.rs b/src/compute/mod.rs
+index b283083..ffe4750 100644
 --- a/src/compute/mod.rs
 +++ b/src/compute/mod.rs
-@@ -48,7 +48,7 @@
+@@ -48,7 +48,7 @@ pub use self::flexbox::compute_flexbox_layout;
  pub use self::grid::compute_grid_layout;
  
  #[cfg(feature = "float_layout")]
@@ -653,7 +672,7 @@ diff --git a/src/compute/mod.rs b/src/compute/mod.rs
  
  use crate::geometry::{Line, Point, Size};
  use crate::style::{AvailableSpace, CoreStyle, Overflow};
-@@ -155,6 +155,7 @@
+@@ -155,6 +155,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
          &Layout {
              order: 0,
              location,
@@ -661,7 +680,7 @@ diff --git a/src/compute/mod.rs b/src/compute/mod.rs
              size: output.size,
              #[cfg(feature = "content_size")]
              content_size: output.content_size,
-@@ -293,7 +294,10 @@
+@@ -293,7 +294,10 @@ pub fn compute_hidden_layout(tree: &mut (impl LayoutPartialTree + CacheTree), no
  #[cfg(feature = "detailed_layout_info")]
  pub mod detailed_info {
      #[cfg(feature = "grid")]
@@ -674,9 +693,10 @@ diff --git a/src/compute/mod.rs b/src/compute/mod.rs
  
  #[cfg(test)]
 diff --git a/src/style/flex.rs b/src/style/flex.rs
+index e4c7654..e5bd68a 100644
 --- a/src/style/flex.rs
 +++ b/src/style/flex.rs
-@@ -64,6 +64,18 @@
+@@ -64,6 +64,18 @@ pub trait FlexboxItemStyle: CoreStyle {
      fn align_self(&self) -> Option<AlignSelf> {
          Style::<Self::CustomIdent>::DEFAULT.align_self
      }
@@ -696,9 +716,10 @@ diff --git a/src/style/flex.rs b/src/style/flex.rs
  
  use crate::geometry::AbsoluteAxis;
 diff --git a/src/style/mod.rs b/src/style/mod.rs
+index c32a9c5..4b4915d 100644
 --- a/src/style/mod.rs
 +++ b/src/style/mod.rs
-@@ -161,6 +161,12 @@
+@@ -161,6 +161,12 @@ pub trait CoreStyle {
      fn aspect_ratio(&self) -> Option<f32> {
          Style::<Self::CustomIdent>::DEFAULT.aspect_ratio
      }
@@ -711,7 +732,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
  
      // Spacing Properties
      /// How large should the margin be on each side?
-@@ -492,6 +498,9 @@
+@@ -492,6 +498,9 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
      ///
      /// The ratio is calculated as width divided by height.
      pub aspect_ratio: Option<f32>,
@@ -721,7 +742,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
  
      // Spacing Properties
      /// How large should the margin be on each side?
-@@ -557,6 +566,9 @@
+@@ -557,6 +566,9 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
      /// 1.0 is the default value, and this value must be positive.
      #[cfg(feature = "flexbox")]
      pub flex_shrink: f32,
@@ -731,7 +752,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
  
      // Grid container properies
      /// Defines the track sizing functions (heights) of the grid rows
-@@ -619,6 +631,7 @@
+@@ -619,6 +631,7 @@ impl<S: CheapCloneStr> Style<S> {
          min_size: Size::auto(),
          max_size: Size::auto(),
          aspect_ratio: None,
@@ -739,7 +760,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
          #[cfg(any(feature = "flexbox", feature = "grid"))]
          gap: Size::zero(),
          // Alignment
-@@ -647,6 +660,8 @@
+@@ -647,6 +660,8 @@ impl<S: CheapCloneStr> Style<S> {
          #[cfg(feature = "flexbox")]
          flex_shrink: 1.0,
          #[cfg(feature = "flexbox")]
@@ -748,7 +769,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
          flex_basis: Dimension::AUTO,
          // Grid
          #[cfg(feature = "grid")]
-@@ -738,6 +753,10 @@
+@@ -738,6 +753,10 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
          self.aspect_ratio
      }
      #[inline(always)]
@@ -759,7 +780,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
      fn margin(&self) -> Rect<LengthPercentageAuto> {
          self.margin
      }
-@@ -807,6 +826,10 @@
+@@ -807,6 +826,10 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
          (*self).aspect_ratio()
      }
      #[inline(always)]
@@ -770,7 +791,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
      fn margin(&self) -> Rect<LengthPercentageAuto> {
          (*self).margin()
      }
-@@ -957,6 +980,10 @@
+@@ -957,6 +980,10 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
          self.flex_shrink
      }
      #[inline(always)]
@@ -781,7 +802,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
      fn align_self(&self) -> Option<AlignSelf> {
          self.align_self
      }
-@@ -977,6 +1004,10 @@
+@@ -977,6 +1004,10 @@ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
          (*self).flex_shrink()
      }
      #[inline(always)]
@@ -792,7 +813,7 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
      fn align_self(&self) -> Option<AlignSelf> {
          (*self).align_self()
      }
-@@ -1274,6 +1305,8 @@
+@@ -1274,11 +1305,14 @@ mod tests {
              #[cfg(feature = "flexbox")]
              flex_shrink: 1.0,
              #[cfg(feature = "flexbox")]
@@ -801,10 +822,32 @@ diff --git a/src/style/mod.rs b/src/style/mod.rs
              flex_basis: super::Dimension::AUTO,
              size: Size::auto(),
              min_size: Size::auto(),
+             max_size: Size::auto(),
+             aspect_ratio: Default::default(),
++            size_containment: Size { width: false, height: false },
+             #[cfg(feature = "grid")]
+             grid_template_rows: Default::default(),
+             #[cfg(feature = "grid")]
+@@ -1375,12 +1409,12 @@ mod tests {
+         assert_type_size::<GridTemplateComponent<String>>(56);
+         assert_type_size::<GridPlacement<String>>(32);
+         assert_type_size::<Line<GridPlacement<String>>>(64);
+-        assert_type_size::<Style<String>>(552);
++        assert_type_size::<Style<String>>(560);
+ 
+         // String-type dependent (Arc<str>)
+         assert_type_size::<GridTemplateComponent<Arc<str>>>(56);
+         assert_type_size::<GridPlacement<Arc<str>>>(24);
+         assert_type_size::<Line<GridPlacement<Arc<str>>>>(48);
+-        assert_type_size::<Style<Arc<str>>>(520);
++        assert_type_size::<Style<Arc<str>>>(528);
+     }
+ }
 diff --git a/src/tree/layout.rs b/src/tree/layout.rs
+index dfc7b51..cf38987 100644
 --- a/src/tree/layout.rs
 +++ b/src/tree/layout.rs
-@@ -231,6 +231,8 @@
+@@ -231,6 +231,8 @@ pub struct Layout {
      pub order: u32,
      /// The top-left corner of the node
      pub location: Point<f32>,
@@ -813,7 +856,7 @@ diff --git a/src/tree/layout.rs b/src/tree/layout.rs
      /// The width and height of the node
      pub size: Size<f32>,
      #[cfg(feature = "content_size")]
-@@ -264,6 +266,7 @@
+@@ -264,6 +266,7 @@ impl Layout {
          Self {
              order: 0,
              location: Point::ZERO,
@@ -821,7 +864,7 @@ diff --git a/src/tree/layout.rs b/src/tree/layout.rs
              size: Size::zero(),
              #[cfg(feature = "content_size")]
              content_size: Size::zero(),
-@@ -284,6 +287,7 @@
+@@ -284,6 +287,7 @@ impl Layout {
              order,
              size: Size::zero(),
              location: Point::ZERO,
@@ -830,6 +873,7 @@ diff --git a/src/tree/layout.rs b/src/tree/layout.rs
              content_size: Size::zero(),
              scrollbar_size: Size::zero(),
 diff --git a/src/tree/traits.rs b/src/tree/traits.rs
+index b91f9ca..4082458 100644
 --- a/src/tree/traits.rs
 +++ b/src/tree/traits.rs
 @@ -129,7 +129,7 @@
@@ -841,7 +885,7 @@ diff --git a/src/tree/traits.rs b/src/tree/traits.rs
  use crate::style::{AvailableSpace, CoreStyle};
  #[cfg(feature = "flexbox")]
  use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
-@@ -273,6 +273,23 @@
+@@ -273,6 +273,26 @@ pub trait LayoutGridContainer: LayoutPartialTree {
      /// Get the child's styles
      fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_>;
  
@@ -858,6 +902,9 @@ diff --git a/src/tree/traits.rs b/src/tree/traits.rs
 +        _child_node_id: NodeId,
 +        grid_area: Rect<f32>,
 +        _content_box: Rect<f32>,
++        _grid_area_auto: Rect<bool>,
++        _container_border: Rect<f32>,
++        _container_border_box: Size<f32>,
 +    ) -> Rect<f32> {
 +        grid_area
 +    }
@@ -866,9 +913,10 @@ diff --git a/src/tree/traits.rs b/src/tree/traits.rs
      ///
      /// Implementing this method is optional. Doing so allows you to access details about the the grid such as
 diff --git a/src/util/print.rs b/src/util/print.rs
+index d536d43..7d3e369 100644
 --- a/src/util/print.rs
 +++ b/src/util/print.rs
-@@ -63,7 +63,7 @@
+@@ -63,7 +63,7 @@ pub fn write_tree(mut writer: impl io::Write, tree: &impl PrintTree, root: NodeI
              width = layout.size.width,
              height = layout.size.height,
              key = node_id,
