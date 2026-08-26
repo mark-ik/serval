@@ -586,7 +586,7 @@ mod tests {
             "console.log(document.URL);\
              console.log(location.href);\
              console.log(location.hash);\
-             history.pushState({}, '', '#next:~:text=another);\
+             history.pushState({}, '', '#next:~:text=another');\
              console.log(document.URL);\
              console.log(location.href);\
              console.log(location.hash);",
