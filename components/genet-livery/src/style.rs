@@ -816,6 +816,24 @@ where
         values: &ComputedValues,
         shorthand: ShorthandId,
     ) -> Option<String> {
+        if shorthand == ShorthandId::Flex {
+            return Some(format!(
+                "{} {} {}",
+                values.get(PropertyId::FlexGrow).to_css_string(),
+                values.get(PropertyId::FlexShrink).to_css_string(),
+                computed_flex_basis_css(values.get(PropertyId::FlexBasis)),
+            ));
+        }
+        if shorthand == ShorthandId::FlexFlow {
+            let direction = values.get(PropertyId::FlexDirection).to_css_string();
+            let wrap = values.get(PropertyId::FlexWrap).to_css_string();
+            return Some(match (direction.as_str(), wrap.as_str()) {
+                ("row", "nowrap") => direction,
+                ("row", _) => wrap,
+                (_, "nowrap") => direction,
+                _ => format!("{direction} {wrap}"),
+            });
+        }
         if !matches!(
             shorthand,
             ShorthandId::BorderColor | ShorthandId::BorderStyle | ShorthandId::BorderWidth
@@ -1411,6 +1429,17 @@ fn computed_value_css(value: PropertyValue) -> String {
             unit: LengthUnit::Px,
         })) => used_px(value),
         value => value.to_css_string(),
+    }
+}
+
+fn computed_flex_basis_css(value: PropertyValue) -> String {
+    match value {
+        PropertyValue::Size(Size::Value(LengthPercentage::Zero)) => "0px".to_owned(),
+        PropertyValue::Size(Size::Value(LengthPercentage::Length(Length {
+            value,
+            unit: LengthUnit::Px,
+        }))) => used_px(value),
+        value => computed_value_css(value),
     }
 }
 

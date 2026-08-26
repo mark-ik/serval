@@ -182,6 +182,10 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
     parts
 }
 
+pub(crate) fn contains_top_level_declaration_delimiter(input: &str) -> bool {
+    split_top_level(&without_comments(input), ';').len() > 1
+}
+
 fn split_components(input: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = None;
@@ -758,6 +762,14 @@ fn flex_zero_basis() -> Size {
 /// Each component may occur at most once; omitted components use the
 /// longhands' initial values.
 fn expand_flex_flow(block: &mut DeclarationBlock, value: &str, important: bool) {
+    if value.trim().is_empty() {
+        block.errors.push(DeclarationError {
+            name: "flex-flow".to_owned(),
+            value: value.to_owned(),
+            kind: DeclarationErrorKind::InvalidValue,
+        });
+        return;
+    }
     let mut direction = None;
     let mut wrap = None;
     for component in split_components(value) {

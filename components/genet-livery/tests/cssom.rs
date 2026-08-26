@@ -78,6 +78,35 @@ fn computed_style_serializes_border_lengths_and_box_shorthands() {
 }
 
 #[test]
+fn computed_style_serializes_flex_shorthands_from_longhands() {
+    let (style_set, card) = retained(".card { flex: 2 3 10px; flex-flow: column wrap; }");
+    assert_eq!(
+        style_set.computed_style(card, "flex").as_deref(),
+        Some("2 3 10px")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "flex-flow").as_deref(),
+        Some("column wrap")
+    );
+
+    let (style_set, card) = retained(".card { flex: 1; flex-flow: row wrap; }");
+    assert_eq!(
+        style_set.computed_style(card, "flex").as_deref(),
+        Some("1 1 0%")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "flex-flow").as_deref(),
+        Some("wrap")
+    );
+
+    let (style_set, card) = retained(".card { flex: 0 0 0; }");
+    assert_eq!(
+        style_set.computed_style(card, "flex").as_deref(),
+        Some("0 0 0px")
+    );
+}
+
+#[test]
 fn computed_transform_serializes_as_a_resolved_2d_matrix() {
     let (retained, card) =
         retained(".card { font-size: 10px; transform: translate(2em, 4px) skewX(45deg); }");

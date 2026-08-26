@@ -19,9 +19,9 @@ use genet_document_resources::{
 use genet_livery::{
     CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryLayout,
     LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextDirective,
-    TextRange, TextSelection, TextSystem, ViewportSizes, canonicalize_specified_value, content_box_size,
-    emit_paint_list_with_text_system_scrolled_with_images, hit_test, layout,
-    layout_with_text_system, resolve_container_query_styles,
+    TextRange, TextSelection, TextSystem, ViewportSizes, canonicalize_specified_value,
+    content_box_size, emit_paint_list_with_text_system_scrolled_with_images, hit_test,
+    is_implemented_shorthand, layout, layout_with_text_system, resolve_container_query_styles,
     resolve_container_query_styles_with_images, resolve_styles,
     used_value_context as layout_used_value_context,
 };
@@ -903,7 +903,9 @@ impl InlineStyleHandler for LiveryInlineStyle {
     fn canonicalize(&self, property: &str, value: &str) -> InlineStyleValueResult {
         if let Some(value) = canonicalize_specified_value(property, value) {
             InlineStyleValueResult::Canonical(value)
-        } else if genet_livery::PropertyId::from_css_name(&property.to_ascii_lowercase()).is_some()
+        } else if (genet_livery::PropertyId::from_css_name(&property.to_ascii_lowercase())
+            .is_some()
+            || is_implemented_shorthand(property))
             && !value.to_ascii_lowercase().contains("var(")
         {
             InlineStyleValueResult::Invalid
@@ -1759,6 +1761,52 @@ mod tests {
             ],
         );
         assert_eq!(cssom.generation(0), Some(initial_generation + 2));
+    }
+
+    #[test]
+    fn boa_cssom_flex_shorthand_receipts_cover_specified_and_computed_reads() {
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse(
+            "<html><body><div id='card' class='card'></div></body></html>",
+        ));
+        LiveryCssom::install(
+            &mut runtime,
+            &[".card { flex: 2 3 10px; flex-flow: column wrap; }"],
+            Device::screen(800.0, 600.0),
+        );
+
+        runtime
+            .eval(
+                "var card = document.getElementById('card');\
+                 var s = card.style;\
+                 s.flex = '1';\
+                 console.log(s.flex);\
+                 s.flex = 'none 1';\
+                 console.log(s.flex);\
+                 s.flexFlow = 'nowrap column';\
+                 console.log(s.flexFlow);\
+                 s.flexFlow = 'nowrap row nowrap';\
+                 console.log(s.flexFlow);\
+                 console.log(String(CSS.supports('flex', '1')) + '|' +\
+                   String(CSS.supports('flex', 'none 1')) + '|' +\
+                   String(CSS.supports('flex-flow', 'column wrap')) + '|' +\
+                   String(CSS.supports('flex-flow', 'column wrap column')));\
+                 console.log(getComputedStyle(card).flex + '|' +\
+                   getComputedStyle(card).flexFlow);",
+            )
+            .expect("Livery flex CSSOM script");
+
+        assert_eq!(
+            runtime.host().borrow().console,
+            vec![
+                "1 1 0%",
+                "1 1 0%",
+                "column",
+                "column",
+                "true|false|true|false",
+                "1 1 0%|column",
+            ],
+        );
     }
 
     #[test]

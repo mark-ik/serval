@@ -250,6 +250,10 @@ fn flex_flow_expands_direction_and_wrap_in_either_order() {
     let duplicate = parse_declaration_block("flex-flow: row column");
     assert!(duplicate.declarations.is_empty());
     assert_eq!(duplicate.errors.len(), 1);
+
+    let empty = parse_declaration_block("flex-flow:");
+    assert!(empty.declarations.is_empty());
+    assert_eq!(empty.errors.len(), 1);
 }
 
 #[test]

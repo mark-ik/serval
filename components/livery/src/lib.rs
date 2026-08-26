@@ -77,10 +77,97 @@ fn specified_opacity(value: &str) -> Option<String> {
 /// retain their CSSOM spelling.
 pub fn canonicalize_specified_value(name: &str, value: &str) -> Option<String> {
     canonicalize_specified_longhand(name, value).or_else(|| {
-        name.eq_ignore_ascii_case("border")
-            .then(|| canonicalize_border(value))
-            .flatten()
+        if name.eq_ignore_ascii_case("border") {
+            canonicalize_border(value)
+        } else {
+            canonicalize_specified_shorthand(name, value)
+        }
     })
+}
+
+/// Return whether `name` is one of the shorthands whose bounded parser can
+/// classify at the CSSOM specified-value seam.
+pub fn is_implemented_shorthand(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "flex" | "flex-flow")
+}
+
+/// Canonicalize the implemented flex shorthands using the same declaration
+/// parser that drives the retained cascade. `None` means either that the
+/// shorthand is outside this bounded helper or that the value is invalid.
+/// Values containing `var()` remain unknown to this parser and therefore pass
+/// through at the shared CSSOM boundary.
+pub fn canonicalize_specified_shorthand(name: &str, value: &str) -> Option<String> {
+    if cascade::contains_top_level_declaration_delimiter(value)
+        || custom::contains_var(value)
+        || !is_implemented_shorthand(name)
+    {
+        return None;
+    }
+    let name = name.to_ascii_lowercase();
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if matches!(
+        value.to_ascii_lowercase().as_str(),
+        "initial" | "inherit" | "unset"
+    ) {
+        return Some(value.to_ascii_lowercase());
+    }
+
+    let block = cascade::parse_declaration_block(&format!("{name}: {value}"));
+    let expected_len = match name.as_str() {
+        "flex" => 3,
+        "flex-flow" => 2,
+        _ => return None,
+    };
+    let is_expected = |property| match name.as_str() {
+        "flex" => matches!(
+            property,
+            PropertyId::FlexGrow | PropertyId::FlexShrink | PropertyId::FlexBasis
+        ),
+        "flex-flow" => matches!(property, PropertyId::FlexDirection | PropertyId::FlexWrap),
+        _ => false,
+    };
+    if !block.errors.is_empty()
+        || !block.custom.is_empty()
+        || block.declarations.len() != expected_len
+        || block
+            .declarations
+            .iter()
+            .any(|declaration| declaration.important || !is_expected(declaration.property))
+    {
+        return None;
+    }
+    let property = |id| {
+        block
+            .declarations
+            .iter()
+            .find(|declaration| declaration.property == id)
+            .and_then(|declaration| match &declaration.value {
+                cascade::DeclaredValue::Value(value) => Some(value.to_css_string()),
+                _ => None,
+            })
+    };
+    match name.as_str() {
+        "flex" => Some(format!(
+            "{} {} {}",
+            property(PropertyId::FlexGrow)?,
+            property(PropertyId::FlexShrink)?,
+            property(PropertyId::FlexBasis)?,
+        )),
+        "flex-flow" => {
+            let direction = property(PropertyId::FlexDirection)?;
+            let wrap = property(PropertyId::FlexWrap)?;
+            match (direction.as_str(), wrap.as_str()) {
+                ("row", "nowrap") => Some(direction),
+                ("row", _) => Some(wrap),
+                (_, "nowrap") => Some(direction),
+                _ => Some(format!("{direction} {wrap}")),
+            }
+        },
+        _ => None,
+    }
 }
 
 fn canonicalize_border(value: &str) -> Option<String> {

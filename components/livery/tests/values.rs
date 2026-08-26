@@ -15,7 +15,7 @@ use livery::values::{
 };
 use livery::{
     AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
-    canonicalize_specified_value,
+    canonicalize_specified_shorthand, canonicalize_specified_value,
 };
 
 fn assert_round_trip<T>(css: &str)
@@ -62,6 +62,59 @@ fn specified_border_canonicalizes_nested_calc_width() {
     assert_eq!(
         canonicalize_specified_value("border", "calc(10%) solid pink"),
         None
+    );
+}
+
+#[test]
+fn specified_flex_shorthands_reuse_cascade_canonicalization() {
+    for (source, expected) in [
+        ("none", "0 0 auto"),
+        ("1", "1 1 0%"),
+        ("7% 8", "8 1 7%"),
+        ("auto 1 2", "1 2 auto"),
+    ] {
+        assert_eq!(
+            canonicalize_specified_shorthand("flex", source).as_deref(),
+            Some(expected)
+        );
+    }
+    for (source, expected) in [
+        ("column nowrap", "column"),
+        ("nowrap column", "column"),
+        ("wrap row-reverse", "row-reverse wrap"),
+        ("row wrap", "wrap"),
+    ] {
+        assert_eq!(
+            canonicalize_specified_shorthand("flex-flow", source).as_deref(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn specified_flex_shorthands_reject_invalid_values_but_preserve_variables() {
+    for (name, value) in [
+        ("flex", "none 1"),
+        ("flex", "2 3 4"),
+        ("flex-flow", "nowrap row nowrap"),
+        ("flex-flow", "column wrap column"),
+        ("flex-flow", ""),
+        ("flex", "1;"),
+        ("flex-flow", "column;"),
+        ("flex", "1; color: red"),
+        ("flex", "1; --x: y"),
+        ("flex", "1 !important"),
+    ] {
+        assert_eq!(canonicalize_specified_shorthand(name, value), None);
+    }
+    assert_eq!(
+        canonicalize_specified_shorthand("flex", "var(--flex)"),
+        None
+    );
+    assert_eq!(canonicalize_specified_value("flex", "var(--flex)"), None);
+    assert_eq!(
+        canonicalize_specified_shorthand("flex", "1 /* ; */").as_deref(),
+        Some("1 1 0%")
     );
 }
 
