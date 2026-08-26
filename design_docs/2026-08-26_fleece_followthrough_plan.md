@@ -1,11 +1,12 @@
 # Plan: Fleece follow-through
 
 **Date:** 2026-08-26
-**Status:** Implementation complete; final verification and remote
-reconciliation are in progress. Documentation landed first, followed by the
-three parallel packets: retire the `genet-extract` shim, activate Text Fragments
-in the retained Genet host, and replace Mere's manifest-only Fleece dependencies
-with real calls or remove them from the wrong layer.
+**Status:** Implementation complete; focused automated verification is green.
+A headed retained-document activation and indication receipt remains open.
+Documentation landed first, followed by the three parallel packets: retire the
+`genet-extract` shim, activate Text Fragments in the retained Genet host, and
+replace Mere's manifest-only Fleece dependencies with real calls or remove them
+from the wrong layer.
 
 ## Why this plan exists
 
@@ -205,6 +206,12 @@ documentation reconciliation
   matcher, first-frame static/scripted activation, indication and scrolling,
   element-fragment fallback, single-fetch fixtures, and script-visible URL
   stripping for `document.URL`, `Location.href`, and `Location.hash`.
+- **2026-08-26:** Packet T's focused automated matrix passed: parser/matcher
+  4/4, retained static activation and element fallback 2/2, scripted activation,
+  single-fetch, and fallback 3/3, and Boa/Nova script-visible URL privacy 2/2.
+  Windows verification used a debuginfo-free test profile after the default
+  5.76 GB test PDB hit MSVC `LNK1318`; the source compilation was already clean.
+  The headed activation and indication receipt remains the explicit open gate.
 - **2026-08-26:** Packet C added crawl and Gazette supplied-document consumers,
   removed the eidetic-search dependency, and retained crawl/fetch/store/product
   ownership boundaries. Integration review corrected XHTML dispatch so a
