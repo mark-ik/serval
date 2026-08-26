@@ -67,11 +67,13 @@ pub use routing::{
 };
 pub use session_engine::{
     ContentLineage, ContentReport, DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole,
-    DocumentSession, EngineKindIndex, EngineKinds, OutlineEntry, SessionButtonState, SessionClick,
-    SessionCursor, SessionEffect, SessionEngine, SessionError, SessionFocusDirection,
-    SessionFormMethod, SessionFormSubmission, SessionIme, SessionInput, SessionInputResult,
-    SessionKey, SessionLink, SessionModifiers, SessionNavigationCommand, SessionPointerButton,
-    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
+    DocumentFindDirection, DocumentFindMatch, DocumentFindQuery, DocumentFindReveal,
+    DocumentFindState, DocumentSession, EngineKindIndex, EngineKinds, OutlineEntry,
+    SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine, SessionError,
+    SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme, SessionInput,
+    SessionInputResult, SessionKey, SessionLink, SessionModifiers, SessionNavigationCommand,
+    SessionPointerButton, SessionRegistry, SessionScrollKey, SessionSpawnRequest,
+    SessionTextTarget,
 };
 pub use sniff::sniff_content_type;
 pub use statements::{LinkStatement, link_statements};

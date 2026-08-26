@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::a11y::A11yCapability;
 use crate::routing::EngineRouteDecision;
+use crate::session_engine::{DocumentFindDirection, DocumentFindQuery, DocumentFindState};
 
 // ── User-agent requests ────────────────────────────────────────────────────
 
@@ -744,6 +745,8 @@ pub enum WebSurfaceEvent {
     LoadProgress {
         value: f32,
     },
+    /// Retained find state from an engine-managed page search.
+    DocumentFindChanged(DocumentFindState),
     ConsoleMessage {
         level: String,
         text: String,
@@ -909,6 +912,26 @@ pub trait WebSurface: SurfaceProducer {
     fn go_forward(&mut self) -> Result<(), SurfaceError>;
     fn can_go_back(&self) -> bool;
     fn can_go_forward(&self) -> bool;
+
+    /// Start or step the hosted engine's page search. Results arrive through
+    /// [`WebSurfaceEvent::DocumentFindChanged`], preserving the surface event
+    /// order rather than adding a filtered result poller.
+    fn document_find(
+        &mut self,
+        _query: &DocumentFindQuery,
+        _direction: DocumentFindDirection,
+        _find_next: bool,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "document find is not wired for this web surface".into(),
+        ))
+    }
+
+    fn clear_document_find(&mut self) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "document find is not wired for this web surface".into(),
+        ))
+    }
 
     // ── Session/script/events ────────────────────────────────────────────────
     fn set_cookie(&mut self, cookie: &Cookie) -> Result<(), SurfaceError>;

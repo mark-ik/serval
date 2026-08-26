@@ -21,7 +21,8 @@ use genet_host_api::ResourceFetcher;
 #[cfg(feature = "livery")]
 use genet_host_api::ResourceResponse;
 use inker::session_engine::{
-    DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession,
+    DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentFindDirection,
+    DocumentFindMatch, DocumentFindQuery, DocumentFindReveal, DocumentFindState, DocumentSession,
     SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine, SessionError,
     SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme, SessionKey,
     SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
@@ -197,6 +198,8 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             last_error: None,
             resources,
             source_response,
+            find_state: DocumentFindState::empty(DocumentFindQuery::default()),
+            find_ranges: Vec::new(),
         }))
     }
 }
@@ -214,6 +217,8 @@ pub struct LiveryDocumentSession {
     last_error: Option<String>,
     resources: ResolvedDocumentResources,
     source_response: ResourceResponse,
+    find_state: DocumentFindState,
+    find_ranges: Vec<genet_livery::TextRange<genet_scripted_dom::NodeId>>,
 }
 
 #[cfg(feature = "livery")]
@@ -577,6 +582,154 @@ impl LiveryDocumentSession {
     pub fn resource_diagnostics(&self) -> &[genet_document_resources::ResourceDiagnostic] {
         &self.resources.diagnostics
     }
+
+    fn find_occurrences(text: &str, query: &DocumentFindQuery) -> Vec<std::ops::Range<usize>> {
+        if query.text.is_empty() {
+            return Vec::new();
+        }
+        if query.match_case {
+            return text
+                .match_indices(&query.text)
+                .map(|(start, matched)| start..start + matched.len())
+                .collect();
+        }
+        if text.is_ascii() && query.text.is_ascii() {
+            let haystack = text.to_ascii_lowercase();
+            let needle = query.text.to_ascii_lowercase();
+            return haystack
+                .match_indices(&needle)
+                .map(|(start, matched)| start..start + matched.len())
+                .collect();
+        }
+
+        let needle = query.text.to_lowercase();
+        let width = query.text.chars().count();
+        let boundaries: Vec<_> = text
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        (0..boundaries.len().saturating_sub(1))
+            .filter_map(|start_index| {
+                let end_index = start_index.checked_add(width)?;
+                let end = *boundaries.get(end_index)?;
+                let start = boundaries[start_index];
+                (text[start..end].to_lowercase() == needle).then_some(start..end)
+            })
+            .collect()
+    }
+
+    fn find_structural_context(
+        &self,
+        source: genet_scripted_dom::NodeId,
+        matched: &str,
+    ) -> (Option<String>, String) {
+        let mut node = self.doc.dom().parent(source);
+        let mut fallback = None;
+        while let Some(candidate) = node {
+            if let Some(tag) = self.tag(candidate) {
+                let role = match tag {
+                    "a" => "link",
+                    "button" => "button",
+                    "input" | "textarea" => "textbox",
+                    "p" => "paragraph",
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
+                    "li" => "listitem",
+                    "img" => "image",
+                    "label" => "label",
+                    "nav" => "navigation",
+                    "header" => "banner",
+                    "footer" => "contentinfo",
+                    "main" => "main",
+                    "section" | "article" => "region",
+                    _ => "group",
+                };
+                let label = self.text_content(candidate).trim().to_string();
+                let context = (
+                    Some(role.to_string()),
+                    if label.is_empty() {
+                        matched.to_string()
+                    } else {
+                        label
+                    },
+                );
+                if role != "group" {
+                    return context;
+                }
+                fallback.get_or_insert(context);
+            }
+            node = self.doc.dom().parent(candidate);
+        }
+        fallback.unwrap_or_else(|| (None, matched.to_string()))
+    }
+
+    fn find_matches(
+        &self,
+        query: &DocumentFindQuery,
+    ) -> (
+        Vec<DocumentFindMatch>,
+        Vec<genet_livery::TextRange<genet_scripted_dom::NodeId>>,
+    ) {
+        fn collect_text_nodes(
+            dom: &genet_scripted_dom::ScriptedDom,
+            node: genet_scripted_dom::NodeId,
+            out: &mut Vec<genet_scripted_dom::NodeId>,
+        ) {
+            if dom.kind(node) == NodeKind::Text {
+                out.push(node);
+            }
+            for child in dom.dom_children(node) {
+                collect_text_nodes(dom, child, out);
+            }
+        }
+
+        let mut sources = Vec::new();
+        collect_text_nodes(self.doc.dom(), self.doc.dom().document(), &mut sources);
+        let mut matches = Vec::new();
+        let mut ranges = Vec::new();
+        for source in sources {
+            let Some(text) = self.doc.dom().text(source) else {
+                continue;
+            };
+            for range in Self::find_occurrences(text, query) {
+                let Some(caret) = self.doc.caret_rect(source, range.start) else {
+                    continue;
+                };
+                let matched = &text[range.clone()];
+                let (role, label) = self.find_structural_context(source, matched);
+                matches.push(DocumentFindMatch {
+                    label,
+                    role,
+                    reveal: DocumentFindReveal::ScrollY((self.doc.scroll().1 + caret.y).max(0.0)),
+                });
+                ranges.push(genet_livery::TextRange {
+                    anchor_node: source,
+                    anchor_offset: range.start,
+                    focus_node: source,
+                    focus_offset: range.end,
+                });
+            }
+        }
+        (matches, ranges)
+    }
+
+    fn reveal_find_current(&mut self) {
+        let Some(index) = self.find_state.current else {
+            self.doc.select_text_range(None);
+            return;
+        };
+        let Some(range) = self.find_ranges.get(index).copied() else {
+            return;
+        };
+        if let Some(DocumentFindMatch {
+            reveal: DocumentFindReveal::ScrollY(y),
+            ..
+        }) = self.find_state.matches.get(index)
+        {
+            self.doc.scroll_to((*y - 24.0).max(0.0));
+        }
+        self.doc.select_text_range(Some(range));
+    }
 }
 
 #[cfg(feature = "livery")]
@@ -878,6 +1031,52 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     fn text_target(&self, text: &str) -> Option<SessionTextTarget> {
         let (anchor, focus) = self.doc.text_target(text)?;
         Some(SessionTextTarget { anchor, focus })
+    }
+
+    fn document_find(
+        &mut self,
+        query: &DocumentFindQuery,
+    ) -> Result<DocumentFindState, SessionError> {
+        if query.text.is_empty() {
+            self.clear_document_find()?;
+            self.find_state.query = query.clone();
+            return Ok(self.find_state.clone());
+        }
+        let (matches, ranges) = self.find_matches(query);
+        self.find_ranges = ranges;
+        self.find_state = DocumentFindState {
+            query: query.clone(),
+            current: (!matches.is_empty()).then_some(0),
+            count: matches.len(),
+            matches,
+            complete: true,
+        };
+        self.reveal_find_current();
+        Ok(self.find_state.clone())
+    }
+
+    fn document_find_step(
+        &mut self,
+        direction: DocumentFindDirection,
+    ) -> Result<DocumentFindState, SessionError> {
+        let count = self.find_state.count;
+        if count == 0 {
+            return Ok(self.find_state.clone());
+        }
+        let current = self.find_state.current.unwrap_or(0);
+        self.find_state.current = Some(match direction {
+            DocumentFindDirection::Previous => (current + count - 1) % count,
+            DocumentFindDirection::Next => (current + 1) % count,
+        });
+        self.reveal_find_current();
+        Ok(self.find_state.clone())
+    }
+
+    fn clear_document_find(&mut self) -> Result<(), SessionError> {
+        self.find_ranges.clear();
+        self.find_state = DocumentFindState::empty(DocumentFindQuery::default());
+        self.doc.select_text_range(None);
+        Ok(())
     }
 
     fn links(&self) -> Vec<SessionLink> {
@@ -1814,6 +2013,65 @@ mod tests {
         let released = session.input(pointer(SessionButtonState::Released));
         assert_eq!(released.effect, SessionEffect::Navigate("/next".to_owned()));
         assert_eq!(released.capture, Some(false));
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_retains_structural_find_and_wraps_reveal() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("https://example.test/find")
+            .with_body(
+                "<html><body><h1>Finding heading</h1><p>First finding.</p>\
+                 <div style=\"height: 1200px\"></div><p>Last finding.</p></body></html>",
+            )
+            .with_viewport(480, 240);
+        let mut session = engine.spawn(&request).expect("livery lane spawns");
+        let _ = session.frame(480, 240);
+
+        let state = session
+            .document_find(&DocumentFindQuery::new("finding"))
+            .expect("livery supplies retained find");
+        assert_eq!(state.matches.len(), 3);
+        assert_eq!(state.count, 3);
+        assert_eq!(state.current, Some(0));
+        assert_eq!(
+            state.current_match().and_then(|item| item.role.as_deref()),
+            Some("heading")
+        );
+        assert_eq!(
+            state.current_match().map(|item| item.label.as_str()),
+            Some("Finding heading")
+        );
+
+        let state = session
+            .document_find_step(DocumentFindDirection::Previous)
+            .expect("previous wraps");
+        assert_eq!(state.current, Some(2));
+        assert_eq!(
+            state.current_match().map(|item| item.label.as_str()),
+            Some("Last finding.")
+        );
+        let concrete = session
+            .as_any_ref()
+            .downcast_ref::<LiveryDocumentSession>()
+            .expect("livery session remains concrete");
+        assert!(
+            concrete.document().scroll().1 > 0.0,
+            "wrapped match is revealed"
+        );
+        assert!(concrete.document().text_selection().is_some());
+
+        let state = session
+            .document_find_step(DocumentFindDirection::Next)
+            .expect("next wraps");
+        assert_eq!(state.current, Some(0));
+
+        let changed = session
+            .document_find(&DocumentFindQuery::new("LAST"))
+            .expect("query replacement recomputes the model");
+        assert_eq!(changed.matches.len(), 1);
+        assert_eq!(changed.current, Some(0));
+        assert_eq!(changed.matches[0].role.as_deref(), Some("paragraph"));
     }
 
     #[cfg(feature = "livery")]

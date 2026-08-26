@@ -190,6 +190,99 @@ pub struct SessionTextTarget {
     pub focus: [f32; 2],
 }
 
+/// Direction for stepping a retained document find model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DocumentFindDirection {
+    Previous,
+    Next,
+}
+
+/// A host-neutral document find query.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentFindQuery {
+    pub text: String,
+    pub match_case: bool,
+}
+
+impl DocumentFindQuery {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            match_case: false,
+        }
+    }
+}
+
+/// How selecting a match is revealed by its owning engine.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum DocumentFindReveal {
+    /// Retained document-space vertical offset. The session applies it when the
+    /// match becomes current; the value remains observable to automation.
+    ScrollY(f32),
+    /// A hosted engine owns selection and reveal internally.
+    EngineManaged,
+}
+
+/// One retained match, in document order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocumentFindMatch {
+    /// Human-readable matched text or accessible element label.
+    pub label: String,
+    /// Coarse semantic role when the engine exposes one.
+    pub role: Option<String>,
+    pub reveal: DocumentFindReveal,
+}
+
+/// The retained result model shared by retained documents and hosted engines.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocumentFindState {
+    pub query: DocumentFindQuery,
+    /// Authoritative number of matches. Engines that can describe individual
+    /// matches also populate `matches`; engine-managed pages may expose only
+    /// this count and the current ordinal.
+    pub count: usize,
+    pub matches: Vec<DocumentFindMatch>,
+    /// Zero-based index into `matches`.
+    pub current: Option<usize>,
+    /// Hosted engines may report progressive counts. Static sessions are
+    /// complete in their first answer.
+    pub complete: bool,
+}
+
+impl DocumentFindState {
+    pub fn empty(query: DocumentFindQuery) -> Self {
+        Self {
+            query,
+            count: 0,
+            matches: Vec::new(),
+            current: None,
+            complete: true,
+        }
+    }
+
+    /// Adapt an engine-managed count/current callback into the same retained
+    /// model used by static sessions. The engine remains responsible for
+    /// revealing the selected occurrence.
+    pub fn engine_managed(
+        query: DocumentFindQuery,
+        count: usize,
+        active_match: Option<usize>,
+        complete: bool,
+    ) -> Self {
+        Self {
+            query,
+            count,
+            matches: Vec::new(),
+            current: active_match.filter(|index| *index < count),
+            complete,
+        }
+    }
+
+    pub fn current_match(&self) -> Option<&DocumentFindMatch> {
+        self.current.and_then(|index| self.matches.get(index))
+    }
+}
+
 /// One element in the structural outline.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutlineEntry {
@@ -625,6 +718,32 @@ pub trait DocumentSession<F>: Any {
     /// to create selection state.
     fn text_target(&self, _text: &str) -> Option<SessionTextTarget> {
         None
+    }
+
+    /// Replace the retained find model for this session and reveal its first
+    /// match. Engines own their document internals; the host receives only the
+    /// portable model.
+    fn document_find(
+        &mut self,
+        _query: &DocumentFindQuery,
+    ) -> Result<DocumentFindState, SessionError> {
+        Err(SessionError::Unsupported(
+            "document find is not wired for this session".into(),
+        ))
+    }
+
+    /// Step the current retained model, wrapping at either end.
+    fn document_find_step(
+        &mut self,
+        _direction: DocumentFindDirection,
+    ) -> Result<DocumentFindState, SessionError> {
+        Err(SessionError::Unsupported(
+            "document find is not wired for this session".into(),
+        ))
+    }
+
+    fn clear_document_find(&mut self) -> Result<(), SessionError> {
+        Ok(())
     }
 
     /// The link hit-table off the retained layout (no live-DOM query per

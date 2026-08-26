@@ -5,11 +5,11 @@
 //! and [`WeldProducer`], the adapter satisfying `inker::SurfaceProducer`.
 
 use inker::{
-    Cookie, CursorShape, DragEvent, DragOperationSet, FocusReason, HttpAuthenticationAnswer,
-    KeyboardEvent, MouseEvent, NativeTextureHandle, NavigationEvent, PermissionAnswer,
-    PhysicalPosition, PointerEvent, SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings,
-    SurfaceSyncHandle, SurfaceTextureFormat, UserAgentRequestId, WebMessage, WebSurface,
-    WebSurfaceCapabilities, WebSurfaceEvent,
+    Cookie, CursorShape, DocumentFindDirection, DocumentFindQuery, DragEvent, DragOperationSet,
+    FocusReason, HttpAuthenticationAnswer, KeyboardEvent, MouseEvent, NativeTextureHandle,
+    NavigationEvent, PermissionAnswer, PhysicalPosition, PointerEvent, SurfaceError, SurfaceFrame,
+    SurfaceProducer, SurfaceSettings, SurfaceSyncHandle, SurfaceTextureFormat, UserAgentRequestId,
+    WebMessage, WebSurface, WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// A frame produced by a [`WeldSurface`]: the shared GPU texture handle the host
@@ -70,6 +70,23 @@ pub trait WeldSurface {
     fn go_forward(&mut self) -> Result<(), SurfaceError>;
     fn can_go_back(&self) -> bool;
     fn can_go_forward(&self) -> bool;
+
+    fn document_find(
+        &mut self,
+        _query: &DocumentFindQuery,
+        _direction: DocumentFindDirection,
+        _find_next: bool,
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "weld-engine find is not wired by this host".into(),
+        ))
+    }
+
+    fn clear_document_find(&mut self) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "weld-engine find is not wired by this host".into(),
+        ))
+    }
 
     fn notify_mouse(&mut self, ev: MouseEvent) -> Result<(), SurfaceError>;
     fn notify_pointer(&mut self, ev: PointerEvent) -> Result<(), SurfaceError>;
@@ -264,6 +281,19 @@ impl WebSurface for WeldProducer {
 
     fn can_go_forward(&self) -> bool {
         self.inner.can_go_forward()
+    }
+
+    fn document_find(
+        &mut self,
+        query: &DocumentFindQuery,
+        direction: DocumentFindDirection,
+        find_next: bool,
+    ) -> Result<(), SurfaceError> {
+        self.inner.document_find(query, direction, find_next)
+    }
+
+    fn clear_document_find(&mut self) -> Result<(), SurfaceError> {
+        self.inner.clear_document_find()
     }
 
     fn set_cookie(&mut self, cookie: &Cookie) -> Result<(), SurfaceError> {

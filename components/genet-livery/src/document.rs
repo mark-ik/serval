@@ -1225,6 +1225,14 @@ where
         })
     }
 
+    /// Replace the visible retained text range without synthesizing pointer
+    /// input. Document-session capabilities such as find own this selection;
+    /// ordinary gesture selection continues through `begin`/`extend`/`finish`.
+    pub fn select_text_range(&mut self, range: Option<TextRange<D::NodeId>>) {
+        self.selection_anchor = None;
+        self.selection_range = range;
+    }
+
     /// Link URLs whose descendant text contributes to this selection.
     pub fn links_for_selection(&self, selection: &TextSelection<D::NodeId>) -> Vec<String> {
         let mut links = Vec::new();
