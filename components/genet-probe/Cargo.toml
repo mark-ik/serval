@@ -5,12 +5,13 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/merely-made/genet"
 description = "Shared automatability substrate for genet apps: resolve semantic selectors (role/class + text) over cambium ScriptedDom surfaces to window points, for scripting, testing, and model-driving."
+publish = true
 
 [lib]
 name = "genet_probe"
 path = "lib.rs"
 
 [dependencies]
-genet-livery = { path = "../genet-livery" }
-genet-scripted-dom = { path = "../genet-scripted-dom" }
-layout-dom-api = { path = "../shared/layout-dom" }
+genet-livery = { version = ">=0.0.1, <0.1", path = "../genet-livery" }
+genet-scripted-dom = { version = "0.1.0", path = "../genet-scripted-dom" }
+layout-dom-api = { version = "0.1.0", path = "../shared/layout-dom" }

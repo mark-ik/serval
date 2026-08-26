@@ -5,9 +5,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/merely-made/genet"
 description = "Standards-owned CSS box and fragment models for Genet."
+publish = true
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-taffy = { version = "0.13.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc", "detailed_layout_info"] }
+taffy = { package = "genet-taffy", version = "0.13.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc", "detailed_layout_info"] }

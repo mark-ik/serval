@@ -2,7 +2,7 @@
 name = "inker"
 # Own version line (not workspace): published crate, 0.0.1 name-claim bumped to
 # 0.1.0 on first publish from this repo (inker-adoption plan, 2026-07-09).
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors = ["Mark AB (markik)"]
 # Not workspace: this crate is ours, not Servo-derived, so it keeps the founding

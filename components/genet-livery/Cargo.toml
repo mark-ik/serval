@@ -6,9 +6,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/merely-made/genet"
 description = "Genet integration for the clean-room Livery CSS engine."
 readme = "README.md"
+publish = true
 
 [dependencies]
-buckram = { path = "../buckram" }
+buckram = { version = "0.0.1", path = "../buckram" }
 cssparser.workspace = true
 data-url = { workspace = true }
 genet-document-resources = { workspace = true }
@@ -16,16 +17,16 @@ euclid.workspace = true
 fontsan.workspace = true
 image = { workspace = true }
 layout-dom-api = { version = "0.1.0", path = "../shared/layout-dom" }
-livery = { version = "0.0.2", path = "../livery" }
+livery = { version = "0.0.3", path = "../livery" }
 paint_list_api.workspace = true
 parley.workspace = true
 selectors = "0.39"
 serde.workspace = true
-taffy = { version = "0.13.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc"] }
+taffy = { package = "genet-taffy", version = "0.13.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc"] }
 
 [dev-dependencies]
 base64.workspace = true
-genet-scripted-dom = { path = "../genet-scripted-dom" }
+genet-scripted-dom = { version = "0.1.0", path = "../genet-scripted-dom" }
 genet-static-dom = { version = "0.1.0", path = "../genet-static-dom" }
 # examples/capture_paint_corpus.rs — same encoding netrender's paint-list
 # corpus stores fixtures in. Already in the lock via other members.
