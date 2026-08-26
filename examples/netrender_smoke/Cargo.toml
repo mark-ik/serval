@@ -33,4 +33,4 @@ pollster = "0.4"
 # restates genet's redirect to the owned wgpu-30 fork. Retires when a
 # wgpu-30 vello ships upstream.
 [patch.crates-io]
-vello = { git = "https://github.com/mark-ik/vello.git", branch = "mark-ik/wgpu-30" }
+vello = { git = "https://github.com/mark-ik/vello.git", tag = "vello-0.10.0" }

@@ -583,10 +583,10 @@ ipc-channel = { path = "support/patches/ipc-channel" }
 # 2026-05-15 audit removed the previous patch and took vello 0.9 from
 # crates.io; that is no longer possible, because upstream vello 0.10 still
 # requires wgpu 29 and their own migration (linebender/vello#1754) is open,
-# stalled, and conflicted. The branch is the v0.10.0 tag plus exactly the
+# stalled, and conflicted. The owned v0.10.0 tag carries exactly the
 # API changes in that PR, so this entry retires by deletion when a wgpu-30
-# vello (0.11) ships. Branch, not rev: owned forks track branches.
-vello = { git = "https://github.com/mark-ik/vello.git", branch = "mark-ik/wgpu-30" }
+# vello (0.11) ships. The immutable tag prevents branch-tip drift.
+vello = { git = "https://github.com/mark-ik/vello.git", tag = "vello-0.10.0" }
 # For WebRender / netrender:
 # The netrender/ workspace (formerly the webrender-wgpu fork) dropped
 # webrender, webrender_api, and wr_malloc_size_of as separate crates. Local
