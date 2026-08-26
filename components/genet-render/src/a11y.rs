@@ -4,7 +4,9 @@
 
 use std::hash::Hash;
 
-use accesskit::{Node as AccessNode, NodeId as AccessNodeId, Rect, Role, Tree, TreeId, TreeUpdate};
+use accesskit::{
+    Action, Node as AccessNode, NodeId as AccessNodeId, Rect, Role, Tree, TreeId, TreeUpdate,
+};
 use genet_livery::LiveryLayout;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 
@@ -24,10 +26,14 @@ fn role_for<D: LayoutDom>(dom: &D, node: D::NodeId) -> Role {
             "progressbar" => return Role::ProgressIndicator,
             "slider" => return Role::Slider,
             "textbox" => return Role::TextInput,
+            "link" => return Role::Link,
+            "document" => return Role::Document,
             "main" => return Role::Main,
             "navigation" => return Role::Navigation,
+            "region" => return Role::Region,
             "heading" => return Role::Heading,
             "alert" => return Role::Alert,
+            "status" => return Role::Status,
             _ => {},
         }
     }
@@ -63,6 +69,56 @@ fn aria_number<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<f64
         .and_then(|value| value.trim().parse::<f64>().ok())
 }
 
+/// One ARIA boolean attribute, when it is explicitly true. An absent or
+/// malformed value is left unset rather than inferring an interaction state.
+fn aria_true<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> bool {
+    dom.attribute(node, &Namespace::default(), &LocalName::from(name))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+fn is_content_editable<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
+    dom.attribute(
+        node,
+        &Namespace::default(),
+        &LocalName::from("contenteditable"),
+    )
+    .is_some_and(|value| {
+        let value = value.trim();
+        value.is_empty()
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("plaintext-only")
+    })
+}
+
+fn has_tabindex<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
+    dom.attribute(node, &Namespace::default(), &LocalName::from("tabindex"))
+        .is_some_and(|value| value.trim().parse::<i32>().is_ok())
+}
+
+fn is_native_control<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
+    matches!(
+        dom.element_name(node).map(|name| name.local.as_ref()),
+        Some("button" | "input" | "select" | "textarea")
+    ) || (dom.element_name(node).map(|name| name.local.as_ref()) == Some("a")
+        && dom
+            .attribute(node, &Namespace::default(), &LocalName::from("href"))
+            .is_some())
+}
+
+fn supports_semantic_action(role: Role) -> bool {
+    matches!(
+        role,
+        Role::Button
+            | Role::CheckBox
+            | Role::RadioButton
+            | Role::Switch
+            | Role::Tab
+            | Role::Slider
+            | Role::TextInput
+            | Role::Link
+    )
+}
+
 fn walk<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -74,13 +130,25 @@ where
     D::NodeId: Copy + Eq + Hash,
 {
     let id = access_id(dom, node);
-    let mut access = AccessNode::new(role_for(dom, node));
+    let role = role_for(dom, node);
+    let mut access = AccessNode::new(role);
     let label = dom
         .attribute(node, &Namespace::default(), &LocalName::from("aria-label"))
         .map(str::to_owned)
         .unwrap_or_else(|| direct_text(dom, node));
     if !label.is_empty() {
         access.set_label(label);
+    }
+    if aria_true(dom, node, "aria-readonly") {
+        access.set_read_only();
+    }
+    let semantic_control = is_native_control(dom, node) || supports_semantic_action(role);
+    let focusable = semantic_control || has_tabindex(dom, node) || is_content_editable(dom, node);
+    if semantic_control || is_content_editable(dom, node) {
+        access.add_action(Action::Click);
+    }
+    if focusable {
+        access.add_action(Action::Focus);
     }
     // A progress bar or slider whose value never reaches the tree is
     // decoration: the reader is told it exists but not how far along it is.
@@ -134,7 +202,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use accesskit::{Node as AccessNode, Role};
+    use accesskit::{Action, Node as AccessNode, Role};
     use genet_scripted_dom::ScriptedDom;
     use layout_dom_api::{LayoutDom, LayoutDomMut};
 
@@ -189,5 +257,48 @@ mod tests {
             Role::ProgressIndicator,
         );
         assert_eq!(bar.numeric_value(), None);
+    }
+
+    #[test]
+    fn a_read_only_document_keeps_its_document_semantics() {
+        let document = with_role(
+            "<div role=\"document\" aria-readonly=\"true\">Read-only notes</div>",
+            Role::Document,
+        );
+        assert!(document.is_read_only());
+    }
+
+    #[test]
+    fn landmarks_and_status_reach_the_reader() {
+        let nodes = nodes_for(
+            "<section role=\"region\" aria-label=\"Related notes\"></section>\
+             <div role=\"status\">Synced</div>",
+        );
+        assert!(nodes.iter().any(|node| node.role() == Role::Region));
+        assert!(nodes.iter().any(|node| node.role() == Role::Status));
+    }
+
+    #[test]
+    fn controls_advertise_click_and_focus_separately() {
+        let button = with_role("<button>Open</button>", Role::Button);
+        assert!(button.supports_action(Action::Click));
+        assert!(button.supports_action(Action::Focus));
+
+        let focusable = nodes_for("<div tabindex=\"0\">Focus only</div>")
+            .into_iter()
+            .find(|node| node.role() == Role::GenericContainer)
+            .expect("focusable div");
+        assert!(focusable.supports_action(Action::Focus));
+        assert!(!focusable.supports_action(Action::Click));
+    }
+
+    #[test]
+    fn contenteditable_nodes_are_clickable_and_focusable() {
+        let editor = with_role(
+            "<div role=\"textbox\" contenteditable>Notes</div>",
+            Role::TextInput,
+        );
+        assert!(editor.supports_action(Action::Click));
+        assert!(editor.supports_action(Action::Focus));
     }
 }
