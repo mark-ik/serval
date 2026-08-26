@@ -209,7 +209,14 @@ mod tests {
 
     #[test]
     fn rejects_malformed_text_directives() {
-        for value in ["", "-prefix", "start,", "prefix--,start", "start,-", "a,b,c"] {
+        for value in [
+            "",
+            "-prefix",
+            "start,",
+            "prefix--,start",
+            "start,-",
+            "a,b,c",
+        ] {
             assert!(parse_text_directive(value).is_none(), "{value}");
         }
         assert!(parse_text_directive("bad%ZZ").is_none());
@@ -222,7 +229,10 @@ mod tests {
             "https://example.test/article#section:~:text=first&unknown&text=second",
         );
         assert_eq!(navigation.resource_url, "https://example.test/article");
-        assert_eq!(navigation.script_visible_url, "https://example.test/article#section");
+        assert_eq!(
+            navigation.script_visible_url,
+            "https://example.test/article#section"
+        );
         assert_eq!(navigation.element_fragment.as_deref(), Some("section"));
         assert_eq!(
             navigation
