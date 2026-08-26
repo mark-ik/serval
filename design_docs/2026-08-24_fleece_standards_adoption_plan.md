@@ -7,6 +7,9 @@ Fleece 0.2 selector release and Knot consumer receipt, H0 module split, and
 Fleece 0.3 structured-data release remain green. The completed 0.1
 reader/extraction work remains recorded in the
 [original scope and receipt](../docs/2026-08-22_fleece_reader_extraction_scope.md).
+Shim retirement, host-side Text Directive activation, and real downstream
+consumer wiring are deliberately separate follow-through work in the
+[2026-08-26 plan](2026-08-26_fleece_followthrough_plan.md).
 
 ## Purpose
 

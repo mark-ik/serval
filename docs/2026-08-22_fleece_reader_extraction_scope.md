@@ -8,6 +8,14 @@ mere had planned it beyond the one-line U3 item in Turnstone's
 Mere-side context: the port law in the
 [family composition thesis](../../mere/design_docs/2026-08-12_family_composition_thesis_brief.md).
 
+**2026-08-26 follow-through:** F0's one-release compatibility allowance was not
+retired after Fleece 0.2; `genet-extract` survived through 0.3.0. Retirement is
+now owned by the
+[Fleece follow-through plan](../design_docs/2026-08-26_fleece_followthrough_plan.md).
+The lowering-home and scripted-sequencing questions below were resolved by the
+implementation receipt. Only the Gazette reading-room product decision remains
+open.
+
 ## Grounding (verified against the tree, 2026-08-22)
 
 - `components/fleece` is a 21-line name reservation. Its README states the
@@ -145,6 +153,11 @@ Each a one-line wiring receipt, in the consumer's own plan:
 **Done when:** each consumer names fleece in its manifest and its plan records
 the receipt; fleece itself gains no dependency on any of them.
 
+**2026-08-26 audit:** this done-condition recorded dependency intent, not live
+consumption. Crawl, Gazette, and eidetic-search still had no Fleece call in
+source. The follow-through plan replaces those manifest-only receipts with two
+real extraction seams and removes the dependency from the wrong layer.
+
 ### F6. Structured data harvest
 
 Page-carried metadata beyond OpenGraph: JSON-LD and microdata blocks
@@ -176,11 +189,10 @@ with their `@type`, and a page without yields an empty list.
    highlights is a recognizable product (Pocket, Omnivore). If it exists in
    the family it is the gazette port's view over fleeced articles with Knot
    holding the highlights, not a fleece port. Decide when gazette is planned.
-2. **Where the `Article -> EngineDocument` lowering lives.** Recommended here:
-   in `genet-documents` beside the existing lowerings, keeping fleece
-   render-free. The alternative (fleece owning it) breaks the witness.
-3. **Whether F4 waits for the livery scripted cutover** or runs over the
-   current scripted profile. Small either way; sequencing only.
+2. **Resolved 2026-08-23, lowering home.** `Article -> EngineDocument` lives in
+   `genet-documents` beside the existing lowerings; Fleece remains render-free.
+3. **Resolved 2026-08-23, scripted sequencing.** F4 ran over the scripted
+   profile and its static/scripted equivalence fixture passed.
 
 ## Relative size
 

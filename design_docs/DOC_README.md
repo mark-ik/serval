@@ -29,6 +29,12 @@ repatriated here from mere.
   Open Graph grouping, DOM document links, and semantic HTML table grids and
   header associations. The releases preserve Fleece's render-free, raw-URL,
   source-identity, and caller-owned annotation boundaries.)
+- [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
+  (**in progress 2026-08-26**: retire the overlong `genet-extract` shim,
+  activate Fleece-generated Text Directives in Genet's retained document host
+  with script-visible URL privacy, and replace Mere's manifest-only Fleece
+  dependencies with real crawl/Gazette consumers or remove them from the wrong
+  layer. Documentation lands before three parallel Luna/Terra packets.)
 
 ## layout and styling
 
@@ -126,6 +132,6 @@ repatriated here from mere.
 
 ## Status
 
-Founded 2026-08-24. The active index now covers two flat plans plus eight
+Founded 2026-08-24. The active index now covers three flat plans plus eight
 documents in three area roots. The engine corpus in `docs/` is not indexed here
 and is not governed by the policy yet.
