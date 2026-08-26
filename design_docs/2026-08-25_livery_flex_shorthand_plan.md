@@ -2,9 +2,11 @@
 
 **Date:** 2026-08-25
 
-**Status:** Complete for the `flex` and `flex-flow` cascade and live-layout
-slice. Row 18 remains in progress for the residual CSSOM, flex sizing, and grid
-work named below.
+**Status:** In progress. The `flex` and `flex-flow` cascade and initial
+live-layout slice are complete. The current-main continuation covers bounded
+specified/computed CSSOM plus physical flex main-axis and gap projection. Row
+18 remains open for the generic declaration model, flex sizing, the remaining
+vertical-flex work, and grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -88,6 +90,44 @@ from their authored values.
 unitless bases retain their four baseline passes, and every remaining loss has
 a named downstream owner.
 
+## Phase 4: specified and computed CSSOM
+
+Reuse Livery's shorthand cascade parser as the grammar authority for
+`element.style` and `CSS.supports()`, while requiring that the synthetic parse
+produce exactly the expected longhands. Extra declarations, custom
+declarations, embedded `!important`, empty values, and parser diagnostics are
+invalid at this seam. Canonical specified `flex` values use
+grow/shrink/basis order; canonical `flex-flow` values use direction/wrap order
+with initial components elided.
+
+Genet-Livery reconstructs computed `flex` and `flex-flow` from their computed
+longhands. A unitless zero flex basis serializes as the computed length `0px`,
+while the shorthand's omitted basis remains `0%`.
+
+This phase does not implement shorthand-to-longhand reflection in the generic
+JavaScript `CSSStyleDeclaration` store. Variable-bearing shorthand values
+continue through the existing pass-through path, so `CSS.supports()` for those
+values remains assigned to that generic seam rather than counted here.
+
+**Done condition:** native Livery, Genet-Livery, and Genet-Scripted receipts
+prove canonical specified values, invalid-value retention, non-variable
+`CSS.supports()` classification, inline-to-computed flow, and computed
+shorthand reads. The exact flexbox parsing map attributes every movement to the
+six named `flex`/`flex-flow` valid, invalid, and computed files with no
+pass-to-fail movement.
+
+## Phase 5: physical flex direction and gaps
+
+Project the container's logical `flex-direction` through Buckram `FlowAxes`
+before handing the style to Taffy's physical row/column model. Transpose
+`row-gap` and `column-gap` into Taffy's physical width/height slots for vertical
+flex containers only; grid retains its separate lowering path.
+
+**Done condition:** a native matrix covers all five supported writing modes in
+both directions, unequal gaps prove the physical component mapping, live RTL
+and `sideways-lr` geometry passes, both assigned direction/gap WPT residuals
+move fail-to-pass, and the full flexbox reftest map has no unexplained loss.
+
 ## Findings
 
 ### 2026-08-25
@@ -122,7 +162,35 @@ a named downstream owner.
   package identity while the root patch keeps workspace builds on the same
   source.
 
-## Native and frozen receipts
+### 2026-08-26
+
+- “CSSOM shorthand serialization” spans three independent seams: specified
+  admission/canonicalization, computed shorthand reads, and generic
+  `CSSStyleDeclaration` shorthand-to-longhand reflection. This continuation
+  closes the first two only.
+- A declaration-block parser is safe to reuse for one CSSOM value only when
+  the caller proves the exact expanded property set. Without that guard,
+  `1; color: red` and embedded `!important` were accepted as a `flex` value.
+- `flex-flow`'s cascade expander admitted an empty component list as the two
+  initial longhands. Empty authored and CSSOM values are invalid and now have
+  a native regression receipt.
+- Taffy's flex direction is physical while CSS `flex-direction` is logical.
+  The missing `FlowAxes` projection jointly owned
+  `flexbox-writing-mode-slr-row-mix.html` and `gap-001-rtl.html`; vertical gap
+  components must be transposed after the same projection.
+- The surviving `flex-minimum-height-flex-items-029.html` residual is separate:
+  vendored Taffy's min-content collection creates one item per line and then
+  retains only the longest line. That repair requires its own Taffy release
+  lane.
+- The current generic `Size` model rejects required `flex-basis: content` and
+  admits width-family values such as `none` that are invalid for flex basis.
+  A distinct flex-basis value model remains required.
+- The prior plan records the final shorthand runner name and hash, but the
+  executable was not present in the preserved ledger directory on 2026-08-26.
+  The continuation therefore rebuilds and freezes both current-main baseline
+  and candidate runners instead of treating the old record as a live artifact.
+
+## Phase 1-3 historical native and frozen receipts
 
 - Livery: all package tests pass, including 33 cascade tests.
 - Genet-Livery: 214 / 214 library tests pass.
@@ -144,12 +212,14 @@ All frozen artifacts are under
 
 ## Remaining Row 18 work
 
-- Model `flex-basis: content` distinctly instead of accepting it through the
-  generic `Size` type.
-- Implement CSSOM shorthand serialization and computed-value receipts for
-  `flex` and `flex-flow`.
-- Repair the named automatic-minimum-size, sideways-axis, and RTL-gap layout
-  residuals.
+- Model flex basis distinctly: admit `content`, reject width-only forms such as
+  `none`, and complete its computed-value behavior.
+- Implement generic `CSSStyleDeclaration` shorthand-to-longhand reflection for
+  `flex` and `flex-flow`, including the variable-bearing `CSS.supports()` seam.
+- Repair the automatic-minimum-size residual in vendored Taffy and publish the
+  corresponding fork release.
+- Validate and repair the remaining vertical-flex cross-axis alignment and
+  wrap-reversal surface beyond the main-axis projection.
 - Inventory and implement the remaining grid surface, including auto tracks
   and template areas, under its own current-main receipt.
 
@@ -180,3 +250,11 @@ All frozen artifacts are under
 - Ran all 131 library tests from the packaged all-features source and all 254
   Buckram tests against the exact release candidate. A clean standalone
   Buckram check then resolved and compiled the published registry crate.
+- Split the CSSOM continuation into specified admission, computed reads, and
+  still-open generic declaration reflection rather than treating them as one
+  surface.
+- Added exact-value guards around shorthand canonicalization, rejected empty
+  `flex-flow`, and added native specified, computed, inline, and
+  `CSS.supports()` receipts.
+- Projected flex main directions through `FlowAxes`, transposed vertical flex
+  gaps, and added a ten-case axis matrix plus unequal-gap live geometry.
