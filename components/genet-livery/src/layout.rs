@@ -7727,7 +7727,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
         justify_items: Some(align_items(computed.justify_items)),
         justify_self: self_alignment(computed.justify_self, computed.width),
         align_content: Some(align_content(computed.align_content)),
-        justify_content: Some(justify_content(computed.justify_content)),
+        justify_content: Some(physical_flex_justify_content(computed, flex_flow)),
         grid_template_columns: grid_template(&computed.grid_template_columns, font_size),
         grid_template_rows: grid_template(&computed.grid_template_rows, font_size),
         grid_auto_flow: grid_auto_flow(computed.grid_auto_flow),
@@ -7762,18 +7762,44 @@ fn flex_flow_axes(computed: &ComputedValues) -> FlowAxes {
 /// authored direction through the container's writing mode and direction
 /// before the backend sizes or places any children.
 fn physical_flex_direction(direction: CssFlexDirection, flow: FlowAxes) -> FlexDirection {
-    let (start, reverse) = match direction {
-        CssFlexDirection::Row => (flow.inline_start(), false),
-        CssFlexDirection::RowReverse => (flow.inline_start(), true),
-        CssFlexDirection::Column => (flow.block_start(), false),
-        CssFlexDirection::ColumnReverse => (flow.block_start(), true),
-    };
+    let start = physical_flex_main_axis_start(direction, flow);
+    let reverse = matches!(
+        direction,
+        CssFlexDirection::RowReverse | CssFlexDirection::ColumnReverse
+    );
     match (start, reverse) {
         (PhysicalSide::Left, false) | (PhysicalSide::Right, true) => FlexDirection::Row,
         (PhysicalSide::Right, false) | (PhysicalSide::Left, true) => FlexDirection::RowReverse,
         (PhysicalSide::Top, false) | (PhysicalSide::Bottom, true) => FlexDirection::Column,
         (PhysicalSide::Bottom, false) | (PhysicalSide::Top, true) => FlexDirection::ColumnReverse,
     }
+}
+
+fn physical_flex_main_axis_start(direction: CssFlexDirection, flow: FlowAxes) -> PhysicalSide {
+    match direction {
+        CssFlexDirection::Row | CssFlexDirection::RowReverse => flow.inline_start(),
+        CssFlexDirection::Column | CssFlexDirection::ColumnReverse => flow.block_start(),
+    }
+}
+
+/// `start` and `end` are flow-relative, unlike `flex-start` and `flex-end`.
+/// Once the flex main axis is physical, lower those two keywords to the
+/// corresponding low or high physical edge as well. Other display modes keep
+/// their existing alignment lowering.
+fn physical_flex_justify_content(computed: &ComputedValues, flow: FlowAxes) -> JustifyContent {
+    let value = if computed.display == CssDisplay::Flex {
+        match (
+            computed.justify_content,
+            physical_flex_main_axis_start(computed.flex_direction, flow),
+        ) {
+            (CssAlignment::Start, PhysicalSide::Right | PhysicalSide::Bottom) => CssAlignment::End,
+            (CssAlignment::End, PhysicalSide::Right | PhysicalSide::Bottom) => CssAlignment::Start,
+            (value, _) => value,
+        }
+    } else {
+        computed.justify_content
+    };
+    justify_content(value)
 }
 
 /// CSS `column-gap` follows the logical inline axis, and `row-gap` follows the
@@ -14350,6 +14376,92 @@ mod tests {
                 physical_flex_direction(CssFlexDirection::ColumnReverse, flow),
                 reverse(column)
             );
+        }
+    }
+
+    #[test]
+    fn flex_justify_content_start_and_end_follow_the_logical_main_axis() {
+        use buckram::{Direction, WritingMode};
+
+        let opposite = |keyword| match keyword {
+            AlignContentKeyword::Start => AlignContentKeyword::End,
+            AlignContentKeyword::End => AlignContentKeyword::Start,
+            _ => unreachable!("only start/end are expected"),
+        };
+        let cases = [
+            (
+                FlowAxes::new(WritingMode::HorizontalTb, Direction::Ltr),
+                AlignContentKeyword::Start,
+                AlignContentKeyword::Start,
+            ),
+            (
+                FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl),
+                AlignContentKeyword::End,
+                AlignContentKeyword::Start,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+                AlignContentKeyword::Start,
+                AlignContentKeyword::End,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Rtl),
+                AlignContentKeyword::End,
+                AlignContentKeyword::End,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Ltr),
+                AlignContentKeyword::Start,
+                AlignContentKeyword::Start,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Rtl),
+                AlignContentKeyword::End,
+                AlignContentKeyword::Start,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysRl, Direction::Ltr),
+                AlignContentKeyword::Start,
+                AlignContentKeyword::End,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysRl, Direction::Rtl),
+                AlignContentKeyword::End,
+                AlignContentKeyword::End,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysLr, Direction::Ltr),
+                AlignContentKeyword::End,
+                AlignContentKeyword::Start,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysLr, Direction::Rtl),
+                AlignContentKeyword::Start,
+                AlignContentKeyword::Start,
+            ),
+        ];
+        let mut computed = ComputedValues::default();
+        computed.display = CssDisplay::Flex;
+
+        for (flow, row_start, column_start) in cases {
+            for (direction, expected_start) in [
+                (CssFlexDirection::Row, row_start),
+                (CssFlexDirection::RowReverse, row_start),
+                (CssFlexDirection::Column, column_start),
+                (CssFlexDirection::ColumnReverse, column_start),
+            ] {
+                computed.flex_direction = direction;
+                computed.justify_content = CssAlignment::Start;
+                assert_eq!(
+                    physical_flex_justify_content(&computed, flow).keyword,
+                    expected_start
+                );
+                computed.justify_content = CssAlignment::End;
+                assert_eq!(
+                    physical_flex_justify_content(&computed, flow).keyword,
+                    opposite(expected_start)
+                );
+            }
         }
     }
 
