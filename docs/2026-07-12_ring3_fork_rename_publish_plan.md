@@ -1,7 +1,7 @@
 # Ring 3 unwalling: genet-stylo + genet-taffy, and the taffy ride-out
 
 **Date:** 2026-07-12
-**Status:** **T0, T1, T2, and T3 landed.**
+**Status:** **T0, T1, T2, and T3 landed; Taffy published.**
 genet's workspace now builds, tests, and passes all nine WPT baselines
 against: taffy re-vendored to stable 0.12.1 (T0), the renamed stylo fork
 family on branch `merely-made/genet-publish-names` (T1, commit `efaa436663`),
@@ -12,9 +12,9 @@ Stylo type family was published to crates.io at `0.19.0`: `genet-stylo`,
 `genet-stylo-traits`. The traits rename was added during Cargo's clean-room
 publish verification because registry `stylo_traits` is type-bound to upstream
 `stylo_atoms`.
-**Not done:** the taffy package itself is not yet renamed to `genet-taffy`
-(unnecessary until actual publishing — see T2 below, a scope correction from
-the original plan). Companion to
+On 2026-08-26 the current fork was published as `genet-taffy 0.13.1` from
+commit `506d84a6c659` and tagged `genet-taffy-v0.13.1`; Buckram and Genet-Livery
+now consume that registry identity. Companion to
 `2026-07-11_genet_publish_rings_plan.md` (this is the "ring 3 publishes
 only if the fork family publishes under its own names" trigger, pulled by
 Mark 2026-07-12).

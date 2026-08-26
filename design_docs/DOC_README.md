@@ -43,7 +43,8 @@ repatriated here from mere.
   expands `flex` and `flex-flow` into the longhand style fields already lowered
   to Taffy. The exact 1,358-file flexbox map records 115 gains, three assigned
   downstream false-pass losses, and the numeric-basis parser repair forced by
-  the first candidate.)
+  the first candidate. The current eight-input Taffy seam is published and
+  consumed as `genet-taffy 0.13.1`.)
 
 ## inker_docs/ — the engine controller
 

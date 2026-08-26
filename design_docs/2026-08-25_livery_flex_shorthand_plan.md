@@ -115,11 +115,12 @@ a named downstream owner.
   clean `release/knot-editor-host-0.1.0` lane. Their version and publishability
   changes are now merged into main, including Livery 0.0.3, Host API 0.1.1,
   Inker 0.1.1, and Nematic 0.1.1.
-- That release lane's `genet-taffy 0.13.0` routing is stale against current
-  Buckram: the published trait has five parameters while current Buckram's
-  static-position implementation requires eight. Main therefore retains the
-  current `taffy` fork patch. A new `genet-taffy` publication needs its own
-  versioned fork-release pass; silently selecting the old release is invalid.
+- That release lane's `genet-taffy 0.13.0` routing was stale against current
+  Buckram: the published trait had five parameters while current Buckram's
+  static-position implementation requires eight. The corrected fork is now
+  published as `genet-taffy 0.13.1`, and Buckram plus Genet-Livery route to that
+  package identity while the root patch keeps workspace builds on the same
+  source.
 
 ## Native and frozen receipts
 
@@ -169,3 +170,13 @@ All frozen artifacts are under
   retained its valid package-version changes, and rejected only the stale
   published-Taffy routing after a compiler proof. `cargo check -p genet-livery
   -j 1` passes again on the current fork.
+
+### 2026-08-26
+
+- Published `genet-taffy 0.13.1` from commit `506d84a6c659` and tagged that
+  source as `genet-taffy-v0.13.1`.
+- Regenerated the complete fork delta against upstream Taffy 0.13.0 and proved
+  that it reproduces all 50 vendored source files byte for byte.
+- Ran all 131 library tests from the packaged all-features source and all 254
+  Buckram tests against the exact release candidate. A clean standalone
+  Buckram check then resolved and compiled the published registry crate.
