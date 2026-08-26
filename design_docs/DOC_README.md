@@ -30,12 +30,13 @@ repatriated here from mere.
   header associations. The releases preserve Fleece's render-free, raw-URL,
   source-identity, and caller-owned annotation boundaries.)
 - [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
-  (**implementation complete; headed receipt open 2026-08-26**: the
+  (**complete 2026-08-26**: the
   `genet-extract` shim is retired; retained static/scripted hosts activate
   Fleece-generated Text Directives with element fallback, indication, scrolling,
   one-fetch behavior, and script-visible URL privacy; Mere crawl and Gazette now
   consume supplied documents while eidetic-search drops its misplaced edge.
-  Focused automated gates are green; headed activation/indication remains.)
+  Focused automated gates and the headed activation/indication receipt are
+  green.)
 
 ## layout and styling
 
