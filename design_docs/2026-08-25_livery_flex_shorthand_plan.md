@@ -111,6 +111,15 @@ a named downstream owner.
   selected crates.io Parley 0.10 and failed before reaching consumer code.
   `support/patches/parley` is now a workspace package so consumers can patch
   crates.io to the Genet git source explicitly.
+- The twelve already-published Knot/Livery support commits had remained on the
+  clean `release/knot-editor-host-0.1.0` lane. Their version and publishability
+  changes are now merged into main, including Livery 0.0.3, Host API 0.1.1,
+  Inker 0.1.1, and Nematic 0.1.1.
+- That release lane's `genet-taffy 0.13.0` routing is stale against current
+  Buckram: the published trait has five parameters while current Buckram's
+  static-position implementation requires eight. Main therefore retains the
+  current `taffy` fork patch. A new `genet-taffy` publication needs its own
+  versioned fork-release pass; silently selecting the old release is invalid.
 
 ## Native and frozen receipts
 
@@ -156,3 +165,7 @@ All frozen artifacts are under
 - Published the Parley fork as a git-addressable Genet workspace package and
   proved Genet-Livery from the workspace root before retrying the Turnstone
   consumer.
+- Merged the twelve-commit published release history into current main,
+  retained its valid package-version changes, and rejected only the stale
+  published-Taffy routing after a compiler proof. `cargo check -p genet-livery
+  -j 1` passes again on the current fork.

@@ -22,7 +22,7 @@ paint_list_api.workspace = true
 parley.workspace = true
 selectors = "0.39"
 serde.workspace = true
-taffy = { package = "genet-taffy", version = "0.13.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc"] }
+taffy = { version = "0.13.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc"] }
 
 [dev-dependencies]
 base64.workspace = true
