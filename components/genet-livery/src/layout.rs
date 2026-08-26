@@ -29,13 +29,14 @@ use livery::{
     values::{
         Alignment as CssAlignment, BorderCollapse, BorderStyle, BorderWidth,
         BoxSizing as CssBoxSizing, CaptionSide, Clear as CssClear, ComputedColor, ContainerType,
-        Display as CssDisplay, FlexDirection as CssFlexDirection, FlexWrap as CssFlexWrap,
-        Float as CssFloat, FontSize, Gap as CssGap, GridAutoFlow as CssGridAutoFlow,
-        GridPlacement as CssGridPlacement, GridTemplate as CssGridTemplate,
-        GridTrack as CssGridTrack, Inset, Length, LengthPercentage as CssLengthPercentage,
-        LineHeight, Margin, Overflow as CssOverflow, Position as CssPosition, Radius,
-        RelativeLengthEnvironment, ShapeOutside as CssShapeOutside, Size as CssSize, VerticalAlign,
-        WhiteSpaceCollapse,
+        Direction as CssDirection, Display as CssDisplay, FlexDirection as CssFlexDirection,
+        FlexWrap as CssFlexWrap, Float as CssFloat, FontSize, Gap as CssGap,
+        GridAutoFlow as CssGridAutoFlow, GridPlacement as CssGridPlacement,
+        GridTemplate as CssGridTemplate, GridTrack as CssGridTrack, Inset, Length,
+        LengthPercentage as CssLengthPercentage, LineHeight, Margin, Overflow as CssOverflow,
+        Position as CssPosition, Radius, RelativeLengthEnvironment,
+        ShapeOutside as CssShapeOutside, Size as CssSize, VerticalAlign, WhiteSpaceCollapse,
+        WritingMode as CssWritingMode,
     },
 };
 use taffy::{
@@ -7614,12 +7615,8 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
         CssDisplay::Table | CssDisplay::InlineTable | CssDisplay::TableRow => Display::Block,
         _ => Display::Block,
     };
-    let flex_direction = match computed.flex_direction {
-        CssFlexDirection::Row => FlexDirection::Row,
-        CssFlexDirection::RowReverse => FlexDirection::RowReverse,
-        CssFlexDirection::Column => FlexDirection::Column,
-        CssFlexDirection::ColumnReverse => FlexDirection::ColumnReverse,
-    };
+    let flex_flow = flex_flow_axes(computed);
+    let flex_direction = physical_flex_direction(computed.flex_direction, flex_flow);
     let float = match computed.float {
         CssFloat::None => TaffyFloat::None,
         CssFloat::Left => TaffyFloat::Left,
@@ -7721,10 +7718,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
                 font_size,
             ),
         },
-        gap: Size {
-            width: gap(computed.column_gap, font_size),
-            height: gap(computed.row_gap, font_size),
-        },
+        gap: physical_flex_gap(computed, font_size, flex_flow),
         align_items: Some(align_items(computed.align_items)),
         // `auto` on the self properties defers to the parent's items value,
         // which is taffy's `None`. A content-keyword size in that axis
@@ -7746,6 +7740,63 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             end: grid_placement(computed.grid_row_end),
         },
         ..Style::default()
+    }
+}
+
+fn flex_flow_axes(computed: &ComputedValues) -> FlowAxes {
+    let writing_mode = match computed.writing_mode {
+        CssWritingMode::HorizontalTb => buckram::WritingMode::HorizontalTb,
+        CssWritingMode::VerticalRl => buckram::WritingMode::VerticalRl,
+        CssWritingMode::VerticalLr => buckram::WritingMode::VerticalLr,
+        CssWritingMode::SidewaysRl => buckram::WritingMode::SidewaysRl,
+        CssWritingMode::SidewaysLr => buckram::WritingMode::SidewaysLr,
+    };
+    let direction = match computed.direction {
+        CssDirection::Ltr => buckram::Direction::Ltr,
+        CssDirection::Rtl => buckram::Direction::Rtl,
+    };
+    FlowAxes::new(writing_mode, direction)
+}
+
+/// Taffy's flex axes are physical. CSS flex axes are logical, so convert the
+/// authored direction through the container's writing mode and direction
+/// before the backend sizes or places any children.
+fn physical_flex_direction(direction: CssFlexDirection, flow: FlowAxes) -> FlexDirection {
+    let (start, reverse) = match direction {
+        CssFlexDirection::Row => (flow.inline_start(), false),
+        CssFlexDirection::RowReverse => (flow.inline_start(), true),
+        CssFlexDirection::Column => (flow.block_start(), false),
+        CssFlexDirection::ColumnReverse => (flow.block_start(), true),
+    };
+    match (start, reverse) {
+        (PhysicalSide::Left, false) | (PhysicalSide::Right, true) => FlexDirection::Row,
+        (PhysicalSide::Right, false) | (PhysicalSide::Left, true) => FlexDirection::RowReverse,
+        (PhysicalSide::Top, false) | (PhysicalSide::Bottom, true) => FlexDirection::Column,
+        (PhysicalSide::Bottom, false) | (PhysicalSide::Top, true) => FlexDirection::ColumnReverse,
+    }
+}
+
+/// CSS `column-gap` follows the logical inline axis, and `row-gap` follows the
+/// block axis. Taffy names its gap components after physical width and height.
+/// The grid lane owns its separate logical lowering, so only flex containers
+/// transpose these components here.
+fn physical_flex_gap(
+    computed: &ComputedValues,
+    font_size: f32,
+    flow: FlowAxes,
+) -> Size<LengthPercentage> {
+    let row_gap = gap(computed.row_gap, font_size);
+    let column_gap = gap(computed.column_gap, font_size);
+    if computed.display == CssDisplay::Flex && !flow.is_horizontal() {
+        Size {
+            width: row_gap,
+            height: column_gap,
+        }
+    } else {
+        Size {
+            width: column_gap,
+            height: row_gap,
+        }
     }
 }
 
@@ -14219,6 +14270,195 @@ mod tests {
                 .last
                 .map(|baseline| { grid.physical_rect().y - host.physical_rect().y + baseline }),
             "the independent host consumes its admitted grid BFC output"
+        );
+    }
+
+    #[test]
+    fn flex_axis_projects_logical_direction_matrix_to_taffy() {
+        use buckram::{Direction, WritingMode};
+
+        let reverse = |direction| match direction {
+            FlexDirection::Row => FlexDirection::RowReverse,
+            FlexDirection::RowReverse => FlexDirection::Row,
+            FlexDirection::Column => FlexDirection::ColumnReverse,
+            FlexDirection::ColumnReverse => FlexDirection::Column,
+        };
+        let cases = [
+            (
+                FlowAxes::new(WritingMode::HorizontalTb, Direction::Ltr),
+                FlexDirection::Row,
+                FlexDirection::Column,
+            ),
+            (
+                FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl),
+                FlexDirection::RowReverse,
+                FlexDirection::Column,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+                FlexDirection::Column,
+                FlexDirection::RowReverse,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalRl, Direction::Rtl),
+                FlexDirection::ColumnReverse,
+                FlexDirection::RowReverse,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Ltr),
+                FlexDirection::Column,
+                FlexDirection::Row,
+            ),
+            (
+                FlowAxes::new(WritingMode::VerticalLr, Direction::Rtl),
+                FlexDirection::ColumnReverse,
+                FlexDirection::Row,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysRl, Direction::Ltr),
+                FlexDirection::Column,
+                FlexDirection::RowReverse,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysRl, Direction::Rtl),
+                FlexDirection::ColumnReverse,
+                FlexDirection::RowReverse,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysLr, Direction::Ltr),
+                FlexDirection::ColumnReverse,
+                FlexDirection::Row,
+            ),
+            (
+                FlowAxes::new(WritingMode::SidewaysLr, Direction::Rtl),
+                FlexDirection::Column,
+                FlexDirection::Row,
+            ),
+        ];
+
+        for (flow, row, column) in cases {
+            assert_eq!(physical_flex_direction(CssFlexDirection::Row, flow), row);
+            assert_eq!(
+                physical_flex_direction(CssFlexDirection::RowReverse, flow),
+                reverse(row)
+            );
+            assert_eq!(
+                physical_flex_direction(CssFlexDirection::Column, flow),
+                column
+            );
+            assert_eq!(
+                physical_flex_direction(CssFlexDirection::ColumnReverse, flow),
+                reverse(column)
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_flex_transposes_logical_gap_components() {
+        use buckram::{Direction, WritingMode};
+
+        let mut computed = ComputedValues::default();
+        computed.display = CssDisplay::Flex;
+        computed.row_gap = "7px".parse().expect("row gap");
+        computed.column_gap = "11px".parse().expect("column gap");
+
+        assert_eq!(
+            physical_flex_gap(
+                &computed,
+                16.0,
+                FlowAxes::new(WritingMode::HorizontalTb, Direction::Ltr)
+            ),
+            Size {
+                width: length(11.0),
+                height: length(7.0),
+            }
+        );
+        assert_eq!(
+            physical_flex_gap(
+                &computed,
+                16.0,
+                FlowAxes::new(WritingMode::SidewaysLr, Direction::Ltr)
+            ),
+            Size {
+                width: length(7.0),
+                height: length(11.0),
+            }
+        );
+    }
+
+    #[test]
+    fn live_flex_projects_rtl_rows_and_sideways_lr_rows_to_physical_axes() {
+        let dom = StaticDocument::parse(
+            "<html><body>\
+             <div id=rtl><div id=r1></div><div id=r2></div><div id=r3></div></div>\
+             <div id=sideways><div id=s1></div><div id=s2></div><div id=s3></div></div>\
+             </body></html>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; border: 0; }\
+                 #rtl { display: flex; direction: rtl; justify-content: flex-start;\
+                        width: 100px; height: 20px;\
+                        row-gap: 7px; column-gap: 11px; }\
+                 #rtl > div { flex: 0 0 20px; height: 20px; }\
+                 #sideways { display: flex; writing-mode: sideways-lr; flex-direction: row;\
+                              justify-content: flex-start;\
+                              width: 20px; height: 100px;\
+                              row-gap: 7px; column-gap: 11px; }\
+                 #sideways > div { flex: 0 0 20px; width: 20px; height: 20px; }"]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("logical flex layout");
+        let rect = |id| {
+            layout
+                .get(node_by_id(&dom, dom.document(), id).expect(id))
+                .expect(id)
+                .physical_rect()
+        };
+
+        let rtl = rect("rtl");
+        let r1 = rect("r1");
+        let r2 = rect("r2");
+        let r3 = rect("r3");
+        assert!(
+            (r1.x - rtl.x - 80.0).abs() <= 0.01,
+            "r1={r1:?}, rtl={rtl:?}"
+        );
+        assert!(
+            (r2.x - rtl.x - 49.0).abs() <= 0.01,
+            "r2={r2:?}, rtl={rtl:?}"
+        );
+        assert!(
+            (r3.x - rtl.x - 18.0).abs() <= 0.01,
+            "r3={r3:?}, rtl={rtl:?}"
+        );
+
+        let sideways = rect("sideways");
+        let s1 = rect("s1");
+        let s2 = rect("s2");
+        let s3 = rect("s3");
+        assert!(
+            (s1.y - sideways.y - 80.0).abs() <= 0.01,
+            "s1={s1:?}, sideways={sideways:?}"
+        );
+        assert!(
+            (s2.y - sideways.y - 49.0).abs() <= 0.01,
+            "s2={s2:?}, sideways={sideways:?}"
+        );
+        assert!(
+            (s3.y - sideways.y - 18.0).abs() <= 0.01,
+            "s3={s3:?}, sideways={sideways:?}"
         );
     }
 
