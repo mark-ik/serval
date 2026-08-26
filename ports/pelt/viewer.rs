@@ -480,10 +480,11 @@ fn parse_product_receipt(value: &str) -> pelt_desktop::StaticProductReceipt {
     match value {
         "article" => pelt_desktop::StaticProductReceipt::Article,
         "controls" => pelt_desktop::StaticProductReceipt::Controls,
+        "responsive" => pelt_desktop::StaticProductReceipt::Responsive,
         "text-fragment" => pelt_desktop::StaticProductReceipt::TextFragment,
         _ => {
             eprintln!(
-                "--product-receipt expects article, controls, or text-fragment (got '{value}')"
+                "--product-receipt expects article, controls, responsive, or text-fragment (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -504,6 +505,14 @@ fn product_receipt_fixture(receipt: pelt_desktop::StaticProductReceipt) -> Strin
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("examples")
                 .join("p5-controls")
+                .join("index.html")
+                .to_string_lossy()
+                .into_owned()
+        },
+        pelt_desktop::StaticProductReceipt::Responsive => {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("examples")
+                .join("p5-responsive")
                 .join("index.html")
                 .to_string_lossy()
                 .into_owned()
@@ -952,7 +961,7 @@ Options:
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
-    --product-receipt <article|controls|text-fragment> (bounded fixture + semantic assertion + PNG)
+    --product-receipt <article|controls|responsive|text-fragment> (bounded fixture + semantic assertion + PNG)
     --artifact <path.png>              (required with --product-receipt)
     --tiles                            (route positional URLs in a recursive Frisket workspace)
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)

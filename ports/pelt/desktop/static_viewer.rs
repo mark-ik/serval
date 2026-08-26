@@ -30,6 +30,8 @@ pub enum StaticProductReceipt {
     Article,
     /// A nested overflow region beside retained editable form controls.
     Controls,
+    /// Viewport-driven grid reflow beside a retained two-column table.
+    Responsive,
     /// Initial Text Fragment activation in a retained Livery document.
     TextFragment,
 }
@@ -39,19 +41,20 @@ impl StaticProductReceipt {
         match self {
             Self::Article => "article",
             Self::Controls => "controls",
+            Self::Responsive => "responsive",
             Self::TextFragment => "text-fragment",
         }
     }
 
     pub fn default_size(self) -> (u32, u32) {
         match self {
-            Self::Article | Self::Controls | Self::TextFragment => (960, 640),
+            Self::Article | Self::Controls | Self::Responsive | Self::TextFragment => (960, 640),
         }
     }
 
     pub fn default_frames(self) -> u32 {
         match self {
-            Self::Article | Self::Controls | Self::TextFragment => 3,
+            Self::Article | Self::Controls | Self::Responsive | Self::TextFragment => 3,
         }
     }
 }
@@ -544,6 +547,36 @@ mod livery_route_tests {
     }
 
     #[test]
+    fn responsive_product_receipt_reflows_grid_and_preserves_table_geometry() {
+        let fixture = format!(
+            r"{}\..\examples\p5-responsive\index.html",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+        registry.register(Box::new(LiverySessionEngine::new(LocalFetcher)));
+        let controller = PeltController::new(
+            registry,
+            SurfaceEngineRegistry::new(),
+            PeltControllerConfig::new(inker::routing::ENGINE_GENET_LIVERY, fixture, (480, 320)),
+            ViewerClock::new(),
+        )
+        .expect("responsive receipt controller");
+        let mut content = ControllerViewerContent {
+            controller,
+            posture: None,
+            document_fetches: None,
+        };
+
+        let _wide = content.frame(480, 320);
+        assert_eq!(
+            content
+                .drive_product_receipt(StaticProductReceipt::Responsive)
+                .as_deref(),
+            Ok("viewport resize reflowed the grid and retained the table axes")
+        );
+    }
+
+    #[test]
     fn text_fragment_product_receipt_selects_scrolls_and_fetches_once() {
         let fixture = format!(
             r"{}\..\examples\text-fragment\index.html",
@@ -873,6 +906,80 @@ impl windowed::ViewerContent for ControllerViewerContent {
                     "nested wheel stayed local and keyboard edit reached retained structure"
                         .to_owned(),
                 )
+            },
+            StaticProductReceipt::Responsive => {
+                let point = |controller: &pelt_core::PeltController<netrender::Scene>,
+                             text: &str| {
+                    controller
+                        .text_target(text)
+                        .map(|target| target.anchor)
+                        .ok_or_else(|| {
+                            format!("responsive receipt could not resolve retained text {text:?}")
+                        })
+                };
+                let wide_alpha = point(&self.controller, "Grid alpha")?;
+                let wide_beta = point(&self.controller, "Grid beta")?;
+                let wide_measure = point(&self.controller, "Measure")?;
+                let wide_state = point(&self.controller, "State")?;
+                let wide_tracks = point(&self.controller, "Grid tracks")?;
+                let wide_responsive = point(&self.controller, "Responsive")?;
+                let wide_columns = point(&self.controller, "Table columns")?;
+                let wide_stable = point(&self.controller, "Stable")?;
+
+                let wide_grid_gap = wide_beta[0] - wide_alpha[0];
+                if (wide_beta[1] - wide_alpha[1]).abs() > 3.0 || wide_grid_gap < 120.0 {
+                    return Err(format!(
+                        "responsive receipt wide grid was not two columns: alpha={wide_alpha:?} beta={wide_beta:?}"
+                    ));
+                }
+                let wide_table_gap = wide_state[0] - wide_measure[0];
+                if (wide_state[1] - wide_measure[1]).abs() > 3.0
+                    || wide_table_gap < 100.0
+                    || (wide_responsive[1] - wide_tracks[1]).abs() > 3.0
+                    || wide_responsive[0] <= wide_tracks[0] + 100.0
+                    || wide_tracks[1] <= wide_measure[1] + 8.0
+                    || (wide_stable[1] - wide_columns[1]).abs() > 3.0
+                    || wide_stable[0] <= wide_columns[0] + 100.0
+                    || wide_columns[1] <= wide_tracks[1] + 8.0
+                {
+                    return Err(format!(
+                        "responsive receipt wide table lost its rows or columns: headers={wide_measure:?}/{wide_state:?} rows={wide_tracks:?}/{wide_responsive:?} and {wide_columns:?}/{wide_stable:?}"
+                    ));
+                }
+
+                let _narrow = self.controller.frame(320, 320);
+                let narrow_alpha = point(&self.controller, "Grid alpha")?;
+                let narrow_beta = point(&self.controller, "Grid beta")?;
+                let narrow_measure = point(&self.controller, "Measure")?;
+                let narrow_state = point(&self.controller, "State")?;
+                let narrow_tracks = point(&self.controller, "Grid tracks")?;
+                let narrow_responsive = point(&self.controller, "Responsive")?;
+                let narrow_columns = point(&self.controller, "Table columns")?;
+                let narrow_stable = point(&self.controller, "Stable")?;
+
+                if narrow_beta[1] <= narrow_alpha[1] + 28.0
+                    || (narrow_beta[0] - narrow_alpha[0]).abs() > 3.0
+                {
+                    return Err(format!(
+                        "responsive receipt narrow grid did not stack: alpha={narrow_alpha:?} beta={narrow_beta:?}"
+                    ));
+                }
+                let narrow_table_gap = narrow_state[0] - narrow_measure[0];
+                if (narrow_state[1] - narrow_measure[1]).abs() > 3.0
+                    || narrow_table_gap < 60.0
+                    || narrow_table_gap >= wide_table_gap - 32.0
+                    || (narrow_responsive[1] - narrow_tracks[1]).abs() > 3.0
+                    || narrow_responsive[0] <= narrow_tracks[0] + 60.0
+                    || narrow_tracks[1] <= narrow_measure[1] + 8.0
+                    || (narrow_stable[1] - narrow_columns[1]).abs() > 3.0
+                    || narrow_stable[0] <= narrow_columns[0] + 60.0
+                    || narrow_columns[1] <= narrow_tracks[1] + 8.0
+                {
+                    return Err(format!(
+                        "responsive receipt narrow table lost responsive axes: headers={narrow_measure:?}/{narrow_state:?} rows={narrow_tracks:?}/{narrow_responsive:?} and {narrow_columns:?}/{narrow_stable:?} wide_gap={wide_table_gap}"
+                    ));
+                }
+                Ok("viewport resize reflowed the grid and retained the table axes".to_owned())
             },
             StaticProductReceipt::TextFragment => {
                 const TARGET: &str = "The retained text fragment target";

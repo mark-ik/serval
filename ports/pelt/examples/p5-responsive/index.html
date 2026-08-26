@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>P5 responsive grid and table</title>
+<style>
+  :root {
+    color-scheme: light;
+    font: 14px/1.25 sans-serif;
+    background: #f4efe4;
+    color: #2f2923;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 600px; margin: 0 auto; padding: 12px 16px; }
+  h1 { margin: 0 0 4px; color: #6b1f2d; font-size: 22px; line-height: 1.05; }
+  .lede { margin: 0 0 9px; color: #5b5147; }
+  .cards {
+    display: grid;
+    grid-template-columns: 1fr;
+    column-gap: 8px;
+    row-gap: 8px;
+  }
+  .card {
+    padding: 7px 8px;
+    border: 2px solid #8b7355;
+    background: #fffaf0;
+  }
+  .card h2 { margin: 0 0 3px; font-size: 16px; color: #075985; }
+  .card p { margin: 0; }
+  table {
+    width: 100%;
+    margin-top: 9px;
+    table-layout: fixed;
+    border-spacing: 0;
+    background: #eef7f5;
+  }
+  th, td { padding: 5px 7px; border: 1px solid #2f6f68; text-align: left; }
+  th { background: #bfd7d5; }
+  @media (min-width: 400px) {
+    .cards { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+<main>
+  <h1>Layout answers the viewport.</h1>
+  <p class="lede">The cards reflow. The table keeps both axes.</p>
+  <section class="cards">
+    <article class="card">
+      <h2>Grid alpha</h2>
+      <p>Wide layouts place this card beside its peer.</p>
+    </article>
+    <article class="card">
+      <h2>Grid beta</h2>
+      <p>Narrow layouts stack this card below the first.</p>
+    </article>
+  </section>
+  <table>
+    <thead>
+      <tr><th>Measure</th><th>State</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Grid tracks</td><td>Responsive</td></tr>
+      <tr><td>Table columns</td><td>Stable</td></tr>
+    </tbody>
+  </table>
+</main>

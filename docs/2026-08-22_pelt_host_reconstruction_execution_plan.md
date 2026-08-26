@@ -424,7 +424,7 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
-**Status:** in progress 2026-08-26. Fixtures 1-2 are complete; fixtures 3-8
+**Status:** in progress 2026-08-26. Fixtures 1-3 are complete; fixtures 4-8
 remain open.
 
 The ordinary-article receipt is:
@@ -462,6 +462,25 @@ that edited textbox value. The 2026-08-26 Windows receipt recorded all three
 frames, the interaction assertion, a nonblank 960x640 PNG, and digest
 `ceb4d98e10c231b8`. The checked-in GPU-free test drives the same receipt through
 `PeltController`.
+
+The responsive grid and table receipt is:
+
+```sh
+cargo run -p pelt --no-default-features --features livery -j 1 -- \
+  --product-receipt responsive \
+  --artifact target/pelt-receipts/responsive.png
+```
+
+The receipt owns `examples/p5-responsive`, the same 960x640 physical viewport,
+and three presented frames. At the live wide logical viewport, its semantic
+driver proves two retained grid labels share one row and that both table body
+rows preserve two ordered columns. It then reframes the retained document at
+320x320, proves the cards stack, both table axes remain intact, and the table's
+column separation contracts with the viewport. The headed host restores its
+live viewport before capture. The 2026-08-26 Windows run presented all three
+960x640 frames, recorded the viewport-reflow assertion, produced a nonblank
+PNG, and recorded digest `a5d1a743599c5493`. The checked-in GPU-free driver
+passed in the full 13/13 `pelt-desktop` Livery test wall.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 
@@ -523,8 +542,8 @@ terminal.
 
 ## Immediate next lane
 
-Continue P5 from the completed ordinary-article and controls receipts. Add
-named receipts for responsive layout, scripted mutation, resource graphs,
+Continue P5 from the completed ordinary-article, controls, and responsive-layout
+receipts. Add named receipts for scripted mutation, resource graphs,
 protocol-native content, the mixed workspace, and the explicit fallback.
 The Reader tile must carry held source bytes rather than teaching Fleece to
 fetch. Each remaining fixture needs a bounded command, captured artifact, and
