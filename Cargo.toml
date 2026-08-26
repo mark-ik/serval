@@ -14,7 +14,6 @@ members = [
     "components/buckram",
     "components/genet-livery",
     "components/genet-static-dom",
-    "components/genet-extract",
     "components/genet-scripted-dom",
     "components/genet-scripted",
     "components/genet-scripted-worker",
