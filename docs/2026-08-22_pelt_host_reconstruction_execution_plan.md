@@ -472,15 +472,16 @@ cargo run -p pelt --no-default-features --features livery -j 1 -- \
 ```
 
 The receipt owns `examples/p5-responsive`, the same 960x640 physical viewport,
-and three presented frames. At the live wide logical viewport, its semantic
+and three presented frames. At a pinned 480x320 logical probe, its semantic
 driver proves two retained grid labels share one row and that both table body
 rows preserve two ordered columns. It then reframes the retained document at
 320x320, proves the cards stack, both table axes remain intact, and the table's
-column separation contracts with the viewport. The headed host restores its
-live viewport before capture. The 2026-08-26 Windows run presented all three
-960x640 frames, recorded the viewport-reflow assertion, produced a nonblank
-PNG, and recorded digest `a5d1a743599c5493`. The checked-in GPU-free driver
-passed in the full 13/13 `pelt-desktop` Livery test wall.
+column separation contracts with the viewport. These pinned CSS-pixel probes
+keep the assertion independent of host DPI; the headed host restores its live
+viewport before capture. The 2026-08-26 Windows run presented all three 960x640
+frames, recorded the viewport-reflow assertion, produced a nonblank PNG, and
+recorded digest `a5d1a743599c5493`. The checked-in GPU-free driver passed in the
+full 13/13 `pelt-desktop` Livery test wall.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 

@@ -908,6 +908,11 @@ impl windowed::ViewerContent for ControllerViewerContent {
                 )
             },
             StaticProductReceipt::Responsive => {
+                // Product receipt sizes are physical pixels, while retained
+                // layout consumes logical CSS pixels after the window scale
+                // factor is applied. Pin the wide semantic probe so the media
+                // query assertion does not depend on host DPI.
+                let _wide = self.controller.frame(480, 320);
                 let point = |controller: &pelt_core::PeltController<netrender::Scene>,
                              text: &str| {
                     controller
