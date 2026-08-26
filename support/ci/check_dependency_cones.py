@@ -64,17 +64,6 @@ def assert_fleece_cone() -> None:
         fail(f"fleece pulled render deps directly: {sorted(deps & forbidden)}")
 
 
-def assert_genet_extract_is_a_shim() -> None:
-    manifest = load_toml(ROOT / "components" / "genet-extract" / "Cargo.toml")
-    deps = dependency_names(manifest.get("dependencies", {}))
-    if deps != {"fleece"}:
-        fail(f"genet-extract dependencies are {sorted(deps)}, expected ['fleece']")
-    for table in ("build-dependencies", "dev-dependencies"):
-        names = dependency_names(manifest.get(table, {}))
-        if names:
-            fail(f"genet-extract {table} must stay empty, found {sorted(names)}")
-
-
 def cargo_metadata() -> dict:
     result = subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--no-deps"],
@@ -89,11 +78,11 @@ def cargo_metadata() -> dict:
     return json.loads(result.stdout)
 
 
-def assert_cargo_metadata_sees_extraction_packages(metadata: dict) -> None:
+def assert_cargo_metadata_sees_fleece(metadata: dict) -> None:
     names = {package["name"] for package in metadata["packages"]}
-    missing = {"fleece", "genet-extract"} - names
+    missing = {"fleece"} - names
     if missing:
-        fail(f"cargo metadata did not report extraction packages {sorted(missing)}")
+        fail(f"cargo metadata did not report fleece package {sorted(missing)}")
 
 
 def assert_ports_depend_inward(metadata: dict) -> None:
@@ -139,9 +128,8 @@ def assert_ports_depend_inward(metadata: dict) -> None:
 
 def main() -> None:
     assert_fleece_cone()
-    assert_genet_extract_is_a_shim()
     metadata = cargo_metadata()
-    assert_cargo_metadata_sees_extraction_packages(metadata)
+    assert_cargo_metadata_sees_fleece(metadata)
     assert_ports_depend_inward(metadata)
     print("dependency-cone witnesses passed")
 
