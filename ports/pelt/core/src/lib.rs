@@ -156,6 +156,14 @@ impl<F: 'static> PeltController<F> {
         self.session.inspect()
     }
 
+    /// Semantic clip from the current retained selection or document.
+    ///
+    /// Product receipts use this to verify engine-owned selection without
+    /// reaching through the controller to a concrete document session.
+    pub fn clip(&self) -> Option<inker::DocumentClip> {
+        self.session.clip()
+    }
+
     /// Links in the current retained frame, in document-local coordinates.
     /// Product hosts use this for semantic receipts and accessibility-driven
     /// activation without reaching through the controller to a concrete engine.

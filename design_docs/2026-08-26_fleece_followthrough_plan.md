@@ -1,8 +1,8 @@
 # Plan: Fleece follow-through
 
 **Date:** 2026-08-26
-**Status:** Implementation complete; focused automated verification is green.
-A headed retained-document activation and indication receipt remains open.
+**Status:** Complete. Implementation, focused verification, and the headed
+retained-document activation and indication receipt are green.
 Documentation landed first, followed by the three parallel packets: retire the
 `genet-extract` shim, activate Text Fragments in the retained Genet host, and
 replace Mere's manifest-only Fleece dependencies with real calls or remove them
@@ -211,9 +211,21 @@ documentation reconciliation
   single-fetch, and fallback 3/3, and Boa/Nova script-visible URL privacy 2/2.
   Windows verification used a debuginfo-free test profile after the default
   5.76 GB test PDB hit MSVC `LNK1318`; the source compilation was already clean.
-  The headed activation and indication receipt remains the explicit open gate.
+  The headed activation and indication receipt passed in the product lane below.
 - **2026-08-26:** Packet C added crawl and Gazette supplied-document consumers,
   removed the eidetic-search dependency, and retained crawl/fetch/store/product
   ownership boundaries. Integration review corrected XHTML dispatch so a
   declared `application/xhtml+xml` response uses the XML parser rather than an
   HTML sniff.
+- **2026-08-26:** Packet T's named Pelt product receipt opened a real Windows
+  window, presented three 960x640 frames, and captured the activated retained
+  selection to PNG. Its semantic assertion proved the exact Text Fragment was
+  selected, scrolled into view, indicated, and retained one primary-document
+  fetch. The artifact digest was `bc3106237d566a57`; the matching GPU-free
+  driver test passed 1/1.
+- **2026-08-26:** The downstream clean-consumer gates passed. Knot's sibling
+  Fleece selector serializer and independent resolver proof passed 1/1 on Mere
+  `d7cd4a87f782`. Turnstone's retained reader route, extraction-lineage update,
+  and URL-twin enrichment checks passed 3/3 on `6019d208e5cb` against Genet
+  `138b6aca6e27`; its generated resolution contained Fleece 0.4 and no
+  `genet-extract` package.

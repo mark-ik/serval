@@ -14,7 +14,13 @@
 
 use crate::{DesktopHostProfile, WindowingMode};
 use genet_host_api::EngineProfile;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 /// One named bounded product receipt implemented by the single-document host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +30,8 @@ pub enum StaticProductReceipt {
     Article,
     /// A nested overflow region beside retained editable form controls.
     Controls,
+    /// Initial Text Fragment activation in a retained Livery document.
+    TextFragment,
 }
 
 impl StaticProductReceipt {
@@ -31,18 +39,19 @@ impl StaticProductReceipt {
         match self {
             Self::Article => "article",
             Self::Controls => "controls",
+            Self::TextFragment => "text-fragment",
         }
     }
 
     pub fn default_size(self) -> (u32, u32) {
         match self {
-            Self::Article | Self::Controls => (960, 640),
+            Self::Article | Self::Controls | Self::TextFragment => (960, 640),
         }
     }
 
     pub fn default_frames(self) -> u32 {
         match self {
-            Self::Article | Self::Controls => 3,
+            Self::Article | Self::Controls | Self::TextFragment => 3,
         }
     }
 }
@@ -288,7 +297,9 @@ mod title_tests {
 #[cfg(all(test, feature = "livery"))]
 mod livery_route_tests {
     use super::windowed::ViewerContent;
-    use super::{ControllerViewerContent, StaticProductReceipt, ViewerClock};
+    use super::{
+        ControllerViewerContent, ReceiptResourceFetcher, StaticProductReceipt, ViewerClock,
+    };
     use genet_documents::{LiveryDocumentSession, LiverySessionEngine, LocalFetcher};
     use inker::{SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry};
     use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -490,6 +501,7 @@ mod livery_route_tests {
         let mut content = ControllerViewerContent {
             controller,
             posture: None,
+            document_fetches: None,
         };
 
         let _geometry = content.frame(960, 640);
@@ -519,6 +531,7 @@ mod livery_route_tests {
         let mut content = ControllerViewerContent {
             controller,
             posture: None,
+            document_fetches: None,
         };
 
         let _geometry = content.frame(960, 640);
@@ -528,6 +541,77 @@ mod livery_route_tests {
                 .as_deref(),
             Ok("nested wheel stayed local and keyboard edit reached retained structure")
         );
+    }
+
+    #[test]
+    fn text_fragment_product_receipt_selects_scrolls_and_fetches_once() {
+        let fixture = format!(
+            r"{}\..\examples\text-fragment\index.html",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let address = format!("{fixture}#:~:text=The%20retained%20text%20fragment%20target");
+        let document_fetches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+        registry.register(Box::new(LiverySessionEngine::new(
+            ReceiptResourceFetcher::new(Some(fixture), std::sync::Arc::clone(&document_fetches)),
+        )));
+        let controller = PeltController::new(
+            registry,
+            SurfaceEngineRegistry::new(),
+            PeltControllerConfig::new(inker::routing::ENGINE_GENET_LIVERY, address, (960, 640)),
+            ViewerClock::new(),
+        )
+        .expect("text fragment receipt controller");
+        let mut content = ControllerViewerContent {
+            controller,
+            posture: None,
+            document_fetches: Some(document_fetches),
+        };
+
+        let _activated = content.frame(960, 640);
+        assert_eq!(
+            content
+                .drive_product_receipt(StaticProductReceipt::TextFragment)
+                .as_deref(),
+            Ok(
+                "text fragment selected, scrolled into view, indicated, and retained one document fetch"
+            )
+        );
+    }
+}
+
+#[cfg(feature = "livery")]
+struct ReceiptResourceFetcher {
+    tracked_resource: Option<String>,
+    document_fetches: Arc<AtomicUsize>,
+}
+
+#[cfg(feature = "livery")]
+impl ReceiptResourceFetcher {
+    fn new(tracked_resource: Option<String>, document_fetches: Arc<AtomicUsize>) -> Self {
+        Self {
+            tracked_resource,
+            document_fetches,
+        }
+    }
+
+    fn record(&self, url: &str) {
+        if self.tracked_resource.as_deref() == Some(url) {
+            self.document_fetches.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(feature = "livery")]
+impl genet_host_api::ResourceFetcher for ReceiptResourceFetcher {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.record(url);
+        genet_host_api::ResourceFetcher::fetch(&genet_documents::LocalFetcher, url)
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+        self.record(url);
+        genet_host_api::ResourceFetcher::fetch_response(&genet_documents::LocalFetcher, url)
     }
 }
 
@@ -564,9 +648,21 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
         });
     }
     let (width, height) = config.size.unwrap_or((800, 600));
+    let document_fetches = Arc::new(AtomicUsize::new(0));
+    let tracked_resource = (config.product_receipt == Some(StaticProductReceipt::TextFragment))
+        .then(|| {
+            config
+                .url
+                .split_once('#')
+                .map_or(config.url.as_str(), |(resource, _)| resource)
+                .to_owned()
+        });
+    let receipt_fetches = tracked_resource
+        .as_ref()
+        .map(|_| Arc::clone(&document_fetches));
     let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
     registry.register(Box::new(LiverySessionEngine::new(
-        genet_documents::LocalFetcher,
+        ReceiptResourceFetcher::new(tracked_resource, document_fetches),
     )));
     let controller = PeltController::new(
         registry,
@@ -583,6 +679,7 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
         ControllerViewerContent {
             controller,
             posture: None,
+            document_fetches: receipt_fetches,
         },
     )
 }
@@ -642,6 +739,7 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
         ControllerViewerContent {
             controller,
             posture,
+            document_fetches: None,
         },
     )
 }
@@ -650,6 +748,7 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
 struct ControllerViewerContent {
     controller: pelt_core::PeltController<netrender::Scene>,
     posture: Option<String>,
+    document_fetches: Option<Arc<AtomicUsize>>,
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
@@ -772,6 +871,44 @@ impl windowed::ViewerContent for ControllerViewerContent {
                 }
                 Ok(
                     "nested wheel stayed local and keyboard edit reached retained structure"
+                        .to_owned(),
+                )
+            },
+            StaticProductReceipt::TextFragment => {
+                const TARGET: &str = "The retained text fragment target";
+                let clip = self
+                    .controller
+                    .clip()
+                    .ok_or_else(|| "text fragment receipt has no retained clip".to_owned())?;
+                if clip.text != TARGET {
+                    return Err(format!(
+                        "text fragment selected {:?} instead of {TARGET:?}",
+                        clip.text
+                    ));
+                }
+                let target = self.controller.text_target(TARGET).ok_or_else(|| {
+                    "text fragment target has no retained viewport geometry".to_owned()
+                })?;
+                let visible = [target.anchor[1], target.focus[1]]
+                    .into_iter()
+                    .any(|y| (0.0..=self.controller.request().viewport.1 as f32).contains(&y));
+                if !visible {
+                    return Err(format!(
+                        "text fragment target stayed outside the viewport: {target:?}"
+                    ));
+                }
+                let fetches = self
+                    .document_fetches
+                    .as_ref()
+                    .ok_or_else(|| "text fragment receipt has no fetch ledger".to_owned())?
+                    .load(Ordering::SeqCst);
+                if fetches != 1 {
+                    return Err(format!(
+                        "text fragment activation fetched the document {fetches} times"
+                    ));
+                }
+                Ok(
+                    "text fragment selected, scrolled into view, indicated, and retained one document fetch"
                         .to_owned(),
                 )
             },

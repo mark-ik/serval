@@ -463,6 +463,21 @@ frames, the interaction assertion, a nonblank 960x640 PNG, and digest
 `ceb4d98e10c231b8`. The checked-in GPU-free test drives the same receipt through
 `PeltController`.
 
+Fleece's retained Text Fragment follow-through has an additional named receipt:
+
+```sh
+cargo run -p pelt --no-default-features --features livery -j 1 -- \
+  --product-receipt text-fragment \
+  --artifact target/pelt-receipts/text-fragment.png
+```
+
+The receipt owns `examples/text-fragment`, addresses its below-fold heading
+through a Text Directive, and accepts the capture only when the retained clip
+contains the exact target, its geometry is visible, and the primary-document
+fetch ledger remains at one. The 2026-08-26 Windows run presented three
+960x640 frames, visibly painted the blue selection indication, and recorded
+digest `bc3106237d566a57`. Its GPU-free semantic driver passed 1/1.
+
 Check in deterministic fixtures and bounded headed capture commands for:
 
 1. an ordinary article with fonts and images;
@@ -508,9 +523,9 @@ terminal.
 
 ## Immediate next lane
 
-Continue P5 from the completed ordinary-article receipt. Add named receipts for
-controls and nested scrolling, responsive layout, scripted mutation, resource
-graphs, protocol-native content, the mixed workspace, and the explicit fallback.
+Continue P5 from the completed ordinary-article and controls receipts. Add
+named receipts for responsive layout, scripted mutation, resource graphs,
+protocol-native content, the mixed workspace, and the explicit fallback.
 The Reader tile must carry held source bytes rather than teaching Fleece to
 fetch. Each remaining fixture needs a bounded command, captured artifact, and
 interaction assertion. The completed Windows P4 route remains the external
