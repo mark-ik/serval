@@ -820,6 +820,14 @@ where
         self.text_frame()?.find_text_range(text)
     }
 
+    /// Resolve a parsed URL Text Directive against retained logical text.
+    pub fn text_range_for_text_directive(
+        &self,
+        directive: &crate::TextDirective,
+    ) -> Option<crate::TextRange<Id>> {
+        self.text_frame()?.find_text_directive_range(directive)
+    }
+
     /// The node's principal box's fragment: a table element's grid box, which
     /// owns background, borders, and used `width`/`height` under CSS 2.1
     /// section 17.4. Rectangle queries and paint-effect anchors use

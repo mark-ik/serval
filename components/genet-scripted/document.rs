@@ -57,7 +57,7 @@ use genet_document_resources::ResourceLimits;
 #[cfg(feature = "render")]
 use genet_layout::{IncrementalLayout, ScrollOffsets, TextRange, TextSelection};
 #[cfg(feature = "livery")]
-use genet_livery::Device;
+use genet_livery::{Device, NavigationFragment};
 #[cfg(feature = "render")]
 use genet_render::translated_frame_from_session_dom;
 #[cfg(any(feature = "render", feature = "livery"))]
@@ -1050,7 +1050,7 @@ pub struct LiveryScriptedDocument<E: ScriptEngine> {
     // by carrying one live document through `ViewerApp`.
     rt: Box<Runtime<E>>,
     cssom: Box<LiveryCssom>,
-    pending_fragment: Option<String>,
+    pending_fragment: Option<NavigationFragment>,
     capture: Option<DomCaptureRecorder>,
     hidden: bool,
     frozen: bool,
@@ -1065,16 +1065,19 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     where
         Fetch: ResourceFetcher + 'static,
     {
-        let (resource, fragment) = match url.split_once('#') {
-            Some((resource, fragment)) => (resource, (!fragment.is_empty()).then(|| fragment)),
-            None => (url, None),
-        };
+        let navigation = NavigationFragment::parse(url);
         let fetcher = SharedResourceFetcher(Rc::new(fetcher));
         let bytes = fetcher
-            .fetch(resource)
-            .ok_or_else(|| format!("could not load {resource}"))?;
-        let mut document = Self::build(&String::from_utf8_lossy(&bytes), fetcher, resource)?;
-        document.pending_fragment = fragment.map(str::to_owned);
+            .fetch(&navigation.resource_url)
+            .ok_or_else(|| format!("could not load {}", navigation.resource_url))?;
+        let mut document = Self::build(
+            &String::from_utf8_lossy(&bytes),
+            fetcher,
+            &navigation.script_visible_url,
+        )?;
+        document.pending_fragment = (!navigation.text_directives.is_empty()
+            || navigation.element_fragment.is_some())
+            .then_some(navigation);
         Ok(document)
     }
 
@@ -1085,7 +1088,16 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     where
         Fetch: ResourceFetcher + 'static,
     {
-        Self::build(html, SharedResourceFetcher(Rc::new(fetcher)), base_url)
+        let navigation = NavigationFragment::parse(base_url);
+        let mut document = Self::build(
+            html,
+            SharedResourceFetcher(Rc::new(fetcher)),
+            &navigation.script_visible_url,
+        )?;
+        document.pending_fragment = (!navigation.text_directives.is_empty()
+            || navigation.element_fragment.is_some())
+            .then_some(navigation);
+        Ok(document)
     }
 
     /// Parse an inline fixture with an explicit empty host transport. Inline
@@ -1220,8 +1232,17 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
                 return netrender::Scene::new(width, height);
             },
         };
-        if let Some(fragment) = self.pending_fragment.take() {
-            self.scroll_to_fragment(&fragment);
+        if let Some(navigation) = self.pending_fragment.take() {
+            let text_activated = self
+                .cssom
+                .activate_text_directives(&navigation.text_directives);
+            if !text_activated
+                && let Some(fragment) = navigation.element_fragment.as_deref()
+            {
+                self.scroll_to_fragment(fragment);
+            }
+            // Reframe retained geometry only. The source bytes were fetched and
+            // the live DOM built before this navigation-time activation.
             list = match self.cssom.frame(&mut self.rt, width, height) {
                 Ok(list) => list,
                 Err(error) => {
@@ -1240,6 +1261,11 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             self.rt.host().borrow_mut().viewport_scroll = self.cssom.scroll();
         }
         moved
+    }
+
+    /// The current Livery viewport offset after host or fragment navigation.
+    pub fn scroll(&self) -> (f32, f32) {
+        self.cssom.scroll()
     }
 
     pub fn scroll_for_key(&mut self, key: ScrollKey) -> bool {
@@ -1382,6 +1408,93 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             Ok(_) => self.capture = Some(recorder),
             Err(error) => eprintln!("[pelt-livery-scripted] dom capture disabled: {error}"),
         }
+    }
+}
+
+#[cfg(all(test, feature = "livery"))]
+mod livery_text_fragment_tests {
+    use super::*;
+    use script_engine_boa::BoaEngine;
+
+    #[derive(Clone)]
+    struct CountingFetcher {
+        calls: Rc<std::cell::RefCell<Vec<String>>>,
+        body: Vec<u8>,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+        fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+            self.calls.borrow_mut().push(url.to_owned());
+            (url == "https://example.test/article").then(|| self.body.clone())
+        }
+    }
+
+    #[test]
+    fn initial_text_fragment_selects_scrolls_and_hides_the_directive_on_boa() {
+        let html = r#"<html><head><style>body { margin: 0; }</style></head><body>
+            <div style="height: 900px"></div><p id="fallback">prefix needle end suffix</p>
+            <script>console.log(document.URL + '|' + location.href + '|' + location.hash);</script>
+            </body></html>"#;
+        let mut document = LiveryScriptedDocument::<BoaEngine>::from_body(
+            html,
+            EmptyResourceFetcher,
+            "https://example.test/article#fallback:~:text=prefix-,needle,end,-suffix",
+        )
+        .expect("Livery scripted document builds");
+
+        let _scene = document.frame(320, 160);
+        assert_eq!(
+            document.console(),
+            vec!["https://example.test/article#fallback|https://example.test/article#fallback|#fallback"],
+        );
+        let selection = document
+            .text_selection()
+            .expect("the retained scripted frame matched the directive");
+        assert_eq!(selection.text, "needle end");
+        assert!(document.scroll().1 > 0.0, "the match is revealed");
+    }
+
+    #[test]
+    fn initial_text_fragment_fetches_the_source_once_on_boa() {
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fetcher = CountingFetcher {
+            calls: calls.clone(),
+            body: br#"<body><div style="height: 900px"></div><p>one needle two</p></body>"#
+                .to_vec(),
+        };
+        let mut document = LiveryScriptedDocument::<BoaEngine>::load(
+            fetcher,
+            "https://example.test/article#:~:text=needle",
+        )
+        .expect("Livery scripted document loads");
+
+        let _scene = document.frame(320, 160);
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["https://example.test/article"],
+            "first-frame activation reuses the loaded source"
+        );
+        assert_eq!(
+            document
+                .text_selection()
+                .expect("text directive matched")
+                .text,
+            "needle"
+        );
+    }
+
+    #[test]
+    fn scripted_text_fragment_falls_back_to_its_element_fragment_on_boa() {
+        let mut document = LiveryScriptedDocument::<BoaEngine>::from_body(
+            r#"<body><div style="height: 900px"></div><p id="fallback">ordinary target</p></body>"#,
+            EmptyResourceFetcher,
+            "https://example.test/article#fallback:~:text=missing",
+        )
+        .expect("Livery scripted document builds");
+
+        let _scene = document.frame(320, 160);
+        assert!(document.text_selection().is_none());
+        assert!(document.scroll().1 > 0.0, "#fallback is revealed");
     }
 }
 

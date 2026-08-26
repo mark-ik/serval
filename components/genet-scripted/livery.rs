@@ -18,8 +18,8 @@ use genet_document_resources::{
 };
 use genet_livery::{
     CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryLayout,
-    LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextRange,
-    TextSelection, TextSystem, ViewportSizes, canonicalize_specified_value, content_box_size,
+    LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextDirective,
+    TextRange, TextSelection, TextSystem, ViewportSizes, canonicalize_specified_value, content_box_size,
     emit_paint_list_with_text_system_scrolled_with_images, hit_test, layout,
     layout_with_text_system, resolve_container_query_styles,
     resolve_container_query_styles_with_images, resolve_styles,
@@ -616,6 +616,46 @@ impl LiveryCssom {
             return false;
         };
         self.scroll_to(0.0, y);
+        true
+    }
+
+    /// Resolve the first pending URL Text Directive against the current retained
+    /// live DOM, retain its selection indication, and reveal its first rect.
+    /// Returns true when the match was already in view as well as when scrolling
+    /// changed, so navigation can distinguish success from element fallback.
+    pub fn activate_text_directives(&self, directives: &[TextDirective]) -> bool {
+        let target = {
+            let state = self.state.borrow();
+            let frame = match state.frame.as_ref() {
+                Some(frame) => frame,
+                None => return false,
+            };
+            let range = match directives.iter().find_map(|directive| {
+                frame
+                    .fragments
+                    .text_range_for_text_directive(directive)
+            }) {
+                Some(range) => range,
+                None => return false,
+            };
+            let selection = match frame.fragments.text_selection(range) {
+                Some(selection) => selection,
+                None => return false,
+            };
+            let first = match selection.rects.first() {
+                Some(first) => first,
+                None => return false,
+            };
+            (
+                range,
+                (first.y - 24.0).max(0.0),
+                (frame.content_extent.1 - frame.viewport.1 as f32).max(0.0),
+            )
+        };
+        let mut state = self.state.borrow_mut();
+        state.selection_anchor = None;
+        state.selection_range = Some(target.0);
+        state.scroll = (0.0, target.1.clamp(0.0, target.2));
         true
     }
 

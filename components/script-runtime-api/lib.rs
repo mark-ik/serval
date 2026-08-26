@@ -928,7 +928,8 @@ impl<E: ScriptEngine> Runtime<E> {
     /// the real origin. For server-mode WPT runs; disk mode leaves the default
     /// `about:blank` location. A non-absolute `url` is ignored.
     pub fn set_base_url(&mut self, url: &str) -> Result<(), E::Error> {
-        let Ok(u) = url::Url::parse(url) else {
+        let script_visible_url = platform::script_visible_document_url(url);
+        let Ok(u) = url::Url::parse(&script_visible_url) else {
             return Ok(());
         };
         self.host.borrow_mut().base_url = Some(u.to_string());

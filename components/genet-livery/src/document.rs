@@ -16,7 +16,7 @@ use paint_list_api::DeviceIntSize;
 
 use crate::{
     IncrementalStyle, InteractionStates, LayoutError, LiveryLayout, LiveryPaintList, RestyleStats,
-    StylePlane, StyleSet, TextRange, TextRect, TextSelection, TextSystem,
+    StylePlane, StyleSet, TextDirective, TextRange, TextRect, TextSelection, TextSystem,
     emit_paint_list_with_text_system_scrolled_with_images, hit_test_with_scroll,
     layout::{
         RetainedRootFormatting, StickyScrollport, layout_retained_formatting_root,
@@ -1233,6 +1233,56 @@ where
         self.selection_range = range;
     }
 
+    /// Resolve the first matching pending URL Text Directive, select its retained
+    /// range, and reveal its first shaped rectangle. A successful match that is
+    /// already visible still returns `true`; callers use that to avoid falling
+    /// through to an ordinary element fragment.
+    pub fn activate_text_directives(&mut self, directives: &[TextDirective]) -> bool {
+        let Some(range) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.text_frame())
+            .and_then(|frame| {
+                directives
+                    .iter()
+                    .find_map(|directive| frame.find_text_directive_range(directive))
+            })
+        else {
+            return false;
+        };
+        let Some(selection) = self.selection_for_range(range) else {
+            return false;
+        };
+        let Some(first) = selection.rects.first() else {
+            return false;
+        };
+        let target_y = (self.scroll.1 + first.y - 24.0).max(0.0);
+        self.select_text_range(Some(range));
+        self.scroll_to(target_y);
+        true
+    }
+
+    /// Reveal an ordinary element-id fragment. This remains the fallback when
+    /// no pending Text Directive resolves against the retained document.
+    pub fn scroll_to_element_fragment(&mut self, fragment: &str) -> bool {
+        let Some(target) = find_id(&self.dom, self.dom.document(), fragment) else {
+            return false;
+        };
+        // Link activation may focus the anchor first, which moves the live
+        // layout into K5g's identity source before this fragment lookup.
+        // That retained geometry is still the current hit-test frame.
+        let Some(y) = self
+            .layout
+            .as_ref()
+            .or(self.identity_source.as_ref())
+            .and_then(|layout| layout.fragments.get(target).map(|fragment| fragment.y))
+        else {
+            return false;
+        };
+        self.scroll_to(y);
+        true
+    }
+
     /// Link URLs whose descendant text contributes to this selection.
     pub fn links_for_selection(&self, selection: &TextSelection<D::NodeId>) -> Vec<String> {
         let mut links = Vec::new();
@@ -1280,7 +1330,7 @@ where
             if let Some(fragment) = href
                 .strip_prefix('#')
                 .filter(|fragment| !fragment.is_empty())
-                && self.scroll_to_fragment(fragment)
+                && self.scroll_to_element_fragment(fragment)
             {
                 return ClickOutcome::Scrolled;
             }
@@ -1721,25 +1771,6 @@ where
             }
             id = self.dom.parent(id)?;
         }
-    }
-
-    fn scroll_to_fragment(&mut self, fragment: &str) -> bool {
-        let Some(target) = find_id(&self.dom, self.dom.document(), fragment) else {
-            return false;
-        };
-        // Link activation may focus the anchor first, which moves the live
-        // layout into K5g's identity source before this fragment lookup.
-        // That retained geometry is still the current hit-test frame.
-        let Some(y) = self
-            .layout
-            .as_ref()
-            .or(self.identity_source.as_ref())
-            .and_then(|layout| layout.fragments.get(target).map(|fragment| fragment.y))
-        else {
-            return false;
-        };
-        self.scroll_to(y);
-        true
     }
 
     fn collect_links(

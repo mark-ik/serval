@@ -96,10 +96,8 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessio
         &self,
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
-        let requested_resource = request
-            .address
-            .split_once('#')
-            .map_or(request.address.as_str(), |(resource, _)| resource);
+        let navigation = genet_livery::NavigationFragment::parse(&request.address);
+        let requested_resource = navigation.resource_url.as_str();
         let source_response = match &request.body {
             Some(body) => ResourceResponse {
                 final_url: request.address.clone(),
@@ -126,7 +124,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessio
         // need one retained value plane even when JavaScript is disabled;
         // ScriptedDom supplies LayoutDomMut without constructing a JS runtime.
         let dom = genet_scripted_dom::ScriptedDom::from_serialized_document(&source);
-        self.spawn_livery_document(request, dom, base_resource, source_response)
+        self.spawn_livery_document(request, dom, base_resource, source_response, navigation)
     }
 }
 
@@ -138,6 +136,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
         dom: genet_scripted_dom::ScriptedDom,
         base_resource: String,
         source_response: ResourceResponse,
+        navigation: genet_livery::NavigationFragment,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let resources = ResolvedDocumentResources::resolve_with_limits(
             &dom,
@@ -190,7 +189,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
         }
         Ok(Box::new(LiveryDocumentSession {
             doc,
-            address: request.address.clone(),
+            address: navigation.script_visible_url.clone(),
             focused_node: None,
             editor: None,
             active_form: None,
@@ -200,6 +199,9 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             source_response,
             find_state: DocumentFindState::empty(DocumentFindQuery::default()),
             find_ranges: Vec::new(),
+            pending_fragment: (!navigation.text_directives.is_empty()
+                || navigation.element_fragment.is_some())
+            .then_some(navigation),
         }))
     }
 }
@@ -219,6 +221,7 @@ pub struct LiveryDocumentSession {
     source_response: ResourceResponse,
     find_state: DocumentFindState,
     find_ranges: Vec<genet_livery::TextRange<genet_scripted_dom::NodeId>>,
+    pending_fragment: Option<genet_livery::NavigationFragment>,
 }
 
 #[cfg(feature = "livery")]
@@ -735,28 +738,46 @@ impl LiveryDocumentSession {
 #[cfg(feature = "livery")]
 impl DocumentSession<Scene> for LiveryDocumentSession {
     fn frame(&mut self, width: u32, height: u32) -> Scene {
-        match self.doc.frame(width, height) {
+        let mut list = match self.doc.frame(width, height) {
             Ok(list) => {
                 self.last_error = None;
-                let mut scene = paint_list_render::translate_paint_list(&list);
-                if let Some(selection) = self.doc.text_selection() {
-                    for rect in selection.rects {
-                        let x0 = rect.x.max(0.0);
-                        let y0 = rect.y.max(0.0);
-                        let x1 = (rect.x + rect.width).min(width as f32);
-                        let y1 = (rect.y + rect.height).min(height as f32);
-                        if x0 < x1 && y0 < y1 {
-                            scene.push_rect(x0, y0, x1, y1, [0.18, 0.46, 0.95, 0.34]);
-                        }
-                    }
-                }
-                scene
+                list
             },
             Err(error) => {
                 self.last_error = Some(error.to_string());
-                Scene::new(width, height)
+                return Scene::new(width, height);
             },
+        };
+        if let Some(navigation) = self.pending_fragment.take() {
+            let text_activated = self
+                .doc
+                .activate_text_directives(&navigation.text_directives);
+            if !text_activated && let Some(fragment) = navigation.element_fragment.as_deref() {
+                self.doc.scroll_to_element_fragment(fragment);
+            }
+            // The activation only changes retained selection/scroll state. It
+            // deliberately reuses this session's already-loaded source.
+            list = match self.doc.frame(width, height) {
+                Ok(list) => list,
+                Err(error) => {
+                    self.last_error = Some(error.to_string());
+                    return Scene::new(width, height);
+                },
+            };
         }
+        let mut scene = paint_list_render::translate_paint_list(&list);
+        if let Some(selection) = self.doc.text_selection() {
+            for rect in selection.rects {
+                let x0 = rect.x.max(0.0);
+                let y0 = rect.y.max(0.0);
+                let x1 = (rect.x + rect.width).min(width as f32);
+                let y1 = (rect.y + rect.height).min(height as f32);
+                if x0 < x1 && y0 < y1 {
+                    scene.push_rect(x0, y0, x1, y1, [0.18, 0.46, 0.95, 0.34]);
+                }
+            }
+        }
+        scene
     }
 
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
@@ -1382,6 +1403,7 @@ where
         &self,
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
+        let navigation = genet_livery::NavigationFragment::parse(&request.address);
         let doc = match &request.body {
             Some(body) => genet_scripted::LiveryScriptedDocument::<E>::from_body(
                 body,
@@ -1396,7 +1418,7 @@ where
         .map_err(SessionError::SpawnFailed)?;
         let mut session = ScriptedDocumentSession {
             doc,
-            address: request.address.clone(),
+            address: navigation.script_visible_url,
         };
         if request.hidden {
             session.doc.set_hidden(true);
@@ -1975,6 +1997,70 @@ mod tests {
         assert_eq!(concrete.document().text_system().shape_count(), shape_count);
         assert!(!session.scroll_by(0.0, 100.0));
         assert_eq!(session.click_at(20.0, 20.0), SessionClick::Miss);
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_activates_the_first_matching_text_directive() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new(
+            "https://example.test/article#:~:text=missing&text=prefix-,target,end,-suffix",
+        )
+        .with_body(
+            r#"<html><head><style>body { margin: 0; }</style></head><body>
+                <div style="height: 900px"></div><p>prefix target end suffix</p>
+                </body></html>"#,
+        )
+        .with_viewport(320, 160);
+        let mut session = engine.spawn(&request).expect("livery session spawns");
+
+        let scene = session.frame(320, 160);
+        let concrete = session
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("retained static session");
+        let selection = concrete
+            .document()
+            .text_selection()
+            .expect("the second directive matched in source order");
+        assert_eq!(selection.text, "target end");
+        assert!(
+            concrete.document().scroll().1 > 0.0,
+            "activation reveals the retained match"
+        );
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|operation| matches!(operation, netrender::SceneOp::Rect(_))),
+            "the selection is emitted as scene indication geometry"
+        );
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_falls_back_to_the_ordinary_element_fragment() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request =
+            SessionSpawnRequest::new("https://example.test/article#fallback:~:text=not-present")
+                .with_body(
+                    r#"<html><head><style>body { margin: 0; }</style></head><body>
+                <div style="height: 900px"></div><p id="fallback">ordinary fallback</p>
+                </body></html>"#,
+                )
+                .with_viewport(320, 160);
+        let mut session = engine.spawn(&request).expect("livery session spawns");
+
+        let _scene = session.frame(320, 160);
+        let concrete = session
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("retained static session");
+        assert!(concrete.document().text_selection().is_none());
+        assert!(
+            concrete.document().scroll().1 > 0.0,
+            "an unmatched text directive falls through to #fallback"
+        );
     }
 
     /// The livery lane's structural report through the trait — the same

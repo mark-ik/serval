@@ -26,6 +26,7 @@ pub mod table_shadow;
 // and CSS Tables 3 section 3.6.1 take off the grid.
 mod table_wrapper;
 mod text;
+mod text_fragment;
 
 pub use buckram::{
     AnonymousBoxKind, Baselines, BoxGeneration, BoxId, BoxOrigin, BreakToken, ContainingBlock,
@@ -59,6 +60,9 @@ pub use style::{
     resolve_styles, resolve_styles_with_presentational_hints,
 };
 pub use text::{TextRange, TextRect, TextSelection, TextSystem};
+pub use text_fragment::{
+    NavigationFragment, TextDirective, parse_fragment_directive, parse_text_directive,
+};
 
 /// Clean-room UA defaults for the bounded Cambium structural lane.
 ///

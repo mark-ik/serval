@@ -18,6 +18,31 @@ use script_engine_api::{CallCx, NativeFn, ScriptEngine};
 
 use crate::HostState;
 
+/// Hide a parsed Scroll-to-Text Fragment directive from every script-visible
+/// document URL surface. The ordinary element fragment before `:~:` remains
+/// observable and is still available to navigation fallback.
+pub(crate) fn script_visible_document_url(input: &str) -> String {
+    let Ok(mut url) = url::Url::parse(input) else {
+        return input
+            .split_once('#')
+            .and_then(|(resource, fragment)| {
+                fragment
+                    .split_once(":~:")
+                    .map(|(element, _)| format!("{resource}#{element}"))
+            })
+            .unwrap_or_else(|| input.to_owned());
+    };
+    let element_fragment = url.fragment().and_then(|fragment| {
+        fragment
+            .split_once(":~:")
+            .map(|(element, _)| element.to_owned())
+    });
+    if let Some(element_fragment) = element_fragment {
+        url.set_fragment(Some(&element_fragment));
+    }
+    url.to_string()
+}
+
 /// Run `f` against the host state, recovered from the engine host-data slot.
 /// `None` when no host state is set.
 fn with_host<E: ScriptEngine, R>(
@@ -37,7 +62,8 @@ fn with_host<E: ScriptEngine, R>(
 /// is not an absolute URL).
 fn location_field(href: Option<&str>, field: &str) -> String {
     // No document URL yet -> `about:blank` (the default top-level location).
-    let href = href.unwrap_or("about:blank");
+    let visible_href = script_visible_document_url(href.unwrap_or("about:blank"));
+    let href = visible_href.as_str();
     let Ok(u) = url::Url::parse(href) else {
         return if field == "href" {
             href.to_string()
@@ -69,9 +95,9 @@ fn resolve_against(base: Option<&str>, input: &str) -> String {
     match base.and_then(|b| url::Url::parse(b).ok()) {
         Some(b) => b
             .join(input)
-            .map(|u| u.to_string())
-            .unwrap_or_else(|_| input.to_owned()),
-        None => input.to_owned(),
+            .map(|u| script_visible_document_url(u.as_str()))
+            .unwrap_or_else(|_| script_visible_document_url(input)),
+        None => script_visible_document_url(input),
     }
 }
 
@@ -402,6 +428,11 @@ const PLATFORM_BOOTSTRAP: &str = r#"
   location.reload = function() {}; // real reload is host-driven
   location.toString = function() { return __locationField('href'); };
   globalThis.location = location;
+  Object.defineProperty(globalThis.document, 'URL', {
+    enumerable: true,
+    configurable: true,
+    get: function() { return __locationField('href'); },
+  });
 
   // ── localStorage ── an in-memory Storage (one origin per runtime). The methods
   // sit on a backing object; a Proxy adds the named-property access Storage has
@@ -541,6 +572,35 @@ mod tests {
                 "https://example.com/c.html",
                 "https://example.com/d.html",
                 "/d.html",
+            ],
+        );
+    }
+
+    /// Parsed Text Fragments may drive retained host navigation, but their
+    /// `:~:` suffix is not exposed through document or location URL surfaces.
+    fn text_fragment_is_hidden_from_script_urls<E: ScriptEngine>() {
+        let mut rt = Runtime::<E>::new().expect("runtime");
+        rt.set_base_url("https://example.com/guide#heading:~:text=private%20phrase")
+            .expect("base url");
+        rt.eval(
+            "console.log(document.URL);\
+             console.log(location.href);\
+             console.log(location.hash);\
+             history.pushState({}, '', '#next:~:text=another);\
+             console.log(document.URL);\
+             console.log(location.href);\
+             console.log(location.hash);",
+        )
+        .expect("text-fragment URL script");
+        assert_eq!(
+            rt.host().borrow().console,
+            vec![
+                "https://example.com/guide#heading",
+                "https://example.com/guide#heading",
+                "#heading",
+                "https://example.com/guide#next",
+                "https://example.com/guide#next",
+                "#next",
             ],
         );
     }
@@ -710,6 +770,10 @@ mod tests {
     fn location_assign_updates_url_on_boa() {
         location_assign_updates_url::<script_engine_boa::BoaEngine>();
     }
+    #[test]
+    fn text_fragment_is_hidden_from_script_urls_on_boa() {
+        text_fragment_is_hidden_from_script_urls::<script_engine_boa::BoaEngine>();
+    }
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn location_reflects_base_url_on_nova() {
@@ -719,5 +783,10 @@ mod tests {
     #[test]
     fn location_assign_updates_url_on_nova() {
         location_assign_updates_url::<script_engine_nova::NovaEngine>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn text_fragment_is_hidden_from_script_urls_on_nova() {
+        text_fragment_is_hidden_from_script_urls::<script_engine_nova::NovaEngine>();
     }
 }

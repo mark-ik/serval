@@ -35,7 +35,9 @@ use parley::{
     TextWrapMode as ParleyTextWrapMode, WordBreak as ParleyWordBreak, layout::YieldData,
 };
 
-use crate::{LiveryLayout, StylePlane, layout::Fragment, paint::resolve_color};
+use crate::{
+    LiveryLayout, StylePlane, TextDirective, layout::Fragment, paint::resolve_color,
+};
 
 pub(crate) trait FragmentLookup<Id> {
     fn rect(&self, id: Id) -> Option<&Fragment>;
@@ -1983,6 +1985,95 @@ where
         })
     }
 
+    /// Resolve a parsed URL Text Directive against the retained logical text.
+    ///
+    /// Text sources in one retained inline group stay contiguous. A group
+    /// boundary contributes a newline, which lets range ends and context cross
+    /// blocks through whitespace without allowing one directive term to bridge
+    /// non-whitespace content that Livery never shaped together.
+    pub(crate) fn find_text_directive_range(
+        &self,
+        directive: &TextDirective,
+    ) -> Option<TextRange<Id>> {
+        let mut logical = String::new();
+        let mut segments = Vec::new();
+        let mut previous_group = None;
+        for source in &self.text_order {
+            let text = self.text_values.get(source)?;
+            let group = self.text_groups.get(source).copied();
+            if !logical.is_empty() && previous_group != group {
+                logical.push('\n');
+            }
+            let start = logical.len();
+            logical.push_str(text);
+            let end = logical.len();
+            if start != end {
+                segments.push((start, end, *source));
+            }
+            previous_group = group;
+        }
+        if logical.is_empty() {
+            return None;
+        }
+
+        let whitespace = |character: char| character.is_whitespace();
+        let has_prefix = |start: usize| {
+            directive.prefix.as_ref().is_none_or(|prefix| {
+                logical[..start].trim_end_matches(whitespace).ends_with(prefix)
+            })
+        };
+        let has_suffix = |end: usize| {
+            directive.suffix.as_ref().is_none_or(|suffix| {
+                logical[end..].trim_start_matches(whitespace).starts_with(suffix)
+            })
+        };
+
+        let mut search_start = 0;
+        while search_start < logical.len() {
+            let relative = logical[search_start..].find(&directive.start)?;
+            let range_start = search_start + relative;
+            let after_start = range_start + directive.start.len();
+            if has_prefix(range_start) {
+                let range_end = match directive.end.as_deref() {
+                    Some(end_term) => {
+                        let mut end_search_start = after_start;
+                        let mut found = None;
+                        while end_search_start < logical.len() {
+                            let Some(relative_end) = logical[end_search_start..].find(end_term)
+                            else {
+                                break;
+                            };
+                            let end_start = end_search_start + relative_end;
+                            let end = end_start + end_term.len();
+                            if has_suffix(end) {
+                                found = Some(end);
+                                break;
+                            }
+                            end_search_start = next_char_boundary(&logical, end_start);
+                        }
+                        found
+                    },
+                    None => has_suffix(after_start).then_some(after_start),
+                };
+                if let Some(range_end) = range_end
+                    && let (Some(anchor), Some(focus)) = (
+                        position_in_segment(&segments, range_start, false),
+                        position_in_segment(&segments, range_end, true),
+                    )
+                {
+                    return Some(TextRange {
+                        anchor_node: anchor.0,
+                        anchor_offset: anchor.1,
+                        focus_node: focus.0,
+                        focus_offset: focus.1,
+                    });
+                }
+            }
+            search_start = next_char_boundary(&logical, range_start);
+        }
+        None
+    }
+
     pub(crate) fn caret_rect<F>(
         &self,
         source: Id,
@@ -2156,6 +2247,28 @@ where
             text,
         })
     }
+}
+
+fn next_char_boundary(text: &str, index: usize) -> usize {
+    index
+        .checked_add(text[index..].chars().next().map_or(1, char::len_utf8))
+        .unwrap_or(text.len())
+        .min(text.len())
+}
+
+fn position_in_segment<Id: Copy>(
+    segments: &[(usize, usize, Id)],
+    position: usize,
+    is_end: bool,
+) -> Option<(Id, usize)> {
+    segments.iter().find_map(|(start, end, source)| {
+        let contains = if is_end {
+            *start < position && position <= *end
+        } else {
+            *start <= position && position < *end
+        };
+        contains.then_some((*source, position - *start))
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -3688,5 +3801,55 @@ mod tests {
         append_inline_text(&mut text, "34", &style);
 
         assert_eq!(text, "12\n34");
+    }
+
+    #[test]
+    fn text_directive_matches_contextual_range_across_retained_sources() {
+        let mut frame = TextFrame::<u8>::default();
+        frame.text_order = vec![1, 2];
+        frame.text_values.insert(1, "prefix start ".to_owned());
+        frame.text_values.insert(2, "end suffix".to_owned());
+        frame.text_groups.insert(1, 0);
+        frame.text_groups.insert(2, 0);
+
+        assert_eq!(
+            frame.find_text_directive_range(&TextDirective {
+                prefix: Some("prefix".to_owned()),
+                start: "start".to_owned(),
+                end: Some("end".to_owned()),
+                suffix: Some("suffix".to_owned()),
+            }),
+            Some(TextRange {
+                anchor_node: 1,
+                anchor_offset: 7,
+                focus_node: 2,
+                focus_offset: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn text_directive_skips_occurrences_without_the_required_context() {
+        let mut frame = TextFrame::<u8>::default();
+        frame.text_order = vec![1];
+        frame
+            .text_values
+            .insert(1, "start wrong prefix start right suffix".to_owned());
+        frame.text_groups.insert(1, 0);
+
+        assert_eq!(
+            frame.find_text_directive_range(&TextDirective {
+                prefix: Some("prefix".to_owned()),
+                start: "start".to_owned(),
+                end: None,
+                suffix: Some("right".to_owned()),
+            }),
+            Some(TextRange {
+                anchor_node: 1,
+                anchor_offset: 19,
+                focus_node: 1,
+                focus_offset: 24,
+            })
+        );
     }
 }
