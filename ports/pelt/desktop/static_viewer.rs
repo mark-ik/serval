@@ -22,24 +22,27 @@ pub enum StaticProductReceipt {
     /// Ordinary script-free article with linked CSS, font, images, tables, and
     /// an in-page jump-link interaction.
     Article,
+    /// A nested overflow region beside retained editable form controls.
+    Controls,
 }
 
 impl StaticProductReceipt {
     pub fn id(self) -> &'static str {
         match self {
             Self::Article => "article",
+            Self::Controls => "controls",
         }
     }
 
     pub fn default_size(self) -> (u32, u32) {
         match self {
-            Self::Article => (960, 640),
+            Self::Article | Self::Controls => (960, 640),
         }
     }
 
     pub fn default_frames(self) -> u32 {
         match self {
-            Self::Article => 3,
+            Self::Article | Self::Controls => 3,
         }
     }
 }
@@ -497,6 +500,35 @@ mod livery_route_tests {
             Ok("jump-link press/release moved the retained viewport")
         );
     }
+
+    #[test]
+    fn controls_product_receipt_drives_nested_scroll_and_retained_editing() {
+        let fixture = format!(
+            r"{}\..\examples\p5-controls\index.html",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+        registry.register(Box::new(LiverySessionEngine::new(LocalFetcher)));
+        let controller = PeltController::new(
+            registry,
+            SurfaceEngineRegistry::new(),
+            PeltControllerConfig::new(inker::routing::ENGINE_GENET_LIVERY, fixture, (960, 640)),
+            ViewerClock::new(),
+        )
+        .expect("controls receipt controller");
+        let mut content = ControllerViewerContent {
+            controller,
+            posture: None,
+        };
+
+        let _geometry = content.frame(960, 640);
+        assert_eq!(
+            content
+                .drive_product_receipt(StaticProductReceipt::Controls)
+                .as_deref(),
+            Ok("nested wheel stayed local and keyboard edit reached retained structure")
+        );
+    }
 }
 
 /// Compatibility entrypoint for callers of the former static viewer. Script-free
@@ -685,6 +717,63 @@ impl windowed::ViewerContent for ControllerViewerContent {
                     );
                 }
                 Ok("jump-link press/release moved the retained viewport".to_owned())
+            },
+            StaticProductReceipt::Controls => {
+                let scroll_target = self
+                    .controller
+                    .text_target("Control log start")
+                    .ok_or_else(|| {
+                        "controls receipt could not resolve the nested scroll target".to_owned()
+                    })?;
+                if !self.controller.scroll_at(
+                    scroll_target.anchor[0] + 2.0,
+                    scroll_target.anchor[1],
+                    0.0,
+                    140.0,
+                ) {
+                    return Err("controls receipt nested region did not scroll".to_owned());
+                }
+                if self
+                    .controller
+                    .scroll_for_key(inker::SessionScrollKey::Home)
+                {
+                    return Err(
+                        "controls receipt wheel escaped into the document viewport".to_owned()
+                    );
+                }
+
+                let tab = || inker::SessionInput::Key {
+                    key: inker::SessionKey::Tab,
+                    state: inker::SessionButtonState::Pressed,
+                    modifiers: inker::SessionModifiers::default(),
+                    repeat: false,
+                };
+                let note = self.controller.input(tab());
+                if !note.handled || !note.editable {
+                    return Err("controls receipt did not focus the retained textarea".to_owned());
+                }
+                let edited = self
+                    .controller
+                    .input(inker::SessionInput::Text(" and ash".to_owned()));
+                if !edited.handled {
+                    return Err("controls receipt textarea rejected text input".to_owned());
+                }
+                let retained = self.controller.inspect().is_some_and(|report| {
+                    report
+                        .outline
+                        .iter()
+                        .any(|entry| entry.role == "textbox" && entry.name == "cedar and ash")
+                });
+                if !retained {
+                    return Err(
+                        "controls receipt edit did not reach retained document structure"
+                            .to_owned(),
+                    );
+                }
+                Ok(
+                    "nested wheel stayed local and keyboard edit reached retained structure"
+                        .to_owned(),
+                )
             },
         }
     }

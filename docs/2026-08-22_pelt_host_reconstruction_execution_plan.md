@@ -424,7 +424,7 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
-**Status:** in progress 2026-08-25. Fixture 1 is complete; fixtures 2-8
+**Status:** in progress 2026-08-26. Fixtures 1-2 are complete; fixtures 3-8
 remain open.
 
 The ordinary-article receipt is:
@@ -443,6 +443,25 @@ same target. The 2026-08-25 Windows receipt recorded all three frames, the
 interaction assertion, a nonblank 960x640 PNG, and digest
 `973595d7fbd90151`. The checked-in GPU-free assertion drives the same receipt
 through `PeltController`.
+
+The nested-scroll and controls receipt is:
+
+```sh
+cargo run -p pelt --no-default-features --features livery -j 1 -- \
+  --product-receipt controls --artifact target/pelt-receipts/controls.png
+```
+
+The named receipt owns `examples/p5-controls`, the same 960x640 physical
+viewport, and three presented frames. Its fixture fits the resulting 480x320
+logical viewport on a 2x display. The semantic driver resolves retained text
+inside the overflow panel, routes a wheel delta at that point, and proves
+`Home` cannot move the untouched document viewport. It then uses ordinary Tab
+focus and text input to change the first editable control from `cedar` to
+`cedar and ash`, accepting the capture only when the structural report carries
+that edited textbox value. The 2026-08-26 Windows receipt recorded all three
+frames, the interaction assertion, a nonblank 960x640 PNG, and digest
+`ceb4d98e10c231b8`. The checked-in GPU-free test drives the same receipt through
+`PeltController`.
 
 Check in deterministic fixtures and bounded headed capture commands for:
 

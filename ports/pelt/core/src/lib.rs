@@ -163,6 +163,12 @@ impl<F: 'static> PeltController<F> {
         self.session.links()
     }
 
+    /// Resolve retained text to document-local pointer endpoints without
+    /// exposing the concrete document engine's DOM or layout identities.
+    pub fn text_target(&self, text: &str) -> Option<inker::SessionTextTarget> {
+        self.session.text_target(text)
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.history_index > 0
     }
