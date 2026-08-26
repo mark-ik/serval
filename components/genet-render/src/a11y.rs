@@ -5,7 +5,7 @@
 use std::hash::Hash;
 
 use accesskit::{
-    Action, Node as AccessNode, NodeId as AccessNodeId, Rect, Role, Tree, TreeId, TreeUpdate,
+    Action, Live, Node as AccessNode, NodeId as AccessNodeId, Rect, Role, Tree, TreeId, TreeUpdate,
 };
 use genet_livery::LiveryLayout;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -76,6 +76,23 @@ fn aria_true<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
+fn is_disabled<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
+    aria_true(dom, node, "aria-disabled")
+        || dom
+            .attribute(node, &Namespace::default(), &LocalName::from("disabled"))
+            .is_some()
+}
+
+fn aria_live<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<Live> {
+    dom.attribute(node, &Namespace::default(), &LocalName::from("aria-live"))
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Live::Off),
+            "polite" => Some(Live::Polite),
+            "assertive" => Some(Live::Assertive),
+            _ => None,
+        })
+}
+
 fn is_content_editable<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
     dom.attribute(
         node,
@@ -124,11 +141,26 @@ fn walk<D>(
     fragments: &LiveryLayout<D::NodeId>,
     node: D::NodeId,
     out: &mut Vec<(AccessNodeId, AccessNode)>,
-) -> AccessNodeId
+) -> Vec<AccessNodeId>
 where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    if aria_true(dom, node, "aria-hidden") {
+        return Vec::new();
+    }
+    let children: Vec<_> = dom
+        .dom_children(node)
+        .filter(|child| dom.kind(*child) == NodeKind::Element)
+        .flat_map(|child| walk(dom, fragments, child, out))
+        .collect();
+    // The synthetic document root anchors the platform tree even though it
+    // has no layout fragment. Other fragment-less elements are not painted;
+    // promote any visible descendants instead of making the shell invent
+    // geometry for a hidden control.
+    if dom.kind(node) != NodeKind::Document && fragments.get(node).is_none() {
+        return children;
+    }
     let id = access_id(dom, node);
     let role = role_for(dom, node);
     let mut access = AccessNode::new(role);
@@ -142,12 +174,19 @@ where
     if aria_true(dom, node, "aria-readonly") {
         access.set_read_only();
     }
+    if let Some(live) = aria_live(dom, node) {
+        access.set_live(live);
+    }
+    let disabled = is_disabled(dom, node);
+    if disabled {
+        access.set_disabled();
+    }
     let semantic_control = is_native_control(dom, node) || supports_semantic_action(role);
     let focusable = semantic_control || has_tabindex(dom, node) || is_content_editable(dom, node);
-    if semantic_control || is_content_editable(dom, node) {
+    if !disabled && (semantic_control || is_content_editable(dom, node)) {
         access.add_action(Action::Click);
     }
-    if focusable {
+    if !disabled && focusable {
         access.add_action(Action::Focus);
     }
     // A progress bar or slider whose value never reaches the tree is
@@ -169,14 +208,9 @@ where
             (fragment.y + fragment.height) as f64,
         ));
     }
-    let children: Vec<_> = dom
-        .dom_children(node)
-        .filter(|child| dom.kind(*child) == NodeKind::Element)
-        .map(|child| walk(dom, fragments, child, out))
-        .collect();
     access.set_children(children);
     out.push((id, access));
-    id
+    vec![id]
 }
 
 /// Project a Livery/Buckram document into an AccessKit tree.
@@ -192,17 +226,23 @@ where
     let root = dom.document();
     let mut nodes = Vec::new();
     walk(dom, fragments, root, &mut nodes);
+    let requested_focus = access_id(dom, focus.unwrap_or(root));
+    let focus = nodes
+        .iter()
+        .any(|(candidate, _)| *candidate == requested_focus)
+        .then_some(requested_focus)
+        .unwrap_or_else(|| access_id(dom, root));
     TreeUpdate {
         nodes,
         tree: Some(Tree::new(access_id(dom, root))),
         tree_id: TreeId::ROOT,
-        focus: access_id(dom, focus.unwrap_or(root)),
+        focus,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use accesskit::{Action, Node as AccessNode, Role};
+    use accesskit::{Action, Live, Node as AccessNode, Role};
     use genet_scripted_dom::ScriptedDom;
     use layout_dom_api::{LayoutDom, LayoutDomMut};
 
@@ -300,5 +340,37 @@ mod tests {
         );
         assert!(editor.supports_action(Action::Click));
         assert!(editor.supports_action(Action::Focus));
+    }
+
+    #[test]
+    fn hidden_controls_do_not_enter_the_tree() {
+        let nodes = nodes_for(
+            "<button style=\"display: none\">Paint hidden</button>\
+             <button aria-hidden=\"true\">ARIA hidden</button>\
+             <button>Visible</button>",
+        );
+        let labels: Vec<_> = nodes.iter().filter_map(AccessNode::label).collect();
+        assert!(!labels.contains(&"Paint hidden"));
+        assert!(!labels.contains(&"ARIA hidden"));
+        assert!(labels.contains(&"Visible"));
+    }
+
+    #[test]
+    fn live_regions_and_disabled_controls_keep_their_state() {
+        let nodes = nodes_for(
+            "<div role=\"status\" aria-live=\"polite\">Saved</div>\
+             <button disabled>Unavailable</button>\
+             <div role=\"button\" aria-disabled=\"true\">Also unavailable</div>",
+        );
+        let status = nodes
+            .iter()
+            .find(|node| node.role() == Role::Status)
+            .expect("status");
+        assert_eq!(status.live(), Some(Live::Polite));
+        for disabled in nodes.iter().filter(|node| node.is_disabled()) {
+            assert!(!disabled.supports_action(Action::Click));
+            assert!(!disabled.supports_action(Action::Focus));
+        }
+        assert_eq!(nodes.iter().filter(|node| node.is_disabled()).count(), 2);
     }
 }
