@@ -30,11 +30,11 @@ repatriated here from mere.
   header associations. The releases preserve Fleece's render-free, raw-URL,
   source-identity, and caller-owned annotation boundaries.)
 - [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
-  (**in progress 2026-08-26**: retire the overlong `genet-extract` shim,
-  activate Fleece-generated Text Directives in Genet's retained document host
-  with script-visible URL privacy, and replace Mere's manifest-only Fleece
-  dependencies with real crawl/Gazette consumers or remove them from the wrong
-  layer. Documentation lands before three parallel Luna/Terra packets.)
+  (**implementation complete; final verification in progress 2026-08-26**: the
+  `genet-extract` shim is retired; retained static/scripted hosts activate
+  Fleece-generated Text Directives with element fallback, indication, scrolling,
+  one-fetch behavior, and script-visible URL privacy; Mere crawl and Gazette now
+  consume supplied documents while eidetic-search drops its misplaced edge.)
 
 ## layout and styling
 

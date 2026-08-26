@@ -1,10 +1,11 @@
 # Plan: Fleece follow-through
 
 **Date:** 2026-08-26
-**Status:** In progress. Documentation reconciliation is the first gate. Three
-implementation packets follow: retire the `genet-extract` shim, activate Text
-Fragments in the retained Genet host, and replace Mere's manifest-only Fleece
-dependencies with real calls or remove them from the wrong layer.
+**Status:** Implementation complete; final verification and remote
+reconciliation are in progress. Documentation landed first, followed by the
+three parallel packets: retire the `genet-extract` shim, activate Text Fragments
+in the retained Genet host, and replace Mere's manifest-only Fleece dependencies
+with real calls or remove them from the wrong layer.
 
 ## Why this plan exists
 
@@ -195,3 +196,17 @@ documentation reconciliation
   privacy path, and Mere's manifest-only consumer dependencies.
 - **2026-08-26:** Documentation-first execution authorized with parallel Luna
   and Terra implementation packets after this plan and its indexes land.
+- **2026-08-26:** The Genet and Mere documentation reconciliations landed on
+  each repository's `main` before implementation began.
+- **2026-08-26:** Packet S removed the Genet shim and its CI/workspace
+  requirements. Mere import now calls Fleece directly and has an HTML fallback
+  regression fixture.
+- **2026-08-26:** Packet T added the WICG-shaped parser and retained logical-text
+  matcher, first-frame static/scripted activation, indication and scrolling,
+  element-fragment fallback, single-fetch fixtures, and script-visible URL
+  stripping for `document.URL`, `Location.href`, and `Location.hash`.
+- **2026-08-26:** Packet C added crawl and Gazette supplied-document consumers,
+  removed the eidetic-search dependency, and retained crawl/fetch/store/product
+  ownership boundaries. Integration review corrected XHTML dispatch so a
+  declared `application/xhtml+xml` response uses the XML parser rather than an
+  HTML sniff.

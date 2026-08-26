@@ -9,9 +9,11 @@ Mere-side context: the port law in the
 [family composition thesis](../../mere/design_docs/2026-08-12_family_composition_thesis_brief.md).
 
 **2026-08-26 follow-through:** F0's one-release compatibility allowance was not
-retired after Fleece 0.2; `genet-extract` survived through 0.3.0. Retirement is
-now owned by the
-[Fleece follow-through plan](../design_docs/2026-08-26_fleece_followthrough_plan.md).
+retired after Fleece 0.2; `genet-extract` survived through 0.3.0. It is now
+retired under the
+[Fleece follow-through plan](../design_docs/2026-08-26_fleece_followthrough_plan.md):
+Mere imports through Fleece directly, and the Genet shim and its workspace/CI
+requirements are gone. Published historical versions remain available.
 The lowering-home and scripted-sequencing questions below were resolved by the
 implementation receipt. Only the Gazette reading-room product decision remains
 open.
@@ -78,6 +80,10 @@ witness (`layout_dom_api` only; `genet-static-dom` dev-only). Turnstone's
 `browse.rs` call site moves to `fleece::extract`.
 **Done when:** `genet-extract` has no source of its own, the dependency-cone
 witness still passes, and Turnstone builds and enriches titles as before.
+
+**Follow-through complete 2026-08-26:** the temporary shim is deleted. The last
+Mere import call now names Fleece, and the dependency-cone witness requires
+Fleece without requiring the retired package.
 
 ### F1. Article, not text
 
@@ -205,7 +211,8 @@ zero in fleece; F6 small.
 - **F0:** `fleece` owns the implementation with `layout_dom_api` as its only
   normal dependency and `genet-static-dom` dev-only. `genet-extract` is a
   pure `pub use fleece::*` compatibility shim. Genet, Pelt, and Turnstone
-  internal consumers now name `fleece`.
+  internal consumers now name `fleece`. **2026-08-26:** the compatibility shim
+  was deleted after the remaining Mere importer moved to Fleece directly.
 - **F1:** `Article`, block and inline structure, metadata, link-density and
   negative-term scoring, sibling absorption, and multi-article rejection are
   live. The checked-in labelled corpus has 20 full-page representative
@@ -222,10 +229,12 @@ zero in fleece; F6 small.
   NotReadable` decision. `ScriptedDocument::extract_article` runs the same
   Fleece function over the post-JS DOM. The SPA and static-equivalence tests
   pass on Boa.
-- **F5:** eidetic-search, crawl, Gazette, and Alembic each name `fleece` in
-  their manifest, with the one-line input receipt recorded in the consumer's
-  plan or README. These are contract wires; the downstream pipeline work
-  remains in each consumer's own plan.
+- **F5:** the original release recorded manifest-level intent. **2026-08-26:**
+  crawl now extracts and resolves links from supplied HTML, Gazette exposes a
+  supplied-HTML-to-`Article` seam, eidetic-search dropped its misplaced direct
+  dependency, and Alembic remains dependency-free until Article-consuming
+  distillation exists. Fetch, polling, storage, and reading-room composition
+  remain consumer-owned work.
 - **F6:** JSON-LD and microdata harvest into dependency-free typed values,
   retaining uninterpreted fields for downstream typing.
 
