@@ -1241,9 +1241,9 @@ physical_side = "left"
 name = "justify-content"
 value_type = "alignment"
 inherited = false
-initial = "start"
-grammar = "start | end | flex-start | flex-end | center | space-between | space-around | space-evenly"
-seed_values = ["start", "center", "space-between"]
+initial = "normal"
+grammar = "normal | start | end | flex-start | flex-end | center | space-between | space-around | space-evenly"
+seed_values = ["normal", "start", "center", "space-between"]
 animation = "discrete"
 source = "css_box_alignment_3"
 

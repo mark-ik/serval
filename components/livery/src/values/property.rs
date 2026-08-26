@@ -2095,6 +2095,7 @@ impl fmt::Display for TabSize {
 keyword_value! {
     /// Flex and grid main/cross-axis alignment keywords.
     pub enum Alignment {
+        Normal => "normal",
         Auto => "auto",
         Start => "start",
         End => "end",

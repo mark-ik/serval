@@ -7792,6 +7792,7 @@ fn physical_flex_justify_content(computed: &ComputedValues, flow: FlowAxes) -> J
             computed.justify_content,
             physical_flex_main_axis_start(computed.flex_direction, flow),
         ) {
+            (CssAlignment::Normal, _) => CssAlignment::FlexStart,
             (CssAlignment::Start, PhysicalSide::Right | PhysicalSide::Bottom) => CssAlignment::End,
             (CssAlignment::End, PhysicalSide::Right | PhysicalSide::Bottom) => CssAlignment::Start,
             (value, _) => value,
@@ -14451,6 +14452,11 @@ mod tests {
                 (CssFlexDirection::ColumnReverse, column_start),
             ] {
                 computed.flex_direction = direction;
+                computed.justify_content = CssAlignment::Normal;
+                assert_eq!(
+                    physical_flex_justify_content(&computed, flow).keyword,
+                    AlignContentKeyword::FlexStart
+                );
                 computed.justify_content = CssAlignment::Start;
                 assert_eq!(
                     physical_flex_justify_content(&computed, flow).keyword,

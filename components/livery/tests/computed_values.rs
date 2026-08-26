@@ -1,5 +1,7 @@
-use livery::values::{Color, FontWeight, Length, LengthPercentage, Opacity, Size, Transform};
-use livery::{ComputedValues, PropertyId, ValueType};
+use livery::values::{
+    Alignment, Color, FontWeight, Length, LengthPercentage, Opacity, Size, Transform,
+};
+use livery::{ComputedValues, PropertyId, ValueType, canonicalize_specified_longhand};
 
 #[test]
 fn generated_initial_values_match_the_catalog() {
@@ -12,7 +14,12 @@ fn generated_initial_values_match_the_catalog() {
     assert_eq!(values.font_weight, FontWeight::Normal);
     assert_eq!(values.opacity, Opacity::ONE);
     assert_eq!(values.transform, Transform::None);
+    assert_eq!(values.justify_content, Alignment::Normal);
     assert_eq!(values.z_index.to_string(), "auto");
+    assert_eq!(
+        canonicalize_specified_longhand("justify-content", "normal").as_deref(),
+        Some("normal")
+    );
 }
 
 #[test]
