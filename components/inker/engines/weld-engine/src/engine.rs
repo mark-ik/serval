@@ -70,9 +70,9 @@ impl SurfaceEngine for WeldEngine {
 mod tests {
     use super::*;
     use inker::{
-        CursorShape, DragEvent, DragOperationSet, EngineProfileBinding, FocusReason, KeyboardEvent,
-        MouseEvent, NavigationEvent, PhysicalPosition, PointerEvent, SurfaceEngineRegistry,
-        SurfaceSettings, WebMessage,
+        CapabilityStatus, CursorShape, DocumentCapabilities, DragEvent, DragOperationSet,
+        EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent, NavigationEvent,
+        PhysicalPosition, PointerEvent, SurfaceEngineRegistry, SurfaceSettings, WebMessage,
         routing::{EngineRouteDecision, SurfaceContract, SurfaceContractMode, SurfaceTargetId},
     };
 
@@ -147,6 +147,7 @@ mod tests {
             inker::WebSurfaceCapabilities {
                 backend_name: "stub.weld".into(),
                 frame_transport: inker::WebFrameTransportMode::Unsupported,
+                document: DocumentCapabilities::default(),
                 ..Default::default()
             }
         }
@@ -208,6 +209,27 @@ mod tests {
             Ok(opt) => assert!(opt.is_none()),
             Err(err) => panic!("unexpected acquire_frame err: {err:?}"),
         }
+    }
+
+    #[test]
+    fn weld_stub_does_not_claim_document_controls() {
+        let caps = StubSurface.web_capabilities().document;
+        assert!(matches!(
+            caps.find_in_page,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(
+            caps.page_zoom,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(
+            caps.page_capture,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(
+            caps.navigation,
+            CapabilityStatus::Unsupported { .. }
+        ));
     }
 
     #[test]

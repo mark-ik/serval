@@ -72,7 +72,7 @@ impl SurfaceEngine for GraftEngine {
 mod tests {
     use super::*;
     use inker::{
-        EngineProfileBinding, SurfaceEngineRegistry,
+        CapabilityStatus, EngineProfileBinding, SurfaceEngineRegistry,
         routing::{EngineRouteDecision, SurfaceContract, SurfaceContractMode, SurfaceTargetId},
     };
 
@@ -207,6 +207,21 @@ mod tests {
             Ok(opt) => assert!(opt.is_none()),
             Err(err) => panic!("unexpected acquire_frame err: {err:?}"),
         }
+    }
+
+    #[test]
+    fn default_graft_document_controls_are_host_dependent() {
+        let caps = StubSurface.web_capabilities().document;
+        assert!(matches!(
+            caps.find_in_page,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(caps.page_zoom, CapabilityStatus::Partial { .. }));
+        assert!(matches!(
+            caps.page_capture,
+            CapabilityStatus::Partial { .. }
+        ));
+        assert!(matches!(caps.navigation, CapabilityStatus::Partial { .. }));
     }
 
     #[test]

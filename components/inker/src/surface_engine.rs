@@ -16,9 +16,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::a11y::A11yCapability;
+pub use crate::WebFeatureStatus;
 use crate::routing::EngineRouteDecision;
 use crate::session_engine::{DocumentFindDirection, DocumentFindQuery, DocumentFindState};
+use crate::{A11yCapability, DocumentCapabilities};
 
 // ── User-agent requests ────────────────────────────────────────────────────
 
@@ -554,21 +555,6 @@ pub struct Cookie {
     pub partitioned: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebFeatureStatus {
-    Supported,
-    Unsupported { reason: String },
-    Partial { detail: String },
-}
-
-impl WebFeatureStatus {
-    pub fn unsupported(reason: impl Into<String>) -> Self {
-        Self::Unsupported {
-            reason: reason.into(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebFrameTransportMode {
     ImportedTexture,
@@ -686,7 +672,9 @@ pub struct WebSurfaceCapabilities {
     pub cookie: CookieCapabilities,
     pub script: ScriptCapabilities,
     pub pointer: PointerInputCapabilities,
-    pub find_in_page: WebFeatureStatus,
+    /// The shared document-facing capability subset. This is the sole
+    /// authority for hosted find, page zoom, capture, and navigation status.
+    pub document: DocumentCapabilities,
     pub pdf: WebFeatureStatus,
     pub downloads: WebFeatureStatus,
     pub devtools: WebFeatureStatus,
@@ -697,7 +685,6 @@ pub struct WebSurfaceCapabilities {
     pub drag_drop: DragDropCapabilities,
     pub ime_observability: WebFeatureStatus,
     pub accessibility: WebFeatureStatus,
-    pub snapshot: WebFeatureStatus,
     pub degradation_reasons: Vec<String>,
 }
 
@@ -716,7 +703,7 @@ impl Default for WebSurfaceCapabilities {
                 ),
             },
             pointer: PointerInputCapabilities::default(),
-            find_in_page: WebFeatureStatus::unsupported("find in page is not wired"),
+            document: DocumentCapabilities::default(),
             pdf: WebFeatureStatus::unsupported("PDF handling is not wired"),
             downloads: WebFeatureStatus::unsupported("download handling is not wired"),
             devtools: WebFeatureStatus::unsupported("devtools are not wired"),
@@ -727,7 +714,6 @@ impl Default for WebSurfaceCapabilities {
             drag_drop: DragDropCapabilities::default(),
             ime_observability: WebFeatureStatus::unsupported("IME observability is not wired"),
             accessibility: WebFeatureStatus::unsupported("surface accessibility is opaque"),
-            snapshot: WebFeatureStatus::unsupported("snapshots are not wired"),
             degradation_reasons: Vec::new(),
         }
     }
@@ -901,6 +887,11 @@ pub trait SurfaceProducer {
 pub trait WebSurface: SurfaceProducer {
     fn capabilities(&self) -> WebSurfaceCapabilities {
         WebSurfaceCapabilities::default()
+    }
+
+    /// The document-control subset of this hosted surface's capabilities.
+    fn document_capabilities(&self) -> DocumentCapabilities {
+        self.capabilities().document
     }
 
     // ── Navigation ───────────────────────────────────────────────────────────

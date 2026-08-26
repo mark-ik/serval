@@ -27,10 +27,26 @@ use inker::session_engine::{
     SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme, SessionKey,
     SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };
+use inker::{DocumentCapabilities, DocumentCapabilityStatus};
 use layout_dom_api::{LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
 use netrender::Scene;
 #[cfg(feature = "livery")]
 use unicode_segmentation::UnicodeSegmentation;
+
+fn retained_document_capabilities(find_reason: impl Into<String>) -> DocumentCapabilities {
+    DocumentCapabilities {
+        find_in_page: DocumentCapabilityStatus::unsupported(find_reason),
+        page_zoom: DocumentCapabilityStatus::unsupported(
+            "retained sessions do not expose page zoom",
+        ),
+        page_capture: DocumentCapabilityStatus::unsupported(
+            "retained sessions do not capture rendered pages",
+        ),
+        navigation: DocumentCapabilityStatus::Partial {
+            detail: "the host owns document lineage, policy, and refetch".into(),
+        },
+    }
+}
 
 /// Map the host-neutral scroll-key vocabulary onto the owned scripted lane.
 #[cfg(feature = "scripted")]
@@ -737,6 +753,21 @@ impl LiveryDocumentSession {
 
 #[cfg(feature = "livery")]
 impl DocumentSession<Scene> for LiveryDocumentSession {
+    fn document_capabilities(&self) -> DocumentCapabilities {
+        DocumentCapabilities {
+            find_in_page: DocumentCapabilityStatus::Supported,
+            page_zoom: DocumentCapabilityStatus::unsupported(
+                "Livery sessions do not expose page zoom",
+            ),
+            page_capture: DocumentCapabilityStatus::unsupported(
+                "Livery sessions do not capture rendered pages",
+            ),
+            navigation: DocumentCapabilityStatus::Partial {
+                detail: "the host owns document lineage, policy, and refetch".into(),
+            },
+        }
+    }
+
     fn frame(&mut self, width: u32, height: u32) -> Scene {
         let mut list = match self.doc.frame(width, height) {
             Ok(list) => {
@@ -1457,6 +1488,10 @@ impl<E: script_engine_api::ScriptEngine + 'static> ScriptedDocumentSession<E> {
 impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
     for ScriptedDocumentSession<E>
 {
+    fn document_capabilities(&self) -> DocumentCapabilities {
+        retained_document_capabilities("scripted sessions do not expose document find")
+    }
+
     fn frame(&mut self, width: u32, height: u32) -> Scene {
         self.doc.frame(width, height)
     }
@@ -1672,6 +1707,10 @@ impl SmolwebDocumentSession {
 
 #[cfg(feature = "smolweb")]
 impl DocumentSession<Scene> for SmolwebDocumentSession {
+    fn document_capabilities(&self) -> DocumentCapabilities {
+        retained_document_capabilities("Smolweb sessions do not expose document find")
+    }
+
     fn frame(&mut self, width: u32, height: u32) -> Scene {
         self.viewport = (width, height);
         self.doc.frame(width, height)
@@ -2113,6 +2152,24 @@ mod tests {
             .with_viewport(480, 240);
         let mut session = engine.spawn(&request).expect("livery lane spawns");
         let _ = session.frame(480, 240);
+
+        let capabilities = session.document_capabilities();
+        assert_eq!(
+            capabilities.find_in_page,
+            DocumentCapabilityStatus::Supported
+        );
+        assert!(matches!(
+            capabilities.page_zoom,
+            DocumentCapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(
+            capabilities.page_capture,
+            DocumentCapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(
+            capabilities.navigation,
+            DocumentCapabilityStatus::Partial { .. }
+        ));
 
         let state = session
             .document_find(&DocumentFindQuery::new("finding"))

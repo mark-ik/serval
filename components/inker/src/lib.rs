@@ -27,6 +27,9 @@
 /// what it can expose to the a11y tree; degradation is declared, never silent).
 pub mod a11y;
 
+/// Shared retained/hosted document-control capability vocabulary.
+pub mod capabilities;
+
 /// Host-neutral engine routing contracts.
 pub mod routing;
 
@@ -53,6 +56,9 @@ pub mod sniff;
 pub mod statements;
 
 pub use a11y::A11yCapability;
+pub use capabilities::{
+    CapabilityStatus, DocumentCapabilities, DocumentCapabilityStatus, WebFeatureStatus,
+};
 pub use document::{
     Block, BlockEvaluator, BlockEvaluators, BlockProvenance, BlockProvenanceMap,
     DocumentDiagnostic, DocumentProvenance, DocumentTrustState, EngineDocument, EvalOutcome,
@@ -87,8 +93,8 @@ pub use surface_engine::{
     PhysicalPosition, PointerButtons, PointerEvent, PointerInputCapabilities, PointerPhase,
     PointerType, SameSite, ScriptCapabilities, SurfaceEngine, SurfaceEngineRegistry, SurfaceError,
     SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, SurfaceSyncHandle,
-    SurfaceTextureFormat, UserAgentRequestId, WebFeatureStatus, WebFrameTransportMode, WebMessage,
-    WebSurface, WebSurfaceCapabilities, WebSurfaceEvent,
+    SurfaceTextureFormat, UserAgentRequestId, WebFrameTransportMode, WebMessage, WebSurface,
+    WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// Crate version.

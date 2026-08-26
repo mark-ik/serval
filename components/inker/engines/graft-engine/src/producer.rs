@@ -6,11 +6,11 @@
 //! satisfies `inker::SurfaceProducer` over it.
 
 use inker::{
-    Cookie, CursorShape, DragEvent, DragOperationSet, FocusReason, KeyboardEvent, MouseEvent,
-    NativeTextureHandle, NavigationEvent, PhysicalPosition, PointerEvent, SurfaceError,
-    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSyncHandle, SurfaceTextureFormat,
-    WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface, WebSurfaceCapabilities,
-    WebSurfaceEvent,
+    Cookie, CursorShape, DocumentCapabilities, DragEvent, DragOperationSet, FocusReason,
+    KeyboardEvent, MouseEvent, NativeTextureHandle, NavigationEvent, PhysicalPosition,
+    PointerEvent, SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSyncHandle,
+    SurfaceTextureFormat, WebFeatureStatus, WebFrameTransportMode, WebMessage, WebSurface,
+    WebSurfaceCapabilities, WebSurfaceEvent,
 };
 
 /// A frame produced by a [`GraftSurface`]: the shared GPU texture handle the host
@@ -103,8 +103,17 @@ pub trait GraftSurface {
         caps.context_menus = WebFeatureStatus::Partial {
             detail: "context menu routing depends on Servo delegate callbacks".into(),
         };
-        caps.snapshot = WebFeatureStatus::Partial {
-            detail: "snapshot capture depends on the host GraftSurface implementation".into(),
+        caps.document = DocumentCapabilities {
+            page_zoom: WebFeatureStatus::Partial {
+                detail: "page zoom depends on the host GraftSurface implementation".into(),
+            },
+            page_capture: WebFeatureStatus::Partial {
+                detail: "page capture depends on the host GraftSurface implementation".into(),
+            },
+            navigation: WebFeatureStatus::Partial {
+                detail: "navigation controls depend on the host GraftSurface implementation".into(),
+            },
+            ..DocumentCapabilities::default()
         };
         caps.degradation_reasons.push(
             "graft-engine reports Servo-backed controls only when the host GraftSurface wires them"

@@ -15,8 +15,8 @@
 
 use inker::{
     Cookie as InkerCookie, CookieAttributeCapabilities, CookieCapabilities,
-    CursorShape as InkerCursorShape, DragDropCapabilities, FocusReason as InkerFocusReason,
-    FrameHandleOwnership, KeyboardEvent as InkerKeyboardEvent,
+    CursorShape as InkerCursorShape, DocumentCapabilities, DragDropCapabilities,
+    FocusReason as InkerFocusReason, FrameHandleOwnership, KeyboardEvent as InkerKeyboardEvent,
     KeyboardModifiers as InkerKeyboardModifiers, MouseButton as InkerMouseButton,
     MouseEvent as InkerMouseEvent, MouseEventKind as InkerMouseEventKind, NativeTextureHandle,
     NavigationEvent as InkerNavEvent, PointerButtons, PointerEvent as InkerPointerEvent,
@@ -351,8 +351,17 @@ pub fn map_capabilities(caps: ScryingCapabilities) -> InkerWebSurfaceCapabilitie
                 "scrying's portable PointerInput has no altitude/azimuth angles",
             ),
         },
-        find_in_page: WebFeatureStatus::Partial {
-            detail: "find support depends on the concrete system webview backend".into(),
+        document: DocumentCapabilities {
+            find_in_page: WebFeatureStatus::Partial {
+                detail: "find support depends on the concrete system webview backend".into(),
+            },
+            page_zoom: WebFeatureStatus::Partial {
+                detail: "zoom settings are forwarded to the concrete system webview backend".into(),
+            },
+            page_capture: snapshot_supported.clone(),
+            navigation: WebFeatureStatus::Partial {
+                detail: "navigation controls are forwarded to the concrete system webview backend".into(),
+            },
         },
         pdf: WebFeatureStatus::Partial {
             detail: "PDF handling depends on the concrete system webview backend".into(),
@@ -387,7 +396,6 @@ pub fn map_capabilities(caps: ScryingCapabilities) -> InkerWebSurfaceCapabilitie
         accessibility: WebFeatureStatus::Partial {
             detail: "system-webview accessibility remains owned by the platform view".into(),
         },
-        snapshot: snapshot_supported.clone(),
         degradation_reasons: vec![
             caps.reason.into(),
             format!("imported_texture={transport_supported:?}"),
@@ -590,7 +598,7 @@ pub fn wrap_web_message(payload: String) -> WebMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inker::{PhysicalPosition, PointerButtons};
+    use inker::{CapabilityStatus, PhysicalPosition, PointerButtons};
     use scrying::native_frame::{Dx12SharedTexture, NativeFrame};
 
     fn touch_pointer(pointer_id: i32, phase: InkerPointerPhase) -> InkerPointerEvent {
@@ -733,6 +741,34 @@ mod tests {
         let out = map_settings(&s);
         assert_eq!(out.zoom_factor, Some(1.25));
         assert_eq!(out.devtools_enabled, Some(true));
+    }
+
+    #[test]
+    fn capabilities_keep_hosted_document_limits_explicit() {
+        let caps = map_capabilities(ScryingCapabilities {
+            backend: ScryingBackend::Unknown,
+            preferred_mode: ScryingSurfaceMode::NativeChildOverlay,
+            imported_texture: ScryingCapabilityStatus::Unsupported(
+                scrying::native_frame::UnsupportedReason::PlatformNotImplemented,
+            ),
+            native_child_overlay: ScryingCapabilityStatus::Supported,
+            cpu_snapshot: ScryingCapabilityStatus::Unsupported(
+                scrying::native_frame::UnsupportedReason::PlatformNotImplemented,
+            ),
+            supported_frames: Vec::new(),
+            reason: "test stub",
+        })
+        .document;
+        assert!(matches!(
+            caps.find_in_page,
+            CapabilityStatus::Partial { .. }
+        ));
+        assert!(matches!(caps.page_zoom, CapabilityStatus::Partial { .. }));
+        assert!(matches!(
+            caps.page_capture,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(matches!(caps.navigation, CapabilityStatus::Partial { .. }));
     }
 
     #[test]

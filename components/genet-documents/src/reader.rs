@@ -9,9 +9,9 @@ use std::any::Any;
 
 use fleece::{Article, ExtractionLineage, Inline, RootSelector};
 use inker::{
-    Block, ContentLineage, ContentReport, DocumentProvenance, DocumentSession, DocumentTrustState,
-    EngineDocument, InlineSpan, SessionClick, SessionEngine, SessionError, SessionLink,
-    SessionScrollKey, SessionSpawnRequest,
+    Block, ContentLineage, ContentReport, DocumentCapabilities, DocumentCapabilityStatus,
+    DocumentProvenance, DocumentSession, DocumentTrustState, EngineDocument, InlineSpan,
+    SessionClick, SessionEngine, SessionError, SessionLink, SessionScrollKey, SessionSpawnRequest,
 };
 use netrender::Scene;
 
@@ -251,6 +251,23 @@ impl ReaderDocumentSession {
 }
 
 impl DocumentSession<Scene> for ReaderDocumentSession {
+    fn document_capabilities(&self) -> DocumentCapabilities {
+        DocumentCapabilities {
+            find_in_page: DocumentCapabilityStatus::unsupported(
+                "reader sessions do not expose document find",
+            ),
+            page_zoom: DocumentCapabilityStatus::unsupported(
+                "reader sessions do not expose page zoom",
+            ),
+            page_capture: DocumentCapabilityStatus::unsupported(
+                "reader sessions do not capture rendered pages",
+            ),
+            navigation: DocumentCapabilityStatus::Partial {
+                detail: "the host owns document lineage, policy, and refetch".into(),
+            },
+        }
+    }
+
     fn frame(&mut self, width: u32, height: u32) -> Scene {
         self.viewport = (width, height);
         self.doc.frame(width, height)

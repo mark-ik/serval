@@ -26,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::a11y::A11yCapability;
+use crate::{A11yCapability, DocumentCapabilities};
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 
@@ -522,6 +522,15 @@ pub trait SessionEngine<F>: Send + Sync {
 /// host's content thread — exactly how the lane types are driven today. Not
 /// `Send` by default (scripted lanes hold JS engine state).
 pub trait DocumentSession<F>: Any {
+    /// Document-facing controls this retained session can presently serve.
+    ///
+    /// A session can expose find while leaving page zoom and raster capture to
+    /// its host. Retained navigation is commonly partial because the host owns
+    /// lineage, policy, and refetch.
+    fn document_capabilities(&self) -> DocumentCapabilities {
+        DocumentCapabilities::default()
+    }
+
     /// Lay out (if needed) and paint at the given viewport. Resize is
     /// implicit: a size change re-lays-out, same as the lanes today.
     fn frame(&mut self, width: u32, height: u32) -> F;
