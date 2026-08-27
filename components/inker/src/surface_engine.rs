@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::WebFeatureStatus;
 use crate::routing::EngineRouteDecision;
-use crate::session_engine::{DocumentFindDirection, DocumentFindQuery, DocumentFindState};
+use crate::session_engine::{
+    DocumentFindDirection, DocumentFindQuery, DocumentFindState, DocumentZoomState,
+};
 use crate::{A11yCapability, DocumentCapabilities};
 
 // ── User-agent requests ────────────────────────────────────────────────────
@@ -866,6 +868,21 @@ pub trait SurfaceProducer {
 
     // ── Settings ─────────────────────────────────────────────────────────────
     fn apply_settings(&mut self, settings: &SurfaceSettings) -> Result<(), SurfaceError>;
+
+    /// Present the hosted document at an absolute page-zoom `factor`
+    /// (1.0 = 100 %), the same user-agent document scale retained sessions
+    /// answer through [`crate::DocumentSession::set_page_zoom`].
+    ///
+    /// This is the typed spelling of [`SurfaceSettings::zoom_factor`]: a
+    /// producer that implements it lets a host change zoom alone, without
+    /// resending an otherwise unrelated settings blob whose remaining fields it
+    /// would have to reconstruct. Producers still on `apply_settings` leave this
+    /// unsupported, and the returned state names the bounds they enforce.
+    fn set_page_zoom(&mut self, _factor: f32) -> Result<DocumentZoomState, SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "page zoom is not wired for this surface".into(),
+        ))
+    }
 
     // ── Snapshot ─────────────────────────────────────────────────────────────
     fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError>;

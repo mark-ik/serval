@@ -2497,3 +2497,33 @@ fn inline_table_atoms_keep_their_structural_background_layers() {
 
     assert!(table < row && row < cell, "{table} {row} {cell}");
 }
+
+/// E0.2: page zoom lays the document out at the shrunk CSS viewport and scales
+/// the emitted frame back up, so the paint list keeps the host's own pixel size
+/// and every primitive rides one root scale.
+#[test]
+fn page_zoom_scales_an_emitted_frame_into_the_presentation_viewport() {
+    let list = render(
+        r#"<html><body><div class="box"></div></body></html>"#,
+        ".box { background-color: #ff0000; height: 10px; width: 10px; }",
+        3,
+    );
+    let unscaled = list.commands().len();
+
+    let scaled = list.clone().scaled_to(1.25, 400, 300);
+    assert_eq!(scaled.viewport(), DeviceIntSize::new(400, 300));
+    assert_eq!(scaled.commands().len(), unscaled + 2);
+    let PaintCmd::PushTransform(spec) = &scaled.commands()[0] else {
+        panic!("the scale is one root transform, not rewritten primitives");
+    };
+    assert_eq!(spec.transform.m11, 1.25);
+    assert_eq!(spec.transform.m22, 1.25);
+    assert!(matches!(
+        scaled.commands().last(),
+        Some(PaintCmd::PopTransform)
+    ));
+
+    let identity = list.scaled_to(1.0, 320, 240);
+    assert_eq!(identity.viewport(), DeviceIntSize::new(320, 240));
+    assert_eq!(identity.commands().len(), unscaled);
+}

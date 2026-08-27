@@ -23,9 +23,10 @@ use genet_host_api::ResourceResponse;
 use inker::session_engine::{
     DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentFindDirection,
     DocumentFindMatch, DocumentFindQuery, DocumentFindReveal, DocumentFindState, DocumentSession,
-    SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine, SessionError,
-    SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme, SessionKey,
-    SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
+    DocumentZoomState, SessionButtonState, SessionClick, SessionCursor, SessionEffect,
+    SessionEngine, SessionError, SessionFocusDirection, SessionFormMethod, SessionFormSubmission,
+    SessionIme, SessionKey, SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest,
+    SessionTextTarget,
 };
 use inker::{DocumentCapabilities, DocumentCapabilityStatus};
 use layout_dom_api::{LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
@@ -37,7 +38,7 @@ fn retained_document_capabilities(find_reason: impl Into<String>) -> DocumentCap
     DocumentCapabilities {
         find_in_page: DocumentCapabilityStatus::unsupported(find_reason),
         page_zoom: DocumentCapabilityStatus::unsupported(
-            "retained sessions do not expose page zoom",
+            "scripted and smolweb sessions do not expose page zoom",
         ),
         page_capture: DocumentCapabilityStatus::unsupported(
             "retained sessions do not capture rendered pages",
@@ -218,6 +219,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             pending_fragment: (!navigation.text_directives.is_empty()
                 || navigation.element_fragment.is_some())
             .then_some(navigation),
+            zoom: DocumentZoomState::clamped(1.0, LIVERY_PAGE_ZOOM_MIN, LIVERY_PAGE_ZOOM_MAX),
         }))
     }
 }
@@ -238,7 +240,16 @@ pub struct LiveryDocumentSession {
     find_state: DocumentFindState,
     find_ranges: Vec<genet_livery::TextRange<genet_scripted_dom::NodeId>>,
     pending_fragment: Option<genet_livery::NavigationFragment>,
+    zoom: DocumentZoomState,
 }
+
+/// Livery's page-zoom bounds — engine policy, matching the range a Chromium
+/// user agent enforces. The requested factor stays the caller's, and this lane
+/// quantizes nothing further: the host's ladder is the only stepping.
+#[cfg(feature = "livery")]
+const LIVERY_PAGE_ZOOM_MIN: f32 = 0.25;
+#[cfg(feature = "livery")]
+const LIVERY_PAGE_ZOOM_MAX: f32 = 5.0;
 
 #[cfg(feature = "livery")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,6 +271,44 @@ struct EditableControl {
 impl LiveryDocumentSession {
     pub fn document(&self) -> &genet_livery::LiveryDocument<genet_scripted_dom::ScriptedDom> {
         &self.doc
+    }
+
+    /// The effective page zoom: presentation pixels per CSS pixel.
+    ///
+    /// The retained [`genet_livery::LiveryDocument`] works only in CSS pixels.
+    /// Everything crossing the session boundary — pointer coordinates in,
+    /// link rects, text targets, find reveals, and content heights out — is in
+    /// the host's presentation space, so this factor converts between them and
+    /// nothing below this type ever sees it.
+    fn zoom(&self) -> f32 {
+        self.zoom.applied
+    }
+
+    /// Presentation-space point → CSS space.
+    fn to_css_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let zoom = self.zoom();
+        (x / zoom, y / zoom)
+    }
+
+    /// Presentation-space length or offset → CSS space.
+    fn to_css_length(&self, length: f32) -> f32 {
+        length / self.zoom()
+    }
+
+    /// CSS-space length or offset → presentation space.
+    fn to_presentation_length(&self, length: f32) -> f32 {
+        length * self.zoom()
+    }
+
+    /// The CSS viewport this presentation viewport covers. Layout and media
+    /// queries run against this shrunk box, which is what makes zoom a
+    /// user-agent document scale rather than a CSS `zoom` on the root.
+    fn css_viewport(&self, width: u32, height: u32) -> (u32, u32) {
+        let zoom = self.zoom();
+        (
+            ((width as f32 / zoom).round() as u32).max(1),
+            ((height as f32 / zoom).round() as u32).max(1),
+        )
     }
 
     fn attribute(&self, node: genet_scripted_dom::NodeId, name: &str) -> Option<&str> {
@@ -386,6 +435,21 @@ impl LiveryDocumentSession {
             caret,
             composition: None,
         });
+    }
+
+    /// The click path in CSS space, shared by the boundary's `click_at` and the
+    /// collapsed-gesture tail of `pointer_up`, which has already converted.
+    fn click_at_css(&mut self, x: f32, y: f32) -> SessionClick {
+        let hit = self.doc.hit_test(x, y);
+        let submit = hit.and_then(|node| self.submit_ancestor(node));
+        self.activate_hit(x, y);
+        match self.doc.click_at(x, y) {
+            genet_livery::ClickOutcome::None => SessionClick::Miss,
+            genet_livery::ClickOutcome::Focused | genet_livery::ClickOutcome::Scrolled => {
+                submit.map_or(SessionClick::Handled, |submit| self.submit_click(submit))
+            },
+            genet_livery::ClickOutcome::Navigate(href) => SessionClick::Navigate(href),
+        }
     }
 
     fn activate_hit(&mut self, x: f32, y: f32) {
@@ -719,7 +783,9 @@ impl LiveryDocumentSession {
                 matches.push(DocumentFindMatch {
                     label,
                     role,
-                    reveal: DocumentFindReveal::ScrollY((self.doc.scroll().1 + caret.y).max(0.0)),
+                    reveal: DocumentFindReveal::ScrollY(
+                        self.to_presentation_length((self.doc.scroll().1 + caret.y).max(0.0)),
+                    ),
                 });
                 ranges.push(genet_livery::TextRange {
                     anchor_node: source,
@@ -745,7 +811,8 @@ impl LiveryDocumentSession {
             ..
         }) = self.find_state.matches.get(index)
         {
-            self.doc.scroll_to((*y - 24.0).max(0.0));
+            let y = self.to_css_length(*y);
+            self.doc.scroll_to((y - 24.0).max(0.0));
         }
         self.doc.select_text_range(Some(range));
     }
@@ -756,9 +823,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     fn document_capabilities(&self) -> DocumentCapabilities {
         DocumentCapabilities {
             find_in_page: DocumentCapabilityStatus::Supported,
-            page_zoom: DocumentCapabilityStatus::unsupported(
-                "Livery sessions do not expose page zoom",
-            ),
+            page_zoom: DocumentCapabilityStatus::Supported,
             page_capture: DocumentCapabilityStatus::unsupported(
                 "Livery sessions do not capture rendered pages",
             ),
@@ -769,7 +834,8 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn frame(&mut self, width: u32, height: u32) -> Scene {
-        let mut list = match self.doc.frame(width, height) {
+        let (css_width, css_height) = self.css_viewport(width, height);
+        let mut list = match self.doc.frame(css_width, css_height) {
             Ok(list) => {
                 self.last_error = None;
                 list
@@ -788,7 +854,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
             }
             // The activation only changes retained selection/scroll state. It
             // deliberately reuses this session's already-loaded source.
-            list = match self.doc.frame(width, height) {
+            list = match self.doc.frame(css_width, css_height) {
                 Ok(list) => list,
                 Err(error) => {
                     self.last_error = Some(error.to_string());
@@ -796,13 +862,20 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                 },
             };
         }
+        let list = list.scaled_to(self.zoom(), width, height);
         let mut scene = paint_list_render::translate_paint_list(&list);
         if let Some(selection) = self.doc.text_selection() {
             for rect in selection.rects {
-                let x0 = rect.x.max(0.0);
-                let y0 = rect.y.max(0.0);
-                let x1 = (rect.x + rect.width).min(width as f32);
-                let y1 = (rect.y + rect.height).min(height as f32);
+                // The overlay is host-side paint, so it is placed in the
+                // presentation viewport the scaled document now fills.
+                let x0 = self.to_presentation_length(rect.x).max(0.0);
+                let y0 = self.to_presentation_length(rect.y).max(0.0);
+                let x1 = self
+                    .to_presentation_length(rect.x + rect.width)
+                    .min(width as f32);
+                let y1 = self
+                    .to_presentation_length(rect.y + rect.height)
+                    .min(height as f32);
                 if x0 < x1 && y0 < y1 {
                     scene.push_rect(x0, y0, x1, y1, [0.18, 0.46, 0.95, 0.34]);
                 }
@@ -812,10 +885,13 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
+        let (dx, dy) = self.to_css_point(dx, dy);
         self.doc.scroll_by(dx, dy)
     }
 
     fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        let (x, y) = self.to_css_point(x, y);
+        let (dx, dy) = self.to_css_point(dx, dy);
         self.doc.scroll_at(x, y, dx, dy)
     }
 
@@ -839,23 +915,17 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn scroll_to(&mut self, y: f32) {
+        let y = self.to_css_length(y);
         self.doc.scroll_to(y);
     }
 
     fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
-        let hit = self.doc.hit_test(x, y);
-        let submit = hit.and_then(|node| self.submit_ancestor(node));
-        self.activate_hit(x, y);
-        match self.doc.click_at(x, y) {
-            genet_livery::ClickOutcome::None => SessionClick::Miss,
-            genet_livery::ClickOutcome::Focused | genet_livery::ClickOutcome::Scrolled => {
-                submit.map_or(SessionClick::Handled, |submit| self.submit_click(submit))
-            },
-            genet_livery::ClickOutcome::Navigate(href) => SessionClick::Navigate(href),
-        }
+        let (x, y) = self.to_css_point(x, y);
+        self.click_at_css(x, y)
     }
 
     fn pointer_down(&mut self, x: f32, y: f32) -> SessionClick {
+        let (x, y) = self.to_css_point(x, y);
         self.pressed_submit = self
             .doc
             .hit_test(x, y)
@@ -877,10 +947,12 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn pointer_move(&mut self, x: f32, y: f32) -> bool {
+        let (x, y) = self.to_css_point(x, y);
         self.doc.extend_text_selection(x, y)
     }
 
     fn pointer_up(&mut self, x: f32, y: f32) -> SessionClick {
+        let (x, y) = self.to_css_point(x, y);
         if self.doc.finish_text_selection(x, y) {
             self.pressed_submit = None;
             SessionClick::Handled
@@ -897,7 +969,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                 self.activate_hit(x, y);
                 self.submit_click(submit)
             } else {
-                self.click_at(x, y)
+                self.click_at_css(x, y)
             }
         }
     }
@@ -1052,6 +1124,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn cursor_at(&self, x: f32, y: f32) -> SessionCursor {
+        let (x, y) = self.to_css_point(x, y);
         let Some(hit) = self.doc.hit_test(x, y) else {
             return SessionCursor::Default;
         };
@@ -1082,7 +1155,12 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
 
     fn text_target(&self, text: &str) -> Option<SessionTextTarget> {
         let (anchor, focus) = self.doc.text_target(text)?;
-        Some(SessionTextTarget { anchor, focus })
+        // These are pointer endpoints callers drive back through `pointer_*`,
+        // so they leave in the same presentation space those methods take.
+        Some(SessionTextTarget {
+            anchor: anchor.map(|value| self.to_presentation_length(value)),
+            focus: focus.map(|value| self.to_presentation_length(value)),
+        })
     }
 
     fn document_find(
@@ -1131,19 +1209,29 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
         Ok(())
     }
 
+    fn set_page_zoom(&mut self, factor: f32) -> Result<DocumentZoomState, SessionError> {
+        self.zoom = DocumentZoomState::clamped(factor, LIVERY_PAGE_ZOOM_MIN, LIVERY_PAGE_ZOOM_MAX);
+        // The retained scroll offset stays a CSS-space value, so the document
+        // keeps the same content near the top of the viewport across the
+        // reflow the next frame performs at the new CSS viewport.
+        Ok(self.zoom)
+    }
+
     fn links(&self) -> Vec<SessionLink> {
         self.doc
             .links()
             .into_iter()
             .map(|link| SessionLink {
                 url: link.url,
-                rect: link.rect,
+                rect: link.rect.map(|value| self.to_presentation_length(value)),
             })
             .collect()
     }
 
-    fn content_height(&mut self, _width: u32, height: u32) -> u32 {
-        self.doc.content_height(height)
+    fn content_height(&mut self, width: u32, height: u32) -> u32 {
+        let (_, css_height) = self.css_viewport(width, height);
+        let content = self.doc.content_height(css_height) as f32;
+        self.to_presentation_length(content).ceil() as u32
     }
 
     fn pump(&mut self, now_ms: f64) {
@@ -2262,6 +2350,189 @@ mod tests {
         );
     }
 
+    /// Page zoom is a document scale the host requests and the engine bounds:
+    /// the requested factor comes back untouched for the host to persist, while
+    /// `applied` is what this lane could honour.
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_page_zoom_reports_requested_and_clamped_applied() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("https://example.test/")
+            .with_body("<html><body><p>zoom</p></body></html>")
+            .with_viewport(320, 240);
+        let mut session = engine.spawn(&request).expect("livery lane spawns");
+
+        let state = session
+            .set_page_zoom(1.25)
+            .expect("livery honours page zoom");
+        assert_eq!(state.requested, 1.25);
+        assert_eq!(state.applied, 1.25);
+        assert_eq!((state.min, state.max), (0.25, 5.0));
+
+        let state = session
+            .set_page_zoom(12.0)
+            .expect("an out-of-range request");
+        assert_eq!(state.requested, 12.0, "the request stays the caller's");
+        assert_eq!(state.applied, 5.0, "the engine owns its bounds");
+
+        let state = session
+            .set_page_zoom(0.05)
+            .expect("an out-of-range request");
+        assert_eq!(state.requested, 0.05);
+        assert_eq!(state.applied, 0.25);
+
+        let state = session.set_page_zoom(1.0).expect("reset is factor 1.0");
+        assert_eq!(state.applied, 1.0);
+    }
+
+    /// Zoom is a user-agent document scale, not a CSS `zoom`: the CSS viewport
+    /// shrinks by the factor, so a `max-width` media query flips at a wider
+    /// presentation viewport than its own boundary.
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_page_zoom_shrinks_the_css_viewport_media_queries_see() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("https://example.test/")
+            .with_body(
+                r#"<html><head><style>
+                    html, body { margin: 0; padding: 0; }
+                    .grow { height: 100px; }
+                    @media (max-width: 500px) { .grow { height: 900px; } }
+                </style></head><body><div class="grow"></div></body></html>"#,
+            )
+            .with_viewport(600, 300);
+        let mut session = engine.spawn(&request).expect("livery lane spawns");
+
+        let _scene = session.frame(600, 300);
+        assert!(
+            session.content_height(600, 300) < 500,
+            "a 600px presentation viewport is a 600px CSS viewport at 100 %"
+        );
+
+        session
+            .set_page_zoom(1.25)
+            .expect("livery honours page zoom");
+        let _scene = session.frame(600, 300);
+        let content = session.content_height(600, 300);
+        assert!(
+            content > 1000,
+            "the 480px CSS viewport matches the query and the 900px block \
+             scales back up: {content}"
+        );
+    }
+
+    /// The boundary space is stable: link rects leave in presentation space and
+    /// pointer coordinates arrive in it, so one visual point keeps resolving to
+    /// the same node as the document scales under it.
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_page_zoom_keeps_hit_testing_at_the_same_visual_point() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("https://example.test/")
+            .with_body(
+                r#"<html><head><style>
+                    html, body { margin: 0; padding: 0; }
+                    a { display: block; height: 20px; width: 100px; }
+                </style></head><body><a href="/next">next</a></body></html>"#,
+            )
+            .with_viewport(320, 240);
+        let mut session = engine.spawn(&request).expect("livery lane spawns");
+        let _scene = session.frame(320, 240);
+
+        let rect = session
+            .links()
+            .into_iter()
+            .next()
+            .expect("retained link")
+            .rect;
+        assert!((rect[2] - 100.0).abs() < 1.0, "{rect:?}");
+        assert_eq!(
+            session.click_at(rect[0] + 10.0, rect[1] + 5.0),
+            SessionClick::Navigate("/next".to_owned())
+        );
+        // Activation restyles the anchor, so the retained layout the hit table
+        // reads is only current again after the next frame.
+        let _scene = session.frame(320, 240);
+        assert_eq!(session.click_at(110.0, 5.0), SessionClick::Miss);
+
+        session
+            .set_page_zoom(1.25)
+            .expect("livery honours page zoom");
+        let _scene = session.frame(320, 240);
+
+        let zoomed = session
+            .links()
+            .into_iter()
+            .next()
+            .expect("retained link")
+            .rect;
+        assert!(
+            (zoomed[2] - 125.0).abs() < 1.0,
+            "the reported rect is presentation space: {zoomed:?}"
+        );
+        assert_eq!(
+            session.click_at(rect[0] + 10.0, rect[1] + 5.0),
+            SessionClick::Navigate("/next".to_owned()),
+            "the same visual point still hits the link"
+        );
+        let _scene = session.frame(320, 240);
+        assert_eq!(
+            session.click_at(110.0, 5.0),
+            SessionClick::Navigate("/next".to_owned()),
+            "and the point the grown link now covers hits it too"
+        );
+    }
+
+    /// A find reveal is a document offset the host applies in presentation
+    /// space, so it scales with zoom and survives the round trip back into the
+    /// retained CSS-space scroll.
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_page_zoom_keeps_find_reveal_in_presentation_space() {
+        fn reveal(state: &DocumentFindState) -> f32 {
+            match state.current_match().expect("a current match").reveal {
+                DocumentFindReveal::ScrollY(y) => y,
+                DocumentFindReveal::EngineManaged => panic!("the livery lane reveals by offset"),
+            }
+        }
+
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("https://example.test/find")
+            .with_body(
+                r#"<html><head><style>html, body { margin: 0; padding: 0; }</style></head>
+                <body><div style="height: 1200px"></div><p>Last finding.</p>
+                <div style="height: 1200px"></div></body></html>"#,
+            )
+            .with_viewport(480, 240);
+        let mut session = engine.spawn(&request).expect("livery lane spawns");
+        let _scene = session.frame(480, 240);
+
+        let query = DocumentFindQuery::new("finding");
+        let at_100 = reveal(&session.document_find(&query).expect("retained find"));
+        assert!(at_100 > 1000.0, "the match sits below the fold: {at_100}");
+
+        session
+            .set_page_zoom(1.25)
+            .expect("livery honours page zoom");
+        let _scene = session.frame(480, 240);
+        let at_125 = reveal(&session.document_find(&query).expect("retained find"));
+        assert!(
+            (at_125 - at_100 * 1.25).abs() < 1.0,
+            "the reveal offset scales with the document: {at_100} {at_125}"
+        );
+
+        let concrete = session
+            .as_any()
+            .downcast_ref::<LiveryDocumentSession>()
+            .expect("session keeps its concrete Livery owner");
+        let scrolled = concrete.document().scroll().1;
+        assert!(
+            (at_125 / 1.25 - 24.0 - scrolled).abs() < 1.0,
+            "the same offset converts back into the retained CSS scroll: \
+             {at_125} {scrolled}"
+        );
+    }
+
     /// The livery lane's structural report through the trait — the same
     /// contract the static lane serves, so a viewer override to livery keeps
     /// the Inspector/a11y read instead of degrading to "none for this lane".
@@ -2318,10 +2589,7 @@ mod tests {
             capabilities.find_in_page,
             DocumentCapabilityStatus::Supported
         );
-        assert!(matches!(
-            capabilities.page_zoom,
-            DocumentCapabilityStatus::Unsupported { .. }
-        ));
+        assert_eq!(capabilities.page_zoom, DocumentCapabilityStatus::Supported);
         assert!(matches!(
             capabilities.page_capture,
             DocumentCapabilityStatus::Unsupported { .. }

@@ -212,6 +212,30 @@ impl LiveryPaintList {
         self.commands.push(PaintCmd::PopTransform);
         self
     }
+
+    /// Scale an already-emitted frame out of the CSS viewport it was laid out
+    /// at and into the larger presentation viewport the host asked for.
+    ///
+    /// This is the render half of user-agent page zoom: layout ran at
+    /// `width / factor` by `height / factor`, so every painted primitive —
+    /// including a scroll translation already pushed by [`Self::translated`] —
+    /// is composed under one root scale rather than rewritten. The presentation
+    /// size is taken rather than derived so the frame keeps the host's exact
+    /// pixel size across the rounding that CSS division introduced.
+    pub fn scaled_to(mut self, factor: f32, width: u32, height: u32) -> Self {
+        self.viewport = DeviceIntSize::new(width as i32, height as i32);
+        if factor == 1.0 {
+            return self;
+        }
+        let transform = TransformSpec {
+            origin: LayoutPoint::new(0.0, 0.0),
+            transform: LayoutTransform::scale(factor, factor, 1.0),
+            kind: TransformKind::Standard,
+        };
+        self.commands.insert(0, PaintCmd::PushTransform(transform));
+        self.commands.push(PaintCmd::PopTransform);
+        self
+    }
 }
 
 impl PaintList for LiveryPaintList {

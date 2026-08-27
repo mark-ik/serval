@@ -283,6 +283,43 @@ impl DocumentFindState {
     }
 }
 
+/// The retained page-zoom model shared by retained documents and hosted
+/// engines.
+///
+/// `requested` is the caller's own value, echoed back unchanged: the host
+/// persists it per node and steps its own ladder. `applied` is what the engine
+/// actually used after clamping and any quantization of its own, and `min` /
+/// `max` name the engine's bounds so a host can grey out a step it cannot take.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocumentZoomState {
+    /// The absolute factor the caller asked for (1.0 = 100 %).
+    pub requested: f32,
+    /// The effective factor this engine is presenting at.
+    pub applied: f32,
+    pub min: f32,
+    pub max: f32,
+}
+
+impl DocumentZoomState {
+    /// Clamp `requested` into `[min, max]` and report both halves. Engines that
+    /// quantize further overwrite `applied` after calling this.
+    pub fn clamped(requested: f32, min: f32, max: f32) -> Self {
+        // A non-finite request is a caller bug rather than a zoom level, and
+        // must never reach layout as a NaN viewport divisor.
+        let applied = if requested.is_finite() {
+            requested.clamp(min, max)
+        } else {
+            1.0_f32.clamp(min, max)
+        };
+        Self {
+            requested,
+            applied,
+            min,
+            max,
+        }
+    }
+}
+
 /// One element in the structural outline.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutlineEntry {
@@ -755,6 +792,20 @@ pub trait DocumentSession<F>: Any {
         Ok(())
     }
 
+    /// Present this document at an absolute page-zoom `factor` (1.0 = 100 %).
+    ///
+    /// This is user-agent document zoom, not CSS `zoom`: the CSS viewport
+    /// shrinks as the factor grows, media queries re-evaluate against it, and
+    /// the engine scales its rendered output back up. Host chrome is never
+    /// scaled. The caller owns its own ladder and persistence — reset is
+    /// `factor` 1.0 — while the engine owns only bounds and quantization, which
+    /// it reports in the returned [`DocumentZoomState`].
+    fn set_page_zoom(&mut self, _factor: f32) -> Result<DocumentZoomState, SessionError> {
+        Err(SessionError::Unsupported(
+            "page zoom is not wired for this session".into(),
+        ))
+    }
+
     /// The link hit-table off the retained layout (no live-DOM query per
     /// click) — the mechanism all three lanes already share.
     fn links(&self) -> Vec<SessionLink>;
@@ -1097,5 +1148,36 @@ mod tests {
         assert!(both.document && both.session && !both.surface);
         assert!(index.kinds_of("scrying.web").surface);
         assert!(!index.kinds_of("absent").any());
+    }
+
+    #[test]
+    fn page_zoom_is_a_named_absence_until_a_lane_wires_it() {
+        let mut session = EchoSession {
+            address: "gemini://example.test/".into(),
+            scroll: 0.0,
+            hidden: false,
+        };
+        assert!(matches!(
+            session.set_page_zoom(1.25),
+            Err(SessionError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn zoom_state_keeps_the_request_and_clamps_only_the_applied_value() {
+        let state = DocumentZoomState::clamped(9.0, 0.25, 5.0);
+        assert_eq!(state.requested, 9.0);
+        assert_eq!(state.applied, 5.0);
+
+        let state = DocumentZoomState::clamped(0.1, 0.25, 5.0);
+        assert_eq!(state.requested, 0.1);
+        assert_eq!(state.applied, 0.25);
+
+        assert_eq!(DocumentZoomState::clamped(1.5, 0.25, 5.0).applied, 1.5);
+        assert_eq!(
+            DocumentZoomState::clamped(f32::NAN, 0.25, 5.0).applied,
+            1.0,
+            "a non-finite request must not reach layout as a viewport divisor"
+        );
     }
 }
