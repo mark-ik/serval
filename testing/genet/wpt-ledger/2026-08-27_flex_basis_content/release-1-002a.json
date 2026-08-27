@@ -1,0 +1,13 @@
+{
+  "command": "reftest",
+  "engine": "none",
+  "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
+  "policy": "exact",
+  "renderer": "livery",
+  "runner_sha256": "eb236a1c866e105810f1d46240f30cc9fb4030aa1a9c5a2b62dfa1378b136b60",
+  "subset": "css/css-flexbox/flexbox-flex-basis-content-002a.html",
+  "tests": {
+    "css/css-flexbox/flexbox-flex-basis-content-002a.html": "pass"
+  },
+  "version": 1
+}

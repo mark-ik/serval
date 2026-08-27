@@ -5,9 +5,9 @@
 **Status:** In progress. The `flex` and `flex-flow` cascade, bounded
 specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
 generic inline declaration reflection, and physical flex main-axis, alignment,
-and gap projection are complete. Row 18 remains open for flex-basis content
-used values and automatic minimums, the remaining vertical-flex work, and
-grid.
+and gap projection are complete. The flex-basis content used-value slice and
+its eight focused reftests are complete. Row 18 remains open for automatic
+minimums, the remaining vertical-flex work, and grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -325,9 +325,15 @@ recorded under
 
 ## Remaining Row 18 work
 
-- Carry `auto` and `content` distinctly through Taffy's flex-basis API, skip
-  preferred-main-size fallback for `content`, publish the fork, and retire the
-  eight focused `flexbox-flex-basis-content-*` layout residuals.
+The `flex-basis: content` slice is complete: `content` bypasses the preferred
+main-size fallback while `auto` retains it; the row and column content queries
+measure Buckram-owned content at the required max-content or fit-content size;
+and all eight `flexbox-flex-basis-content-*` reftests pass twice under exact
+release receipts in
+`testing/genet/wpt-ledger/2026-08-27_flex_basis_content`. The Taffy complete
+delta is regenerated and verified, but this work does not claim a new
+published `genet-taffy` release.
+
 - Add shared `ex` font metrics and generic zero-percentage provenance rather
   than encoding either exception inside `FlexBasis`.
 - Repair the automatic-minimum-size residual in vendored Taffy and publish the
@@ -405,3 +411,18 @@ recorded under
 - Froze the rebased WPT runner. The complete parsing map moves from 113 / 183
   to 159 / 183 through the 40 `flex` and six `flex-flow` shorthand subtests,
   with zero losses and no other identity movement.
+- Completed the content-basis used-value path. A `content` basis now bypasses
+  a preferred main size while `auto` still consults one, including the
+  aspect-ratio Step B correction that preserves an explicitly authored cross
+  size. Buckram supplies the narrow row max-content and column fit-content
+  measurements, including direct replaced leaves, nested flex, and BFC float
+  lines; Livery keeps blockified flex/grid items on the block paint route.
+- Regenerated the authoritative Taffy complete delta and proved a clean
+  pristine-source apply reproduces the vendored `src/` tree byte for byte.
+  The standalone all-features Taffy receipt records 131 unit and 5 doc tests
+  passing.
+- Rebased the Row 18 series onto current `main`, rebuilt the release WPT
+  runner (`eb236a1c866e105810f1d46240f30cc9fb4030aa1a9c5a2b62dfa1378b136b60`),
+  and ran `flexbox-flex-basis-content-001a` through `004b` twice with the
+  exact policy. Each run-one/run-two map pair is byte-identical; all sixteen
+  maps are checked in under `testing/genet/wpt-ledger/2026-08-27_flex_basis_content`.
