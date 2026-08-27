@@ -1,6 +1,6 @@
 # genet's taffy fork — patch log
 
-This is `genet-taffy 0.13.1`, a vendored copy of upstream `taffy 0.13.0` —
+This is `genet-taffy 0.14.0`, a vendored copy of upstream `taffy 0.13.0` —
 re-vendored 2026-08-16 from the
 prior `0.12.1` (itself re-vendored 2026-07-12 from
 `0.11.0-experimental-cache-fix.3`, when `float_layout` graduated from
@@ -48,6 +48,32 @@ full `src/` comparison reproduce the vendored tree byte for byte; the
 standalone all-features run records 131 unit tests and 5 doc tests passing.
 The resulting patch SHA-256 is
 `BDE982DE04A4DF21FE50E071E07220044E973095793A31F11276D8EE8238AF7D`.
+
+**0.14.0 release candidate (2026-08-27).** Regenerated `0000` against a
+fresh extraction of the published upstream `taffy 0.13.0` crate after the
+Row 18 automatic-minimum repair. The delta changes 16 `src/` files (855 added
+lines, 127 removed, 86 hunks); applying it with `patch -p1` to a clean
+upstream copy reproduces all 50 vendored `src/` files byte for byte. Its
+SHA-256 is `29185D83256125C5BBD948354128353010807644A5518F0B3B5FD8BE609121B2`
+and its size is 73,200 bytes.
+
+The final 69-file packaged crate passed offline `cargo package` verification,
+then its extracted source passed the all-features suite: 139 unit tests and 5
+doc tests.
+
+`git diff --check` reports ten trailing-space diagnostics within the generated
+delta. They are existing vendored `src/` bytes represented as added lines;
+they remain deliberately so the authoritative patch preserves the byte-exact
+round trip.
+
+The repair adds the public
+`SizingMode::ContentSizeForAutomaticMinimum` marker. It has the same leaf
+measurement behavior as `ContentSize`, but confines the wrapped-column
+automatic-minimum contribution to the Flexbox call site and partitions the
+layout cache. Downstream code that exhaustively matches the public
+`SizingMode` enum must add an arm or a wildcard before adopting 0.14.0. This
+minor bump is required because adding a public enum variant is a breaking
+change under 0.x semver.
 
 To bump taffy:
 
@@ -117,6 +143,14 @@ Note for the next re-vendor: taffy 0.13.0 reworked the flex abspos alignment
 this hoist sits in (writing-mode-relative `start`/`end`, new
 `AlignItems::SELF_START`/`SELF_END`), so the flex half needs a genuine rebase
 rather than a mechanical re-apply.
+
+It also carries the Row 18 automatic-minimum repair. The flex algorithm uses
+the marker only while measuring a column item's max-content automatic minimum
+with an auto main-axis minimum and non-scroll main-axis overflow. Wrapped
+column min-content contributions sum only in that context; rows, explicit
+minimums, definite sizing, and cross-axis-only scroll retain their prior
+paths. `CacheKey` includes `SizingMode` so an inherent/content/automatic-min
+measurement cannot reuse the wrong cached result.
 
 ### 0001 — `find_content_slot` width-fit (patch file deleted 2026-08-16)
 
@@ -269,7 +303,7 @@ keeps CSS containing-block selection and used geometry outside Taffy.
 
 > **Its `.patch` file is historical and must not be applied**: 2 of 3 hunks in
 > `grid/alignment.rs` no longer apply even to pristine 0.12.1, and the callback
-> gained three more inputs after the 0.13 bump. The current 0.13.1 source is
+> gained three more inputs after the 0.13 bump. The current 0.14.0 source is
 > recorded by `0000-complete-fork-delta.patch`.
 
 

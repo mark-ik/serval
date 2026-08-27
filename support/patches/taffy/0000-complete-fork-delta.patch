@@ -137,7 +137,7 @@ index 6127476..0427f51 100644
                  border,
                  margin: resolved_margin,
 diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
-index ce4d990..b808fbf 100644
+index ce4d990..e11bd4d 100644
 --- a/src/compute/flexbox.rs
 +++ b/src/compute/flexbox.rs
 @@ -27,6 +27,12 @@ struct FlexItem {
@@ -181,6 +181,15 @@ index ce4d990..b808fbf 100644
  
      // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
      // is ComputeSize (and thus the container's size is all that we're interested in)
+@@ -243,7 +259,7 @@ pub fn compute_flexbox_layout(
+ 
+ /// Compute a preliminary size for an item
+ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
+-    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
++    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, sizing_mode, .. } = inputs;
+ 
+     // Define some general constants we will need for the remainder of the algorithm.
+     let mut constants = compute_constants(tree, tree.get_flexbox_container_style(node), known_dimensions, parent_size);
 @@ -256,6 +272,12 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
      debug_log!("generate_anonymous_flex_items");
      let mut flex_items = generate_anonymous_flex_items(tree, node, &constants);
@@ -194,6 +203,15 @@ index ce4d990..b808fbf 100644
      // 9.2. Line Length Determination
  
      // 2. Determine the available main and cross space for the flex items
+@@ -293,7 +315,7 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
+         constants.container_size.set_main(constants.dir, outer_main_size);
+     } else {
+         // Sets constants.container_size and constants.outer_container_size
+-        determine_container_main_size(tree, available_space, &mut flex_lines, &mut constants);
++        determine_container_main_size(tree, available_space, sizing_mode, &mut flex_lines, &mut constants);
+         constants.node_inner_size.set_main(constants.dir, Some(constants.inner_container_size.main(constants.dir)));
+         constants.node_outer_size.set_main(constants.dir, Some(constants.container_size.main(constants.dir)));
+ 
 @@ -539,6 +561,7 @@ fn generate_anonymous_flex_items(
              FlexItem {
                  node: child,
@@ -265,7 +283,81 @@ index ce4d990..b808fbf 100644
                  break 'flex_basis flex_basis;
              };
  
-@@ -2067,6 +2119,7 @@ fn calculate_flex_item(
+@@ -840,7 +892,7 @@ fn determine_flex_base_size(
+                     child_known_dimensions,
+                     child_parent_size,
+                     child_available_space,
+-                    SizingMode::ContentSize,
++                    SizingMode::ContentSizeForAutomaticMinimum,
+                     dir.main_axis(),
+                     Line::FALSE,
+                 )
+@@ -964,6 +1016,7 @@ fn collect_flex_lines<'a>(
+ fn determine_container_main_size(
+     tree: &mut impl LayoutFlexboxContainer,
+     available_space: Size<AvailableSpace>,
++    sizing_mode: SizingMode,
+     lines: &mut [FlexLine<'_>],
+     constants: &mut AlgoConstants,
+ ) {
+@@ -998,6 +1051,30 @@ fn determine_container_main_size(
+                     size
+                 }
+             }
++            // A wrapped column flex container's automatic block minimum is
++            // formed before its children can wrap into additional columns.
++            // The min-content line collection above puts each item on a
++            // separate line, so taking only the longest one would discard
++            // every later automatic minimum contribution.
++            AvailableSpace::MinContent
++                if constants.is_wrap
++                    && constants.is_column
++                    && sizing_mode == SizingMode::ContentSizeForAutomaticMinimum =>
++            {
++                let item_count = lines.iter().map(|line| line.items.len()).sum();
++                let item_main_size_sum = lines
++                    .iter()
++                    .flat_map(|line| line.items.iter())
++                    .map(|child| {
++                        let padding_border_sum = (child.padding + child.border).main_axis_sum(constants.dir);
++                        (child.flex_basis.max(child.resolved_minimum_main_size)
++                            + child.margin.main_axis_sum(constants.dir))
++                        .max(padding_border_sum)
++                    })
++                    .sum::<f32>();
++                let gap_sum = sum_axis_gaps(constants.gap.main(constants.dir), item_count);
++                item_main_size_sum + gap_sum + main_content_box_inset
++            }
+             AvailableSpace::MinContent if constants.is_wrap => {
+                 let longest_line_length: f32 = lines
+                     .iter()
+@@ -1095,12 +1172,24 @@ fn determine_container_main_size(
+                                 // Either the min- or max- content size depending on which constraint we are sizing under.
+                                 // TODO: Optimise by using already computed values where available
+                                 debug_log!("COMPUTE CHILD BASE SIZE (for intrinsic main size):");
++                                // A content-based automatic minimum makes the main axis indefinite for
++                                // intrinsic sizing. In a column's max-content query, do not reapply the
++                                // item's definite preferred height while measuring that contribution.
++                                let child_sizing_mode = if constants.is_column
++                                    && available_space.main(constants.dir) == AvailableSpace::MaxContent
++                                    && style_min.is_none()
++                                    && !item.overflow.main(constants.dir).is_scroll_container()
++                                {
++                                    SizingMode::ContentSizeForAutomaticMinimum
++                                } else {
++                                    SizingMode::InherentSize
++                                };
+                                 let content_main_size = tree.measure_child_size(
+                                     item.node,
+                                     child_known_dimensions,
+                                     constants.node_inner_size,
+                                     child_available_space,
+-                                    SizingMode::InherentSize,
++                                    child_sizing_mode,
+                                     dir.main_axis(),
+                                     Line::FALSE,
+                                 ) + item.margin.main_axis_sum(constants.dir);
+@@ -2067,6 +2156,7 @@ fn calculate_flex_item(
              content_size,
              scrollbar_size,
              location,
@@ -273,7 +365,7 @@ index ce4d990..b808fbf 100644
              padding: item.padding,
              border: item.border,
              margin: item.margin,
-@@ -2401,8 +2454,72 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2401,8 +2491,72 @@ fn perform_absolute_layout_on_absolute_children(
          let cross_end_scrollbar_offset =
              if cross_is_rtl { 0.0 } else { constants.scrollbar_gutter.cross(constants.dir) };
  
@@ -348,7 +440,7 @@ index ce4d990..b808fbf 100644
          let offset_main = if start_main.is_some() || end_main.is_some() {
              if main_is_rtl && end_main.is_some() {
                  constants.container_size.main(constants.dir)
-@@ -2425,90 +2542,14 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2425,90 +2579,14 @@ fn perform_absolute_layout_on_absolute_children(
                      - resolved_margin.main_end(constants.dir)
              }
          } else {
@@ -443,7 +535,7 @@ index ce4d990..b808fbf 100644
              let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
                  > constants.container_size.cross(constants.dir)
                      - constants.content_box_inset.cross_axis_sum(constants.dir);
-@@ -2562,6 +2603,31 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2562,6 +2640,31 @@ fn perform_absolute_layout_on_absolute_children(
              }
          };
  
@@ -475,7 +567,7 @@ index ce4d990..b808fbf 100644
          let location = match constants.is_row {
              true => Point { x: offset_main, y: offset_cross },
              false => Point { x: offset_cross, y: offset_main },
-@@ -2579,6 +2645,10 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2579,6 +2682,10 @@ fn perform_absolute_layout_on_absolute_children(
                  content_size: layout_output.content_size,
                  scrollbar_size,
                  location,
@@ -722,6 +814,19 @@ index 8bfc240..348067e 100644
  }
  
  /// Information from the computation of grids tracks
+diff --git a/src/compute/leaf.rs b/src/compute/leaf.rs
+index 4f1d979..ee19fd1 100644
+--- a/src/compute/leaf.rs
++++ b/src/compute/leaf.rs
+@@ -35,7 +35,7 @@ where
+     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
+     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
+     let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
+-        SizingMode::ContentSize => {
++        SizingMode::ContentSize | SizingMode::ContentSizeForAutomaticMinimum => {
+             let node_size = known_dimensions;
+             let node_min_size = Size::NONE;
+             let node_max_size = Size::NONE;
 diff --git a/src/compute/mod.rs b/src/compute/mod.rs
 index b283083..ffe4750 100644
 --- a/src/compute/mod.rs
@@ -1170,11 +1275,125 @@ index c32a9c5..4f07089 100644
 +        assert_type_size::<Style<Arc<str>>>(528);
      }
  }
+diff --git a/src/tree/cache.rs b/src/tree/cache.rs
+index 5187419..251e72e 100644
+--- a/src/tree/cache.rs
++++ b/src/tree/cache.rs
+@@ -4,7 +4,7 @@
+ 
+ use crate::geometry::Size;
+ use crate::style::AvailableSpace;
+-use crate::tree::{LayoutInput, LayoutOutput, RunMode};
++use crate::tree::{LayoutInput, LayoutOutput, RunMode, SizingMode};
+ use crate::RequestedAxis;
+ 
+ /// The number of cache entries for each node in the tree
+@@ -89,6 +89,8 @@ struct CacheKey {
+     kd_available_space: u64,
+     /// The initial cached size of the parent's node
+     parent_size: u64,
++    /// The style-sizing policy used for this computation
++    sizing_mode: SizingMode,
+ }
+ 
+ impl CacheKey {
+@@ -118,6 +120,7 @@ impl From<&LayoutInput> for CacheKey {
+         Self {
+             kd_available_space: size_mixed_cache_key(input.known_dimensions, input.available_space),
+             parent_size: (size_option_cache_key(input.parent_size) & NON_SIGN_BITS_MASK) | extra_bits,
++            sizing_mode: input.sizing_mode,
+         }
+     }
+ }
+@@ -230,6 +233,7 @@ impl Cache {
+                 for entry in self.measure_entries.iter().flatten() {
+                     if entry.key.kd_available_space == key.kd_available_space
+                         && (entry.key.x_axis_parent_size() == key.x_axis_parent_size())
++                        && entry.key.sizing_mode == key.sizing_mode
+                     {
+                         return Some(LayoutOutput::from_outer_size(entry.content));
+                     }
+@@ -282,3 +286,66 @@ pub enum ClearState {
+     /// Everything was already cleared
+     AlreadyEmpty,
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{Line, RequestedAxis, SizingMode};
++    use crate::style_helpers::TaffyMaxContent;
++
++    fn compute_size_input(sizing_mode: SizingMode) -> LayoutInput {
++        LayoutInput {
++            run_mode: RunMode::ComputeSize,
++            sizing_mode,
++            axis: RequestedAxis::Both,
++            known_dimensions: Size::NONE,
++            parent_size: Size::NONE,
++            available_space: Size::MAX_CONTENT,
++            vertical_margins_are_collapsible: Line::FALSE,
++        }
++    }
++
++    #[test]
++    fn compute_size_cache_distinguishes_automatic_minimum_after_content_size() {
++        let content_size = compute_size_input(SizingMode::ContentSize);
++        let automatic_minimum = compute_size_input(SizingMode::ContentSizeForAutomaticMinimum);
++        let mut cache = Cache::new();
++
++        cache.store(&content_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
++
++        assert!(cache.get(&automatic_minimum).is_none());
++    }
++
++    #[test]
++    fn compute_size_cache_distinguishes_content_size_after_automatic_minimum() {
++        let content_size = compute_size_input(SizingMode::ContentSize);
++        let automatic_minimum = compute_size_input(SizingMode::ContentSizeForAutomaticMinimum);
++        let mut cache = Cache::new();
++
++        cache.store(&automatic_minimum, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
++
++        assert!(cache.get(&content_size).is_none());
++    }
++
++    #[test]
++    fn compute_size_cache_distinguishes_content_size_after_inherent_size() {
++        let content_size = compute_size_input(SizingMode::ContentSize);
++        let inherent_size = compute_size_input(SizingMode::InherentSize);
++        let mut cache = Cache::new();
++
++        cache.store(&inherent_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
++
++        assert!(cache.get(&content_size).is_none());
++    }
++
++    #[test]
++    fn compute_size_cache_distinguishes_inherent_size_after_content_size() {
++        let content_size = compute_size_input(SizingMode::ContentSize);
++        let inherent_size = compute_size_input(SizingMode::InherentSize);
++        let mut cache = Cache::new();
++
++        cache.store(&content_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
++
++        assert!(cache.get(&inherent_size).is_none());
++    }
++}
 diff --git a/src/tree/layout.rs b/src/tree/layout.rs
-index dfc7b51..cf38987 100644
+index dfc7b51..6f2274a 100644
 --- a/src/tree/layout.rs
 +++ b/src/tree/layout.rs
-@@ -231,6 +231,8 @@ pub struct Layout {
+@@ -23,6 +23,8 @@ pub enum RunMode {
+ pub enum SizingMode {
+     /// Only content contributions should be taken into account
+     ContentSize,
++    /// Only content contributions should be taken into account while measuring a flex item's automatic minimum size
++    ContentSizeForAutomaticMinimum,
+     /// Inherent size styles should be taken into account in addition to content contributions
+     InherentSize,
+ }
+@@ -231,6 +233,8 @@ pub struct Layout {
      pub order: u32,
      /// The top-left corner of the node
      pub location: Point<f32>,
@@ -1183,7 +1402,7 @@ index dfc7b51..cf38987 100644
      /// The width and height of the node
      pub size: Size<f32>,
      #[cfg(feature = "content_size")]
-@@ -264,6 +266,7 @@ impl Layout {
+@@ -264,6 +268,7 @@ impl Layout {
          Self {
              order: 0,
              location: Point::ZERO,
@@ -1191,7 +1410,7 @@ index dfc7b51..cf38987 100644
              size: Size::zero(),
              #[cfg(feature = "content_size")]
              content_size: Size::zero(),
-@@ -284,6 +287,7 @@ impl Layout {
+@@ -284,6 +289,7 @@ impl Layout {
              order,
              size: Size::zero(),
              location: Point::ZERO,
@@ -1199,6 +1418,201 @@ index dfc7b51..cf38987 100644
              #[cfg(feature = "content_size")]
              content_size: Size::zero(),
              scrollbar_size: Size::zero(),
+diff --git a/src/tree/taffy_tree.rs b/src/tree/taffy_tree.rs
+index 71a9fa7..80af96f 100644
+--- a/src/tree/taffy_tree.rs
++++ b/src/tree/taffy_tree.rs
+@@ -947,7 +947,8 @@ impl<NodeContext> TaffyTree<NodeContext> {
+ mod tests {
+ 
+     use super::*;
+-    use crate::style::{Dimension, Display, FlexDirection};
++    use crate::{Line, RequestedAxis, SizingMode};
++    use crate::style::{Dimension, Display, FlexDirection, FlexWrap};
+     use crate::style_helpers::*;
+     use crate::util::sys;
+ 
+@@ -961,6 +962,57 @@ mod tests {
+         known_dimensions.unwrap_or(node_context.cloned().unwrap_or(Size::ZERO))
+     }
+ 
++    fn layout_wrapped_column_auto_minimum(outer_height: Dimension) -> [Size<f32>; 4] {
++        let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
++        let item_style = Style {
++            flex_grow: 1.0,
++            flex_shrink: 0.0,
++            flex_basis: Dimension::length(0.0).into(),
++            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
++            ..Default::default()
++        };
++        let first = taffy
++            .new_leaf_with_context(item_style.clone(), Size { width: 100.0, height: 50.0 })
++            .unwrap();
++        let second = taffy
++            .new_leaf_with_context(item_style, Size { width: 100.0, height: 50.0 })
++            .unwrap();
++        let inner = taffy
++            .new_with_children(
++                Style {
++                    display: Display::Flex,
++                    flex_direction: FlexDirection::Column,
++                    flex_wrap: FlexWrap::Wrap,
++                    flex_grow: 1.0,
++                    flex_shrink: 0.0,
++                    flex_basis: Dimension::length(0.0).into(),
++                    size: Size { width: Dimension::auto(), height: Dimension::length(500.0) },
++                    ..Default::default()
++                },
++                &[first, second],
++            )
++            .unwrap();
++        let outer = taffy
++            .new_with_children(
++                Style {
++                    display: Display::Flex,
++                    flex_direction: FlexDirection::Column,
++                    size: Size { width: Dimension::length(320.0), height: outer_height },
++                    ..Default::default()
++                },
++                &[inner],
++            )
++            .unwrap();
++
++        taffy.compute_layout_with_measure(outer, Size::MAX_CONTENT, size_measure_function).unwrap();
++        [
++            taffy.layout(outer).unwrap().size,
++            taffy.layout(inner).unwrap().size,
++            taffy.layout(first).unwrap().size,
++            taffy.layout(second).unwrap().size,
++        ]
++    }
++
+     #[test]
+     fn new_should_allocate_default_capacity() {
+         const DEFAULT_CAPACITY: usize = 16; // This is the capacity defined in the `impl Default`
+@@ -1085,6 +1137,122 @@ mod tests {
+         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
+     }
+ 
++    fn wrapped_column_flex_item_intrinsic_height(sizing_mode: SizingMode) -> f32 {
++        let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
++        let item_style = Style {
++            flex_grow: 1.0,
++            flex_shrink: 0.0,
++            flex_basis: Dimension::length(0.0).into(),
++            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
++            ..Default::default()
++        };
++        let first = taffy
++            .new_leaf_with_context(item_style.clone(), Size { width: 100.0, height: 50.0 })
++            .unwrap();
++        let second = taffy
++            .new_leaf_with_context(item_style, Size { width: 100.0, height: 50.0 })
++            .unwrap();
++        let inner = taffy
++            .new_with_children(
++                Style {
++                    display: Display::Flex,
++                    flex_direction: FlexDirection::Column,
++                    flex_wrap: FlexWrap::Wrap,
++                    flex_grow: 1.0,
++                    flex_shrink: 0.0,
++                    flex_basis: Dimension::length(0.0).into(),
++                    size: Size { width: Dimension::auto(), height: Dimension::length(500.0) },
++                    ..Default::default()
++                },
++                &[first, second],
++            )
++            .unwrap();
++
++        let output = compute_flexbox_layout(
++            &mut TaffyView { taffy: &mut taffy, measure_function: size_measure_function },
++            inner,
++            LayoutInput {
++                run_mode: RunMode::ComputeSize,
++                sizing_mode,
++                axis: RequestedAxis::Vertical,
++                known_dimensions: Size::NONE,
++                parent_size: Size::NONE,
++                available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MinContent },
++                vertical_margins_are_collapsible: Line::FALSE,
++            },
++        );
++
++        output.size.height
++    }
++
++    #[test]
++    fn wrapped_column_flex_item_auto_minimum_sums_intrinsic_lines() {
++        assert_eq!(
++            wrapped_column_flex_item_intrinsic_height(SizingMode::ContentSizeForAutomaticMinimum),
++            100.0
++        );
++    }
++
++    #[test]
++    fn wrapped_column_flex_item_content_size_uses_largest_intrinsic_line() {
++        let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
++        let item_style = Style {
++            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
++            ..Default::default()
++        };
++        let first = taffy
++            .new_leaf_with_context(item_style.clone(), Size { width: 100.0, height: 50.0 })
++            .unwrap();
++        let second = taffy
++            .new_leaf_with_context(item_style, Size { width: 100.0, height: 50.0 })
++            .unwrap();
++        let inner = taffy
++            .new_with_children(
++                Style {
++                    display: Display::Flex,
++                    flex_direction: FlexDirection::Column,
++                    flex_wrap: FlexWrap::Wrap,
++                    ..Default::default()
++                },
++                &[first, second],
++            )
++            .unwrap();
++
++        let output = compute_flexbox_layout(
++            &mut TaffyView { taffy: &mut taffy, measure_function: size_measure_function },
++            inner,
++            LayoutInput {
++                run_mode: RunMode::ComputeSize,
++                sizing_mode: SizingMode::ContentSize,
++                axis: RequestedAxis::Vertical,
++                known_dimensions: Size::NONE,
++                parent_size: Size::NONE,
++                available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MinContent },
++                vertical_margins_are_collapsible: Line::FALSE,
++            },
++        );
++
++        assert_eq!(output.size.height, 50.0);
++    }
++
++    #[test]
++    fn outer_column_uses_wrapped_item_auto_minimum_for_max_content() {
++        let [outer, inner, first, second] = layout_wrapped_column_auto_minimum(Dimension::auto());
++
++        assert_eq!(outer, Size { width: 320.0, height: 100.0 });
++        assert_eq!(inner, Size { width: 320.0, height: 100.0 });
++        assert_eq!(first, Size { width: 100.0, height: 50.0 });
++        assert_eq!(second, Size { width: 100.0, height: 50.0 });
++    }
++
++    #[test]
++    fn definite_outer_column_height_does_not_use_intrinsic_auto_minimum_path() {
++        let [outer, inner, ..] = layout_wrapped_column_auto_minimum(Dimension::length(300.0));
++
++        assert_eq!(outer.height, 300.0);
++        assert_eq!(inner.height, 300.0);
++    }
++
+     /// Test that adding `add_child()` works
+     #[test]
+     fn add_child() {
 diff --git a/src/tree/traits.rs b/src/tree/traits.rs
 index b91f9ca..4082458 100644
 --- a/src/tree/traits.rs
