@@ -259,7 +259,7 @@ pub fn compute_flexbox_layout(
 
 /// Compute a preliminary size for an item
 fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
-    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
+    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, sizing_mode, .. } = inputs;
 
     // Define some general constants we will need for the remainder of the algorithm.
     let mut constants = compute_constants(tree, tree.get_flexbox_container_style(node), known_dimensions, parent_size);
@@ -315,7 +315,7 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
         constants.container_size.set_main(constants.dir, outer_main_size);
     } else {
         // Sets constants.container_size and constants.outer_container_size
-        determine_container_main_size(tree, available_space, &mut flex_lines, &mut constants);
+        determine_container_main_size(tree, available_space, sizing_mode, &mut flex_lines, &mut constants);
         constants.node_inner_size.set_main(constants.dir, Some(constants.inner_container_size.main(constants.dir)));
         constants.node_outer_size.set_main(constants.dir, Some(constants.container_size.main(constants.dir)));
 
@@ -1016,6 +1016,7 @@ fn collect_flex_lines<'a>(
 fn determine_container_main_size(
     tree: &mut impl LayoutFlexboxContainer,
     available_space: Size<AvailableSpace>,
+    sizing_mode: SizingMode,
     lines: &mut [FlexLine<'_>],
     constants: &mut AlgoConstants,
 ) {
@@ -1055,7 +1056,11 @@ fn determine_container_main_size(
             // The min-content line collection above puts each item on a
             // separate line, so taking only the longest one would discard
             // every later automatic minimum contribution.
-            AvailableSpace::MinContent if constants.is_wrap && constants.is_column => {
+            AvailableSpace::MinContent
+                if constants.is_wrap
+                    && constants.is_column
+                    && sizing_mode == SizingMode::ContentSizeForAutomaticMinimum =>
+            {
                 let item_count = lines.iter().map(|line| line.items.len()).sum();
                 let item_main_size_sum = lines
                     .iter()
@@ -1170,12 +1175,12 @@ fn determine_container_main_size(
                                 // A content-based automatic minimum makes the main axis indefinite for
                                 // intrinsic sizing. In a column's max-content query, do not reapply the
                                 // item's definite preferred height while measuring that contribution.
-                                let sizing_mode = if constants.is_column
+                                let child_sizing_mode = if constants.is_column
                                     && available_space.main(constants.dir) == AvailableSpace::MaxContent
                                     && style_min.is_none()
-                                    && !item.is_scroll_container()
+                                    && !item.overflow.main(constants.dir).is_scroll_container()
                                 {
-                                    SizingMode::ContentSize
+                                    SizingMode::ContentSizeForAutomaticMinimum
                                 } else {
                                     SizingMode::InherentSize
                                 };
@@ -1184,7 +1189,7 @@ fn determine_container_main_size(
                                     child_known_dimensions,
                                     constants.node_inner_size,
                                     child_available_space,
-                                    sizing_mode,
+                                    child_sizing_mode,
                                     dir.main_axis(),
                                     Line::FALSE,
                                 ) + item.margin.main_axis_sum(constants.dir);

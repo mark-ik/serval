@@ -1137,8 +1137,7 @@ mod tests {
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
     }
 
-    #[test]
-    fn wrapped_column_flex_item_auto_minimum_sums_intrinsic_lines() {
+    fn wrapped_column_flex_item_intrinsic_height(sizing_mode: SizingMode) -> f32 {
         let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
         let item_style = Style {
             flex_grow: 1.0,
@@ -1174,6 +1173,56 @@ mod tests {
             inner,
             LayoutInput {
                 run_mode: RunMode::ComputeSize,
+                sizing_mode,
+                axis: RequestedAxis::Vertical,
+                known_dimensions: Size::NONE,
+                parent_size: Size::NONE,
+                available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MinContent },
+                vertical_margins_are_collapsible: Line::FALSE,
+            },
+        );
+
+        output.size.height
+    }
+
+    #[test]
+    fn wrapped_column_flex_item_auto_minimum_sums_intrinsic_lines() {
+        assert_eq!(
+            wrapped_column_flex_item_intrinsic_height(SizingMode::ContentSizeForAutomaticMinimum),
+            100.0
+        );
+    }
+
+    #[test]
+    fn wrapped_column_flex_item_content_size_uses_largest_intrinsic_line() {
+        let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
+        let item_style = Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            ..Default::default()
+        };
+        let first = taffy
+            .new_leaf_with_context(item_style.clone(), Size { width: 100.0, height: 50.0 })
+            .unwrap();
+        let second = taffy
+            .new_leaf_with_context(item_style, Size { width: 100.0, height: 50.0 })
+            .unwrap();
+        let inner = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    flex_wrap: FlexWrap::Wrap,
+                    ..Default::default()
+                },
+                &[first, second],
+            )
+            .unwrap();
+
+        let output = compute_flexbox_layout(
+            &mut TaffyView { taffy: &mut taffy, measure_function: size_measure_function },
+            inner,
+            LayoutInput {
+                run_mode: RunMode::ComputeSize,
                 sizing_mode: SizingMode::ContentSize,
                 axis: RequestedAxis::Vertical,
                 known_dimensions: Size::NONE,
@@ -1183,7 +1232,7 @@ mod tests {
             },
         );
 
-        assert_eq!(output.size.height, 100.0);
+        assert_eq!(output.size.height, 50.0);
     }
 
     #[test]

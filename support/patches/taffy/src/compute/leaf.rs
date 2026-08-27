@@ -35,7 +35,7 @@ where
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
     let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
-        SizingMode::ContentSize => {
+        SizingMode::ContentSize | SizingMode::ContentSizeForAutomaticMinimum => {
             let node_size = known_dimensions;
             let node_min_size = Size::NONE;
             let node_max_size = Size::NONE;
