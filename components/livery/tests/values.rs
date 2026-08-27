@@ -15,8 +15,10 @@ use livery::values::{
     ZIndex,
 };
 use livery::{
-    AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
-    canonicalize_specified_shorthand, canonicalize_specified_value,
+    AnimationClass, ComputedValues, InlineShorthandExpansion, PropertyId,
+    canonicalize_specified_longhand, canonicalize_specified_shorthand,
+    canonicalize_specified_value, classify_specified_shorthand, expand_specified_shorthand,
+    reconstruct_specified_shorthand, specified_shorthand_longhands,
 };
 
 fn assert_round_trip<T>(css: &str)
@@ -95,6 +97,126 @@ fn specified_flex_shorthands_reuse_cascade_canonicalization() {
 }
 
 #[test]
+fn inline_flex_shorthands_expand_and_reconstruct_through_livery() {
+    assert_eq!(
+        specified_shorthand_longhands("FLEX"),
+        Some(vec!["flex-grow", "flex-shrink", "flex-basis"])
+    );
+    assert_eq!(
+        specified_shorthand_longhands("flex-flow"),
+        Some(vec!["flex-direction", "flex-wrap"])
+    );
+    assert_eq!(specified_shorthand_longhands("border"), None);
+
+    assert_eq!(
+        expand_specified_shorthand("flex", "none"),
+        Some(vec![
+            ("flex-grow".to_string(), "0".to_string()),
+            ("flex-shrink".to_string(), "0".to_string()),
+            ("flex-basis".to_string(), "auto".to_string()),
+        ])
+    );
+    assert_eq!(
+        expand_specified_shorthand("flex-flow", "wrap row-reverse"),
+        Some(vec![
+            ("flex-direction".to_string(), "row-reverse".to_string()),
+            ("flex-wrap".to_string(), "wrap".to_string()),
+        ])
+    );
+    for keyword in ["initial", "inherit", "unset"] {
+        assert_eq!(
+            expand_specified_shorthand("flex", keyword),
+            Some(vec![
+                ("flex-grow".to_string(), keyword.to_string()),
+                ("flex-shrink".to_string(), keyword.to_string()),
+                ("flex-basis".to_string(), keyword.to_string()),
+            ])
+        );
+    }
+
+    assert_eq!(
+        classify_specified_shorthand("flex", "var(--flex)"),
+        InlineShorthandExpansion::Deferred
+    );
+    assert_eq!(
+        classify_specified_shorthand("flex", "none 1"),
+        InlineShorthandExpansion::Invalid
+    );
+    assert_eq!(
+        classify_specified_shorthand("flex-flow", "column; color: red"),
+        InlineShorthandExpansion::Invalid
+    );
+
+    assert_eq!(
+        reconstruct_specified_shorthand(
+            "flex",
+            &[
+                ("flex-grow".to_string(), "1".to_string()),
+                ("flex-shrink".to_string(), "1".to_string()),
+                ("flex-basis".to_string(), "0%".to_string()),
+            ],
+        )
+        .as_deref(),
+        Some("1 1 0%")
+    );
+    assert_eq!(
+        reconstruct_specified_shorthand(
+            "flex-flow",
+            &[
+                ("flex-direction".to_string(), "row".to_string()),
+                ("flex-wrap".to_string(), "wrap".to_string()),
+            ],
+        )
+        .as_deref(),
+        Some("wrap")
+    );
+    assert_eq!(
+        reconstruct_specified_shorthand(
+            "flex-flow",
+            &[
+                ("flex-direction".to_string(), "row-reverse".to_string()),
+                ("flex-wrap".to_string(), "nowrap".to_string()),
+            ],
+        )
+        .as_deref(),
+        Some("row-reverse")
+    );
+    assert_eq!(
+        reconstruct_specified_shorthand(
+            "flex-flow",
+            &[("flex-direction".to_string(), "row".to_string())],
+        ),
+        None
+    );
+    assert_eq!(
+        reconstruct_specified_shorthand(
+            "flex",
+            &[
+                ("flex-grow".to_string(), "initial".to_string()),
+                ("flex-shrink".to_string(), "initial".to_string()),
+                ("flex-basis".to_string(), "initial".to_string()),
+            ],
+        )
+        .as_deref(),
+        Some("initial")
+    );
+    for keyword in ["inherit", "unset"] {
+        assert_eq!(
+            reconstruct_specified_shorthand(
+                "flex",
+                &[
+                    ("flex-grow".to_string(), keyword.to_string()),
+                    ("flex-shrink".to_string(), keyword.to_string()),
+                    ("flex-basis".to_string(), keyword.to_string()),
+                ],
+            )
+            .as_deref(),
+            Some(keyword)
+        );
+    }
+}
+
+#[test]
 fn flex_basis_has_its_own_non_negative_value_grammar() {
     for value in [
         "auto",
@@ -163,6 +285,7 @@ fn specified_flex_shorthands_reject_invalid_values_but_preserve_variables() {
         ("flex", "1; color: red"),
         ("flex", "1; --x: y"),
         ("flex", "1 !important"),
+        ("flex", "revert inherit"),
     ] {
         assert_eq!(canonicalize_specified_shorthand(name, value), None);
     }

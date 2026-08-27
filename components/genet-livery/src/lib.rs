@@ -47,8 +47,9 @@ pub use livery::media::{Device, ViewportSize, ViewportSizes};
 pub use livery::selector::StatePseudoClass;
 pub use livery::stylesheet::{CssomRule, CssomRuleKind, FontFaceRule, RuleMutationError};
 pub use livery::{
-    PropertyId, canonicalize_specified_longhand, canonicalize_specified_value,
-    is_implemented_shorthand,
+    InlineShorthandComponent, InlineShorthandExpansion, PropertyId,
+    canonicalize_specified_longhand, canonicalize_specified_value, classify_specified_shorthand,
+    is_implemented_shorthand, reconstruct_specified_shorthand, specified_shorthand_longhands,
 };
 pub use paint::{
     LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system,

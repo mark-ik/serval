@@ -85,10 +85,182 @@ pub fn canonicalize_specified_value(name: &str, value: &str) -> Option<String> {
     })
 }
 
+/// One longhand component produced from a supported inline-style shorthand.
+///
+/// The declaration host stores these components rather than retaining the
+/// authored shorthand, matching the cascade's shorthand expansion boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InlineShorthandComponent {
+    pub name: &'static str,
+    pub value: String,
+}
+
+/// How Livery classified an inline-style shorthand assignment.
+///
+/// A deferred value is syntactically owned by a supported shorthand but
+/// contains `var()` and cannot expand before custom-property substitution.
+/// Keeping it distinct from `Invalid` lets CSSOM report support without
+/// inventing component values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InlineShorthandExpansion {
+    Expanded(Vec<InlineShorthandComponent>),
+    Deferred,
+    Invalid,
+}
+
+/// Return the ordered component longhands for a shorthand supported at the
+/// inline CSSOM seam.
+pub fn specified_shorthand_longhands(name: &str) -> Option<Vec<&'static str>> {
+    let shorthand = ShorthandId::from_css_name(&name.to_ascii_lowercase())?;
+    matches!(shorthand, ShorthandId::Flex | ShorthandId::FlexFlow).then(|| {
+        shorthand
+            .metadata()
+            .longhands
+            .iter()
+            .map(|property| property.metadata().name)
+            .collect()
+    })
+}
+
 /// Return whether `name` is one of the shorthands whose bounded parser can
 /// classify at the CSSOM specified-value seam.
 pub fn is_implemented_shorthand(name: &str) -> bool {
-    matches!(name.to_ascii_lowercase().as_str(), "flex" | "flex-flow")
+    specified_shorthand_longhands(name).is_some()
+}
+
+/// Expand a supported shorthand through Livery's declaration parser.
+///
+/// This preserves the cascade's grammar, defaults, CSS-wide keyword handling,
+/// and canonical component serializations. It deliberately exposes variables
+/// as deferred rather than pretending their eventual longhands are known.
+pub fn classify_specified_shorthand(name: &str, value: &str) -> InlineShorthandExpansion {
+    let name = name.to_ascii_lowercase();
+    let Some(longhand_names) = specified_shorthand_longhands(&name) else {
+        return InlineShorthandExpansion::Invalid;
+    };
+    if value.trim().is_empty() || cascade::contains_top_level_declaration_delimiter(value) {
+        return InlineShorthandExpansion::Invalid;
+    }
+
+    let css_wide = value.trim().to_ascii_lowercase();
+    if matches!(css_wide.as_str(), "initial" | "inherit" | "unset") {
+        return InlineShorthandExpansion::Expanded(
+            longhand_names
+                .iter()
+                .map(|&longhand_name| InlineShorthandComponent {
+                    name: longhand_name,
+                    value: css_wide.clone(),
+                })
+                .collect(),
+        );
+    }
+
+    let block = cascade::parse_declaration_block(&format!("{name}: {value}"));
+    if !block.errors.is_empty()
+        || !block.custom.is_empty()
+        || block.declarations.len() != longhand_names.len()
+        || block
+            .declarations
+            .iter()
+            .any(|declaration| declaration.important)
+    {
+        return InlineShorthandExpansion::Invalid;
+    }
+
+    let mut components = Vec::with_capacity(longhand_names.len());
+    for (longhand_name, declaration) in longhand_names.iter().zip(&block.declarations) {
+        if declaration.property.metadata().name != *longhand_name {
+            return InlineShorthandExpansion::Invalid;
+        }
+        let value = match &declaration.value {
+            cascade::DeclaredValue::Value(value) => value.to_css_string(),
+            cascade::DeclaredValue::Initial => "initial".to_string(),
+            cascade::DeclaredValue::Inherit => "inherit".to_string(),
+            cascade::DeclaredValue::Unset => "unset".to_string(),
+            cascade::DeclaredValue::Pending(_) => return InlineShorthandExpansion::Deferred,
+        };
+        components.push(InlineShorthandComponent {
+            name: longhand_name,
+            value,
+        });
+    }
+    InlineShorthandExpansion::Expanded(components)
+}
+
+/// Expand a valid non-variable shorthand into its canonical component values.
+///
+/// Use [`classify_specified_shorthand`] when the caller must distinguish a
+/// deferred `var()` assignment from invalid syntax.
+pub fn expand_specified_shorthand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
+    let InlineShorthandExpansion::Expanded(components) = classify_specified_shorthand(name, value)
+    else {
+        return None;
+    };
+    Some(
+        components
+            .into_iter()
+            .map(|component| (component.name.to_string(), component.value))
+            .collect(),
+    )
+}
+
+/// Reconstruct the canonical shorthand value from every ordered longhand
+/// component currently stored by an inline style declaration.
+///
+/// Missing, duplicated, variable-bearing, and mixed CSS-wide components have
+/// no valid shorthand serialization and return `None`.
+pub fn reconstruct_specified_shorthand(
+    name: &str,
+    components: &[(String, String)],
+) -> Option<String> {
+    let name = name.to_ascii_lowercase();
+    let longhand_names = specified_shorthand_longhands(&name)?;
+    if components.len() != longhand_names.len() {
+        return None;
+    }
+
+    let mut values = Vec::with_capacity(longhand_names.len());
+    for longhand_name in longhand_names {
+        let mut matching = components
+            .iter()
+            .filter(|(component_name, _)| component_name.eq_ignore_ascii_case(longhand_name));
+        let (_, value) = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        values.push(canonicalize_specified_longhand(longhand_name, value)?);
+    }
+
+    let css_wide = values
+        .first()
+        .filter(|value| matches!(value.as_str(), "initial" | "inherit" | "unset"));
+    if let Some(keyword) = css_wide {
+        return values
+            .iter()
+            .all(|value| value == keyword)
+            .then(|| keyword.clone());
+    }
+    if values
+        .iter()
+        .any(|value| matches!(value.as_str(), "initial" | "inherit" | "unset"))
+    {
+        return None;
+    }
+
+    match name.as_str() {
+        "flex" => Some(values.join(" ")),
+        "flex-flow" => {
+            let direction = &values[0];
+            let wrap = &values[1];
+            match (direction.as_str(), wrap.as_str()) {
+                ("row", "nowrap") => Some(direction.clone()),
+                ("row", _) => Some(wrap.clone()),
+                (_, "nowrap") => Some(direction.clone()),
+                _ => Some(format!("{direction} {wrap}")),
+            }
+        },
+        _ => None,
+    }
 }
 
 /// Canonicalize the implemented flex shorthands using the same declaration
@@ -97,77 +269,8 @@ pub fn is_implemented_shorthand(name: &str) -> bool {
 /// Values containing `var()` remain unknown to this parser and therefore pass
 /// through at the shared CSSOM boundary.
 pub fn canonicalize_specified_shorthand(name: &str, value: &str) -> Option<String> {
-    if cascade::contains_top_level_declaration_delimiter(value)
-        || custom::contains_var(value)
-        || !is_implemented_shorthand(name)
-    {
-        return None;
-    }
-    let name = name.to_ascii_lowercase();
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if matches!(
-        value.to_ascii_lowercase().as_str(),
-        "initial" | "inherit" | "unset"
-    ) {
-        return Some(value.to_ascii_lowercase());
-    }
-
-    let block = cascade::parse_declaration_block(&format!("{name}: {value}"));
-    let expected_len = match name.as_str() {
-        "flex" => 3,
-        "flex-flow" => 2,
-        _ => return None,
-    };
-    let is_expected = |property| match name.as_str() {
-        "flex" => matches!(
-            property,
-            PropertyId::FlexGrow | PropertyId::FlexShrink | PropertyId::FlexBasis
-        ),
-        "flex-flow" => matches!(property, PropertyId::FlexDirection | PropertyId::FlexWrap),
-        _ => false,
-    };
-    if !block.errors.is_empty()
-        || !block.custom.is_empty()
-        || block.declarations.len() != expected_len
-        || block
-            .declarations
-            .iter()
-            .any(|declaration| declaration.important || !is_expected(declaration.property))
-    {
-        return None;
-    }
-    let property = |id| {
-        block
-            .declarations
-            .iter()
-            .find(|declaration| declaration.property == id)
-            .and_then(|declaration| match &declaration.value {
-                cascade::DeclaredValue::Value(value) => Some(value.to_css_string()),
-                _ => None,
-            })
-    };
-    match name.as_str() {
-        "flex" => Some(format!(
-            "{} {} {}",
-            property(PropertyId::FlexGrow)?,
-            property(PropertyId::FlexShrink)?,
-            property(PropertyId::FlexBasis)?,
-        )),
-        "flex-flow" => {
-            let direction = property(PropertyId::FlexDirection)?;
-            let wrap = property(PropertyId::FlexWrap)?;
-            match (direction.as_str(), wrap.as_str()) {
-                ("row", "nowrap") => Some(direction),
-                ("row", _) => Some(wrap),
-                (_, "nowrap") => Some(direction),
-                _ => Some(format!("{direction} {wrap}")),
-            }
-        },
-        _ => None,
-    }
+    let components = expand_specified_shorthand(name, value)?;
+    reconstruct_specified_shorthand(name, &components)
 }
 
 fn canonicalize_border(value: &str) -> Option<String> {
