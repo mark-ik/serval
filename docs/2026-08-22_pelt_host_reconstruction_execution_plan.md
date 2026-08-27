@@ -599,28 +599,29 @@ cargo run --locked --offline -p pelt --no-default-features \
   --artifact target/pelt-receipts/workspace-mixed.png
 ```
 
-The receipt reuses the four P4 fixtures and owns a 960x640, bounded 600-frame
-capture. After the first shared frame establishes Frisket content geometry, it
-clicks the retained Gemtext `static.html` link through tile 1's real content
-hole. Smolweb navigates on primary press and releases capture on pointer-up.
+The receipt reuses the four P4 fixtures and owns a 960x640 capture with three
+postcondition frames. A 600-redraw warmup first requires the Scrying fixture's
+timer to run, its imported texture to advance to a newer fenced frame, and that
+frame to be composed at least twice. It then clicks the retained Gemtext
+`static.html` link through tile 1's real content hole. Smolweb navigates on
+primary press and releases capture on pointer-up.
+
 The driver then removes only tile 1's receipt pin and lets shared routing select
 Livery for the new HTML address. It proves the same content hole remains tile
 1, the independent static tile retains its Livery title and heading, Boa's
 mutation remains in tile 3, and tile 4 retains its Scrying surface or visible
-platform fallback. On Windows with a registered producer, completion also
-requires tile 4's native view, more producer frames than imports, at least one
-import, and at least two fence waits and compositions. The remaining bounded
-dwell keeps the live Scrying surface visible in the final capture instead of
-accepting its startup texture.
+platform fallback. On Windows with a registered producer, the three
+postcondition frames begin only after the native content-readiness checks pass.
 
 The 2026-08-27 locked, offline Windows receipt used the registered Scrying
 producer and captured all four lanes in one compositor target. It exited after
-600 960x640 host frames with native counters `frames=4 imports=1 waits=4
-compositions=600` and routes `genet.livery:document` for tiles 1 and 2,
+160, 219, and 224 host redraws across three runs, within the 600-redraw bound,
+with three postcondition frames and routes `genet.livery:document` for tiles 1 and 2,
 `genet.scripted:document` for tile 3, and
 `scrying.web:surface:CompositedTexture` for tile 4. It recorded `Gemtext
 navigation rerouted only tile 1; Livery, scripted, and external neighbors
-held`, digest `aaa7ca8720c3aad4`, and a 100,839-byte PNG with SHA-256
+held`, digest `aaa7ca8720c3aad4`. The two visually inspected 100,839-byte PNGs
+were byte-identical with SHA-256
 `49ea93762c04f06cc85af2489d0519cb548d1153e37e3e8587538eb5a07797ce`.
 The GPU-free mixed driver passes without a Scrying producer by requiring the
 same explicit Livery fallback for tile 4 while still proving locality across
@@ -636,20 +637,21 @@ cargo run --locked --offline -p pelt --no-default-features \
 ```
 
 The receipt owns `examples/workspace/p5-fallback/index.html` and its retained
-`next.html` destination, again at 960x640 for three frames. It starts as an
-ordinary Livery document, applies the explicit `scrying.web` selection through
-the workspace route-policy seam with no Scrying producer registered, and
-requires the exact visible fallback reason and route title. On the following
-frame it clicks the real `next.html` link through the Frisket content hole and
-proves the replacement document remains interactive under the same fallback
-route. This receipt tests policy selection and visible document fallback. A
-user-facing route-control surface remains P6 work.
+`next.html` destination, again at 960x640 with three postcondition frames. It
+starts as an ordinary Livery document, applies the explicit `scrying.web`
+selection through the workspace route-policy seam with no Scrying producer
+registered, and requires the exact visible fallback reason and route title. On
+the following frame it clicks the real `next.html` link through the Frisket
+content hole and proves the replacement document remains interactive under the
+same fallback route. This receipt tests policy selection and visible document
+fallback. A user-facing route-control surface remains P6 work.
 
-The 2026-08-27 locked, offline Windows receipt exited after three 960x640
-frames with route `scrying.web:fallback:genet.livery`, visibly captured the
-navigated destination and route title, and recorded `explicit Scrying pin fell
+The 2026-08-27 locked, offline Windows receipt exited after five host redraws,
+including three postcondition frames, with route
+`scrying.web:fallback:genet.livery`. Two successive runs visibly captured the
+navigated destination and route title and recorded `explicit Scrying pin fell
 back visibly to Livery; retained link navigation stayed interactive`. Its
-digest is `b12523eac8a17028`; the 105,832-byte PNG has SHA-256
+digest is `b12523eac8a17028`; both 105,832-byte PNGs have SHA-256
 `556d49064fce0cc18f1f81839920a072b6dc2e8962cd6f1dcf60de574307b8e3`.
 The GPU-free test drives the same two policy-and-navigation steps.
 
@@ -659,10 +661,11 @@ alongside routes and frame bounds. Named workspace receipts reject the older P3
 and P4 receipt drivers so two semantic sequences cannot silently share one
 capture. The full locked, offline `pelt-desktop` wall with
 `livery,scripted,smolweb` passes 23/23, including both new GPU-free drivers;
-the focused Pelt CLI parser receipt also passes. The final Windows wall used
-`--config 'profile.test.debug=0'`: the default-debug relink reached MSVC's
-`LNK1318` PDB limit, while disabling debug information for the whole test
-profile avoided PDB generation and passed all 23 tests without a source change.
+the focused Pelt CLI parser receipt passes 1/1, and the three-test `pelt-core`
+integration wall passes. The final Windows wall used
+`--config 'profile.test.package."pelt-desktop".debug=0'`: the default-debug
+relink reached MSVC's `LNK1318` PDB limit, while the package-only debug override
+left dependency code unchanged and passed all 23 tests.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 

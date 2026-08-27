@@ -39,6 +39,7 @@ use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
 use crate::{WindowingMode, static_viewer};
 
 const RECEIPT_STEPS: u8 = 8;
+const WORKSPACE_RECEIPT_WARMUP_LIMIT: u32 = 600;
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
 
@@ -64,10 +65,7 @@ impl WorkspaceReceipt {
     }
 
     fn default_frames(self) -> u32 {
-        match self {
-            Self::Mixed => 600,
-            Self::Fallback => 3,
-        }
+        3
     }
 }
 
@@ -421,11 +419,14 @@ struct WorkspaceApp {
     gesture: Option<PointerGesture>,
     receipt_step: u8,
     receipt_complete: bool,
+    workspace_receipt_redraws: u32,
     receipt_error: Option<String>,
     pending_workspace_assertion: Option<String>,
     workspace_receipt_outcome: Option<WorkspaceReceiptOutcome>,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
+    #[cfg(target_os = "windows")]
+    mixed_content_ready_frame: Option<u32>,
     #[cfg(target_os = "windows")]
     scrying_host: Option<ScryingReceiptHost>,
 }
@@ -453,11 +454,14 @@ impl WorkspaceApp {
             gesture: None,
             receipt_step: 0,
             receipt_complete: false,
+            workspace_receipt_redraws: 0,
             receipt_error: None,
             pending_workspace_assertion: None,
             workspace_receipt_outcome: None,
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
+            #[cfg(target_os = "windows")]
+            mixed_content_ready_frame: None,
             #[cfg(target_os = "windows")]
             scrying_host,
         }
@@ -526,7 +530,18 @@ impl WorkspaceApp {
                     self.pending_workspace_assertion = Some(assertion);
                     self.receipt_complete = true;
                 },
-                Ok(None) => {},
+                Ok(None) => {
+                    if self.config.workspace_receipt == Some(WorkspaceReceipt::Mixed)
+                        && self.redraws >= WORKSPACE_RECEIPT_WARMUP_LIMIT
+                    {
+                        self.receipt_error = Some(
+                            "mixed workspace receipt reached its warmup bound before the native surface was ready"
+                                .to_owned(),
+                        );
+                        event_loop.exit();
+                        return;
+                    }
+                },
                 Err(error) => {
                     self.receipt_error = Some(error);
                     event_loop.exit();
@@ -665,7 +680,7 @@ impl WorkspaceApp {
             && self
                 .config
                 .frames
-                .is_some_and(|limit| self.redraws.saturating_add(1) >= limit);
+                .is_some_and(|limit| self.workspace_receipt_redraws.saturating_add(1) >= limit);
         let receipt_canvas = capture_now.then(|| {
             host.device().create_texture(&wgpu::TextureDescriptor {
                 label: Some("pelt workspace receipt composition"),
@@ -796,15 +811,23 @@ impl WorkspaceApp {
         }
         host.queue().present(swap);
         self.redraws += 1;
+        if self.config.workspace_receipt.is_some() && self.receipt_complete {
+            self.workspace_receipt_redraws += 1;
+        }
 
-        if self.workspace_receipt_outcome.is_some()
+        let workspace_receipt_finished = self.config.workspace_receipt.is_some()
+            && self.receipt_complete
+            && self
+                .config
+                .frames
+                .is_some_and(|limit| self.workspace_receipt_redraws >= limit);
+        if workspace_receipt_finished
             || (self.receipt_complete
                 && !self.config.capability_receipt
                 && self.config.workspace_receipt.is_none())
-            || self
-                .config
-                .frames
-                .is_some_and(|limit| self.redraws >= limit)
+            || self.config.frames.is_some_and(|limit| {
+                self.config.workspace_receipt.is_none() && self.redraws >= limit
+            })
         {
             event_loop.exit();
         } else if self.config.interaction_receipt || more || self.config.frames.is_some() {
@@ -824,13 +847,13 @@ impl WorkspaceApp {
     }
 
     fn drive_mixed_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
-        if self.receipt_step == 0 {
-            self.drive_mixed_workspace_receipt()?;
-            self.receipt_step = 1;
-        }
         #[cfg(target_os = "windows")]
         if self.scrying_host.is_some() && !self.mixed_native_receipt_ready() {
             return Ok(None);
+        }
+        if self.receipt_step == 0 {
+            self.drive_mixed_workspace_receipt()?;
+            self.receipt_step = 1;
         }
         Ok(Some(MIXED_WORKSPACE_ASSERTION.to_owned()))
     }
@@ -853,12 +876,14 @@ impl WorkspaceApp {
             .ok_or("mixed receipt Gemtext tile has no static.html link")?;
         let x = rect.x + link.rect[0] + 2.0;
         let y = rect.y + link.rect[1] + 2.0;
-        self.pointer_move(x, y);
-        if !self.pointer_down() {
-            return Err(
-                "mixed receipt link was not routed through its Frisket content hole".to_owned(),
-            );
+        let hit = self.frisket.hit(x, y);
+        if hit != Some(FrisketHit::Content(tile)) {
+            return Err(format!(
+                "mixed receipt link missed tile 1's Frisket content hole: {hit:?}"
+            ));
         }
+        self.pointer_move(x, y);
+        let _ = self.pointer_down();
         // Smolweb uses Inker's compatibility click-on-press floor. Pointer-up
         // still closes capture, but the replacement session need not redraw.
         let _ = self.pointer_up();
@@ -970,13 +995,25 @@ impl WorkspaceApp {
     }
 
     #[cfg(target_os = "windows")]
-    fn mixed_native_receipt_ready(&self) -> bool {
+    fn mixed_native_receipt_ready(&mut self) -> bool {
+        if !self.capability_receipt_ready() {
+            return false;
+        }
         let stats = self.native_surfaces.stats();
-        self.native_surfaces.view(TileId(4)).is_some()
-            && stats.frames > stats.imports
-            && stats.imports > 0
-            && stats.waits >= 2
-            && stats.compositions >= 2
+        if let Some(ready_frame) = self.mixed_content_ready_frame {
+            return stats.frames > ready_frame;
+        }
+        let script = "Number(document.querySelector('#tick')?.textContent ?? 0) >= 1";
+        let content_ready = self
+            .workspace
+            .execute_surface_script(TileId(4), script)
+            .ok()
+            .flatten()
+            .is_some_and(|result| matches!(result.trim(), "true" | "\"true\""));
+        if content_ready {
+            self.mixed_content_ready_frame = Some(stats.frames);
+        }
+        false
     }
 
     fn drive_fallback_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
@@ -1021,12 +1058,15 @@ impl WorkspaceApp {
             .ok_or("fallback receipt retained document has no next.html link")?;
         let x = rect.x + link.rect[0] + link.rect[2] * 0.5;
         let y = rect.y + link.rect[1] + link.rect[3] * 0.5;
-        self.pointer_move(x, y);
-        if !self.pointer_down() || !self.pointer_up() {
-            return Err(
-                "fallback receipt link did not traverse its Frisket content hole".to_owned(),
-            );
+        let hit = self.frisket.hit(x, y);
+        if hit != Some(FrisketHit::Content(tile)) {
+            return Err(format!(
+                "fallback receipt link missed tile 1's Frisket content hole: {hit:?}"
+            ));
         }
+        self.pointer_move(x, y);
+        let _ = self.pointer_down();
+        let _ = self.pointer_up();
         self.validate_fallback_route(
             "Pelt fallback destination",
             "Fallback navigation stayed local",
@@ -1909,14 +1949,6 @@ mod tests {
         let caller_geometry = config.with_size(800, 500).with_frame_limit(5);
         assert_eq!(caller_geometry.size, Some((800, 500)));
         assert_eq!(caller_geometry.frames, Some(5));
-
-        let mixed = WorkspaceViewerConfig::new(
-            vec!["native.gmi".to_owned(), "surface.html".to_owned()],
-            WindowingMode::Headed,
-        )
-        .with_workspace_receipt(WorkspaceReceipt::Mixed, "mixed.png");
-        assert_eq!(mixed.size, Some((960, 640)));
-        assert_eq!(mixed.frames, Some(600));
     }
 
     #[test]

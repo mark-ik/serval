@@ -331,6 +331,13 @@ fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() 
     assert_eq!(surface_probe.frames, 1);
     drop(surface_probe);
     assert!(workspace.pump());
+    assert_eq!(workspace.execute_surface_script(TileId(1), "1"), Ok(None));
+    assert!(
+        workspace
+            .execute_surface_script(TileId(3), "1")
+            .unwrap_err()
+            .contains("no web scripting plane")
+    );
 
     assert!(
         workspace
