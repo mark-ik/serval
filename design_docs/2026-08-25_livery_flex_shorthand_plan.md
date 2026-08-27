@@ -426,3 +426,10 @@ published `genet-taffy` release.
   and ran `flexbox-flex-basis-content-001a` through `004b` twice with the
   exact policy. Each run-one/run-two map pair is byte-identical; all sixteen
   maps are checked in under `testing/genet/wpt-ledger/2026-08-27_flex_basis_content`.
+- Re-ran the focused Livery receipt (6 / 6) and the full Buckram wall
+  (254 / 254) after the rebase. The rebase preserved every Row 18 compiled
+  source blob byte for byte, so the already-measured full Livery wall remains
+  applicable: 223 passed and one pre-existing canvas assertion failed. The
+  same `replaced_html_dimensions_use_computed_css_and_canvas_intrinsics`
+  failure, which observes `200 × 200` instead of its expected `100 × 100`,
+  occurs on the untouched baseline and is not attributed to this slice.
