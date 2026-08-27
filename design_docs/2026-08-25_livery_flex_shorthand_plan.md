@@ -3,9 +3,10 @@
 **Date:** 2026-08-25
 
 **Status:** In progress. The `flex` and `flex-flow` cascade, bounded
-specified/computed CSSOM, and physical flex main-axis, alignment, and gap
-projection are complete. Row 18 remains open for the generic declaration
-model, flex sizing, the remaining vertical-flex work, and grid.
+specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
+and physical flex main-axis, alignment, and gap projection are complete. Row
+18 remains open for generic declaration reflection, flex-basis content used
+values and automatic minimums, the remaining vertical-flex work, and grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -190,9 +191,18 @@ move fail-to-pass, and the full flexbox reftest map has no unexplained loss.
   vendored Taffy's min-content collection creates one item per line and then
   retains only the longest line. That repair requires its own Taffy release
   lane.
-- The current generic `Size` model rejects required `flex-basis: content` and
-  admits width-family values such as `none` that are invalid for flex basis.
-  A distinct flex-basis value model remains required.
+- `flex-basis` now has a distinct specified/computed value model. It admits
+  `content` and the intrinsic sizing keywords, rejects width-family `none`,
+  resolves definite font- and environment-relative values, reapplies its
+  non-negative computed range after deferred `ch` and container-unit
+  resolution, and retains its own interpolation and CSSOM serialization. The
+  temporary Genet-Livery adapter still lowers intrinsic and `content` bases to
+  Taffy `auto`; this is an explicit compatibility boundary, not used-value
+  support.
+- Two focused parsing residuals remain outside that value model:
+  `calc(2em + 3ex)` needs shared `ex` font metrics, while
+  `calc(0% + 10px)` needs the generic length-percentage representation to
+  retain a syntactic zero-percentage term.
 - The prior plan records the final shorthand runner name and hash, but the
   executable was not present in the preserved ledger directory on 2026-08-26.
   The continuation therefore rebuilds and freezes both current-main baseline
@@ -257,8 +267,11 @@ and focused maps are recorded under
 
 ## Remaining Row 18 work
 
-- Model flex basis distinctly: admit `content`, reject width-only forms such as
-  `none`, and complete its computed-value behavior.
+- Carry `auto` and `content` distinctly through Taffy's flex-basis API, skip
+  preferred-main-size fallback for `content`, publish the fork, and retire the
+  eight focused `flexbox-flex-basis-content-*` layout residuals.
+- Add shared `ex` font metrics and generic zero-percentage provenance rather
+  than encoding either exception inside `FlexBasis`.
 - Implement generic `CSSStyleDeclaration` shorthand-to-longhand reflection for
   `flex` and `flex-flow`, including the variable-bearing `CSS.supports()` seam.
 - Repair the automatic-minimum-size residual in vendored Taffy and publish the
@@ -309,3 +322,17 @@ and focused maps are recorded under
 - Froze current-main baseline and accepted candidate runners. The exact
   parsing map gains 30 subtests, and the full 1,358-file flexbox map gains 19
   reftests with zero pass-to-fail movement.
+- Added a distinct `FlexBasis` type through generated property dispatch,
+  cascade, computed-value resolution, animation interpolation, CSSOM, and an
+  explicit temporary Taffy adapter. Native Livery, Genet-Livery, and scripted
+  Boa receipts are green.
+- Reapplied the non-negative computed range at each deferred relative-length
+  boundary. A focused native regression retains `calc(10cqw - 1em)` until its
+  container is known, then clamps the resolved negative length to zero.
+- Rebuilt matched baseline and candidate runners with one ignored root lockfile
+  copied byte-for-byte between worktrees. The focused flex-basis surface moves
+  from 14 / 27 to 25 / 27; the complete flex parsing map moves from 98 / 183 to
+  113 / 183 with 15 exact gains and zero losses.
+- Characterized all eight `flexbox-flex-basis-content-001a` through `004b`
+  reftests. They remain local failures in both maps, so this slice makes no
+  content used-value or layout claim.

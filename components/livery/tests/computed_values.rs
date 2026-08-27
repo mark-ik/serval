@@ -1,5 +1,5 @@
 use livery::values::{
-    Alignment, Color, FontWeight, Length, LengthPercentage, Opacity, Size, Transform,
+    Alignment, Color, FlexBasis, FontWeight, Length, LengthPercentage, Opacity, Size, Transform,
 };
 use livery::{ComputedValues, PropertyId, ValueType, canonicalize_specified_longhand};
 
@@ -11,6 +11,7 @@ fn generated_initial_values_match_the_catalog() {
     assert_eq!(values.background_color, Color::TRANSPARENT);
     assert_eq!(values.width, Size::Auto);
     assert_eq!(values.height, Size::Auto);
+    assert_eq!(values.flex_basis, FlexBasis::Auto);
     assert_eq!(values.font_weight, FontWeight::Normal);
     assert_eq!(values.opacity, Opacity::ONE);
     assert_eq!(values.transform, Transform::None);

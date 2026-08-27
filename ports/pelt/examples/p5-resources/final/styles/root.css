@@ -1,0 +1,37 @@
+@import "palette.css";
+
+@font-face {
+  font-family: ReceiptAhem;
+  src: url("../../../Ahem.ttf") format("truetype");
+}
+
+body {
+  margin: 0;
+  padding: 24px;
+  background-color: #f3ecdc;
+  color: #3d2b1f;
+  font: 18px sans-serif;
+}
+
+h1 { margin: 0 0 18px; }
+
+p { margin: 0 0 16px; }
+
+.font-proof {
+  width: 72px;
+  height: 18px;
+  margin: 0 0 16px;
+  overflow: hidden;
+  color: #6f4228;
+  font: 18px/1 ReceiptAhem, sans-serif;
+}
+
+.card {
+  width: 180px;
+  height: 64px;
+  margin: 0 0 16px;
+  background-color: #d9b46c;
+  background-image: url("../../../../../../resources/servo_64.png");
+  background-repeat: no-repeat;
+  background-position: center;
+}

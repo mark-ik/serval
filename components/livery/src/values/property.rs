@@ -2770,6 +2770,136 @@ impl fmt::Display for Size {
     }
 }
 
+/// The `flex-basis` grammar is deliberately separate from generic box sizes.
+/// In particular it admits `content` and the intrinsic sizing keywords, while
+/// rejecting width-only `none`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FlexBasis {
+    Auto,
+    Content,
+    MinContent,
+    MaxContent,
+    FitContent,
+    Value(LengthPercentage),
+}
+
+impl FlexBasis {
+    fn clamp_definite_nonnegative(self) -> Self {
+        let Self::Value(value) = self else {
+            return self;
+        };
+        let value = match value {
+            LengthPercentage::Length(length) if length.unit == super::LengthUnit::Px => {
+                LengthPercentage::Length(Length::px(length.value.max(0.0)))
+            },
+            LengthPercentage::Calc(calc)
+                if calc.percentage == 0.0
+                    && calc.em == 0.0
+                    && calc.rem == 0.0
+                    && !calc.has_unresolved_relative() =>
+            {
+                LengthPercentage::Length(Length::px(calc.px.max(0.0)))
+            },
+            value => value,
+        };
+        Self::Value(value)
+    }
+
+    /// Resolve font-relative terms for the computed-value boundary. A
+    /// definite negative result is clamped as required by flex-basis's
+    /// non-negative range; percentage-dependent results remain deferred.
+    pub fn resolve_font_relative(self, em: f32, rem: f32) -> Self {
+        let Self::Value(value) = self else {
+            return self;
+        };
+        Self::Value(value.resolve_font_relative(em, rem)).clamp_definite_nonnegative()
+    }
+
+    /// Resolve available environment-relative terms and reapply the computed
+    /// non-negative range once the result becomes definite. Font-relative and
+    /// percentage-dependent values remain deferred to their own boundaries.
+    pub fn resolve_relative(self, environment: RelativeLengthEnvironment) -> Self {
+        let Self::Value(value) = self else {
+            return self;
+        };
+        Self::Value(value.resolve_relative(environment)).clamp_definite_nonnegative()
+    }
+
+    /// Interpolate numeric bases through their shared length-percentage
+    /// representation. Keywords and incompatible value families switch at
+    /// the animation midpoint.
+    pub fn interpolate(self, other: Self, progress: f32) -> Self {
+        match (self, other) {
+            (Self::Value(from), Self::Value(to)) => Self::Value(from.interpolate(to, progress)),
+            (from, _) if progress.clamp(0.0, 1.0) < 0.5 => from,
+            (_, to) => to,
+        }
+    }
+
+    /// A computed pure percentage serializes without a redundant `calc()`.
+    pub fn computed_value(self) -> Self {
+        let Self::Value(LengthPercentage::Calc(calc)) = self else {
+            return self;
+        };
+        if calc.px == 0.0
+            && calc.em == 0.0
+            && calc.rem == 0.0
+            && calc.to_string() == format!("calc({}%)", format_number(calc.percentage * 100.0))
+        {
+            return Self::Value(LengthPercentage::Percentage(calc.percentage));
+        }
+        self
+    }
+}
+
+impl FromStr for FlexBasis {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
+        let keyword = if input.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if input.eq_ignore_ascii_case("content") {
+            Some(Self::Content)
+        } else if input.eq_ignore_ascii_case("min-content") {
+            Some(Self::MinContent)
+        } else if input.eq_ignore_ascii_case("max-content") {
+            Some(Self::MaxContent)
+        } else if input.eq_ignore_ascii_case("fit-content") {
+            Some(Self::FitContent)
+        } else {
+            None
+        };
+        if let Some(keyword) = keyword {
+            return Ok(keyword);
+        }
+
+        let value = input.parse::<LengthPercentage>()?;
+        match value {
+            LengthPercentage::Length(length) if length.value < 0.0 => {
+                Err(ParseError::expected("a non-negative flex basis"))
+            },
+            LengthPercentage::Percentage(value) if value < 0.0 => {
+                Err(ParseError::expected("a non-negative flex basis"))
+            },
+            value => Ok(Self::Value(value)),
+        }
+    }
+}
+
+impl fmt::Display for FlexBasis {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => formatter.write_str("auto"),
+            Self::Content => formatter.write_str("content"),
+            Self::MinContent => formatter.write_str("min-content"),
+            Self::MaxContent => formatter.write_str("max-content"),
+            Self::FitContent => formatter.write_str("fit-content"),
+            Self::Value(value) => value.fmt(formatter),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GridTrack {
     Auto,

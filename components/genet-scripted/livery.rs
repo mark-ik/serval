@@ -1876,6 +1876,35 @@ mod tests {
     }
 
     #[test]
+    fn boa_cssom_flex_basis_accepts_intrinsic_keywords_in_scripted_reads() {
+        let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
+        runtime.load_dom(&StaticDocument::parse(
+            "<html><body><div id='card' class='card'></div></body></html>",
+        ));
+        LiveryCssom::install(
+            &mut runtime,
+            &[".card { flex-basis: content; }"],
+            Device::screen(800.0, 600.0),
+        );
+
+        runtime
+            .eval(
+                "var card = document.getElementById('card');\
+                 console.log(String(CSS.supports('flex-basis', 'content')) + '|' +\
+                   String(CSS.supports('flex-basis', 'fit-content')));\
+                 console.log(getComputedStyle(card).flexBasis);\
+                 card.style.flexBasis = 'fit-content';\
+                 console.log(card.style.flexBasis + '|' + getComputedStyle(card).flexBasis);",
+            )
+            .expect("Livery flex-basis CSSOM script");
+
+        assert_eq!(
+            runtime.host().borrow().console,
+            vec!["true|true", "content", "fit-content|fit-content"],
+        );
+    }
+
+    #[test]
     fn boa_canonicalizes_nested_calc_through_livery_inline_cssom() {
         let mut runtime = Runtime::<BoaEngine>::new().expect("runtime");
         runtime.load_dom(&StaticDocument::parse(

@@ -725,7 +725,7 @@ impl CalcLengthPercentage {
         self
     }
 
-    fn has_unresolved_relative(self) -> bool {
+    pub(super) fn has_unresolved_relative(self) -> bool {
         self.relative_len() != 0
     }
 }

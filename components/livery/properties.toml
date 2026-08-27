@@ -1043,10 +1043,10 @@ source = "css_fonts_4"
 
 [[property]]
 name = "flex-basis"
-value_type = "size"
+value_type = "flex-basis"
 inherited = false
 initial = "auto"
-grammar = "auto | <length-percentage> | content"
+grammar = "auto | content | min-content | max-content | fit-content | <length-percentage>"
 seed_values = ["auto", "px", "percentage"]
 animation = "by-computed-value"
 source = "css_flexbox_1"

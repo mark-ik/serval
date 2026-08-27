@@ -58,7 +58,7 @@ pub use genet_documents::SmolwebDocument;
 #[cfg(feature = "smolweb")]
 pub use genet_documents::{SmolwebPalette, SmolwebTheme};
 #[cfg(feature = "smolweb")]
-pub use smolweb_glue::run_smolweb_viewer;
+pub use smolweb_glue::{run_smolweb_receipt, run_smolweb_viewer};
 
 #[cfg(feature = "scripted")]
 mod scripted;

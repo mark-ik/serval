@@ -29,9 +29,9 @@ use livery::{
     values::{
         Alignment as CssAlignment, BorderCollapse, BorderStyle, BorderWidth,
         BoxSizing as CssBoxSizing, CaptionSide, Clear as CssClear, ComputedColor, ContainerType,
-        Direction as CssDirection, Display as CssDisplay, FlexDirection as CssFlexDirection,
-        FlexWrap as CssFlexWrap, Float as CssFloat, FontSize, Gap as CssGap,
-        GridAutoFlow as CssGridAutoFlow, GridPlacement as CssGridPlacement,
+        Direction as CssDirection, Display as CssDisplay, FlexBasis as CssFlexBasis,
+        FlexDirection as CssFlexDirection, FlexWrap as CssFlexWrap, Float as CssFloat, FontSize,
+        Gap as CssGap, GridAutoFlow as CssGridAutoFlow, GridPlacement as CssGridPlacement,
         GridTemplate as CssGridTemplate, GridTrack as CssGridTrack, Inset, Length,
         LengthPercentage as CssLengthPercentage, LineHeight, Margin, Overflow as CssOverflow,
         Position as CssPosition, Radius, RelativeLengthEnvironment,
@@ -7680,7 +7680,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             CssFlexWrap::Wrap => FlexWrap::Wrap,
             CssFlexWrap::WrapReverse => FlexWrap::WrapReverse,
         },
-        flex_basis: dimension(computed.flex_basis, font_size),
+        flex_basis: flex_basis_dimension(computed.flex_basis, font_size),
         flex_grow: computed.flex_grow.value(),
         flex_shrink: computed.flex_shrink.value(),
         order: computed.order.value(),
@@ -8155,6 +8155,24 @@ fn dimension(size: CssSize, em: f32) -> Dimension {
             _ => Dimension::length(absolute_length_percentage(value, em, 16.0, 0.0)),
         },
         _ => Dimension::auto(),
+    }
+}
+
+/// Temporary boundary while vendored Taffy has only `Dimension` for a flex
+/// basis. CSS `content` and intrinsic bases deliberately remain visible in
+/// Livery's computed value and collapse to Taffy `auto` here. They need a
+/// flex-specific Taffy basis API before this lowering can become semantic.
+fn flex_basis_dimension(basis: CssFlexBasis, em: f32) -> Dimension {
+    match basis {
+        CssFlexBasis::Value(value) => match value {
+            CssLengthPercentage::Percentage(value) => Dimension::percent(value),
+            _ => Dimension::length(absolute_length_percentage(value, em, 16.0, 0.0)),
+        },
+        CssFlexBasis::Auto
+        | CssFlexBasis::Content
+        | CssFlexBasis::MinContent
+        | CssFlexBasis::MaxContent
+        | CssFlexBasis::FitContent => Dimension::auto(),
     }
 }
 

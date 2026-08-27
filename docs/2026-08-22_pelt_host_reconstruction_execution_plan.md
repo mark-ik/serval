@@ -424,7 +424,7 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
-**Status:** in progress 2026-08-26. Fixtures 1-4 are complete; fixtures 5-8
+**Status:** in progress 2026-08-27. Fixtures 1-6 are complete; fixtures 7-8
 remain open.
 
 The ordinary-article receipt is:
@@ -523,6 +523,72 @@ P0-deferred scripted selection test by painting selection overlays on cached
 frames and deriving clipped links from selected text-node ancestry instead of
 overlapping element rectangles.
 
+The redirected resource-graph receipt is:
+
+```sh
+cargo run --locked --offline -p pelt --no-default-features --features livery -j 1 -- \
+  --product-receipt resources \
+  --artifact target/pelt-receipts/resources.png
+```
+
+The receipt owns `examples/p5-resources/start/index.html` and its redirected
+`final/index.html` response. The receipt fetcher returns the final identity and
+delegates every other request to `LocalFetcher`, so the run is deterministic and
+does not need a network server. The final document links `styles/root.css`,
+whose leading `@import` loads `styles/palette.css`; the linked sheet also names
+the reused `Ahem.ttf` font and `servo_64.png` image through relative URLs.
+
+The GPU-free assertion inspects the retained resource ledger for the redirected
+document identity, imported-before-parent order, import parent/child IDs,
+source/request URL identities, sheet-relative image and font entries, and an
+empty diagnostic set. The headed driver remains host-neutral: its source clip
+proves the final response identity, the scene proves the image, named Ahem font
+bytes, and imported accent color, and a shared fetch trace proves the complete
+request sequence.
+
+The 2026-08-27 locked, offline Windows receipt presented three 960x640 frames
+after each flattened font source was resolved against its final stylesheet
+identity. It recorded `redirected identity, imported cascade, linked image/font,
+and fetch trace held`, with digest `b2736b2a574240f7`. Two successive captures
+were byte-identical at 88,850 bytes with SHA-256
+`77b75a5b7da67b354c63513f6f339b317a3690b4eddc13a8b57feb4a702b2f65`.
+The focused retained-resource assertion passes, followed by the full 15/15
+`pelt-desktop` Livery test wall and its doc-test wall.
+
+The protocol-native Gemtext receipt is:
+
+```sh
+cargo run --locked --offline -p pelt --no-default-features --features smolweb -j 1 -- \
+  --product-receipt gemtext \
+  --artifact target/pelt-receipts/gemtext.png
+```
+
+The receipt owns `examples/p5-gemtext/index.gmi` and its linked `next.gmi`, the
+same 960x640 physical viewport, and three presented frames. Pelt supplies the
+initial `text/gemini` body through `SessionSpawnRequest`; the registered
+`SmolwebSessionEngine` lowers it through Nematic without consulting transport.
+A receipt-local fetcher serves only the two fixed Gemtext URLs so the retained
+native link can open the second document without network access.
+
+The GPU-free driver proves the controller's engine ID is
+`nematic.gemtext`, the held body and content type survive the initial spawn,
+the structural report and retained hit table expose the resolved native link,
+and both documents paint nonempty Gemtext glyph runs. Smolweb currently uses
+Inker's compatibility click-on-press floor: the primary press captures and
+navigates exactly once, pointer-up releases capture, and `PeltController`
+replaces the initial request with a fresh bodyless request for the fixed
+destination. The destination title, return link, and painted scene must all
+pass before capture is accepted.
+
+The 2026-08-27 locked, offline Windows receipt presented three 960x640 frames
+and captured the navigated document with its retained return link. It recorded
+`held Gemtext body lowered through Nematic; retained native link navigated
+through PeltController`, digest `5c8cf8e4e09843d3`, and a 69,169-byte PNG with
+SHA-256
+`8465cb47b4667bb5ca49d283c1bd53804ad98f8727be79aedefa86bf395615c8`.
+The focused routed controller test passes 1/1, followed by the full 17/17
+`pelt-desktop` Smolweb test wall.
+
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 
 ```sh
@@ -584,8 +650,8 @@ terminal.
 ## Immediate next lane
 
 Continue P5 from the completed ordinary-article, controls, responsive-layout,
-and scripted-navigation receipts. Add named receipts for resource graphs,
-protocol-native content, the mixed workspace, and the explicit fallback.
+scripted-navigation, redirected-resource-graph, and protocol-native Gemtext
+receipts. Add named receipts for the mixed workspace and explicit fallback.
 The Reader tile must carry held source bytes rather than teaching Fleece to
 fetch. Each remaining fixture needs a bounded command, captured artifact, and
 interaction assertion. The completed Windows P4 route remains the external

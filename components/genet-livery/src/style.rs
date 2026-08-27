@@ -5,7 +5,7 @@ use std::{
 };
 
 use genet_document_resources::{
-    ResolvedImportRule, ResolvedStylesheet, StylesheetImportParent, StylesheetOwner,
+    ResolvedImportRule, ResolvedStylesheet, StylesheetImportParent, StylesheetOwner, resolve_url,
 };
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
@@ -22,9 +22,9 @@ use livery::{
         Stylesheet, StylesheetDiagnostic,
     },
     values::{
-        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FontSize, Length,
-        LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size, SystemColor,
-        TreeCounts, UsedColorContext,
+        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FlexBasis, FontSize,
+        Length, LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size,
+        SystemColor, TreeCounts, UsedColorContext,
     },
 };
 
@@ -105,6 +105,18 @@ impl AuthorStylesheet {
     /// imported sheets derive it from their parent import path.
     pub fn cssom_key(&self) -> &str {
         &self.cssom_key
+    }
+
+    /// Font descriptors for Livery's host-facing flattened view. CSSOM keeps
+    /// the raw stylesheet spelling, while resource registration needs the
+    /// source-relative identity of every URL.
+    fn resolved_font_faces(&self) -> impl Iterator<Item = FontFaceRule> + '_ {
+        let source_url = self.source_url.as_deref();
+        self.stylesheet
+            .font_faces()
+            .iter()
+            .cloned()
+            .map(move |face| face.remap_source_urls(|source| resolve_url(source_url, source)))
     }
 
     fn refresh_resource_graph(&mut self, source: &ResolvedStylesheet, cssom_key: String) {
@@ -318,7 +330,7 @@ impl StyleSet {
             self.diagnostics.extend_from_slice(author.diagnostics());
             self.rules.extend(author.reindexed_rules(source_order));
             source_order = source_order.saturating_add(author.rules().len() as u64);
-            self.font_faces.extend(author.font_faces().iter().cloned());
+            self.font_faces.extend(author.resolved_font_faces());
             self.keyframes.extend(author.keyframes().iter().cloned());
         }
         self.generation = self.generation.saturating_add(1);
@@ -517,8 +529,9 @@ impl StyleSet {
         &self.rules
     }
 
-    /// Author and UA font faces in stylesheet order. The host resolves each
-    /// retained source URL and supplies bytes to the document separately.
+    /// Author and UA font faces in stylesheet order. Author source URLs are
+    /// resolved against each sheet's final identity; retained CSSOM text stays
+    /// authored, and the host separately supplies the matching bytes.
     pub fn font_faces(&self) -> &[FontFaceRule] {
         &self.font_faces
     }
@@ -804,6 +817,9 @@ where
             };
             let reference_box = definite_transform_reference_box(values, em);
             return Some(values.transform.to_computed_css(em, reference_box));
+        }
+        if property == PropertyId::FlexBasis {
+            return Some(computed_flex_basis_css(values.get(property)));
         }
         Some(computed_value_css(resolve_property_used_colors(
             values.get(property),
@@ -1366,6 +1382,10 @@ fn resolve_font_metrics(computed: &mut ComputedValues, parent: Option<&ComputedV
                 livery::values::Spacing::Length(value.resolve_font_relative(font_size, 16.0));
         }
     }
+    computed.flex_basis = computed
+        .flex_basis
+        .resolve_font_relative(font_size, 16.0)
+        .computed_value();
 }
 
 fn resolve_length_percentage(value: LengthPercentage, em: f32, percentage_basis: f32) -> f32 {
@@ -1434,8 +1454,8 @@ fn computed_value_css(value: PropertyValue) -> String {
 
 fn computed_flex_basis_css(value: PropertyValue) -> String {
     match value {
-        PropertyValue::Size(Size::Value(LengthPercentage::Zero)) => "0px".to_owned(),
-        PropertyValue::Size(Size::Value(LengthPercentage::Length(Length {
+        PropertyValue::FlexBasis(FlexBasis::Value(LengthPercentage::Zero)) => "0px".to_owned(),
+        PropertyValue::FlexBasis(FlexBasis::Value(LengthPercentage::Length(Length {
             value,
             unit: LengthUnit::Px,
         }))) => used_px(value),
@@ -1587,5 +1607,61 @@ mod tests {
             logical_borders.border_bottom_color.to_srgb8(),
             Some((255, 0, 0, 255))
         );
+    }
+
+    #[test]
+    fn flattened_font_faces_keep_sheet_relative_sources_while_cssom_stays_authored() {
+        fn linked_sheet(
+            sheet_id: u64,
+            source_url: &str,
+            family: &str,
+            document_order: u64,
+        ) -> ResolvedStylesheet {
+            ResolvedStylesheet {
+                sheet_id,
+                owner: StylesheetOwner::Linked,
+                owner_node: Some(sheet_id),
+                source_url: Some(source_url.to_owned()),
+                requested_url: Some(source_url.to_owned()),
+                content_type: Some("text/css".to_owned()),
+                media: None,
+                imports: Vec::new(),
+                import_parent: None,
+                text: format!("@font-face {{ font-family: {family}; src: url(\"font.ttf\"); }}"),
+                document_order,
+            }
+        }
+
+        let styles = StyleSet::cambium_resources(&[
+            linked_sheet(1, "https://example.test/first/site.css", "First", 0),
+            linked_sheet(2, "https://example.test/second/site.css", "Second", 1),
+        ]);
+
+        assert_eq!(
+            styles
+                .font_faces()
+                .iter()
+                .map(|face| face.sources()[0].as_ref())
+                .collect::<Vec<_>>(),
+            [
+                "https://example.test/first/font.ttf",
+                "https://example.test/second/font.ttf",
+            ]
+        );
+        for sheet in 0..2 {
+            let rule = styles
+                .cssom_rule(sheet, &[0])
+                .expect("retained author @font-face CSSOM rule");
+            assert!(
+                rule.css_text.contains("url(\"font.ttf\")"),
+                "CSSOM keeps the authored source spelling: {}",
+                rule.css_text
+            );
+            assert!(
+                !rule.css_text.contains("https://example.test/"),
+                "flattened resource remapping cannot rewrite CSSOM: {}",
+                rule.css_text
+            );
+        }
     }
 }

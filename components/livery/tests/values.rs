@@ -5,13 +5,14 @@ use livery::values::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
     BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide, Clear, Color, Contain,
-    ContainIntrinsicSize, CssValue, Direction, Display, Duration, EmptyCells, FlexDirection,
-    FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize, FontStyle,
-    FontVariantLigatures, FontWeight, Gap, Inset, LengthPercentage, LengthUnit, LineHeight,
-    ListStyleType, Margin, Opacity, Order, Overflow, Padding, PointerEvents, Position, Radius,
-    RelativeLengthEnvironment, ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing,
-    TextAlign, TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty,
-    TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse, ZIndex,
+    ContainIntrinsicSize, CssValue, Direction, Display, Duration, EmptyCells, FlexBasis,
+    FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize,
+    FontStyle, FontVariantLigatures, FontWeight, Gap, Inset, Interpolate, LengthPercentage,
+    LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, Padding,
+    PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate, Scale,
+    Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode, TimingFunction,
+    Transform, TransitionProperty, TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse,
+    ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, PropertyId, canonicalize_specified_longhand,
@@ -72,6 +73,8 @@ fn specified_flex_shorthands_reuse_cascade_canonicalization() {
         ("1", "1 1 0%"),
         ("7% 8", "8 1 7%"),
         ("auto 1 2", "1 2 auto"),
+        ("content", "1 1 content"),
+        ("2 fit-content 3", "2 3 fit-content"),
     ] {
         assert_eq!(
             canonicalize_specified_shorthand("flex", source).as_deref(),
@@ -89,6 +92,62 @@ fn specified_flex_shorthands_reuse_cascade_canonicalization() {
             Some(expected)
         );
     }
+}
+
+#[test]
+fn flex_basis_has_its_own_non_negative_value_grammar() {
+    for value in [
+        "auto",
+        "content",
+        "min-content",
+        "max-content",
+        "fit-content",
+        "0",
+        "12px",
+        "25%",
+    ] {
+        assert_round_trip::<FlexBasis>(value);
+    }
+    for value in [
+        "none",
+        "auto content",
+        "-1px",
+        "-2%",
+        "3px 4%",
+        "anchor-size(--a width)",
+        "anchor-size(--a width, 10px)",
+    ] {
+        assert!(value.parse::<FlexBasis>().is_err(), "accepted {value}");
+        assert_eq!(canonicalize_specified_longhand("flex-basis", value), None);
+    }
+    assert_eq!(
+        canonicalize_specified_longhand("flex-basis", "content").as_deref(),
+        Some("content")
+    );
+}
+
+#[test]
+fn flex_basis_interpolates_numeric_values_and_preserves_unresolved_environment_terms() {
+    let from = "10px".parse::<FlexBasis>().unwrap();
+    let to = "30px".parse::<FlexBasis>().unwrap();
+    assert_eq!(from.interpolate_value(&to, 0.25).to_string(), "15px");
+
+    let content = FlexBasis::Content;
+    assert_eq!(content.interpolate_value(&to, 0.25), content);
+    assert_eq!(content.interpolate_value(&to, 0.75), to);
+
+    let negative = "calc(10px - 0.5em)".parse::<FlexBasis>().unwrap();
+    assert_eq!(negative.resolve_font_relative(40.0, 16.0).to_string(), "0");
+
+    let container_relative = "calc(10cqw - 1em)".parse::<FlexBasis>().unwrap();
+    let unresolved = container_relative.resolve_font_relative(16.0, 16.0);
+    assert!(unresolved.to_string().contains("cqw"));
+    let resolved = unresolved.resolve_relative_lengths(RelativeLengthEnvironment::containers(
+        ViewportSizes::uniform(100.0, 100.0),
+        Some(100.0),
+        Some(100.0),
+    ));
+    assert_eq!(resolved.to_string(), "0");
 }
 
 #[test]

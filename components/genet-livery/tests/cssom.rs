@@ -104,6 +104,42 @@ fn computed_style_serializes_flex_shorthands_from_longhands() {
         style_set.computed_style(card, "flex").as_deref(),
         Some("0 0 0px")
     );
+
+    let (style_set, card) = retained(".card { font-size: 40px; flex-basis: content; }");
+    assert_eq!(
+        style_set.computed_style(card, "flex-basis").as_deref(),
+        Some("content")
+    );
+
+    let (style_set, card) = retained(".card { flex-basis: fit-content; }");
+    assert_eq!(
+        style_set.computed_style(card, "flex-basis").as_deref(),
+        Some("fit-content")
+    );
+
+    let (style_set, card) = retained(".card { font-size: 40px; flex-basis: calc(10px + 0.5em); }");
+    assert_eq!(
+        style_set.computed_style(card, "flex-basis").as_deref(),
+        Some("30px")
+    );
+
+    let (style_set, card) = retained(".card { font-size: 40px; flex-basis: calc(10px - 0.5em); }");
+    assert_eq!(
+        style_set.computed_style(card, "flex-basis").as_deref(),
+        Some("0px")
+    );
+
+    let (style_set, card) = retained(".card { flex-basis: calc(10% + 0px); }");
+    assert_eq!(
+        style_set.computed_style(card, "flex-basis").as_deref(),
+        Some("10%")
+    );
+
+    let (style_set, card) = retained(".card { flex-basis: calc(10%); }");
+    assert_eq!(
+        style_set.computed_style(card, "flex-basis").as_deref(),
+        Some("10%")
+    );
 }
 
 #[test]
