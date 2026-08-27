@@ -10,14 +10,15 @@ use std::sync::Arc;
 
 use genet_host_api::resolve_href;
 use inker::{
-    ContentReport, DocumentSession, SessionEffect, SessionFormMethod, SessionInput,
+    A11yCapability, ContentReport, DocumentSession, SessionEffect, SessionFormMethod, SessionInput,
     SessionInputResult, SessionNavigationCommand, SessionRegistry, SessionScrollKey,
     SessionSpawnRequest, SurfaceEngineRegistry,
 };
 
 pub use workspace::{
     PeltRegistries, PeltRouteSource, PeltRouteState, PeltSurfaceLayer, PeltTileFrame,
-    PeltTileRequest, PeltTileRoute, PeltWorkspace, PeltWorkspaceFrame, WorkspaceRect,
+    PeltTileInspection, PeltTileRequest, PeltTileRoute, PeltWorkspace, PeltWorkspaceFrame,
+    WorkspaceRect,
 };
 
 /// A caller-owned monotonic clock. Pelt asks for the current time only while
@@ -154,6 +155,16 @@ impl<F: 'static> PeltController<F> {
 
     pub fn inspect(&self) -> Option<ContentReport> {
         self.session.inspect()
+    }
+
+    /// The semantic capability declared by this controller's active document
+    /// engine. Construction requires that engine to remain in the immutable
+    /// shared registry, so this cannot silently degrade after a session opens.
+    pub fn a11y_capability(&self) -> A11yCapability {
+        self.session_engines
+            .get(&self.engine_id)
+            .expect("a live Pelt controller keeps its registered session engine")
+            .a11y_capability()
     }
 
     /// Semantic clip from the current retained selection or document.

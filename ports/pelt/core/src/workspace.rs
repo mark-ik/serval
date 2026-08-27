@@ -7,10 +7,11 @@ use inker::routing::{
     WorkspaceRouteId, is_surface_engine,
 };
 use inker::{
-    EngineProfileBinding, FocusReason, KeyboardEvent, KeyboardModifiers, MouseButton, MouseEvent,
-    MouseEventKind, PhysicalPosition, SessionButtonState, SessionInput, SessionKey,
-    SessionNavigationCommand, SessionPointerButton, SessionRegistry, SessionScrollKey,
-    SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame, SurfaceProducer, SurfaceSpawnRequest,
+    A11yCapability, ContentReport, EngineProfileBinding, FocusReason, KeyboardEvent,
+    KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, PhysicalPosition,
+    SessionButtonState, SessionInput, SessionKey, SessionNavigationCommand, SessionPointerButton,
+    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
+    SurfaceProducer, SurfaceSpawnRequest,
 };
 
 use crate::{PeltClock, PeltController, PeltControllerConfig, PeltHostEffect};
@@ -163,6 +164,15 @@ impl PeltTileRoute {
             PeltRouteState::Document | PeltRouteState::Surface => &self.decision.engine_id,
         }
     }
+}
+
+/// The active tile's declared semantic capability and any structural report
+/// its engine provides. Surface lanes retain their declared capability even
+/// when they cannot expose a report, so hosts never guess from route kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PeltTileInspection {
+    pub capability: A11yCapability,
+    pub report: Option<ContentReport>,
 }
 
 /// One Frisket content hole in workspace coordinates.
@@ -466,6 +476,35 @@ impl<F: 'static> PeltWorkspace<F> {
         self.routes.values()
     }
 
+    /// Inspect the provider actually active for `tile`. A selected surface may
+    /// have fallen back to a document controller, in which case the document's
+    /// capability and report are authoritative. A live surface instead exposes
+    /// only the capability declared by its registered surface engine.
+    pub fn inspection(&self, tile: TileId) -> Option<PeltTileInspection> {
+        let route = self.routes.get(&tile)?;
+        match &route.state {
+            PeltRouteState::Document | PeltRouteState::Fallback { .. } => {
+                let controller = self.controllers.get(&tile)?;
+                Some(PeltTileInspection {
+                    capability: controller.a11y_capability(),
+                    report: controller.inspect(),
+                })
+            },
+            PeltRouteState::Surface => {
+                let routed = self.routed.as_ref()?;
+                let capability = routed
+                    .registries
+                    .surfaces
+                    .engine(route.active_engine())?
+                    .a11y_capability();
+                Some(PeltTileInspection {
+                    capability,
+                    report: None,
+                })
+            },
+        }
+    }
+
     /// Evaluate a script through one routed surface's optional web control
     /// plane. Document tiles return `Ok(None)` so hosts can probe a mixed
     /// workspace without duplicating route-state checks.
@@ -687,6 +726,22 @@ impl<F: 'static> PeltWorkspace<F> {
 
     /// Produce one frame for every active document hole, sized to that hole.
     pub fn frame(&mut self) -> PeltWorkspaceFrame<F> {
+        self.frame_with_surface_polling(true)
+    }
+
+    /// Produce document frames and the active surface layers without polling
+    /// their producers.
+    ///
+    /// A host can use this for a bounded compositor capture after it has
+    /// already imported a native surface frame. The returned surface layers
+    /// preserve their routes and geometry, while their `frame` is `Ok(None)`
+    /// so the host reuses its cached imported view instead of advancing an
+    /// external producer.
+    pub fn frame_with_cached_surfaces(&mut self) -> PeltWorkspaceFrame<F> {
+        self.frame_with_surface_polling(false)
+    }
+
+    fn frame_with_surface_polling(&mut self, poll_surfaces: bool) -> PeltWorkspaceFrame<F> {
         let active = active_tiles(&self.tree);
         let mut tiles = Vec::with_capacity(active.len());
         let mut surfaces = Vec::new();
@@ -702,7 +757,11 @@ impl<F: 'static> PeltWorkspace<F> {
                     frame: controller.frame(width, height),
                 });
             } else if let Some(surface) = self.surfaces.get_mut(&tile) {
-                let frame = surface.frame(rect, self.surface_scale_factor);
+                let frame = if poll_surfaces {
+                    surface.frame(rect, self.surface_scale_factor)
+                } else {
+                    Ok(None)
+                };
                 if let Some(route) = self.routes.get(&tile).cloned() {
                     surfaces.push(PeltSurfaceLayer {
                         tile,

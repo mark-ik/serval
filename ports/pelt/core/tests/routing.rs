@@ -7,10 +7,10 @@ use genet_host_api::tile::{
 };
 use inker::routing::{ENGINE_SCRYING_WEB, EngineRoutePolicy, EngineRouteRule, SurfaceContractMode};
 use inker::{
-    DocumentSession, EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent, SessionClick,
-    SessionEngine, SessionError, SessionRegistry, SessionScrollKey, SessionSpawnRequest,
-    SurfaceEngine, SurfaceEngineRegistry, SurfaceError, SurfaceFrame, SurfaceProducer,
-    SurfaceSettings, SurfaceSpawnRequest,
+    A11yCapability, DocumentSession, EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent,
+    SessionClick, SessionEngine, SessionError, SessionRegistry, SessionScrollKey,
+    SessionSpawnRequest, SurfaceEngine, SurfaceEngineRegistry, SurfaceError, SurfaceFrame,
+    SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest,
 };
 use pelt_core::{
     PeltClock, PeltRegistries, PeltRouteSource, PeltRouteState, PeltTileRequest, PeltWorkspace,
@@ -26,6 +26,7 @@ struct FakeDocumentEngine {
     id: &'static str,
     probe: Arc<Mutex<DocumentProbe>>,
     fail: bool,
+    capability: A11yCapability,
 }
 
 impl SessionEngine<String> for FakeDocumentEngine {
@@ -49,6 +50,10 @@ impl SessionEngine<String> for FakeDocumentEngine {
             id: self.id,
             address: request.address.clone(),
         }))
+    }
+
+    fn a11y_capability(&self) -> A11yCapability {
+        self.capability
     }
 }
 
@@ -184,16 +189,19 @@ fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() 
         id: "fake.static",
         probe: documents.clone(),
         fail: false,
+        capability: A11yCapability::Full,
     }));
     sessions.register(Box::new(FakeDocumentEngine {
         id: "fake.scripted",
         probe: documents.clone(),
         fail: false,
+        capability: A11yCapability::Partial,
     }));
     sessions.register(Box::new(FakeDocumentEngine {
         id: "fake.fail",
         probe: documents.clone(),
         fail: true,
+        capability: A11yCapability::Partial,
     }));
     let mut surface_engines = SurfaceEngineRegistry::new();
     surface_engines.register(Box::new(FakeSurfaceEngine(surfaces.clone())));
@@ -290,6 +298,16 @@ fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() 
         workspace.route(TileId(6)).unwrap().state,
         PeltRouteState::Fallback { ref reason, .. } if reason.contains("EmbeddedHost")
     ));
+    let surface_inspection = workspace
+        .inspection(TileId(3))
+        .expect("live surface exposes its declared capability");
+    assert_eq!(surface_inspection.capability, A11yCapability::Opaque);
+    assert_eq!(surface_inspection.report, None);
+    let fallback_inspection = workspace
+        .inspection(TileId(4))
+        .expect("fallback exposes its active document capability");
+    assert_eq!(fallback_inspection.capability, A11yCapability::Full);
+    assert_eq!(fallback_inspection.report, None);
     assert!(
         workspace
             .tree()
@@ -330,6 +348,11 @@ fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() 
     assert_eq!(surface_probe.offsets, [(400, 20)]);
     assert_eq!(surface_probe.frames, 1);
     drop(surface_probe);
+    let cached_frame = workspace.frame_with_cached_surfaces();
+    assert_eq!(cached_frame.tiles.len(), 5);
+    assert_eq!(cached_frame.surfaces.len(), 1);
+    assert!(cached_frame.surfaces[0].frame.as_ref().unwrap().is_none());
+    assert_eq!(surfaces.lock().unwrap().frames, 1);
     assert!(workspace.pump());
     assert_eq!(workspace.execute_surface_script(TileId(1), "1"), Ok(None));
     assert!(

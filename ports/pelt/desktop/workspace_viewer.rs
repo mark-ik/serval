@@ -21,7 +21,7 @@ use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
     PeltController, PeltHostEffect, PeltRegistries, PeltRouteSource, PeltRouteState,
-    PeltTileRequest, PeltWorkspace, WorkspaceRect,
+    PeltTileInspection, PeltTileRequest, PeltWorkspace, WorkspaceRect,
 };
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -34,7 +34,8 @@ use winit::window::{Window, WindowId};
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{
-    ChromeAction, ChromeEngineChoice, FrisketHit, FrisketSurface, WorkspaceChrome,
+    ChromeAction, ChromeEngineChoice, ChromeInspector, ChromeInspectorSection, FrisketHit,
+    FrisketSurface, WorkspaceChrome,
 };
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
@@ -44,7 +45,8 @@ const RECEIPT_STEPS: u8 = 8;
 const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
-const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, and applied a per-tile override while the mixed workspace held";
+const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, applied a per-tile override, and exposed truthful structural inspection while the mixed workspace held";
+const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -496,6 +498,129 @@ struct ChromeEngineMenu {
     tile: TileId,
 }
 
+fn capability_label(capability: inker::A11yCapability) -> &'static str {
+    match capability {
+        inker::A11yCapability::Full => "Full",
+        inker::A11yCapability::Partial => "Partial",
+        inker::A11yCapability::Opaque => "Opaque",
+    }
+}
+
+fn count_label<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 { singular } else { plural }
+}
+
+fn inspector_section(label: &str, entries: Vec<String>) -> Option<ChromeInspectorSection> {
+    (!entries.is_empty()).then(|| ChromeInspectorSection {
+        label: format!("{label} ({})", entries.len()),
+        omitted: entries.len().saturating_sub(INSPECTOR_VISIBLE_ROWS),
+        entries: entries.into_iter().take(INSPECTOR_VISIBLE_ROWS).collect(),
+    })
+}
+
+fn inspector_snapshot(
+    active_engine: String,
+    route_is_surface: bool,
+    inspection: Option<PeltTileInspection>,
+) -> ChromeInspector {
+    match inspection {
+        Some(PeltTileInspection {
+            capability: inker::A11yCapability::Opaque,
+            ..
+        }) => ChromeInspector {
+            status: if route_is_surface {
+                "Opaque surface"
+            } else {
+                "Opaque document"
+            }
+            .to_owned(),
+            title: Some(active_engine),
+            summary: if route_is_surface {
+                "Contents not inspectable on this surface."
+            } else {
+                "Contents not inspectable for this document."
+            }
+            .to_owned(),
+            sections: Vec::new(),
+        },
+        Some(PeltTileInspection {
+            capability,
+            report: Some(report),
+        }) => {
+            let heading_count = report.headings.len();
+            let outline_count = report.outline.len();
+            let link_count = report.links.len();
+            let mut sections = Vec::new();
+            if let Some(section) = inspector_section("Headings", report.headings) {
+                sections.push(section);
+            }
+            if let Some(section) = inspector_section(
+                "Outline",
+                report
+                    .outline
+                    .into_iter()
+                    .map(|entry| {
+                        let indent = "  ".repeat(entry.depth.min(3));
+                        if entry.name.is_empty() {
+                            format!("{indent}{}", entry.role)
+                        } else {
+                            format!("{indent}{}: {}", entry.role, entry.name)
+                        }
+                    })
+                    .collect(),
+            ) {
+                sections.push(section);
+            }
+            if let Some(section) = inspector_section("Links", report.links) {
+                sections.push(section);
+            }
+            if let Some(lineage) = report.lineage {
+                let mut entry = format!(
+                    "{} {} · {} · {} blocks",
+                    lineage.tool, lineage.version, lineage.selector, lineage.block_count
+                );
+                if let Some(score) = lineage.score {
+                    entry.push_str(&format!(" · score {score}"));
+                }
+                sections.push(ChromeInspectorSection {
+                    label: "Lineage".to_owned(),
+                    entries: vec![entry],
+                    omitted: 0,
+                });
+            }
+            ChromeInspector {
+                status: format!("{} structural report", capability_label(capability)),
+                title: report.title,
+                summary: format!(
+                    "{heading_count} {} · {outline_count} {} · {link_count} {}",
+                    count_label(heading_count, "heading", "headings"),
+                    count_label(outline_count, "outline entry", "outline entries"),
+                    count_label(link_count, "link", "links"),
+                ),
+                sections,
+            }
+        },
+        Some(PeltTileInspection { capability, .. }) if route_is_surface => ChromeInspector {
+            status: format!("{} surface", capability_label(capability)),
+            title: Some(active_engine),
+            summary: "This surface does not expose a structural report to Pelt.".to_owned(),
+            sections: Vec::new(),
+        },
+        Some(PeltTileInspection { capability, .. }) => ChromeInspector {
+            status: format!("{} document", capability_label(capability)),
+            title: Some(active_engine),
+            summary: "This document does not expose structural content.".to_owned(),
+            sections: Vec::new(),
+        },
+        None => ChromeInspector {
+            status: "Unavailable".to_owned(),
+            title: Some(active_engine),
+            summary: "Content inspection is unavailable for this tile.".to_owned(),
+            sections: Vec::new(),
+        },
+    }
+}
+
 struct WorkspaceApp {
     config: WorkspaceViewerConfig,
     workspace: PeltWorkspace<Scene>,
@@ -519,6 +644,7 @@ struct WorkspaceApp {
     chrome_status: ChromeStatus,
     chrome_address: Option<ChromeAddressInput>,
     chrome_engine_menu: Option<ChromeEngineMenu>,
+    chrome_inspector_open: bool,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -572,6 +698,7 @@ impl WorkspaceApp {
             chrome_status: ChromeStatus::Ready,
             chrome_address: None,
             chrome_engine_menu: None,
+            chrome_inspector_open: false,
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -680,6 +807,20 @@ impl WorkspaceApp {
         self.chrome_engine_menu = None;
     }
 
+    fn chrome_inspector(&self, tile: TileId) -> ChromeInspector {
+        let route = self.workspace.route(tile);
+        let active_engine = route
+            .map(|route| route.active_engine().to_owned())
+            .unwrap_or_else(|| "No active engine".to_owned());
+        let route_is_surface =
+            route.is_some_and(|route| matches!(route.state, PeltRouteState::Surface));
+        inspector_snapshot(
+            active_engine,
+            route_is_surface,
+            self.workspace.inspection(tile),
+        )
+    }
+
     fn chrome_model(&self) -> WorkspaceChrome {
         let Some(tile) = self.workspace.focused_tile() else {
             return WorkspaceChrome {
@@ -694,6 +835,7 @@ impl WorkspaceApp {
                 engine_menu_open: false,
                 engine_selected: None,
                 engine_choices: Self::chrome_engine_choices(),
+                inspector: None,
             };
         };
         let controller = self.workspace.controller(tile);
@@ -767,6 +909,9 @@ impl WorkspaceApp {
                 .is_some_and(|menu| menu.tile == tile),
             engine_selected,
             engine_choices: Self::chrome_engine_choices(),
+            inspector: self
+                .chrome_inspector_open
+                .then(|| self.chrome_inspector(tile)),
         }
     }
 
@@ -921,6 +1066,14 @@ impl WorkspaceApp {
         }
     }
 
+    fn toggle_chrome_inspector(&mut self) -> bool {
+        if self.workspace.focused_tile().is_none() {
+            return false;
+        }
+        self.chrome_inspector_open = !self.chrome_inspector_open;
+        true
+    }
+
     fn apply_chrome_action(&mut self, action: ChromeAction) -> bool {
         if action != ChromeAction::Address {
             self.clear_chrome_address();
@@ -956,6 +1109,7 @@ impl WorkspaceApp {
             },
             ChromeAction::ToggleEngineMenu => self.toggle_chrome_engine_menu(),
             ChromeAction::ChooseEngine(choice) => self.choose_chrome_engine(choice),
+            ChromeAction::ToggleInspector => self.toggle_chrome_inspector(),
         }
     }
 
@@ -1050,7 +1204,18 @@ impl WorkspaceApp {
             .set_content_rects(pane_frame.content_rects.iter().copied());
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
-        let workspace_frame = self.workspace.frame();
+        // Once the Chrome receipt has asserted its final state, keep composing
+        // its already-imported native layer through capture. That gives this
+        // native inspector receipt a stable visual boundary without advancing
+        // an external producer after the evidence is complete.
+        let capture_stable_workspace = self.config.workspace_receipt
+            == Some(WorkspaceReceipt::Chrome)
+            && self.receipt_complete;
+        let workspace_frame = if capture_stable_workspace {
+            self.workspace.frame_with_cached_surfaces()
+        } else {
+            self.workspace.frame()
+        };
         #[cfg(target_os = "windows")]
         {
             let live_surfaces = self
@@ -1142,13 +1307,16 @@ impl WorkspaceApp {
                 (texture, view, layer.rect)
             })
             .collect::<Vec<_>>();
+        let inspector_overlay = pane_frame
+            .inspector_rect
+            .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
         let capture_now = self.config.workspace_receipt.is_some()
             && self.receipt_complete
             && self.workspace_receipt_outcome.is_none()
-            && self
-                .config
-                .frames
-                .is_some_and(|limit| self.workspace_receipt_redraws.saturating_add(1) >= limit);
+            && (self.config.workspace_receipt == Some(WorkspaceReceipt::Chrome)
+                || self.config.frames.is_some_and(|limit| {
+                    self.workspace_receipt_redraws.saturating_add(1) >= limit
+                }));
         let receipt_canvas = capture_now.then(|| {
             host.device().create_texture(&wgpu::TextureDescriptor {
                 label: Some("pelt workspace receipt composition"),
@@ -1171,6 +1339,18 @@ impl WorkspaceApp {
             .as_ref()
             .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
         let Some(swap) = host.acquire() else {
+            if let Some(error) = self.workspace_receipt_timeout_error() {
+                self.receipt_error = Some(error);
+                event_loop.exit();
+                return;
+            }
+            // An outdated or lost swapchain is deliberately skipped by the
+            // shared host. A named receipt must drive one recovery frame,
+            // otherwise a geometry change can leave its native surface
+            // waiting without another redraw.
+            if self.config.workspace_receipt.is_some() && !self.receipt_complete {
+                self.request_redraw();
+            }
             return;
         };
         let swap_target = swap
@@ -1217,18 +1397,33 @@ impl WorkspaceApp {
                 self.height,
                 placement(rect, self.scale_factor),
             );
-            if let Err(error) =
-                self.native_surfaces
-                    .return_to_common(tile, host.device(), host.queue())
-            {
-                self.receipt_error = Some(format!(
-                    "tile {} native surface release failed: {error}",
-                    tile.0
-                ));
-                event_loop.exit();
-                return;
+            // The normal loop must return this shared resource before the
+            // producer's next acquire. A frozen receipt takes no later acquire
+            // and exits after capture, so avoid a needless whole-device wait.
+            if !capture_stable_workspace {
+                if let Err(error) =
+                    self.native_surfaces
+                        .return_to_common(tile, host.device(), host.queue())
+                {
+                    self.receipt_error = Some(format!(
+                        "tile {} native surface release failed: {error}",
+                        tile.0
+                    ));
+                    event_loop.exit();
+                    return;
+                }
             }
             self.native_surfaces.mark_composed();
+        }
+        if let Some(inspector_overlay) = inspector_overlay {
+            host.renderer().compose_external_texture(
+                &frame_view,
+                &target,
+                host.format(),
+                self.width,
+                self.height,
+                inspector_overlay,
+            );
         }
         let captured = if let Some(source) = receipt_view.as_ref() {
             let Some(path) = self.config.artifact.as_deref() else {
@@ -1302,43 +1497,23 @@ impl WorkspaceApp {
             self.chrome_status = ChromeStatus::Ready;
         }
 
-        if matches!(
-            self.config.workspace_receipt,
-            Some(WorkspaceReceipt::Mixed | WorkspaceReceipt::Chrome)
-        ) && !self.receipt_complete
-            && self.workspace_receipt_stage_started.elapsed()
-                >= self.config.workspace_receipt_stage_timeout
-        {
-            #[cfg(target_os = "windows")]
-            let progress = {
-                let stats = self.native_surfaces.stats();
-                format!(
-                    "frames={} imports={} waits={} compositions={} verified_sizes={:?}",
-                    stats.frames,
-                    stats.imports,
-                    stats.waits,
-                    stats.compositions,
-                    self.mixed_verified_sizes
-                )
-            };
-            #[cfg(not(target_os = "windows"))]
-            let progress = "native surface unavailable on this platform".to_owned();
-            self.receipt_error = Some(format!(
-                "native workspace receipt timed out after {}s at {}x{} ({progress})",
-                self.config.workspace_receipt_stage_timeout.as_secs_f32(),
-                self.width,
-                self.height
-            ));
+        if let Some(error) = self.workspace_receipt_timeout_error() {
+            self.receipt_error = Some(error);
             event_loop.exit();
             return;
         }
 
-        let workspace_receipt_finished = self.config.workspace_receipt.is_some()
-            && self.receipt_complete
-            && self
-                .config
-                .frames
-                .is_some_and(|limit| self.workspace_receipt_redraws >= limit);
+        let workspace_receipt_finished = match self.config.workspace_receipt {
+            Some(WorkspaceReceipt::Chrome) => self.workspace_receipt_outcome.is_some(),
+            Some(_) => {
+                self.receipt_complete
+                    && self
+                        .config
+                        .frames
+                        .is_some_and(|limit| self.workspace_receipt_redraws >= limit)
+            },
+            None => false,
+        };
         if workspace_receipt_finished
             || (self.receipt_complete
                 && !self.config.capability_receipt
@@ -1367,6 +1542,38 @@ impl WorkspaceApp {
             WorkspaceReceipt::Fallback => self.drive_fallback_workspace_receipt_step(),
             WorkspaceReceipt::Chrome => self.drive_chrome_workspace_receipt_step(),
         }
+    }
+
+    fn workspace_receipt_timeout_error(&self) -> Option<String> {
+        if !matches!(
+            self.config.workspace_receipt,
+            Some(WorkspaceReceipt::Mixed | WorkspaceReceipt::Chrome)
+        ) || self.receipt_complete
+            || self.workspace_receipt_stage_started.elapsed()
+                < self.config.workspace_receipt_stage_timeout
+        {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        let progress = {
+            let stats = self.native_surfaces.stats();
+            format!(
+                "frames={} imports={} waits={} compositions={} verified_sizes={:?}",
+                stats.frames,
+                stats.imports,
+                stats.waits,
+                stats.compositions,
+                self.mixed_verified_sizes
+            )
+        };
+        #[cfg(not(target_os = "windows"))]
+        let progress = "native surface unavailable on this platform".to_owned();
+        Some(format!(
+            "native workspace receipt timed out after {}s at {}x{} ({progress})",
+            self.config.workspace_receipt_stage_timeout.as_secs_f32(),
+            self.width,
+            self.height
+        ))
     }
 
     fn drive_mixed_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
@@ -1868,6 +2075,62 @@ impl WorkspaceApp {
                 {
                     return Err(
                         "chrome receipt did not expose its restored automatic selection".to_owned(),
+                    );
+                }
+                self.click_chrome("inspect")?;
+            },
+            17 => {
+                let inspector = self
+                    .chrome_model()
+                    .inspector
+                    .ok_or("chrome receipt did not open its content inspector")?;
+                if inspector.status != "Partial structural report"
+                    || inspector.title.as_deref() != Some("Scrying native surface")
+                    || !inspector.sections.iter().any(|section| {
+                        section.label == "Headings (1)"
+                            && section
+                                .entries
+                                .iter()
+                                .any(|entry| entry == "Scrying native surface")
+                    })
+                    || self.frisket.chrome_rect("engine-automatic").is_some()
+                {
+                    return Err(
+                        "chrome receipt did not expose the focused Livery structural report"
+                            .to_owned(),
+                    );
+                }
+                self.click_tab(TileId(4))?;
+            },
+            18 => {
+                let inspector = self
+                    .chrome_model()
+                    .inspector
+                    .ok_or("chrome receipt lost its content inspector after focus change")?;
+                if self.workspace.focused_tile() != Some(TileId(4)) {
+                    return Err(
+                        "chrome receipt could not focus its external surface tile".to_owned()
+                    );
+                }
+                #[cfg(target_os = "windows")]
+                let opaque_surface = self.scrying_host.is_some();
+                #[cfg(not(target_os = "windows"))]
+                let opaque_surface = false;
+                if opaque_surface {
+                    if inspector.status != "Opaque surface"
+                        || inspector.summary != "Contents not inspectable on this surface."
+                        || !inspector.sections.is_empty()
+                    {
+                        return Err(
+                            "chrome receipt did not disclose the opaque surface honestly"
+                                .to_owned(),
+                        );
+                    }
+                } else if inspector.status != "Partial structural report"
+                    || inspector.title.as_deref() != Some("Scrying native surface")
+                {
+                    return Err(
+                        "chrome receipt did not inspect the active Livery fallback".to_owned()
                     );
                 }
                 self.validate_chrome_workspace_receipt()?;
@@ -2779,6 +3042,22 @@ fn placement(rect: WorkspaceRect, scale_factor: f32) -> ExternalTexturePlacement
     ])
 }
 
+fn fragment_placement(
+    rect: WorkspaceRect,
+    viewport: (u32, u32),
+    scale_factor: f32,
+) -> ExternalTexturePlacement {
+    let placement = placement(rect, scale_factor);
+    let [x0, y0, x1, y1] = placement.dest_rect;
+    let (width, height) = (viewport.0.max(1) as f32, viewport.1.max(1) as f32);
+    placement.with_uv([
+        (x0 / width).clamp(0.0, 1.0),
+        (y0 / height).clamp(0.0, 1.0),
+        (x1 / width).clamp(0.0, 1.0),
+        (y1 / height).clamp(0.0, 1.0),
+    ])
+}
+
 fn button_state(state: ElementState) -> SessionButtonState {
     match state {
         ElementState::Pressed => SessionButtonState::Pressed,
@@ -2862,6 +3141,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opaque_capability_blocks_even_an_accidental_structural_report() {
+        let inspector = inspector_snapshot(
+            "opaque.test".to_owned(),
+            false,
+            Some(PeltTileInspection {
+                capability: inker::A11yCapability::Opaque,
+                report: Some(inker::ContentReport {
+                    title: Some("Must not leak".to_owned()),
+                    headings: vec!["Also must not leak".to_owned()],
+                    ..Default::default()
+                }),
+            }),
+        );
+        assert_eq!(inspector.status, "Opaque document");
+        assert_eq!(inspector.title.as_deref(), Some("opaque.test"));
+        assert_eq!(
+            inspector.summary,
+            "Contents not inspectable for this document."
+        );
+        assert!(inspector.sections.is_empty());
+    }
+
+    #[test]
     fn four_urls_build_tabs_beside_a_nested_split() {
         let urls = (1..=4)
             .map(|id| format!("tile-{id}.html"))
@@ -2889,6 +3191,21 @@ mod tests {
         assert_eq!(nearest_edge((295.0, 140.0), rect), Edge::Right);
         assert_eq!(nearest_edge((200.0, 102.0), rect), Edge::Top);
         assert_eq!(nearest_edge((200.0, 198.0), rect), Edge::Bottom);
+    }
+
+    #[test]
+    fn inspector_overlay_reuses_the_matching_physical_frame_crop() {
+        let placement = fragment_placement(
+            WorkspaceRect::new(392.0, 70.0, 248.0, 300.0),
+            (960, 640),
+            1.5,
+        );
+        assert_eq!(placement.dest_rect, [588.0, 105.0, 960.0, 555.0]);
+        assert_eq!(
+            placement.uv,
+            [0.612_5, 0.164_062_5, 1.0, 0.867_187_5],
+            "the source crop stays aligned with the scaled destination"
+        );
     }
 
     #[test]
@@ -3124,7 +3441,7 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         let mut app = WorkspaceApp::new(config, workspace, frisket);
 
-        for _ in 0..20 {
+        for _ in 0..24 {
             app.refresh_chrome();
             let pane = app.frisket.frame(960, 640).expect("chrome Frisket frame");
             app.workspace.set_content_rects(pane.content_rects);

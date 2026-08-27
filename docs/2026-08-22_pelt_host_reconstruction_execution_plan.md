@@ -6,8 +6,10 @@
 current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4 completed on
 Windows 2026-08-25 with a registered Scrying producer, native shared-handle
 import, repeated fence waits, and visible same-window composition. P5 completed
-2026-08-27 with all eight deterministic product receipts. P6 is the current
-lane. IOSurface and DMA-BUF imports remain separate platform lanes.
+2026-08-27 with all eight deterministic product receipts. P6's focused-tile
+Chrome and structural-inspection slice completed 2026-08-27; its remaining
+presentability work is active. IOSurface and DMA-BUF imports remain separate
+platform lanes.
 
 ## Objective
 
@@ -719,9 +721,9 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
-**Status:** active. The bounded focused-tile Chrome and engine-choice-menu
-receipt completed on Windows 2026-08-27; the broader presentability and
-inspection lane remains open.
+**Status:** active. The bounded focused-tile Chrome, engine-choice-menu, and
+structural-inspection receipt completed on Windows 2026-08-27; the broader
+presentability lane remains open.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -755,6 +757,22 @@ through the same key path used by the window adapter, submits it, traverses Back
 and Forward, reloads the same focused history entry, and then proves the menu
 dismissal and explicit engine choices while all other lanes hold.
 
+`Inspect` is a retained, read-only Chrome drawer that follows focused-tile
+selection. `PeltWorkspace::inspection` asks the provider actually active for
+that tile: document controllers supply their declared capability and optional
+structural report, while a live surface reports only the capability declared by
+its registered surface engine. An opaque provider suppresses even an accidental
+report and discloses exactly `Contents not inspectable on this surface.` The
+drawer overlays rather than resizes Frisket content holes, leaves pointer input
+with the workspace, and is replayed from its exact Frisket pixel crop after
+native texture composition so it remains visible above an external surface.
+
+After Chrome's semantic assertion, its named receipt freezes the producer,
+retains the already-imported texture and its required fence wait, captures the
+first fully composed postcondition frame, then exits. That boundary avoids a
+second producer acquire or an unnecessary return-to-COMMON wait. P5's mixed and
+fallback receipts keep their existing three-postcondition-frame cadence.
+
 The chrome is a Pelt-specific retained wrapper around Cambium Frisket, rendered
 by Livery and laid out by Buckram. Frisket still owns the pane tree, tab and
 divider semantics, and active content holes. To keep a tab title from running
@@ -765,13 +783,18 @@ P4, and P5 captures deliberately retain their existing frameless surfaces, so
 their named evidence does not silently change.
 
 The GPU-free `pelt-desktop` test drives the full sequence without a registered
-Scrying producer and therefore requires tile 4's visible Livery fallback. The
-full Livery, Scripted, and Smolweb profile passed 25 tests. The headed Windows
-run created one 960x640 window, retained all four lanes, captured after 275
-redraws, and recorded 13 native frames, 10 imports, 13 fence waits, and 275
-compositions. Its assertion was `focused-tile chrome navigated history, bound
-an explicit engine choice menu, and applied a per-tile override while the mixed
-workspace held`; the captured compositor digest was `d84e9ecb5fbffbd2`.
+Scrying producer and therefore requires tile 4's visible Livery fallback. It
+also proves opaque data cannot leak from an accidental report, the retained
+drawer preserves content-hole geometry and tab input, and its physical crop
+replays above a native layer. The full Livery, Scripted, and Smolweb profile
+passed 28 tests. The headed Windows run created one 960x640 window, retained
+all four lanes, captured after 252 redraws, and recorded 14 native frames, 11
+imports, 14 fence waits, and 252 compositions. Its assertion was
+`focused-tile chrome navigated history, bound an explicit engine choice menu,
+applied a per-tile override, and exposed truthful structural inspection while
+the mixed workspace held`; the captured compositor digest was
+`cc5edea62df69340`. The PNG visibly shows the live Scrying tile below the
+topmost `Opaque surface` drawer and its honest disclosure.
 
 ## Cross-gate rules
 
@@ -789,8 +812,8 @@ workspace held`; the captured compositor digest was `d84e9ecb5fbffbd2`.
 
 ## Immediate next lane
 
-Continue P6 from the Chrome receipt with a settings surface, dedicated
-loading/error documents, structural inspection, theme and accessibility state,
+Continue P6 from the Chrome and structural-inspection receipt with dedicated
+loading/error documents, then a settings surface, theme and accessibility state,
 and narrow-width/high-DPI evidence. The
 Reader-in-workspace lane must carry held source bytes rather than teaching
 Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
