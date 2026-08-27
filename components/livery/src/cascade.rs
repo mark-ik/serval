@@ -9,9 +9,9 @@ use crate::media::{Device, SystemPalette};
 use crate::values::{
     AnimationDelay, AnimationName, BackgroundAttachment, BackgroundBox, BackgroundImage,
     BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderStyle, BorderWidth, BoxShadow,
-    ColorScheme, ComputedColor, Duration, FlexDirection, FlexFactor, FlexWrap, FontFamily,
-    FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight, Inset, LineHeight,
-    Margin, Padding, Radius, Size, SystemColor, TimingFunction, TransitionProperty,
+    ColorScheme, ComputedColor, Duration, FlexBasis, FlexDirection, FlexFactor, FlexWrap,
+    FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight, Inset,
+    LineHeight, Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty,
     UsedColorContext,
 };
 use crate::{ComputedValues, PropertyId, PropertyValue, ShorthandId};
@@ -672,13 +672,11 @@ fn expand_animation(block: &mut DeclarationBlock, value: &str, important: bool) 
 /// Expand the bounded `flex` grammar. The omitted values follow CSS
 /// Flexbox's shorthand defaults: a lone factor uses shrink `1` and basis
 /// `0%`, two factors use `0%` for basis, and a basis-only form uses `1 1`.
-/// The lane deliberately excludes the `content` basis until the value model
-/// carries it distinctly from the generic `size` type.
 fn expand_flex(block: &mut DeclarationBlock, value: &str, important: bool) {
     let parts = split_components(value);
     let parsed = match parts.as_slice() {
         [keyword] if keyword.eq_ignore_ascii_case("none") => {
-            Some((FlexFactor::ZERO, FlexFactor::ZERO, Size::Auto))
+            Some((FlexFactor::ZERO, FlexFactor::ZERO, FlexBasis::Auto))
         },
         parts => parse_flex_components(parts),
     };
@@ -693,7 +691,7 @@ fn expand_flex(block: &mut DeclarationBlock, value: &str, important: bool) {
     for (property, value) in [
         (PropertyId::FlexGrow, PropertyValue::FlexFactor(grow)),
         (PropertyId::FlexShrink, PropertyValue::FlexFactor(shrink)),
-        (PropertyId::FlexBasis, PropertyValue::Size(basis)),
+        (PropertyId::FlexBasis, PropertyValue::FlexBasis(basis)),
     ] {
         block.declarations.push(Declaration {
             property,
@@ -703,7 +701,7 @@ fn expand_flex(block: &mut DeclarationBlock, value: &str, important: bool) {
     }
 }
 
-fn parse_flex_components(parts: &[&str]) -> Option<(FlexFactor, FlexFactor, Size)> {
+fn parse_flex_components(parts: &[&str]) -> Option<(FlexFactor, FlexFactor, FlexBasis)> {
     if !(1..=3).contains(&parts.len()) {
         return None;
     }
@@ -748,12 +746,11 @@ fn parse_flex_components(parts: &[&str]) -> Option<(FlexFactor, FlexFactor, Size
     None
 }
 
-fn parse_flex_basis(input: &str) -> Option<Size> {
-    let basis = input.parse::<Size>().ok()?;
-    matches!(basis, Size::Auto | Size::Value(_)).then_some(basis)
+fn parse_flex_basis(input: &str) -> Option<FlexBasis> {
+    input.parse().ok()
 }
 
-fn flex_zero_basis() -> Size {
+fn flex_zero_basis() -> FlexBasis {
     "0%".parse()
         .expect("the flex shorthand's zero basis is valid")
 }

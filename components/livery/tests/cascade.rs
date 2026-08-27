@@ -175,6 +175,22 @@ fn flex_shorthand_expands_keyword_and_arity_defaults() {
                 ("flex-basis", "0"),
             ],
         ),
+        (
+            "flex: content",
+            vec![
+                ("flex-grow", "1"),
+                ("flex-shrink", "1"),
+                ("flex-basis", "content"),
+            ],
+        ),
+        (
+            "flex: fit-content 2 3",
+            vec![
+                ("flex-grow", "2"),
+                ("flex-shrink", "3"),
+                ("flex-basis", "fit-content"),
+            ],
+        ),
     ] {
         let block = parse_declaration_block(css);
         assert!(block.errors.is_empty(), "{css}: {:?}", block.errors);
@@ -199,8 +215,9 @@ fn flex_shorthand_expands_keyword_and_arity_defaults() {
 #[test]
 fn flex_shorthand_rejects_unmodeled_or_invalid_values() {
     for css in [
-        "flex: content",
-        "flex: 1 1 content",
+        "flex: 1 1 none",
+        "flex: 1 1 -1px",
+        "flex: 1 1 -2%",
         "flex: 2 3 4",
         "flex: 0 0 4",
         "flex: 0 1 4",

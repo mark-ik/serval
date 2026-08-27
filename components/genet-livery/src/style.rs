@@ -22,9 +22,9 @@ use livery::{
         Stylesheet, StylesheetDiagnostic,
     },
     values::{
-        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FontSize, Length,
-        LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size, SystemColor,
-        TreeCounts, UsedColorContext,
+        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FlexBasis, FontSize,
+        Length, LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size,
+        SystemColor, TreeCounts, UsedColorContext,
     },
 };
 
@@ -805,6 +805,9 @@ where
             let reference_box = definite_transform_reference_box(values, em);
             return Some(values.transform.to_computed_css(em, reference_box));
         }
+        if property == PropertyId::FlexBasis {
+            return Some(computed_flex_basis_css(values.get(property)));
+        }
         Some(computed_value_css(resolve_property_used_colors(
             values.get(property),
             self.used_color_context_for(values),
@@ -1366,6 +1369,10 @@ fn resolve_font_metrics(computed: &mut ComputedValues, parent: Option<&ComputedV
                 livery::values::Spacing::Length(value.resolve_font_relative(font_size, 16.0));
         }
     }
+    computed.flex_basis = computed
+        .flex_basis
+        .resolve_font_relative(font_size, 16.0)
+        .computed_value();
 }
 
 fn resolve_length_percentage(value: LengthPercentage, em: f32, percentage_basis: f32) -> f32 {
@@ -1434,8 +1441,8 @@ fn computed_value_css(value: PropertyValue) -> String {
 
 fn computed_flex_basis_css(value: PropertyValue) -> String {
     match value {
-        PropertyValue::Size(Size::Value(LengthPercentage::Zero)) => "0px".to_owned(),
-        PropertyValue::Size(Size::Value(LengthPercentage::Length(Length {
+        PropertyValue::FlexBasis(FlexBasis::Value(LengthPercentage::Zero)) => "0px".to_owned(),
+        PropertyValue::FlexBasis(FlexBasis::Value(LengthPercentage::Length(Length {
             value,
             unit: LengthUnit::Px,
         }))) => used_px(value),

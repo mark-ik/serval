@@ -25,7 +25,7 @@ pub use property::{
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BackgroundSizeComponent,
     BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue, BoxSizing, CaptionSide,
     Clear, Contain, ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display,
-    Duration, EmptyCells, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily,
+    Duration, EmptyCells, FlexBasis, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily,
     FontFeatureSetting, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
     Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset,
     LineBreak, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, OverflowWrap, Padding,
@@ -319,6 +319,15 @@ impl ResolveViewport for Size {
     }
 }
 
+impl ResolveViewport for FlexBasis {
+    fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
+        match *self {
+            Self::Value(value) => Self::Value(value.resolve_relative(environment)),
+            value => value,
+        }
+    }
+}
+
 impl ResolveViewport for TextIndent {
     fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
         Self {
@@ -467,6 +476,12 @@ discrete_interpolation!(
     WritingMode,
     ZIndex,
 );
+
+impl Interpolate for FlexBasis {
+    fn interpolate_value(&self, other: &Self, progress: f32) -> Self {
+        (*self).interpolate(*other, progress)
+    }
+}
 
 impl Interpolate for Color {
     fn interpolate_value(&self, other: &Self, progress: f32) -> Self {
