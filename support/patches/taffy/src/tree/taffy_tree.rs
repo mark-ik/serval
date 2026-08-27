@@ -947,7 +947,8 @@ impl<NodeContext> TaffyTree<NodeContext> {
 mod tests {
 
     use super::*;
-    use crate::style::{Dimension, Display, FlexDirection};
+    use crate::{Line, RequestedAxis, SizingMode};
+    use crate::style::{Dimension, Display, FlexDirection, FlexWrap};
     use crate::style_helpers::*;
     use crate::util::sys;
 
@@ -959,6 +960,57 @@ mod tests {
         _style: &Style,
     ) -> Size<f32> {
         known_dimensions.unwrap_or(node_context.cloned().unwrap_or(Size::ZERO))
+    }
+
+    fn layout_wrapped_column_auto_minimum(outer_height: Dimension) -> [Size<f32>; 4] {
+        let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
+        let item_style = Style {
+            flex_grow: 1.0,
+            flex_shrink: 0.0,
+            flex_basis: Dimension::length(0.0).into(),
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            ..Default::default()
+        };
+        let first = taffy
+            .new_leaf_with_context(item_style.clone(), Size { width: 100.0, height: 50.0 })
+            .unwrap();
+        let second = taffy
+            .new_leaf_with_context(item_style, Size { width: 100.0, height: 50.0 })
+            .unwrap();
+        let inner = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    flex_wrap: FlexWrap::Wrap,
+                    flex_grow: 1.0,
+                    flex_shrink: 0.0,
+                    flex_basis: Dimension::length(0.0).into(),
+                    size: Size { width: Dimension::auto(), height: Dimension::length(500.0) },
+                    ..Default::default()
+                },
+                &[first, second],
+            )
+            .unwrap();
+        let outer = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    size: Size { width: Dimension::length(320.0), height: outer_height },
+                    ..Default::default()
+                },
+                &[inner],
+            )
+            .unwrap();
+
+        taffy.compute_layout_with_measure(outer, Size::MAX_CONTENT, size_measure_function).unwrap();
+        [
+            taffy.layout(outer).unwrap().size,
+            taffy.layout(inner).unwrap().size,
+            taffy.layout(first).unwrap().size,
+            taffy.layout(second).unwrap().size,
+        ]
     }
 
     #[test]
@@ -1083,6 +1135,73 @@ mod tests {
         taffy.set_node_context(node, Some(Size { width: 100.0, height: 100.0 })).unwrap();
         taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
+    }
+
+    #[test]
+    fn wrapped_column_flex_item_auto_minimum_sums_intrinsic_lines() {
+        let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
+        let item_style = Style {
+            flex_grow: 1.0,
+            flex_shrink: 0.0,
+            flex_basis: Dimension::length(0.0).into(),
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            ..Default::default()
+        };
+        let first = taffy
+            .new_leaf_with_context(item_style.clone(), Size { width: 100.0, height: 50.0 })
+            .unwrap();
+        let second = taffy
+            .new_leaf_with_context(item_style, Size { width: 100.0, height: 50.0 })
+            .unwrap();
+        let inner = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    flex_wrap: FlexWrap::Wrap,
+                    flex_grow: 1.0,
+                    flex_shrink: 0.0,
+                    flex_basis: Dimension::length(0.0).into(),
+                    size: Size { width: Dimension::auto(), height: Dimension::length(500.0) },
+                    ..Default::default()
+                },
+                &[first, second],
+            )
+            .unwrap();
+
+        let output = compute_flexbox_layout(
+            &mut TaffyView { taffy: &mut taffy, measure_function: size_measure_function },
+            inner,
+            LayoutInput {
+                run_mode: RunMode::ComputeSize,
+                sizing_mode: SizingMode::ContentSize,
+                axis: RequestedAxis::Vertical,
+                known_dimensions: Size::NONE,
+                parent_size: Size::NONE,
+                available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MinContent },
+                vertical_margins_are_collapsible: Line::FALSE,
+            },
+        );
+
+        assert_eq!(output.size.height, 100.0);
+    }
+
+    #[test]
+    fn outer_column_uses_wrapped_item_auto_minimum_for_max_content() {
+        let [outer, inner, first, second] = layout_wrapped_column_auto_minimum(Dimension::auto());
+
+        assert_eq!(outer, Size { width: 320.0, height: 100.0 });
+        assert_eq!(inner, Size { width: 320.0, height: 100.0 });
+        assert_eq!(first, Size { width: 100.0, height: 50.0 });
+        assert_eq!(second, Size { width: 100.0, height: 50.0 });
+    }
+
+    #[test]
+    fn definite_outer_column_height_does_not_use_intrinsic_auto_minimum_path() {
+        let [outer, inner, ..] = layout_wrapped_column_auto_minimum(Dimension::length(300.0));
+
+        assert_eq!(outer.height, 300.0);
+        assert_eq!(inner.height, 300.0);
     }
 
     /// Test that adding `add_child()` works

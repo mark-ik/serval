@@ -1050,6 +1050,26 @@ fn determine_container_main_size(
                     size
                 }
             }
+            // A wrapped column flex container's automatic block minimum is
+            // formed before its children can wrap into additional columns.
+            // The min-content line collection above puts each item on a
+            // separate line, so taking only the longest one would discard
+            // every later automatic minimum contribution.
+            AvailableSpace::MinContent if constants.is_wrap && constants.is_column => {
+                let item_count = lines.iter().map(|line| line.items.len()).sum();
+                let item_main_size_sum = lines
+                    .iter()
+                    .flat_map(|line| line.items.iter())
+                    .map(|child| {
+                        let padding_border_sum = (child.padding + child.border).main_axis_sum(constants.dir);
+                        (child.flex_basis.max(child.resolved_minimum_main_size)
+                            + child.margin.main_axis_sum(constants.dir))
+                        .max(padding_border_sum)
+                    })
+                    .sum::<f32>();
+                let gap_sum = sum_axis_gaps(constants.gap.main(constants.dir), item_count);
+                item_main_size_sum + gap_sum + main_content_box_inset
+            }
             AvailableSpace::MinContent if constants.is_wrap => {
                 let longest_line_length: f32 = lines
                     .iter()
@@ -1147,12 +1167,24 @@ fn determine_container_main_size(
                                 // Either the min- or max- content size depending on which constraint we are sizing under.
                                 // TODO: Optimise by using already computed values where available
                                 debug_log!("COMPUTE CHILD BASE SIZE (for intrinsic main size):");
+                                // A content-based automatic minimum makes the main axis indefinite for
+                                // intrinsic sizing. In a column's max-content query, do not reapply the
+                                // item's definite preferred height while measuring that contribution.
+                                let sizing_mode = if constants.is_column
+                                    && available_space.main(constants.dir) == AvailableSpace::MaxContent
+                                    && style_min.is_none()
+                                    && !item.is_scroll_container()
+                                {
+                                    SizingMode::ContentSize
+                                } else {
+                                    SizingMode::InherentSize
+                                };
                                 let content_main_size = tree.measure_child_size(
                                     item.node,
                                     child_known_dimensions,
                                     constants.node_inner_size,
                                     child_available_space,
-                                    SizingMode::InherentSize,
+                                    sizing_mode,
                                     dir.main_axis(),
                                     Line::FALSE,
                                 ) + item.margin.main_axis_sum(constants.dir);
