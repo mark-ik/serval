@@ -33,7 +33,9 @@ use winit::window::{Window, WindowId};
 
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
-use crate::frisket_surface::{ChromeAction, FrisketHit, FrisketSurface, WorkspaceChrome};
+use crate::frisket_surface::{
+    ChromeAction, ChromeEngineChoice, FrisketHit, FrisketSurface, WorkspaceChrome,
+};
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
 use crate::{WindowingMode, static_viewer};
@@ -42,7 +44,7 @@ const RECEIPT_STEPS: u8 = 8;
 const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
-const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history and applied a per-tile engine override while the mixed workspace held";
+const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, and applied a per-tile override while the mixed workspace held";
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -486,6 +488,14 @@ struct ChromeAddressInput {
     replace_on_insert: bool,
 }
 
+/// The menu is bound to the tile that opened it.  Rendering still flows
+/// through the chrome snapshot, but route mutation never follows a later
+/// focus change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ChromeEngineMenu {
+    tile: TileId,
+}
+
 struct WorkspaceApp {
     config: WorkspaceViewerConfig,
     workspace: PeltWorkspace<Scene>,
@@ -508,6 +518,7 @@ struct WorkspaceApp {
     workspace_receipt_stage_started: Instant,
     chrome_status: ChromeStatus,
     chrome_address: Option<ChromeAddressInput>,
+    chrome_engine_menu: Option<ChromeEngineMenu>,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -560,6 +571,7 @@ impl WorkspaceApp {
             workspace_receipt_stage_started: Instant::now(),
             chrome_status: ChromeStatus::Ready,
             chrome_address: None,
+            chrome_engine_menu: None,
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -623,8 +635,49 @@ impl WorkspaceApp {
     }
 
     fn refresh_chrome(&mut self) {
+        self.dismiss_chrome_engine_menu_if_focus_changed();
         let chrome = self.config.chrome.then(|| self.chrome_model());
         self.frisket.set_chrome(chrome);
+    }
+
+    fn chrome_engine_choices() -> Vec<ChromeEngineChoice> {
+        #[cfg(feature = "scripted")]
+        {
+            vec![
+                ChromeEngineChoice::Automatic,
+                ChromeEngineChoice::Livery,
+                ChromeEngineChoice::Scripted,
+            ]
+        }
+        #[cfg(not(feature = "scripted"))]
+        {
+            vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery]
+        }
+    }
+
+    fn selected_chrome_engine(&self, tile: TileId) -> Option<ChromeEngineChoice> {
+        let route = self.workspace.route(tile)?;
+        if route.source == PeltRouteSource::Automatic {
+            return Some(ChromeEngineChoice::Automatic);
+        }
+        match route.selected_engine() {
+            inker::routing::ENGINE_GENET_LIVERY => Some(ChromeEngineChoice::Livery),
+            inker::routing::ENGINE_GENET_SCRIPTED => Some(ChromeEngineChoice::Scripted),
+            _ => None,
+        }
+    }
+
+    fn dismiss_chrome_engine_menu_if_focus_changed(&mut self) {
+        if self
+            .chrome_engine_menu
+            .is_some_and(|menu| self.workspace.focused_tile() != Some(menu.tile))
+        {
+            self.chrome_engine_menu = None;
+        }
+    }
+
+    fn clear_chrome_engine_menu(&mut self) {
+        self.chrome_engine_menu = None;
     }
 
     fn chrome_model(&self) -> WorkspaceChrome {
@@ -638,6 +691,9 @@ impl WorkspaceApp {
                 can_go_back: false,
                 can_go_forward: false,
                 engine_label: "Auto".to_owned(),
+                engine_menu_open: false,
+                engine_selected: None,
+                engine_choices: Self::chrome_engine_choices(),
             };
         };
         let controller = self.workspace.controller(tile);
@@ -687,12 +743,14 @@ impl WorkspaceApp {
                 }
             })
             .unwrap_or_else(|| "No route".to_owned());
-        let engine_label = self
-            .workspace
-            .route(tile)
-            .map(|route| match route.source {
-                PeltRouteSource::Automatic => "Auto".to_owned(),
-                PeltRouteSource::UserOverride => route.selected_engine().to_owned(),
+        let engine_selected = self.selected_chrome_engine(tile);
+        let engine_label = engine_selected
+            .map(ChromeEngineChoice::trigger_label)
+            .map(str::to_owned)
+            .or_else(|| {
+                self.workspace
+                    .route(tile)
+                    .map(|route| route.selected_engine().to_owned())
             })
             .unwrap_or_else(|| "Auto".to_owned());
         WorkspaceChrome {
@@ -704,6 +762,11 @@ impl WorkspaceApp {
             can_go_back: controller.is_some_and(PeltController::can_go_back),
             can_go_forward: controller.is_some_and(PeltController::can_go_forward),
             engine_label,
+            engine_menu_open: self
+                .chrome_engine_menu
+                .is_some_and(|menu| menu.tile == tile),
+            engine_selected,
+            engine_choices: Self::chrome_engine_choices(),
         }
     }
 
@@ -793,31 +856,53 @@ impl WorkspaceApp {
         true
     }
 
-    fn cycle_chrome_engine(&mut self) -> bool {
+    fn toggle_chrome_engine_menu(&mut self) -> bool {
         let Some(tile) = self.workspace.focused_tile() else {
             return false;
         };
-        let current = self.workspace.route(tile).and_then(|route| {
-            (route.source == PeltRouteSource::UserOverride)
-                .then(|| route.selected_engine().to_owned())
-        });
-        #[cfg(feature = "scripted")]
-        let choices = vec![
-            None,
-            Some(inker::routing::ENGINE_GENET_LIVERY.to_owned()),
-            Some(inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
-        ];
-        #[cfg(not(feature = "scripted"))]
-        let choices = vec![None, Some(inker::routing::ENGINE_GENET_LIVERY.to_owned())];
-        let next = choices
-            .iter()
-            .position(|choice| choice == &current)
-            .map(|index| choices[(index + 1) % choices.len()].clone())
-            .unwrap_or_else(|| choices[0].clone());
-        match self.workspace.set_route_override(tile, next.clone()) {
+        if self.chrome_engine_menu == Some(ChromeEngineMenu { tile }) {
+            self.clear_chrome_engine_menu();
+        } else {
+            self.chrome_engine_menu = Some(ChromeEngineMenu { tile });
+        }
+        true
+    }
+
+    fn choose_chrome_engine(&mut self, choice: ChromeEngineChoice) -> bool {
+        let Some(menu) = self.chrome_engine_menu.take() else {
+            return false;
+        };
+        if self.workspace.focused_tile() != Some(menu.tile) {
+            self.chrome_status = ChromeStatus::Message(
+                "Engine chooser closed because the focused tile changed".to_owned(),
+            );
+            return true;
+        }
+        let next = match choice {
+            ChromeEngineChoice::Automatic => None,
+            ChromeEngineChoice::Livery => Some(inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+            ChromeEngineChoice::Scripted => {
+                #[cfg(feature = "scripted")]
+                {
+                    Some(inker::routing::ENGINE_GENET_SCRIPTED.to_owned())
+                }
+                #[cfg(not(feature = "scripted"))]
+                {
+                    self.chrome_status = ChromeStatus::Error(
+                        "Scripted engine is unavailable in this Pelt build".to_owned(),
+                    );
+                    return true;
+                }
+            },
+        };
+        match self.workspace.set_route_override(menu.tile, next.clone()) {
             Ok(changed) => {
                 if !changed {
-                    return false;
+                    self.chrome_status = ChromeStatus::Message(format!(
+                        "Engine already selected: {}",
+                        choice.label()
+                    ));
+                    return true;
                 }
                 self.frisket.set_tree(self.workspace.tree());
                 self.chrome_status = ChromeStatus::Message(match next {
@@ -839,6 +924,12 @@ impl WorkspaceApp {
     fn apply_chrome_action(&mut self, action: ChromeAction) -> bool {
         if action != ChromeAction::Address {
             self.clear_chrome_address();
+        }
+        if !matches!(
+            action,
+            ChromeAction::ToggleEngineMenu | ChromeAction::ChooseEngine(_)
+        ) {
+            self.clear_chrome_engine_menu();
         }
         match action {
             ChromeAction::Back => {
@@ -863,7 +954,8 @@ impl WorkspaceApp {
                 self.begin_address_edit();
                 true
             },
-            ChromeAction::NextEngine => self.cycle_chrome_engine(),
+            ChromeAction::ToggleEngineMenu => self.toggle_chrome_engine_menu(),
+            ChromeAction::ChooseEngine(choice) => self.choose_chrome_engine(choice),
         }
     }
 
@@ -1549,7 +1641,7 @@ impl WorkspaceApp {
                     .ok_or("chrome receipt has no retained address field")?;
                 let engine = self
                     .frisket
-                    .chrome_rect("engine-next")
+                    .chrome_rect("engine-menu")
                     .ok_or("chrome receipt has no retained engine control")?;
                 let tile = self
                     .workspace
@@ -1633,23 +1725,96 @@ impl WorkspaceApp {
                 }
             },
             6 => {
-                self.click_chrome("engine-next")?;
+                self.click_chrome("engine-menu")?;
+            },
+            7 => {
+                let automatic = self
+                    .frisket
+                    .chrome_rect("engine-automatic")
+                    .ok_or("chrome receipt did not render an Automatic menu choice")?;
+                let livery = self
+                    .frisket
+                    .chrome_rect("engine-livery")
+                    .ok_or("chrome receipt did not render a Livery menu choice")?;
+                if automatic.width <= 0.0
+                    || livery.width <= 0.0
+                    || !matches!(
+                        self.frisket.hit(
+                            livery.x + livery.width / 2.0,
+                            livery.y + livery.height / 2.0
+                        ),
+                        Some(FrisketHit::ChromeAction(ChromeAction::ChooseEngine(
+                            ChromeEngineChoice::Livery
+                        )))
+                    )
+                    || self.chrome_model().engine_selected != Some(ChromeEngineChoice::Automatic)
+                {
+                    return Err(
+                        "chrome receipt did not expose an explicit selected engine menu".to_owned(),
+                    );
+                }
+                #[cfg(feature = "scripted")]
+                if self.frisket.chrome_rect("engine-scripted").is_none() {
+                    return Err(
+                        "chrome receipt omitted the compiled Scripted menu choice".to_owned()
+                    );
+                }
+                self.click_tab(TileId(3))?;
+            },
+            8 => {
                 let route = self
                     .workspace
                     .route(TileId(2))
-                    .ok_or("chrome receipt lost route after engine pin")?;
+                    .ok_or("chrome receipt lost focused tile while dismissing the menu")?;
+                let scripted = self
+                    .workspace
+                    .route(TileId(3))
+                    .ok_or("chrome receipt lost scripted neighbor while dismissing the menu")?;
+                if self.workspace.focused_tile() != Some(TileId(3))
+                    || self.frisket.chrome_rect("engine-livery").is_some()
+                    || route.source != PeltRouteSource::Automatic
+                    || scripted.selected_engine() != inker::routing::ENGINE_GENET_SCRIPTED
+                {
+                    return Err(format!(
+                        "chrome receipt did not dismiss the tile-bound engine menu: {route:?}"
+                    ));
+                }
+                self.click_tab(TileId(2))?;
+            },
+            9 => {
+                if self.workspace.focused_tile() != Some(TileId(2)) {
+                    return Err(
+                        "chrome receipt could not restore its original focused tile".to_owned()
+                    );
+                }
+                self.click_chrome("engine-menu")?;
+            },
+            10 => {
+                self.click_chrome("engine-livery")?;
+            },
+            11 => {
+                let route = self
+                    .workspace
+                    .route(TileId(2))
+                    .ok_or("chrome receipt lost route after choosing Livery")?;
                 if route.source != PeltRouteSource::UserOverride
                     || route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
                 {
                     return Err(format!("chrome receipt did not pin Livery: {route:?}"));
                 }
+                self.click_chrome("engine-menu")?;
             },
-            7 => {
-                self.click_chrome("engine-next")?;
+            12 => {
+                #[cfg(feature = "scripted")]
+                self.click_chrome("engine-scripted")?;
+                #[cfg(not(feature = "scripted"))]
+                self.click_chrome("engine-automatic")?;
+            },
+            13 => {
                 let route = self
                     .workspace
                     .route(TileId(2))
-                    .ok_or("chrome receipt lost route after second engine choice")?;
+                    .ok_or("chrome receipt lost route after its second engine choice")?;
                 #[cfg(feature = "scripted")]
                 if route.source != PeltRouteSource::UserOverride
                     || route.selected_engine() != inker::routing::ENGINE_GENET_SCRIPTED
@@ -1666,10 +1831,19 @@ impl WorkspaceApp {
                         "chrome receipt did not restore automatic Livery: {route:?}"
                     ));
                 }
-            },
-            8 => {
                 #[cfg(feature = "scripted")]
-                self.click_chrome("engine-next")?;
+                self.click_chrome("engine-menu")?;
+                #[cfg(not(feature = "scripted"))]
+                {
+                    self.validate_chrome_workspace_receipt()?;
+                    self.receipt_step = self.receipt_step.saturating_add(1);
+                    return Ok(Some(CHROME_WORKSPACE_ASSERTION.to_owned()));
+                }
+            },
+            14 => {
+                self.click_chrome("engine-automatic")?;
+            },
+            15 => {
                 let route = self
                     .workspace
                     .route(TileId(2))
@@ -1681,6 +1855,20 @@ impl WorkspaceApp {
                     return Err(format!(
                         "chrome receipt did not restore automatic Livery: {route:?}"
                     ));
+                }
+                self.click_chrome("engine-menu")?;
+            },
+            16 => {
+                let automatic = self
+                    .frisket
+                    .chrome_rect("engine-automatic")
+                    .ok_or("chrome receipt did not keep its final Automatic choice visible")?;
+                if automatic.width <= 0.0
+                    || self.chrome_model().engine_selected != Some(ChromeEngineChoice::Automatic)
+                {
+                    return Err(
+                        "chrome receipt did not expose its restored automatic selection".to_owned(),
+                    );
                 }
                 self.validate_chrome_workspace_receipt()?;
                 self.receipt_step = self.receipt_step.saturating_add(1);
@@ -1976,6 +2164,10 @@ impl WorkspaceApp {
             error,
             ..
         } = effect;
+        self.dismiss_chrome_engine_menu_if_focus_changed();
+        if navigated {
+            self.clear_chrome_engine_menu();
+        }
         if let Some(error) = error {
             eprintln!("[pelt-workspace] {error}");
             self.chrome_status = ChromeStatus::Error(error);
@@ -2004,7 +2196,11 @@ impl WorkspaceApp {
     }
 
     fn apply_tile_event(&mut self, event: TileEvent) -> bool {
+        let focused_before = self.workspace.focused_tile();
         if self.workspace.apply(&event) {
+            if self.workspace.focused_tile() != focused_before {
+                self.clear_chrome_engine_menu();
+            }
             self.frisket.set_tree(self.workspace.tree());
             if let Some(window) = &self.window {
                 window.set_title(&self.window_title());
@@ -2058,9 +2254,12 @@ impl WorkspaceApp {
             Some(FrisketHit::ChromeAction(action)) => self.apply_chrome_action(action),
             Some(FrisketHit::Close(tile)) => {
                 self.clear_chrome_address();
+                self.clear_chrome_engine_menu();
                 self.apply_tile_event(TileEvent::Closed(tile))
             },
             Some(FrisketHit::Divider { target, split_rect }) => {
+                self.clear_chrome_address();
+                self.clear_chrome_engine_menu();
                 let Some(fractions) = self.workspace.tree().fractions_at(&target.path) else {
                     return false;
                 };
@@ -2086,6 +2285,7 @@ impl WorkspaceApp {
             },
             Some(FrisketHit::Tab(tile)) => {
                 self.clear_chrome_address();
+                self.clear_chrome_engine_menu();
                 self.gesture = Some(PointerGesture::Tab(TabDrag {
                     tile,
                     start: self.cursor,
@@ -2095,6 +2295,7 @@ impl WorkspaceApp {
             },
             Some(FrisketHit::Content(_)) => {
                 self.clear_chrome_address();
+                self.clear_chrome_engine_menu();
                 self.gesture = Some(PointerGesture::Content);
                 let effect = self.workspace.input(SessionInput::PointerButton {
                     x,
@@ -2107,7 +2308,11 @@ impl WorkspaceApp {
                 self.apply_effect(effect);
                 redraw
             },
-            Some(FrisketHit::Chrome) | None => false,
+            Some(FrisketHit::Chrome) => {
+                self.clear_chrome_address();
+                self.chrome_engine_menu.take().is_some()
+            },
+            None => false,
         }
     }
 
@@ -2919,7 +3124,7 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         let mut app = WorkspaceApp::new(config, workspace, frisket);
 
-        for _ in 0..12 {
+        for _ in 0..20 {
             app.refresh_chrome();
             let pane = app.frisket.frame(960, 640).expect("chrome Frisket frame");
             app.workspace.set_content_rects(pane.content_rects);

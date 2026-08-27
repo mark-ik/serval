@@ -719,8 +719,9 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
-**Status:** active. The first bounded Chrome receipt completed on Windows
-2026-08-27; the broader presentability and inspection lane remains open.
+**Status:** active. The bounded focused-tile Chrome and engine-choice-menu
+receipt completed on Windows 2026-08-27; the broader presentability and
+inspection lane remains open.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -743,12 +744,16 @@ cargo run --offline -p pelt --no-default-features \
 It reuses P4's four mixed-engine fixtures, but leaves tile 2 as an ordinary
 automatic HTML-to-Livery route. The retained Pelt chrome owns a focused-tile
 address field, Back, Forward, Reload, title, full route indicator, loading or
-failure status, and an Engine control. The control cycles that one tile through
-automatic, Livery, Scripted when compiled, and automatic again through
-`PeltWorkspace::set_route_override`; the other Gemtext, Scripted, and Scrying
-lanes remain intact. The address driver enters `surface.html` through the same
-key path used by the window adapter, submits it, traverses Back and Forward,
-reloads the same focused history entry, and then checks the engine cycle.
+failure status, and an Engine control. That control opens a retained one-level
+menu with explicit Automatic, Livery, and Scripted-when-compiled rows. Each row
+is a `menuitemradio` with checked state, and selection remains a
+`PeltWorkspace::set_route_override` operation rather than a Frisket action.
+The menu is bound to the tile focused when it opens, then closes on a focus
+change, content click, navigation, or explicit selection; it cannot redirect a
+later choice onto a neighboring tile. The address driver enters `surface.html`
+through the same key path used by the window adapter, submits it, traverses Back
+and Forward, reloads the same focused history entry, and then proves the menu
+dismissal and explicit engine choices while all other lanes hold.
 
 The chrome is a Pelt-specific retained wrapper around Cambium Frisket, rendered
 by Livery and laid out by Buckram. Frisket still owns the pane tree, tab and
@@ -761,11 +766,12 @@ their named evidence does not silently change.
 
 The GPU-free `pelt-desktop` test drives the full sequence without a registered
 Scrying producer and therefore requires tile 4's visible Livery fallback. The
-headed Windows run created one 960x640 window, retained all four lanes,
-captured after 275 redraws, and recorded four native frames, one import, four
-fence waits, and 275 compositions. Its assertion was `focused-tile chrome
-navigated history and applied a per-tile engine override while the mixed
-workspace held`; the captured compositor digest was `31aee86abd210644`.
+full Livery, Scripted, and Smolweb profile passed 25 tests. The headed Windows
+run created one 960x640 window, retained all four lanes, captured after 275
+redraws, and recorded 13 native frames, 10 imports, 13 fence waits, and 275
+compositions. Its assertion was `focused-tile chrome navigated history, bound
+an explicit engine choice menu, and applied a per-tile override while the mixed
+workspace held`; the captured compositor digest was `d84e9ecb5fbffbd2`.
 
 ## Cross-gate rules
 
@@ -783,9 +789,9 @@ workspace held`; the captured compositor digest was `31aee86abd210644`.
 
 ## Immediate next lane
 
-Continue P6 from the Chrome receipt with a real engine-choice menu and
-settings surface, dedicated loading/error documents, structural inspection,
-theme and accessibility state, and narrow-width/high-DPI evidence. The
+Continue P6 from the Chrome receipt with a settings surface, dedicated
+loading/error documents, structural inspection, theme and accessibility state,
+and narrow-width/high-DPI evidence. The
 Reader-in-workspace lane must carry held source bytes rather than teaching
 Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
 than an unrecorded ninth P5 fixture.

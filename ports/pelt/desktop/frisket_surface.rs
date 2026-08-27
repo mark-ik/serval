@@ -67,11 +67,38 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
                 .attr(ATTR_CHROME_ACTION, "address"),
         ),
         Box::new(
-            el::<_, FrameState, ()>("div", format!("Engine: {}", chrome.engine_label))
-                .attr("class", "pelt-engine")
-                .attr("role", "button")
-                .attr("aria-label", "Choose engine for focused tile")
-                .attr(ATTR_CHROME_ACTION, "engine-next"),
+            el::<_, FrameState, ()>(
+                "div",
+                format!(
+                    "Engine: {} {}",
+                    chrome.engine_label,
+                    if chrome.engine_menu_open {
+                        "▴"
+                    } else {
+                        "▾"
+                    }
+                ),
+            )
+            .attr(
+                "class",
+                if chrome.engine_menu_open {
+                    "pelt-engine pelt-engine-open"
+                } else {
+                    "pelt-engine"
+                },
+            )
+            .attr("role", "button")
+            .attr("aria-label", "Choose engine for focused tile")
+            .attr("aria-haspopup", "menu")
+            .attr(
+                "aria-expanded",
+                if chrome.engine_menu_open {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .attr(ATTR_CHROME_ACTION, "engine-menu"),
         ),
     ];
     let details: Vec<FrameView> = vec![
@@ -81,18 +108,35 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
             el::<_, FrameState, ()>("div", chrome.status.clone()).attr("class", "pelt-status"),
         ),
     ];
-    let header: FrameView = Box::new(
-        el::<_, FrameState, ()>(
-            "div",
-            vec![
-                Box::new(el::<_, FrameState, ()>("div", toolbar).attr("class", "pelt-toolbar"))
-                    as FrameView,
-                Box::new(el::<_, FrameState, ()>("div", details).attr("class", "pelt-details"))
-                    as FrameView,
-            ],
-        )
-        .attr("class", "pelt-chrome"),
-    );
+    let mut header_items: Vec<FrameView> = vec![Box::new(
+        el::<_, FrameState, ()>("div", toolbar).attr("class", "pelt-toolbar"),
+    )];
+    if chrome.engine_menu_open {
+        let choices = chrome
+            .engine_choices
+            .iter()
+            .copied()
+            .map(|choice| engine_choice_view(choice, chrome.engine_selected == Some(choice)))
+            .collect::<Vec<_>>();
+        header_items.push(Box::new(
+            el::<_, FrameState, ()>("div", choices)
+                .attr("id", "pelt-engine-menu")
+                .attr("class", "pelt-engine-menu")
+                .attr("role", "menu")
+                .attr("aria-label", "Engine for focused tile"),
+        ));
+    }
+    header_items.push(Box::new(
+        el::<_, FrameState, ()>("div", details).attr("class", "pelt-details"),
+    ));
+    let header: FrameView = Box::new(el::<_, FrameState, ()>("div", header_items).attr(
+        "class",
+        if chrome.engine_menu_open {
+            "pelt-chrome pelt-chrome-menu-open"
+        } else {
+            "pelt-chrome"
+        },
+    ));
     let pane: FrameView = Box::new(
         el::<_, FrameState, ()>("div", pane)
             .attr("class", "pelt-pane")
@@ -130,7 +174,70 @@ pub(crate) enum ChromeAction {
     Forward,
     Reload,
     Address,
-    NextEngine,
+    ToggleEngineMenu,
+    ChooseEngine(ChromeEngineChoice),
+}
+
+/// One explicitly available engine choice in the focused-tile Pelt menu.
+/// The host decides which of these are registered for a build and preserves
+/// route ownership when a row is selected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChromeEngineChoice {
+    Automatic,
+    Livery,
+    Scripted,
+}
+
+impl ChromeEngineChoice {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic",
+            Self::Livery => "Livery",
+            Self::Scripted => "Scripted",
+        }
+    }
+
+    pub(crate) const fn trigger_label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Auto",
+            Self::Livery => "Livery",
+            Self::Scripted => "Scripted",
+        }
+    }
+
+    const fn action(self) -> &'static str {
+        match self {
+            Self::Automatic => "engine-automatic",
+            Self::Livery => "engine-livery",
+            Self::Scripted => "engine-scripted",
+        }
+    }
+
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Livery => "genet.livery",
+            Self::Scripted => "genet.scripted",
+        }
+    }
+}
+
+fn engine_choice_view(choice: ChromeEngineChoice, selected: bool) -> FrameView {
+    Box::new(
+        el::<_, FrameState, ()>("div", choice.label())
+            .attr(
+                "class",
+                if selected {
+                    "pelt-engine-option pelt-engine-option-selected"
+                } else {
+                    "pelt-engine-option"
+                },
+            )
+            .attr("role", "menuitemradio")
+            .attr("aria-checked", if selected { "true" } else { "false" })
+            .attr("data-key", choice.id())
+            .attr(ATTR_CHROME_ACTION, choice.action()),
+    )
 }
 
 /// Snapshot rendered by the retained Pelt chrome above Frisket.
@@ -144,6 +251,9 @@ pub(crate) struct WorkspaceChrome {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub engine_label: String,
+    pub engine_menu_open: bool,
+    pub engine_selected: Option<ChromeEngineChoice>,
+    pub engine_choices: Vec<ChromeEngineChoice>,
 }
 
 /// A retained, GPU-free pane frame. Its DOM is produced by Cambium Frisket;
@@ -351,7 +461,12 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
                 "forward" => Some(ChromeAction::Forward),
                 "reload" => Some(ChromeAction::Reload),
                 "address" => Some(ChromeAction::Address),
-                "engine-next" => Some(ChromeAction::NextEngine),
+                "engine-menu" => Some(ChromeAction::ToggleEngineMenu),
+                "engine-automatic" => {
+                    Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Automatic))
+                },
+                "engine-livery" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Livery)),
+                "engine-scripted" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Scripted)),
                 _ => None,
             };
         }
@@ -362,11 +477,16 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
 const PELT_CHROME_CSS: &str = "\
     .pelt-workspace { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #202027; } \
     .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 70px; min-height: 70px; padding: 4px 6px; background: #24242d; border-bottom: 1px solid #3c3c48; } \
+    .pelt-chrome-menu-open { flex-basis: 108px; min-height: 108px; } \
     .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; } \
     .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 4px; padding: 4px 0; text-align: center; color: #e8e8ee; background: #3a3a46; border: 1px solid #555565; } \
     .pelt-chrome-button.disabled { color: #777783; background: #2c2c34; border-color: #363640; } \
     .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: #f0f0f4; background: #16161d; border: 1px solid #555565; } \
     .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 5px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: #bfe9ff; background: #30384a; border: 1px solid #566d91; } \
+    .pelt-engine-open { color: #ffffff; background: #41506b; border-color: #83a3d5; } \
+    .pelt-engine-menu { display: flex; flex-direction: row; flex-grow: 0; flex-shrink: 0; flex-basis: 28px; min-height: 28px; margin: 2px 0; } \
+    .pelt-engine-option { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: #c9d9ef; background: #30384a; border: 1px solid #566d91; } \
+    .pelt-engine-option-selected { color: #ffffff; background: #46628a; border-color: #9cc8ff; } \
     .pelt-details { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 26px; min-width: 0; overflow: hidden; } \
     .pelt-title { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; overflow: hidden; white-space: nowrap; color: #ffffff; font-size: 13px; } \
     .pelt-route { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 260px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: #9ccdf0; font-size: 12px; } \
@@ -512,23 +632,83 @@ mod tests {
             can_go_back: false,
             can_go_forward: false,
             engine_label: "Auto".to_owned(),
+            engine_menu_open: true,
+            engine_selected: Some(ChromeEngineChoice::Automatic),
+            engine_choices: vec![
+                ChromeEngineChoice::Automatic,
+                ChromeEngineChoice::Livery,
+                ChromeEngineChoice::Scripted,
+            ],
         }));
         let frame = surface.frame(800, 600).expect("chrome Frisket frame");
         let address = surface.chrome_rect("address").expect("address geometry");
-        let engine = surface.chrome_rect("engine-next").expect("engine geometry");
+        let engine = surface.chrome_rect("engine-menu").expect("engine geometry");
+        let livery = surface
+            .chrome_rect("engine-livery")
+            .expect("Livery choice geometry");
         let first = frame
             .content_rects
             .iter()
             .find_map(|(tile, rect)| (*tile == TileId(1)).then_some(*rect))
             .expect("first content geometry");
         assert!(address.width > engine.width);
-        assert!(first.y > address.y + address.height);
+        assert!(livery.y > address.y);
+        assert!(first.y > livery.y + livery.height);
         assert_eq!(
             surface.hit(
                 address.x + address.width / 2.0,
                 address.y + address.height / 2.0
             ),
             Some(FrisketHit::ChromeAction(ChromeAction::Address))
+        );
+        assert_eq!(
+            surface.hit(
+                livery.x + livery.width / 2.0,
+                livery.y + livery.height / 2.0
+            ),
+            Some(FrisketHit::ChromeAction(ChromeAction::ChooseEngine(
+                ChromeEngineChoice::Livery
+            )))
+        );
+        let trigger = nodes_with_attr(surface.document.dom(), ATTR_CHROME_ACTION)
+            .into_iter()
+            .find(|node| {
+                attr(surface.document.dom(), *node, ATTR_CHROME_ACTION).as_deref()
+                    == Some("engine-menu")
+            })
+            .expect("engine trigger semantic node");
+        assert_eq!(
+            attr(surface.document.dom(), trigger, "aria-haspopup").as_deref(),
+            Some("menu")
+        );
+        assert_eq!(
+            attr(surface.document.dom(), trigger, "aria-expanded").as_deref(),
+            Some("true")
+        );
+        let menu = nodes_with_attr(surface.document.dom(), "id")
+            .into_iter()
+            .find(|node| {
+                attr(surface.document.dom(), *node, "id").as_deref() == Some("pelt-engine-menu")
+            })
+            .expect("engine menu semantic node");
+        assert_eq!(
+            attr(surface.document.dom(), menu, "role").as_deref(),
+            Some("menu")
+        );
+        let automatic = nodes_with_attr(surface.document.dom(), ATTR_CHROME_ACTION)
+            .into_iter()
+            .find(|node| {
+                attr(surface.document.dom(), *node, ATTR_CHROME_ACTION).as_deref()
+                    == Some("engine-automatic")
+            })
+            .expect("automatic choice semantic node");
+        assert_eq!(
+            attr(surface.document.dom(), automatic, "role").as_deref(),
+            Some("menuitemradio")
+        );
+        assert_eq!(
+            attr(surface.document.dom(), automatic, "aria-checked").as_deref(),
+            Some("true")
         );
         let back = surface.chrome_rect("back").expect("back geometry");
         assert_eq!(
