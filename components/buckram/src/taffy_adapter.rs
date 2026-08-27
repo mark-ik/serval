@@ -1131,6 +1131,14 @@ fn is_opaque_formatting_root(style: BlockStyle) -> bool {
     style.establishes_bfc && style.float == FloatSide::None
 }
 
+/// Whether an intrinsic query ignores authored preferred sizes.
+fn is_content_sizing_mode(sizing_mode: SizingMode) -> bool {
+    matches!(
+        sizing_mode,
+        SizingMode::ContentSize | SizingMode::ContentSizeForAutomaticMinimum
+    )
+}
+
 struct ChildIter<'a>(slice::Iter<'a, AlgorithmNodeId>);
 
 impl Iterator for ChildIter<'_> {
@@ -2090,14 +2098,14 @@ where
         );
         let exact_row_flex_base_query = parent_is_row_flex
             && inputs.run_mode == RunMode::ComputeSize
-            && inputs.sizing_mode == SizingMode::ContentSize
+            && is_content_sizing_mode(inputs.sizing_mode)
             && inputs.axis == taffy::RequestedAxis::Horizontal
             && inputs.available_space.width == taffy::AvailableSpace::MaxContent
             && self.row_flex_basis_uses_content(node);
         let exact_column_flex_base_query = parent_is_column_flex
             && !self.tree.nodes[node.index()].flex_content_base_probe_active
             && inputs.run_mode == RunMode::ComputeSize
-            && inputs.sizing_mode == SizingMode::ContentSize
+            && is_content_sizing_mode(inputs.sizing_mode)
             && inputs.axis == taffy::RequestedAxis::Vertical
             && inputs.known_dimensions.height.is_none()
             && inputs.available_space.height == taffy::AvailableSpace::MaxContent
@@ -2105,7 +2113,7 @@ where
         let exact_column_cross_query = parent_is_column_flex
             && self.tree.nodes[node.index()].flex_content_base_query
             && inputs.run_mode == RunMode::ComputeSize
-            && inputs.sizing_mode == SizingMode::ContentSize
+            && is_content_sizing_mode(inputs.sizing_mode)
             && inputs.axis == taffy::RequestedAxis::Horizontal
             && inputs.known_dimensions.width.is_none()
             && inputs.known_dimensions.height.is_some()
@@ -2241,7 +2249,7 @@ where
         let content_row_height_query = measured_content_flex_item
             && parent_is_row_flex
             && inputs.run_mode == RunMode::ComputeSize
-            && inputs.sizing_mode == SizingMode::ContentSize
+            && is_content_sizing_mode(inputs.sizing_mode)
             && inputs.axis == taffy::RequestedAxis::Vertical
             && inputs.known_dimensions.width.is_some()
             && inputs.known_dimensions.height.is_none()
@@ -2251,7 +2259,7 @@ where
         let content_column_base_probe = measured_content_flex_item
             && parent_is_column_flex
             && inputs.run_mode == RunMode::ComputeSize
-            && inputs.sizing_mode == SizingMode::ContentSize
+            && is_content_sizing_mode(inputs.sizing_mode)
             && inputs.axis == taffy::RequestedAxis::Vertical
             && inputs.known_dimensions.width.is_some()
             && inputs.known_dimensions.height.is_none()
@@ -3360,6 +3368,13 @@ mod tests {
         _line_constraints: Option<&FloatLineConstraints>,
     ) -> AlgorithmSize<f32> {
         AlgorithmSize::new(0.0, 0.0)
+    }
+
+    #[test]
+    fn automatic_minimum_mode_stays_on_buckrams_content_sizing_route() {
+        assert!(is_content_sizing_mode(SizingMode::ContentSize));
+        assert!(is_content_sizing_mode(SizingMode::ContentSizeForAutomaticMinimum));
+        assert!(!is_content_sizing_mode(SizingMode::InherentSize));
     }
 
     #[test]
