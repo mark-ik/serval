@@ -183,6 +183,9 @@ ash = "0.38"
 
 
 [dev-dependencies]
+# The fixture-5 receipt inspects the concrete retained resource-ledger types
+# returned by `LiveryDocumentSession::resource_set()`.
+genet-document-resources = { workspace = true }
 # Offline mock HTTP server for the netfetch (http(s)) integration test, so it runs
 # without a live network. Mirrors genet-wpt's fetch()->netfetcher test harness.
 mockito = "1"

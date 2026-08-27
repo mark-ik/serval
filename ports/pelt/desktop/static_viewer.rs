@@ -37,6 +37,8 @@ pub enum ProductReceipt {
     Scripted,
     /// Initial Text Fragment activation in a retained Livery document.
     TextFragment,
+    /// Redirected document with a linked/imported stylesheet resource graph.
+    Resources,
 }
 
 impl ProductReceipt {
@@ -47,6 +49,7 @@ impl ProductReceipt {
             Self::Responsive => "responsive",
             Self::Scripted => "scripted",
             Self::TextFragment => "text-fragment",
+            Self::Resources => "resources",
         }
     }
 
@@ -61,6 +64,7 @@ impl ProductReceipt {
             | Self::Responsive
             | Self::Scripted
             | Self::TextFragment => (960, 640),
+            Self::Resources => (960, 640),
         }
     }
 
@@ -71,6 +75,7 @@ impl ProductReceipt {
             | Self::Responsive
             | Self::Scripted
             | Self::TextFragment => 3,
+            Self::Resources => 3,
         }
     }
 }
@@ -409,10 +414,10 @@ mod livery_route_tests {
         ControllerViewerContent, ReceiptResourceFetcher, StaticProductReceipt, ViewerClock,
     };
     #[cfg(feature = "scripted")]
+    use genet_documents::ResourceFetchPolicy;
+    #[cfg(feature = "scripted")]
     use genet_documents::ScriptedSessionEngine;
-    use genet_documents::{
-        LiveryDocumentSession, LiverySessionEngine, LocalFetcher, ResourceFetchPolicy,
-    };
+    use genet_documents::{LiveryDocumentSession, LiverySessionEngine, LocalFetcher};
     use inker::{SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry};
     use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
     use netrender::{Scene, SceneOp};
@@ -625,6 +630,11 @@ mod livery_route_tests {
             controller,
             posture: None,
             document_fetches: None,
+            resource_requests: None,
+            expected_resource_font: None,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         };
 
         let _geometry = content.frame(960, 640);
@@ -655,6 +665,11 @@ mod livery_route_tests {
             controller,
             posture: None,
             document_fetches: None,
+            resource_requests: None,
+            expected_resource_font: None,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         };
 
         let _geometry = content.frame(960, 640);
@@ -685,6 +700,11 @@ mod livery_route_tests {
             controller,
             posture: None,
             document_fetches: None,
+            resource_requests: None,
+            expected_resource_font: None,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         };
 
         let _wide = content.frame(480, 320);
@@ -693,6 +713,171 @@ mod livery_route_tests {
                 .drive_product_receipt(StaticProductReceipt::Responsive)
                 .as_deref(),
             Ok("viewport resize reflowed the grid and retained the table axes")
+        );
+    }
+
+    #[test]
+    fn resources_product_receipt_keeps_redirected_sheet_graph_and_assets() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("examples")
+            .join("p5-resources");
+        let start = root.join("start").join("index.html");
+        let final_path = root.join("final").join("index.html");
+        let expected_font = std::fs::read(root.join("..").join("Ahem.ttf"))
+            .expect("resources receipt Ahem fixture");
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fetcher = ReceiptResourceFetcher::new(
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .with_trace(std::sync::Arc::clone(&requests))
+        .with_redirect(
+            start.to_string_lossy().into_owned(),
+            final_path.to_string_lossy().into_owned(),
+            final_path.clone(),
+        );
+        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+        registry.register(Box::new(LiverySessionEngine::new(fetcher)));
+        let mut session = registry
+            .spawn(
+                inker::routing::ENGINE_GENET_LIVERY,
+                &SessionSpawnRequest::new(start.to_string_lossy().into_owned())
+                    .with_viewport(960, 640),
+            )
+            .expect("resources receipt controller route");
+        let scene = session.frame(960, 640);
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|operation| matches!(operation, SceneOp::Image(_))),
+            "the sheet-relative image reaches the product scene"
+        );
+        assert!(
+            scene
+                .fonts
+                .iter()
+                .any(|font| font.data.as_ref() == expected_font.as_slice()),
+            "the named @font-face bytes reach a painted glyph run"
+        );
+        let concrete = session
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("resources receipt keeps its Livery session");
+        let resources = concrete.resource_set();
+        assert!(
+            resources.document_url.as_deref().is_some_and(|url| url
+                .replace('\\', "/")
+                .ends_with("/p5-resources/final/index.html")),
+            "the document ledger retains the redirected final identity: {:?}",
+            resources.document_url
+        );
+        assert_eq!(resources.stylesheets.len(), 2, "imported and linked sheets");
+        let imported = &resources.stylesheets[0];
+        let parent = &resources.stylesheets[1];
+        assert_eq!(
+            imported.owner,
+            genet_document_resources::StylesheetOwner::Imported
+        );
+        assert_eq!(
+            parent.owner,
+            genet_document_resources::StylesheetOwner::Linked
+        );
+        assert_eq!(parent.imports.len(), 1);
+        assert_eq!(parent.imports[0].authored_url, "palette.css");
+        assert_eq!(parent.imports[0].child_sheet_id, Some(imported.sheet_id));
+        assert_eq!(
+            imported.import_parent,
+            Some(genet_document_resources::StylesheetImportParent {
+                sheet_id: parent.sheet_id,
+                import_index: 0,
+            })
+        );
+        assert!(parent.source_url.as_deref().is_some_and(|url| {
+            url.replace('\\', "/")
+                .ends_with("/p5-resources/final/styles/root.css")
+        }));
+        assert!(parent.requested_url.as_deref().is_some_and(|url| {
+            url.replace('\\', "/")
+                .ends_with("/p5-resources/final/styles/root.css")
+        }));
+        assert!(imported.source_url.as_deref().is_some_and(|url| {
+            url.replace('\\', "/")
+                .ends_with("/p5-resources/final/styles/palette.css")
+        }));
+        assert!(imported.requested_url.as_deref().is_some_and(|url| {
+            url.replace('\\', "/")
+                .ends_with("/p5-resources/final/styles/palette.css")
+        }));
+        assert!(
+            resources.diagnostics.is_empty(),
+            "{:#?}",
+            resources.diagnostics
+        );
+        let resource_ledger = resources
+            .resources
+            .iter()
+            .map(|resource| {
+                format!(
+                    "{:?}: {} -> {} ({} bytes)",
+                    resource.kind,
+                    resource.authored_url,
+                    resource.resolved_url,
+                    resource.bytes.len()
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            resources.resources.iter().any(|resource| {
+                resource.kind == genet_document_resources::ResourceKind::Image
+                    && resource.authored_url == "../../../../../../resources/servo_64.png"
+                    && resource.resolved_url.replace('\\', "/").ends_with(
+                        "/p5-resources/final/styles/../../../../../../resources/servo_64.png",
+                    )
+            }),
+            "resolved resource ledger: {resource_ledger:#?}"
+        );
+        assert!(
+            resources.resources.iter().any(|resource| {
+                resource.kind == genet_document_resources::ResourceKind::Font
+                    && resource.authored_url == "../../../Ahem.ttf"
+                    && resource
+                        .resolved_url
+                        .replace('\\', "/")
+                        .ends_with("/p5-resources/final/styles/../../../Ahem.ttf")
+            }),
+            "resolved resource ledger: {resource_ledger:#?}"
+        );
+        let accent = node_by_id(concrete.document().dom(), "accent");
+        assert_eq!(
+            concrete
+                .document()
+                .computed_style(accent, "color")
+                .as_deref(),
+            Some("rgb(31, 107, 87)"),
+            "the imported sheet reaches the computed cascade"
+        );
+        let expected = [
+            "/p5-resources/start/index.html",
+            "/p5-resources/final/styles/root.css",
+            "/p5-resources/final/styles/palette.css",
+            "/p5-resources/final/styles/../../../Ahem.ttf",
+            "/p5-resources/final/styles/../../../../../../resources/servo_64.png",
+        ];
+        let actual = requests
+            .lock()
+            .expect("resource trace lock")
+            .iter()
+            .map(|url| url.replace('\\', "/"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual.len(), expected.len(), "resource fetch count");
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.ends_with(expected)),
+            "resource fetch order and ownership: actual={actual:?} expected suffixes={expected:?}"
         );
     }
 
@@ -785,6 +970,11 @@ mod livery_route_tests {
             controller,
             posture: None,
             document_fetches: Some(document_fetches),
+            resource_requests: None,
+            expected_resource_font: None,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         };
 
         let _activated = content.frame(960, 640);
@@ -803,6 +993,8 @@ mod livery_route_tests {
 struct ReceiptResourceFetcher {
     tracked_resource: Option<String>,
     document_fetches: Arc<AtomicUsize>,
+    requests: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    redirect: Option<(String, String, PathBuf)>,
 }
 
 #[cfg(feature = "livery")]
@@ -811,12 +1003,35 @@ impl ReceiptResourceFetcher {
         Self {
             tracked_resource,
             document_fetches,
+            requests: None,
+            redirect: None,
         }
+    }
+
+    fn with_trace(mut self, requests: Arc<std::sync::Mutex<Vec<String>>>) -> Self {
+        self.requests = Some(requests);
+        self
+    }
+
+    fn with_redirect(
+        mut self,
+        requested_url: impl Into<String>,
+        final_url: impl Into<String>,
+        body_path: impl Into<PathBuf>,
+    ) -> Self {
+        self.redirect = Some((requested_url.into(), final_url.into(), body_path.into()));
+        self
     }
 
     fn record(&self, url: &str) {
         if self.tracked_resource.as_deref() == Some(url) {
             self.document_fetches.fetch_add(1, Ordering::SeqCst);
+        }
+        if let Some(requests) = &self.requests {
+            requests
+                .lock()
+                .expect("receipt resource trace lock")
+                .push(url.to_owned());
         }
     }
 }
@@ -824,12 +1039,19 @@ impl ReceiptResourceFetcher {
 #[cfg(feature = "livery")]
 impl genet_host_api::ResourceFetcher for ReceiptResourceFetcher {
     fn fetch(&self, url: &str) -> Option<Vec<u8>> {
-        self.record(url);
-        genet_host_api::ResourceFetcher::fetch(&genet_documents::LocalFetcher, url)
+        genet_host_api::ResourceFetcher::fetch_response(self, url).map(|response| response.bytes)
     }
 
     fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
         self.record(url);
+        if let Some((requested_url, final_url, body_path)) = &self.redirect
+            && requested_url == url
+        {
+            return std::fs::read(body_path).ok().map(|bytes| {
+                genet_host_api::ResourceResponse::new(final_url.clone(), bytes)
+                    .with_content_type("text/html")
+            });
+        }
         genet_host_api::ResourceFetcher::fetch_response(&genet_documents::LocalFetcher, url)
     }
 }
@@ -881,10 +1103,32 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     let receipt_fetches = tracked_resource
         .as_ref()
         .map(|_| Arc::clone(&document_fetches));
+    let resource_requests = (config.product_receipt == Some(StaticProductReceipt::Resources))
+        .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
+    let mut expected_resource_font = None;
+    let mut receipt_fetcher = ReceiptResourceFetcher::new(tracked_resource, document_fetches);
+    if config.product_receipt == Some(StaticProductReceipt::Resources) {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("examples")
+            .join("p5-resources");
+        let final_path = fixture_root.join("final").join("index.html");
+        expected_resource_font = Some(
+            std::fs::read(fixture_root.join("..").join("Ahem.ttf"))
+                .map_err(|error| format!("resources receipt could not read Ahem.ttf: {error}"))?,
+        );
+        let final_url = final_path.to_string_lossy().into_owned();
+        let requested_url = config
+            .url
+            .split_once('#')
+            .map_or(config.url.as_str(), |(resource, _)| resource)
+            .to_owned();
+        receipt_fetcher = receipt_fetcher
+            .with_trace(resource_requests.as_ref().expect("resource trace").clone())
+            .with_redirect(requested_url, final_url, final_path);
+    }
     let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
-    registry.register(Box::new(LiverySessionEngine::new(
-        ReceiptResourceFetcher::new(tracked_resource, document_fetches),
-    )));
+    registry.register(Box::new(LiverySessionEngine::new(receipt_fetcher)));
     let controller = PeltController::new(
         registry,
         SurfaceEngineRegistry::new(),
@@ -901,6 +1145,11 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             controller,
             posture: None,
             document_fetches: receipt_fetches,
+            resource_requests,
+            expected_resource_font,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         },
     )
 }
@@ -962,6 +1211,11 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             controller,
             posture,
             document_fetches: None,
+            resource_requests: None,
+            expected_resource_font: None,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         },
     )
 }
@@ -971,6 +1225,11 @@ pub(crate) struct ControllerViewerContent {
     controller: pelt_core::PeltController<netrender::Scene>,
     posture: Option<String>,
     document_fetches: Option<Arc<AtomicUsize>>,
+    resource_requests: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    expected_resource_font: Option<Vec<u8>>,
+    rendered_image: bool,
+    rendered_resource_font: bool,
+    imported_accent: bool,
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
@@ -983,6 +1242,11 @@ impl ControllerViewerContent {
             controller,
             posture,
             document_fetches: None,
+            resource_requests: None,
+            expected_resource_font: None,
+            rendered_image: false,
+            rendered_resource_font: false,
+            imported_accent: false,
         }
     }
 }
@@ -1369,6 +1633,72 @@ impl windowed::ViewerContent for ControllerViewerContent {
                         .to_owned(),
                 )
             },
+            StaticProductReceipt::Resources => {
+                let clip = self
+                    .controller
+                    .clip()
+                    .ok_or_else(|| "resources receipt has no source-response clip".to_owned())?;
+                let canonical = clip
+                    .artifacts
+                    .first()
+                    .map(|artifact| artifact.canonical_uri.replace('\\', "/"))
+                    .ok_or_else(|| {
+                        "resources receipt has no source-response artifact".to_owned()
+                    })?;
+                if !canonical.ends_with("/p5-resources/final/index.html") {
+                    return Err(format!(
+                        "resources receipt lost redirected final identity: {canonical}"
+                    ));
+                }
+                if self.controller.title().as_deref() != Some("Pelt resource graph receipt") {
+                    return Err(
+                        "resources receipt did not retain the final document title".to_owned()
+                    );
+                }
+                if !self.rendered_image {
+                    return Err("resources receipt did not render its linked image".to_owned());
+                }
+                if !self.rendered_resource_font {
+                    return Err(
+                        "resources receipt did not paint its named @font-face bytes".to_owned()
+                    );
+                }
+                if !self.imported_accent {
+                    return Err(
+                        "resources receipt did not paint the imported stylesheet color".to_owned(),
+                    );
+                }
+                let expected = [
+                    "/p5-resources/start/index.html",
+                    "/p5-resources/final/styles/root.css",
+                    "/p5-resources/final/styles/palette.css",
+                    "/p5-resources/final/styles/../../../Ahem.ttf",
+                    "/p5-resources/final/styles/../../../../../../resources/servo_64.png",
+                ];
+                let trace = self
+                    .resource_requests
+                    .as_ref()
+                    .ok_or_else(|| "resources receipt has no fetch trace".to_owned())?
+                    .lock()
+                    .map_err(|_| "resources receipt fetch trace was poisoned".to_owned())?
+                    .iter()
+                    .map(|url| url.replace('\\', "/"))
+                    .collect::<Vec<_>>();
+                if trace.len() != expected.len()
+                    || !trace
+                        .iter()
+                        .zip(expected.iter())
+                        .all(|(actual, expected)| actual.ends_with(expected))
+                {
+                    return Err(format!(
+                        "resources receipt fetch trace drifted: actual={trace:?} expected={expected:?}"
+                    ));
+                }
+                Ok(
+                    "redirected identity, imported cascade, linked image/font, and fetch trace held"
+                        .to_owned(),
+                )
+            },
             StaticProductReceipt::TextFragment => {
                 const TARGET: &str = "The retained text fragment target";
                 let clip = self
@@ -1411,7 +1741,28 @@ impl windowed::ViewerContent for ControllerViewerContent {
     }
 
     fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
-        self.controller.frame(width, height)
+        let scene = self.controller.frame(width, height);
+        self.rendered_image = scene
+            .ops
+            .iter()
+            .any(|operation| matches!(operation, netrender::SceneOp::Image(_)));
+        self.rendered_resource_font =
+            self.expected_resource_font
+                .as_ref()
+                .is_some_and(|expected| {
+                    scene
+                        .fonts
+                        .iter()
+                        .any(|font| font.data.as_ref() == expected.as_slice())
+                });
+        self.imported_accent = scene.ops.iter().any(|operation| {
+            matches!(
+                operation,
+                netrender::SceneOp::GlyphRun(run)
+                    if run.color == [31.0 / 255.0, 107.0 / 255.0, 87.0 / 255.0, 1.0]
+            )
+        });
+        scene
     }
 
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
