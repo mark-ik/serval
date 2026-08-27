@@ -332,8 +332,8 @@ measure Buckram-owned content at the required max-content or fit-content size;
 and all eight `flexbox-flex-basis-content-*` reftests pass twice under exact
 release receipts in
 `testing/genet/wpt-ledger/2026-08-27_flex_basis_content`. The Taffy complete
-delta is regenerated and verified. The automatic-minimum-size candidate is
-also receipt-complete: its focused Genet-Livery regression passes 1 / 1, and
+delta is regenerated and verified. The automatic-minimum-size release is also
+receipt-complete: its focused Genet-Livery regression passes 1 / 1, and
 the exact Livery receipt covers that case plus the eight content-basis
 adjacency cases, all nine passing from HEAD `9d23efc433d`. The receipt is
 recorded at
@@ -344,11 +344,15 @@ manifest SHA-256
 `d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422`.
 The package-gate baseline remains Livery 192 passed / 0 failed / 4 ignored,
 Genet-Livery 223 passed plus the known canvas baseline failure, and Buckram
-254 / 254. The canvas result is unchanged: the pre-existing
+255 / 255. The focused released-package native receipts are Genet-Livery
+automatic minimum 1 / 1, flex-basis content 2 / 2, and its content-basis repro
+6 / 6. The canvas result is unchanged: the pre-existing
 `replaced_html_dimensions_use_computed_css_and_canvas_intrinsics` assertion
-observes `200 x 200` instead of `100 x 100` on the untouched baseline. The
-corresponding `genet-taffy` publication remains pending root confirmation;
-this receipt does not claim a published 0.13.2 release.
+observes `200 x 200` instead of `100 x 100` on the untouched baseline.
+`genet-taffy 0.14.0` was published from `e8a67b06a4b`, merged to `main` at
+`8b4e14e7853`, and tagged `genet-taffy-v0.14.0`. The 69-file registry archive
+has SHA-256 `50F2A560C4025930D7138D18BA78C55B3C40E562A2927B3D58E871771DB0676D`;
+consumer resolution is clean.
 
 - Validate and repair the remaining vertical-flex cross-axis alignment and
   wrap-reversal surface beyond the main-axis projection.
@@ -448,8 +452,15 @@ this receipt does not claim a published 0.13.2 release.
   failure, which observes `200 × 200` instead of its expected `100 × 100`,
   occurs on the untouched baseline and is not attributed to this slice.
 - Repaired the nested wrapped-column automatic-minimum-size residual in the
-  vendored Taffy candidate and added the focused Genet-Livery geometry
+  vendored Taffy release and added the focused Genet-Livery geometry
   regression. The exact frozen Livery receipt passes the automatic-minimum
   case and all eight content-basis adjacency cases; its runner, manifest, and
   per-case maps are recorded under
   `testing/genet/wpt-ledger/2026-08-27_flex_automatic_minimum`.
+- Published `genet-taffy 0.14.0` from `e8a67b06a4b`; merged it to `main` at
+  `8b4e14e7853` and annotated the release source as `genet-taffy-v0.14.0`.
+  The 69-file registry archive has SHA-256
+  `50F2A560C4025930D7138D18BA78C55B3C40E562A2927B3D58E871771DB0676D`.
+  Consumer resolution is clean. Release-native gates are Buckram 255 / 255,
+  Genet-Livery automatic minimum 1 / 1, flex-basis content 2 / 2, and
+  content-basis repro 6 / 6; all nine focused WPT cases pass.

@@ -49,7 +49,7 @@ standalone all-features run records 131 unit tests and 5 doc tests passing.
 The resulting patch SHA-256 is
 `BDE982DE04A4DF21FE50E071E07220044E973095793A31F11276D8EE8238AF7D`.
 
-**0.14.0 release candidate (2026-08-27).** Regenerated `0000` against a
+**0.14.0 release (2026-08-27).** Regenerated `0000` against a
 fresh extraction of the published upstream `taffy 0.13.0` crate after the
 Row 18 automatic-minimum repair. The delta changes 16 `src/` files (855 added
 lines, 127 removed, 86 hunks); applying it with `patch -p1` to a clean
@@ -60,6 +60,14 @@ and its size is 73,200 bytes.
 The final 69-file packaged crate passed offline `cargo package` verification,
 then its extracted source passed the all-features suite: 139 unit tests and 5
 doc tests.
+
+`genet-taffy 0.14.0` was published from `e8a67b06a4b`, then merged to `main`
+at `8b4e14e7853`. The annotated `genet-taffy-v0.14.0` tag peels to that
+release commit. The registry archive has 69 files and SHA-256
+`50F2A560C4025930D7138D18BA78C55B3C40E562A2927B3D58E871771DB0676D`.
+Consumer resolution is clean; the release-native receipts are Buckram 255 / 255,
+Genet-Livery automatic minimum 1 / 1, flex-basis content 2 / 2, and its
+content-basis repro 6 / 6.
 
 `git diff --check` reports ten trailing-space diagnostics within the generated
 delta. They are existing vendored `src/` bytes represented as added lines;
