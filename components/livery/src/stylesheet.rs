@@ -168,6 +168,19 @@ impl FontFaceRule {
         &self.sources
     }
 
+    /// Return this descriptor with each source URL rewritten for a
+    /// consuming document. The family, feature settings, and loadability
+    /// contract remain unchanged, so callers can keep raw CSSOM text while
+    /// using source-relative resource identities for font registration.
+    pub fn remap_source_urls(mut self, mut remap: impl FnMut(&str) -> String) -> Self {
+        self.sources = self
+            .sources
+            .iter()
+            .map(|source| remap(source).into_boxed_str())
+            .collect();
+        self
+    }
+
     pub fn feature_settings(&self) -> &FontFeatureSettings {
         &self.feature_settings
     }
