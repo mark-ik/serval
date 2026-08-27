@@ -4,6 +4,12 @@
 
 //! Type erasure for retained product-owned Cambium runners.
 //!
+//! Frozen as v1 with the descriptor vocabulary (2026-08-26): the fourteen
+//! trait methods stand, including the three no erased host calls yet —
+//! `root`, `focusables`, and `pointer_capture` erase the same capabilities
+//! the concrete hosts already rely on (subtree identity, spatial focus, and
+//! mid-drag capture routing). Changes are additive until a v2.
+//!
 //! This boundary starts after a host has translated platform input and resolved
 //! any DOM hit target. It intentionally does not perform layout, hit testing,
 //! scene conversion, scrolling policy, accessibility hosting, or lifetime
@@ -225,8 +231,7 @@ mod tests {
     use std::rc::Rc;
 
     use genet_host_api::{
-        PlacementHint, ProviderId, SourceKindId, SurfaceId, SurfaceMultiplicity, SurfaceRole,
-        SurfaceSourceShape, SurfaceUnavailableReason,
+        ProviderId, SourceKindId, SurfaceId, SurfaceSourceShape, SurfaceUnavailableReason,
     };
     use genet_scripted_dom::{NodeId, ScriptedDom};
     use layout_dom_api::{LayoutDom, NodeKind};
@@ -280,10 +285,6 @@ mod tests {
             surface_id: SurfaceId::from(id),
             label: id.to_owned(),
             accepted_source: SurfaceSourceShape::One(SourceKindId::from("example.source")),
-            roles: vec![SurfaceRole::from("document")],
-            multiplicity: SurfaceMultiplicity::PerSource,
-            placement_hint: PlacementHint::from("main"),
-            potential_capabilities: vec![],
         }
     }
 

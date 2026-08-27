@@ -7,6 +7,14 @@
 //! A descriptor says what a provider may offer. It deliberately does not carry
 //! executable factories, settings values, commands, product snapshots, or live
 //! handles. Those stay with the product and its admitted runtime session.
+//!
+//! This vocabulary is frozen as v1 (2026-08-26), proven by two unrelated
+//! products and one erased host. Changes are additive until a v2; the
+//! pre-freeze census and rulings live in Mere's
+//! `design_docs/mere_docs/implementation_strategy/2026-08-24_knot_shared_surface_and_port_contribution_plan.md`.
+//! The census removed the speculative descriptor tail (roles, multiplicity,
+//! placement hint, potential capabilities); each returns additively with the
+//! consumer that actually reads it.
 
 macro_rules! owned_id {
     ($name:ident, $doc:literal) => {
@@ -57,15 +65,6 @@ owned_id!(
     SourceKindId,
     "A product-defined kind of source a surface accepts."
 );
-owned_id!(SurfaceRole, "A product-defined role a surface may perform.");
-owned_id!(
-    PlacementHint,
-    "A host-interpreted, product-supplied placement hint."
-);
-owned_id!(
-    CapabilityId,
-    "A potential capability a surface may expose when admitted."
-);
 
 /// The cardinality and source kind a surface can be admitted against.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,25 +77,17 @@ pub enum SurfaceSourceShape {
     Many(SourceKindId),
 }
 
-/// Whether a host may keep one, one-per-source, or many instances of a surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SurfaceMultiplicity {
-    Singleton,
-    PerSource,
-    Multiple,
-}
-
 /// Stable facts a product publishes before a host admits a surface.
+///
+/// `accepted_source` is the admission truth, not a parallel claim: a host
+/// that also keeps a provider-local admission schema must assert the two
+/// agree when the provider registers, so one stated fact governs admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SurfaceDescriptor {
     pub provider_id: ProviderId,
     pub surface_id: SurfaceId,
     pub label: String,
     pub accepted_source: SurfaceSourceShape,
-    pub roles: Vec<SurfaceRole>,
-    pub multiplicity: SurfaceMultiplicity,
-    pub placement_hint: PlacementHint,
-    pub potential_capabilities: Vec<CapabilityId>,
 }
 
 /// The current availability of one admitted surface session.
@@ -113,6 +104,11 @@ impl SurfaceAvailability {
 }
 
 /// Why a product declined or could not maintain an admitted surface.
+///
+/// The unproduced variants are deliberate reservations for the broader
+/// per-authority status surfaces the shared-surface plan's F0 names: a
+/// locked vault, a stale snapshot, an unconfigured provider, an unhealthy
+/// resident.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SurfaceUnavailableReason {
     Absent,
@@ -136,10 +132,6 @@ mod tests {
             surface_id: SurfaceId::from("example.surface.v1"),
             label: "Example surface".to_owned(),
             accepted_source: SurfaceSourceShape::One(SourceKindId::from("example.source")),
-            roles: vec![SurfaceRole::from("document")],
-            multiplicity: SurfaceMultiplicity::PerSource,
-            placement_hint: PlacementHint::from("main"),
-            potential_capabilities: vec![CapabilityId::from("edit")],
         };
 
         assert_eq!(descriptor.provider_id.as_str(), "example.provider");

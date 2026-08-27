@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Freeze the retained surface contract at v1 with `genet-host-api`'s
+  descriptor vocabulary. The descriptor keeps identity, label, and
+  `accepted_source` (now the admission truth a host asserts against its
+  provider registration); the speculative tail (roles, multiplicity,
+  placement hint, potential capabilities) is removed and returns additively
+  with a real consumer. `RetainedSurfaceSession` keeps all fourteen
+  methods. Changes are additive until a v2.
+
 ## 0.3.3 - 2026-08-09
 
 - Publish the post-0.3.2 workspace state under its own number. The registry

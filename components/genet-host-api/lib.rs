@@ -18,8 +18,8 @@ pub mod tile;
 
 pub use navigation::resolve_href;
 pub use surface::{
-    CapabilityId, PlacementHint, ProviderId, SourceKindId, SurfaceAvailability, SurfaceDescriptor,
-    SurfaceId, SurfaceMultiplicity, SurfaceRole, SurfaceSourceShape, SurfaceUnavailableReason,
+    ProviderId, SourceKindId, SurfaceAvailability, SurfaceDescriptor, SurfaceId,
+    SurfaceSourceShape, SurfaceUnavailableReason,
 };
 
 /// Coarse engine selection for diagnostic hosts such as standalone Pelt.
