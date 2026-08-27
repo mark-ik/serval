@@ -53,10 +53,16 @@ fn nested_wrapped_column_uses_the_sum_of_intrinsic_item_heights_for_auto_minimum
         assert!(fragments.get(node).is_some(), "missing fragment for {id}");
     }
 
-    assert_eq!(rect("inner").2, 320.0);
-    assert_eq!(rect("inner").3, 100.0);
-    assert_eq!(rect("first").2, 100.0);
-    assert_eq!(rect("first").3, 50.0);
-    assert_eq!(rect("second").2, 100.0);
-    assert_eq!(rect("second").3, 50.0);
+    let outer = rect("outer");
+    let inner = rect("inner");
+    let first = rect("first");
+    let second = rect("second");
+
+    assert_eq!(outer.3, 100.0);
+    assert_eq!(inner.3, 100.0);
+    assert_eq!(inner.2, 320.0);
+    assert_eq!((first.0 - inner.0, first.1 - inner.1), (0.0, 0.0));
+    assert_eq!((second.0 - inner.0, second.1 - inner.1), (0.0, 50.0));
+    assert_eq!((first.2, first.3), (100.0, 50.0));
+    assert_eq!((second.2, second.3), (100.0, 50.0));
 }
