@@ -2,11 +2,10 @@
 
 **Date:** 2026-08-25
 
-**Status:** In progress. The `flex` and `flex-flow` cascade and initial
-live-layout slice are complete. The current-main continuation covers bounded
-specified/computed CSSOM plus physical flex main-axis and gap projection. Row
-18 remains open for the generic declaration model, flex sizing, the remaining
-vertical-flex work, and grid.
+**Status:** In progress. The `flex` and `flex-flow` cascade, bounded
+specified/computed CSSOM, and physical flex main-axis, alignment, and gap
+projection are complete. Row 18 remains open for the generic declaration
+model, flex sizing, the remaining vertical-flex work, and grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -72,7 +71,8 @@ The 115 directory gains divide into 54 `flexbox_flex-*` value-matrix files,
 There is no skip movement. Four initially exposed unitless-basis losses forced
 the numeric-token repair before acceptance and pass in the final map.
 
-The three surviving pass-to-fail results are assigned rather than hidden:
+At Phase 3 acceptance, three pass-to-fail results were assigned rather than
+hidden:
 
 - `flex-minimum-height-flex-items-029.html` begins exercising the existing
   nested column-flex automatic-minimum-size gap once its valid `flex`
@@ -84,7 +84,8 @@ The three surviving pass-to-fail results are assigned rather than hidden:
 
 Those were baseline coincidences caused by dropping the shorthand. They are
 downstream layout residuals, not evidence that the expanded longhands differ
-from their authored values.
+from their authored values. Phase 5 repairs the direction and gap residuals;
+the automatic-minimum-size residual remains open under its separate owner.
 
 **Done condition:** every directory identity is accounted for, invalid
 unitless bases retain their four baseline passes, and every remaining loss has
@@ -121,7 +122,9 @@ pass-to-fail movement.
 Project the container's logical `flex-direction` through Buckram `FlowAxes`
 before handing the style to Taffy's physical row/column model. Transpose
 `row-gap` and `column-gap` into Taffy's physical width/height slots for vertical
-flex containers only; grid retains its separate lowering path.
+flex containers only; grid retains its separate lowering path. Project
+explicit `justify-content: start/end` through the same logical main axis while
+preserving `normal` as its distinct computed value and flex-start used value.
 
 **Done condition:** a native matrix covers all five supported writing modes in
 both directions, unequal gaps prove the physical component mapping, live RTL
@@ -178,6 +181,11 @@ move fail-to-pass, and the full flexbox reftest map has no unexplained loss.
   The missing `FlowAxes` projection jointly owned
   `flexbox-writing-mode-slr-row-mix.html` and `gap-001-rtl.html`; vertical gap
   components must be transposed after the same projection.
+- Physicalizing the flex main axis also requires projecting explicit
+  `justify-content: start/end`. The first candidate exposed two RTL losses.
+  Treating every `start` as authored then exposed that Livery had collapsed
+  the CSS initial `normal` value to `start`; retaining `normal` and lowering
+  its flex used value to `flex-start` repaired that distinction.
 - The surviving `flex-minimum-height-flex-items-029.html` residual is separate:
   vendored Taffy's min-content collection creates one item per line and then
   retains only the longest line. That repair requires its own Taffy release
@@ -209,6 +217,43 @@ The ignored workspace lock was regenerated offline after Fleece's 0.4 version
 bump. The accepted release runner then built with `--locked --offline -j 1`.
 All frozen artifacts are under
 `testing/genet/wpt-ledger/2026-08-25_flex_shorthands`.
+
+## Phase 4-5 native and frozen receipts
+
+The continuation baseline is accepted main at `bad78dda19f`. The accepted
+source ends at `838167fc179`, followed only by receipt documentation. Both
+source trees use Cargo.lock SHA-256
+`9618C76EFD48385C11C36933A04287332E78F80453BFB27A5FB306B2D78D03D6`.
+
+- Final frozen runner: `genet-wpt-final-838167fc179-nodebug.exe`.
+- Runner SHA-256:
+  `45EC1D090656C6CDD229E07AA258864B3A554D0E8C161EF00A8239C56D0090FC`.
+- Manifest SHA-256:
+  `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`.
+- Livery: 189 passed, zero failed, four ignored.
+- Genet-Livery: 223 passed, zero failed.
+- Genet-Scripted: 25 passed, zero failed.
+
+| Exact receipt | Baseline | Final | Movement |
+|---|---:|---:|---:|
+| `css/css-flexbox` reftests | 430 pass / 454 fail / 474 skip / 0 error | 449 pass / 435 fail / 474 skip / 0 error | 19 fail-to-pass, 0 pass-to-fail |
+| `css/css-flexbox/parsing` testharness | 68 / 183 subtests | 98 / 183 subtests | 30 fail-to-pass, 0 pass-to-fail |
+| `flexbox-writing-mode-slr-row-mix.html` | fail | pass | assigned direction residual retired |
+| `gap-001-rtl.html` | fail | pass | assigned gap residual retired |
+| `flex-minimum-height-flex-items-029.html` | fail | fail | separate automatic-minimum-size residual unchanged |
+
+The first candidate produced 15 reftest gains but regressed the two RTL
+`justify-content: start/end` files. The alignment projection repaired those;
+a second focused candidate then exposed the collapsed `normal` initial value.
+Both rejected runners and their focused maps remain frozen beside the accepted
+artifacts. The final full map has 19 exact gains and no loss. Its SHA-256 is
+`E1C7DECAAF59AC0152AB8394B23AFD7A89910ACDD0548DD57CE3758DE4C2C285`;
+the final parsing map SHA-256 is
+`F197F29880341D72B89A87E1906B2186D1A9902803B0775F38FB31AFBA7E5EEF`.
+
+The reproducible commands, all runner hashes, exact transition identities,
+and focused maps are recorded under
+`testing/genet/wpt-ledger/2026-08-26_flex_axis_cssom`.
 
 ## Remaining Row 18 work
 
@@ -258,3 +303,9 @@ All frozen artifacts are under
   `CSS.supports()` receipts.
 - Projected flex main directions through `FlowAxes`, transposed vertical flex
   gaps, and added a ten-case axis matrix plus unequal-gap live geometry.
+- Projected explicit flex `justify-content: start/end`, restored the distinct
+  `normal` initial and computed value, and retained `normal`'s flex-start used
+  behavior through physical axis lowering.
+- Froze current-main baseline and accepted candidate runners. The exact
+  parsing map gains 30 subtests, and the full 1,358-file flexbox map gains 19
+  reftests with zero pass-to-fail movement.

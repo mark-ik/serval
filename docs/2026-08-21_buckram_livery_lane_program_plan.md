@@ -6,8 +6,10 @@ anonymous-table continuation, K5 rows 1+2+7, 3, 4, and 5+6, K6 row 13,
 css-text row 14, paint row 15, fonts row 16, writing-modes row 10, and harness
 rows 19+20+21 are complete. Row 12's rectangular, horizontal rounded,
 relative float-state, and horizontal direction slices are complete, while the
-row remains in progress. Row 18's flex-shorthand slice is complete, while the
-row remains in progress for its CSSOM, flex-layout residuals, and grid surface.
+row remains in progress. Row 18's flex shorthand, bounded CSSOM, and physical
+main-axis, alignment, and gap projection slices are complete, while the row
+remains in progress for generic declaration reflection, flex sizing and
+automatic minimums, the remaining vertical-flex work, and grid.
 Wave 2 is unblocked. Every other row remains an inventory item until its
 current-main receipt is named below.
 
@@ -76,7 +78,7 @@ plans and receipts.
 | 10 | Writing modes | **Complete** | Orthogonal auto inline sizing now uses the direct perpendicular block child's intrinsic block contribution. The exact writing-modes map moves from 186 to 193 verified passes with seven gains and zero losses. Text orientation, text combine, fragmentation, and algorithm-owned positioned/table/flex/grid residuals retain their named owners. See the [current-main reconciliation](2026-08-24_buckram_writing_modes_reconciliation.md). |
 | 12 | Floats and shapes | **In progress** | Horizontal box-valued shapes use rectangular or circular rounded line-exclusion areas while margin-box placement remains separate. Relative blocks retain float state, and LTR/RTL boundaries mirror that state through descendant content coordinates. The latest exact shape-box map is 27 pass / 15 assigned failures; full CSS has 11 gains and 3 assigned false-pass losses. See the [rectangular](2026-08-25_buckram_float_shape_boxes_reconciliation.md), [rounded](2026-08-25_buckram_rounded_shape_boxes_reconciliation.md), [relative float-state](2026-08-25_buckram_relative_float_state_reconciliation.md), and [horizontal direction](2026-08-25_buckram_horizontal_float_direction_reconciliation.md) reconciliations. |
 | 17 | Counters, lists, generated content | Livery `content`/`counter-*` cascade and marker boxes | Open |
-| 18 | Flex and grid | **In progress** | `flex` and `flex-flow` now expand into the existing Taffy-facing longhands. The exact flexbox map has 115 gains and three assigned downstream false-pass losses. CSSOM shorthand serialization, named flex sizing/direction/gap residuals, and the remaining grid surface stay open. See the [flex shorthand plan](../design_docs/2026-08-25_livery_flex_shorthand_plan.md). |
+| 18 | Flex and grid | **In progress** | `flex` and `flex-flow` expand into the existing Taffy-facing longhands, bounded specified/computed CSSOM is live, and logical main-axis, `start/end`, and gap values reach Taffy's physical model. Against current-main baseline, the continuation adds 19 exact flexbox reftest gains and 30 parsing-subtest gains with zero losses. Generic declaration reflection, distinct flex-basis sizing, automatic minimums, the remaining vertical-flex surface, and grid stay open. See the [flex shorthand plan](../design_docs/2026-08-25_livery_flex_shorthand_plan.md). |
 
 Lane 8 retained `with_out_of_flow_children_excluded`. It still has named
 fallback and backend-sizing call sites, so deletion is not a condition for
