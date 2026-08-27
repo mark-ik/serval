@@ -4,7 +4,7 @@
 
 use crate::geometry::Size;
 use crate::style::AvailableSpace;
-use crate::tree::{LayoutInput, LayoutOutput, RunMode};
+use crate::tree::{LayoutInput, LayoutOutput, RunMode, SizingMode};
 use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
@@ -89,6 +89,8 @@ struct CacheKey {
     kd_available_space: u64,
     /// The initial cached size of the parent's node
     parent_size: u64,
+    /// The style-sizing policy used for this computation
+    sizing_mode: SizingMode,
 }
 
 impl CacheKey {
@@ -118,6 +120,7 @@ impl From<&LayoutInput> for CacheKey {
         Self {
             kd_available_space: size_mixed_cache_key(input.known_dimensions, input.available_space),
             parent_size: (size_option_cache_key(input.parent_size) & NON_SIGN_BITS_MASK) | extra_bits,
+            sizing_mode: input.sizing_mode,
         }
     }
 }
@@ -230,6 +233,7 @@ impl Cache {
                 for entry in self.measure_entries.iter().flatten() {
                     if entry.key.kd_available_space == key.kd_available_space
                         && (entry.key.x_axis_parent_size() == key.x_axis_parent_size())
+                        && entry.key.sizing_mode == key.sizing_mode
                     {
                         return Some(LayoutOutput::from_outer_size(entry.content));
                     }
@@ -281,4 +285,67 @@ pub enum ClearState {
     Cleared,
     /// Everything was already cleared
     AlreadyEmpty,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Line, RequestedAxis, SizingMode};
+    use crate::style_helpers::TaffyMaxContent;
+
+    fn compute_size_input(sizing_mode: SizingMode) -> LayoutInput {
+        LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode,
+            axis: RequestedAxis::Both,
+            known_dimensions: Size::NONE,
+            parent_size: Size::NONE,
+            available_space: Size::MAX_CONTENT,
+            vertical_margins_are_collapsible: Line::FALSE,
+        }
+    }
+
+    #[test]
+    fn compute_size_cache_distinguishes_automatic_minimum_after_content_size() {
+        let content_size = compute_size_input(SizingMode::ContentSize);
+        let automatic_minimum = compute_size_input(SizingMode::ContentSizeForAutomaticMinimum);
+        let mut cache = Cache::new();
+
+        cache.store(&content_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
+
+        assert!(cache.get(&automatic_minimum).is_none());
+    }
+
+    #[test]
+    fn compute_size_cache_distinguishes_content_size_after_automatic_minimum() {
+        let content_size = compute_size_input(SizingMode::ContentSize);
+        let automatic_minimum = compute_size_input(SizingMode::ContentSizeForAutomaticMinimum);
+        let mut cache = Cache::new();
+
+        cache.store(&automatic_minimum, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
+
+        assert!(cache.get(&content_size).is_none());
+    }
+
+    #[test]
+    fn compute_size_cache_distinguishes_content_size_after_inherent_size() {
+        let content_size = compute_size_input(SizingMode::ContentSize);
+        let inherent_size = compute_size_input(SizingMode::InherentSize);
+        let mut cache = Cache::new();
+
+        cache.store(&inherent_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
+
+        assert!(cache.get(&content_size).is_none());
+    }
+
+    #[test]
+    fn compute_size_cache_distinguishes_inherent_size_after_content_size() {
+        let content_size = compute_size_input(SizingMode::ContentSize);
+        let inherent_size = compute_size_input(SizingMode::InherentSize);
+        let mut cache = Cache::new();
+
+        cache.store(&content_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
+
+        assert!(cache.get(&inherent_size).is_none());
+    }
 }

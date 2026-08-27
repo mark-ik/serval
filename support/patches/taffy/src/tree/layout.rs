@@ -23,6 +23,8 @@ pub enum RunMode {
 pub enum SizingMode {
     /// Only content contributions should be taken into account
     ContentSize,
+    /// Only content contributions should be taken into account while measuring a flex item's automatic minimum size
+    ContentSizeForAutomaticMinimum,
     /// Inherent size styles should be taken into account in addition to content contributions
     InherentSize,
 }
