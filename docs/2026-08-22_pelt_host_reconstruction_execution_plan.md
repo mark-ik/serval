@@ -5,8 +5,9 @@
 **Status:** active. P0 completed 2026-08-22. P1 was rebased and reverified on
 current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4 completed on
 Windows 2026-08-25 with a registered Scrying producer, native shared-handle
-import, repeated fence waits, and visible same-window composition. P5 is the
-current lane. IOSurface and DMA-BUF imports remain separate platform lanes.
+import, repeated fence waits, and visible same-window composition. P5 completed
+2026-08-27 with all eight deterministic product receipts. P6 is the current
+lane. IOSurface and DMA-BUF imports remain separate platform lanes.
 
 ## Objective
 
@@ -424,8 +425,8 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
-**Status:** in progress 2026-08-27. Fixtures 1-6 are complete; fixtures 7-8
-remain open.
+**Status:** complete 2026-08-27. All eight deterministic fixtures have named
+commands, bounded captures, semantic assertions, and GPU-free checks.
 
 The ordinary-article receipt is:
 
@@ -589,6 +590,80 @@ SHA-256
 The focused routed controller test passes 1/1, followed by the full 17/17
 `pelt-desktop` Smolweb test wall.
 
+The mixed tiled-workspace receipt is:
+
+```sh
+cargo run --locked --offline -p pelt --no-default-features \
+  --features livery,scripted,smolweb -j 1 -- \
+  --workspace-receipt mixed \
+  --artifact target/pelt-receipts/workspace-mixed.png
+```
+
+The receipt reuses the four P4 fixtures and owns a 960x640, bounded 600-frame
+capture. After the first shared frame establishes Frisket content geometry, it
+clicks the retained Gemtext `static.html` link through tile 1's real content
+hole. Smolweb navigates on primary press and releases capture on pointer-up.
+The driver then removes only tile 1's receipt pin and lets shared routing select
+Livery for the new HTML address. It proves the same content hole remains tile
+1, the independent static tile retains its Livery title and heading, Boa's
+mutation remains in tile 3, and tile 4 retains its Scrying surface or visible
+platform fallback. On Windows with a registered producer, completion also
+requires tile 4's native view, more producer frames than imports, at least one
+import, and at least two fence waits and compositions. The remaining bounded
+dwell keeps the live Scrying surface visible in the final capture instead of
+accepting its startup texture.
+
+The 2026-08-27 locked, offline Windows receipt used the registered Scrying
+producer and captured all four lanes in one compositor target. It exited after
+600 960x640 host frames with native counters `frames=4 imports=1 waits=4
+compositions=600` and routes `genet.livery:document` for tiles 1 and 2,
+`genet.scripted:document` for tile 3, and
+`scrying.web:surface:CompositedTexture` for tile 4. It recorded `Gemtext
+navigation rerouted only tile 1; Livery, scripted, and external neighbors
+held`, digest `aaa7ca8720c3aad4`, and a 100,839-byte PNG with SHA-256
+`49ea93762c04f06cc85af2489d0519cb548d1153e37e3e8587538eb5a07797ce`.
+The GPU-free mixed driver passes without a Scrying producer by requiring the
+same explicit Livery fallback for tile 4 while still proving locality across
+all four tiles.
+
+The explicit external-engine fallback receipt is:
+
+```sh
+cargo run --locked --offline -p pelt --no-default-features \
+  --features livery -j 1 -- \
+  --workspace-receipt fallback \
+  --artifact target/pelt-receipts/workspace-fallback.png
+```
+
+The receipt owns `examples/workspace/p5-fallback/index.html` and its retained
+`next.html` destination, again at 960x640 for three frames. It starts as an
+ordinary Livery document, applies the explicit `scrying.web` selection through
+the workspace route-policy seam with no Scrying producer registered, and
+requires the exact visible fallback reason and route title. On the following
+frame it clicks the real `next.html` link through the Frisket content hole and
+proves the replacement document remains interactive under the same fallback
+route. This receipt tests policy selection and visible document fallback. A
+user-facing route-control surface remains P6 work.
+
+The 2026-08-27 locked, offline Windows receipt exited after three 960x640
+frames with route `scrying.web:fallback:genet.livery`, visibly captured the
+navigated destination and route title, and recorded `explicit Scrying pin fell
+back visibly to Livery; retained link navigation stayed interactive`. Its
+digest is `b12523eac8a17028`; the 105,832-byte PNG has SHA-256
+`556d49064fce0cc18f1f81839920a072b6dc2e8962cd6f1dcf60de574307b8e3`.
+The GPU-free test drives the same two policy-and-navigation steps.
+
+`WorkspaceReceiptOutcome` retains the receipt id, assertion, artifact path, and
+compositor digest through the host outcome, and the CLI prints that evidence
+alongside routes and frame bounds. Named workspace receipts reject the older P3
+and P4 receipt drivers so two semantic sequences cannot silently share one
+capture. The full locked, offline `pelt-desktop` wall with
+`livery,scripted,smolweb` passes 23/23, including both new GPU-free drivers;
+the focused Pelt CLI parser receipt also passes. The final Windows wall used
+`--config 'profile.test.debug=0'`: the default-debug relink reached MSVC's
+`LNK1318` PDB limit, while disabling debug information for the whole test
+profile avoided PDB generation and passed all 23 tests without a source change.
+
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 
 ```sh
@@ -624,6 +699,8 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
+**Status:** open after P5 completion 2026-08-27.
+
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
 override, loading/error pages, settings, structural inspector, theme, and
@@ -649,11 +726,16 @@ terminal.
 
 ## Immediate next lane
 
-Continue P5 from the completed ordinary-article, controls, responsive-layout,
-scripted-navigation, redirected-resource-graph, and protocol-native Gemtext
-receipts. Add named receipts for the mixed workspace and explicit fallback.
-The Reader tile must carry held source bytes rather than teaching Fleece to
-fetch. Each remaining fixture needs a bounded command, captured artifact, and
-interaction assertion. The completed Windows P4 route remains the external
-engine comparison lane; IOSurface, DMA-BUF, and multi-GPU hardening stay
-independently receipted work.
+Begin P6 with Cambium/Livery chrome over the retained Pelt core. The first
+bounded receipt should expose the focused tile's address, history controls,
+route indicator, loading or failure state, and an actual per-tile engine
+override control while preserving the P5 mixed-workspace composition. The
+Reader-in-workspace lane must carry held source bytes rather than teaching
+Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
+than an unrecorded ninth P5 fixture.
+
+The completed Windows P4 route remains the external-engine comparison lane.
+IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and
+embedded-host attachment stay independently receipted platform work. An
+optional live-site smoke may supplement the deterministic P5 set, but does not
+replace or reopen it.

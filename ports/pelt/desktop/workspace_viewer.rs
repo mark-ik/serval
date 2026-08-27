@@ -1,6 +1,7 @@
 //! Headed recursive Pelt workspace over TileTree and Frisket.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,6 +39,37 @@ use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
 use crate::{WindowingMode, static_viewer};
 
 const RECEIPT_STEPS: u8 = 8;
+const MIXED_WORKSPACE_ASSERTION: &str =
+    "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
+
+/// One bounded semantic receipt for a recursive Pelt workspace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceReceipt {
+    /// A Gemtext link replaces only its own tile through capability routing.
+    Mixed,
+    /// An unavailable external engine visibly falls back to the owned Livery lane.
+    Fallback,
+}
+
+impl WorkspaceReceipt {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Mixed => "mixed",
+            Self::Fallback => "fallback",
+        }
+    }
+
+    fn default_size(self) -> (u32, u32) {
+        (960, 640)
+    }
+
+    fn default_frames(self) -> u32 {
+        match self {
+            Self::Mixed => 600,
+            Self::Fallback => 3,
+        }
+    }
+}
 
 /// Configuration for the recursive Livery workspace.
 pub struct WorkspaceViewerConfig {
@@ -50,6 +82,10 @@ pub struct WorkspaceViewerConfig {
     pub interaction_receipt: bool,
     /// Drive the mixed P4 routing receipt after the first shared frame.
     pub capability_receipt: bool,
+    /// Named P5 workspace receipt with a captured compositor artifact.
+    pub workspace_receipt: Option<WorkspaceReceipt>,
+    /// Caller-owned PNG path for the named workspace receipt.
+    pub artifact: Option<PathBuf>,
     /// One-based tile number to explicit engine id.
     pub route_overrides: HashMap<u64, String>,
 }
@@ -63,6 +99,8 @@ impl WorkspaceViewerConfig {
             frames: None,
             interaction_receipt: false,
             capability_receipt: false,
+            workspace_receipt: None,
+            artifact: None,
             route_overrides: HashMap::new(),
         }
     }
@@ -93,6 +131,26 @@ impl WorkspaceViewerConfig {
         self.frames = Some(self.frames.unwrap_or(0).max(600));
         self
     }
+
+    pub fn with_workspace_receipt(
+        mut self,
+        receipt: WorkspaceReceipt,
+        artifact: impl AsRef<Path>,
+    ) -> Self {
+        self.size = Some(receipt.default_size());
+        self.frames = Some(receipt.default_frames());
+        self.workspace_receipt = Some(receipt);
+        self.artifact = Some(artifact.as_ref().to_owned());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceReceiptOutcome {
+    pub id: &'static str,
+    pub assertion: String,
+    pub artifact: PathBuf,
+    pub digest: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,12 +162,21 @@ pub struct WorkspaceViewerOutcome {
     pub tile_count: usize,
     pub interaction_receipt: bool,
     pub capability_receipt: bool,
+    pub workspace_receipt: Option<WorkspaceReceiptOutcome>,
     pub routes: Vec<String>,
 }
 
 pub fn run_livery_workspace_viewer(
     config: WorkspaceViewerConfig,
 ) -> Result<WorkspaceViewerOutcome, String> {
+    if config.workspace_receipt.is_some()
+        && (config.interaction_receipt || config.capability_receipt)
+    {
+        return Err(
+            "a named workspace receipt cannot be combined with the P3 or P4 receipt driver"
+                .to_owned(),
+        );
+    }
     let tree = tree_from_urls(&config.urls);
     let tile_count = tree.tiles().len();
     if matches!(config.windowing, WindowingMode::Headless) {
@@ -121,13 +188,16 @@ pub fn run_livery_workspace_viewer(
             tile_count,
             interaction_receipt: false,
             capability_receipt: false,
+            workspace_receipt: None,
             routes: Vec::new(),
         });
     }
 
     let initial_size = config.size.unwrap_or((1100, 750));
     #[cfg(target_os = "windows")]
-    let scrying_host = Some(ScryingReceiptHost::new());
+    let omit_scrying = config.workspace_receipt == Some(WorkspaceReceipt::Fallback);
+    #[cfg(target_os = "windows")]
+    let scrying_host = (!omit_scrying).then(ScryingReceiptHost::new);
     #[cfg(target_os = "windows")]
     let registries = workspace_registries(scrying_host.clone());
     #[cfg(not(target_os = "windows"))]
@@ -164,8 +234,13 @@ pub fn run_livery_workspace_viewer(
     if app.config.capability_receipt && !app.receipt_complete {
         return Err("P4 capability receipt ended before a native surface frame arrived".to_owned());
     }
+    if app.config.workspace_receipt.is_some() && app.workspace_receipt_outcome.is_none() {
+        return Err("workspace receipt ended before its semantic assertion and capture".to_owned());
+    }
     #[cfg(target_os = "windows")]
-    if app.config.capability_receipt {
+    if app.config.capability_receipt
+        || app.config.workspace_receipt == Some(WorkspaceReceipt::Mixed)
+    {
         let native = app.native_surfaces.stats();
         println!(
             "pelt native-surface receipt frames={} imports={} waits={} compositions={}",
@@ -347,6 +422,8 @@ struct WorkspaceApp {
     receipt_step: u8,
     receipt_complete: bool,
     receipt_error: Option<String>,
+    pending_workspace_assertion: Option<String>,
+    workspace_receipt_outcome: Option<WorkspaceReceiptOutcome>,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -377,6 +454,8 @@ impl WorkspaceApp {
             receipt_step: 0,
             receipt_complete: false,
             receipt_error: None,
+            pending_workspace_assertion: None,
+            workspace_receipt_outcome: None,
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -417,6 +496,7 @@ impl WorkspaceApp {
             tile_count: self.workspace.tree().tiles().len(),
             interaction_receipt: self.config.interaction_receipt && self.receipt_complete,
             capability_receipt: self.config.capability_receipt && self.receipt_complete,
+            workspace_receipt: self.workspace_receipt_outcome.clone(),
             routes,
         }
     }
@@ -440,6 +520,20 @@ impl WorkspaceApp {
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
+        if self.config.workspace_receipt.is_some() && self.redraws > 0 && !self.receipt_complete {
+            match self.drive_workspace_receipt() {
+                Ok(Some(assertion)) => {
+                    self.pending_workspace_assertion = Some(assertion);
+                    self.receipt_complete = true;
+                },
+                Ok(None) => {},
+                Err(error) => {
+                    self.receipt_error = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            }
+        }
         if self.config.capability_receipt
             && self.redraws > 0
             && !self.receipt_complete
@@ -565,12 +659,41 @@ impl WorkspaceApp {
                 (texture, view, layer.rect)
             })
             .collect::<Vec<_>>();
+        let capture_now = self.config.workspace_receipt.is_some()
+            && self.receipt_complete
+            && self.workspace_receipt_outcome.is_none()
+            && self
+                .config
+                .frames
+                .is_some_and(|limit| self.redraws.saturating_add(1) >= limit);
+        let receipt_canvas = capture_now.then(|| {
+            host.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("pelt workspace receipt composition"),
+                size: wgpu::Extent3d {
+                    width: self.width.max(1),
+                    height: self.height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: host.format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
+        let receipt_view = receipt_canvas
+            .as_ref()
+            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
         let Some(swap) = host.acquire() else {
             return;
         };
-        let target = swap
+        let swap_target = swap
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let target = receipt_view.as_ref().unwrap_or(&swap_target);
         host.renderer().compose_external_texture(
             &frame_view,
             &target,
@@ -624,10 +747,60 @@ impl WorkspaceApp {
             }
             self.native_surfaces.mark_composed();
         }
+        let captured = if let Some(source) = receipt_view.as_ref() {
+            let Some(path) = self.config.artifact.as_deref() else {
+                self.receipt_error = Some("workspace receipt needs an artifact path".to_owned());
+                event_loop.exit();
+                return;
+            };
+            match crate::receipt_capture::capture_composition(
+                host,
+                source,
+                self.width,
+                self.height,
+                path,
+            ) {
+                Ok(captured) => Some(captured),
+                Err(error) => {
+                    self.receipt_error = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            }
+        } else {
+            None
+        };
+        if let Some(captured) = captured.as_ref() {
+            let receipt = self
+                .config
+                .workspace_receipt
+                .expect("capture is only allocated for a workspace receipt");
+            let assertion = self
+                .pending_workspace_assertion
+                .clone()
+                .expect("semantic assertion precedes workspace capture");
+            self.workspace_receipt_outcome = Some(WorkspaceReceiptOutcome {
+                id: receipt.id(),
+                assertion,
+                artifact: captured.path.clone(),
+                digest: captured.digest,
+            });
+            host.renderer().compose_external_texture(
+                &captured.view,
+                &swap_target,
+                host.format(),
+                self.width,
+                self.height,
+                ExternalTexturePlacement::new([0.0, 0.0, self.width as f32, self.height as f32]),
+            );
+        }
         host.queue().present(swap);
         self.redraws += 1;
 
-        if (self.receipt_complete && !self.config.capability_receipt)
+        if self.workspace_receipt_outcome.is_some()
+            || (self.receipt_complete
+                && !self.config.capability_receipt
+                && self.config.workspace_receipt.is_none())
             || self
                 .config
                 .frames
@@ -637,6 +810,289 @@ impl WorkspaceApp {
         } else if self.config.interaction_receipt || more || self.config.frames.is_some() {
             self.request_redraw();
         }
+    }
+
+    fn drive_workspace_receipt(&mut self) -> Result<Option<String>, String> {
+        match self
+            .config
+            .workspace_receipt
+            .expect("receipt checked above")
+        {
+            WorkspaceReceipt::Mixed => self.drive_mixed_workspace_receipt_step(),
+            WorkspaceReceipt::Fallback => self.drive_fallback_workspace_receipt_step(),
+        }
+    }
+
+    fn drive_mixed_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        if self.receipt_step == 0 {
+            self.drive_mixed_workspace_receipt()?;
+            self.receipt_step = 1;
+        }
+        #[cfg(target_os = "windows")]
+        if self.scrying_host.is_some() && !self.mixed_native_receipt_ready() {
+            return Ok(None);
+        }
+        Ok(Some(MIXED_WORKSPACE_ASSERTION.to_owned()))
+    }
+
+    fn drive_mixed_workspace_receipt(&mut self) -> Result<String, String> {
+        let tile = TileId(1);
+        let rect = self
+            .workspace
+            .content_rect(tile)
+            .ok_or("mixed receipt has no Frisket content geometry for tile 1")?;
+        let link = self
+            .workspace
+            .controller(tile)
+            .and_then(|controller| {
+                controller
+                    .links()
+                    .into_iter()
+                    .find(|link| link.url.ends_with("static.html"))
+            })
+            .ok_or("mixed receipt Gemtext tile has no static.html link")?;
+        let x = rect.x + link.rect[0] + 2.0;
+        let y = rect.y + link.rect[1] + 2.0;
+        self.pointer_move(x, y);
+        if !self.pointer_down() {
+            return Err(
+                "mixed receipt link was not routed through its Frisket content hole".to_owned(),
+            );
+        }
+        // Smolweb uses Inker's compatibility click-on-press floor. Pointer-up
+        // still closes capture, but the replacement session need not redraw.
+        let _ = self.pointer_up();
+        if !self
+            .workspace
+            .controller(tile)
+            .is_some_and(|controller| controller.address().ends_with("static.html"))
+        {
+            return Err("mixed receipt Gemtext gesture did not navigate tile 1".to_owned());
+        }
+        // P4 pins the initial Gemtext fixture so the native proof does not
+        // depend on host MIME inference. The real link has now updated the
+        // held address; release only that fixture pin and let the shared
+        // policy choose the HTML owner for this tile.
+        if !self.workspace.set_route_override(tile, None)? {
+            return Err("mixed receipt did not release tile 1's Gemtext fixture pin".to_owned());
+        }
+        self.frisket.set_tree(self.workspace.tree());
+        let first = self
+            .workspace
+            .route(tile)
+            .ok_or("mixed receipt lost tile 1 route")?;
+        if first.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+            || !matches!(first.state, PeltRouteState::Document)
+            || self.workspace.content_rect(tile) != Some(rect)
+        {
+            return Err(format!(
+                "mixed receipt tile 1 did not reroute to Livery: {first:?}"
+            ));
+        }
+        let title = self
+            .workspace
+            .controller(tile)
+            .and_then(PeltController::inspect)
+            .and_then(|report| report.title)
+            .ok_or("mixed receipt rerouted Livery tile has no title")?;
+        if title != "Static Livery" {
+            return Err(format!(
+                "mixed receipt tile 1 retained {title:?}, not Static Livery"
+            ));
+        }
+        let second = self
+            .workspace
+            .route(TileId(2))
+            .ok_or("mixed receipt lost the sibling Livery tile")?;
+        let second_report = self
+            .workspace
+            .controller(TileId(2))
+            .and_then(PeltController::inspect);
+        if second.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+            || !matches!(second.state, PeltRouteState::Document)
+            || !second_report.is_some_and(|report| {
+                report.title.as_deref() == Some("Static Livery")
+                    && report.headings == ["Static Livery"]
+            })
+        {
+            return Err(format!(
+                "mixed receipt changed its sibling Livery tile: {second:?}"
+            ));
+        }
+        let third = self
+            .workspace
+            .route(TileId(3))
+            .ok_or("mixed receipt lost scripted tile")?;
+        if third.selected_engine() != inker::routing::ENGINE_GENET_SCRIPTED {
+            return Err(format!(
+                "mixed receipt changed scripted tile route: {third:?}"
+            ));
+        }
+        let scripted = self
+            .workspace
+            .controller(TileId(3))
+            .and_then(PeltController::inspect)
+            .ok_or("mixed receipt scripted tile has no structural report")?;
+        if scripted.title.as_deref() != Some("Scripted Livery")
+            || !scripted
+                .outline
+                .iter()
+                .any(|entry| entry.name == "Boa mutated this retained DOM")
+        {
+            return Err("mixed receipt changed its sibling scripted DOM".to_owned());
+        }
+        let fourth = self
+            .workspace
+            .route(TileId(4))
+            .ok_or("mixed receipt lost surface tile")?;
+        #[cfg(target_os = "windows")]
+        let stable_fourth = if self.scrying_host.is_some() {
+            matches!(fourth.state, PeltRouteState::Surface)
+        } else {
+            matches!(
+                fourth.state,
+                PeltRouteState::Fallback { ref active_engine, .. }
+                    if active_engine == inker::routing::ENGINE_GENET_LIVERY
+            )
+        };
+        #[cfg(not(target_os = "windows"))]
+        let stable_fourth = matches!(
+            fourth.state,
+            PeltRouteState::Fallback { ref active_engine, .. }
+                if active_engine == inker::routing::ENGINE_GENET_LIVERY
+        );
+        if fourth.selected_engine() != inker::routing::ENGINE_SCRYING_WEB || !stable_fourth {
+            return Err(format!(
+                "mixed receipt changed surface/fallback owner: {fourth:?}"
+            ));
+        }
+        Ok(MIXED_WORKSPACE_ASSERTION.to_owned())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn mixed_native_receipt_ready(&self) -> bool {
+        let stats = self.native_surfaces.stats();
+        self.native_surfaces.view(TileId(4)).is_some()
+            && stats.frames > stats.imports
+            && stats.imports > 0
+            && stats.waits >= 2
+            && stats.compositions >= 2
+    }
+
+    fn drive_fallback_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        if self.receipt_step == 0 {
+            let initial = self
+                .workspace
+                .route(TileId(1))
+                .ok_or("fallback receipt has no initial Livery route")?;
+            if initial.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                || !matches!(initial.state, PeltRouteState::Document)
+            {
+                return Err(format!(
+                    "fallback receipt did not start as ordinary Livery: {initial:?}"
+                ));
+            }
+            if !self.workspace.set_route_override(
+                TileId(1),
+                Some(inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+            )? {
+                return Err("fallback receipt did not apply its live Scrying override".to_owned());
+            }
+            self.frisket.set_tree(self.workspace.tree());
+            self.validate_fallback_route("Pelt fallback receipt", "Fallback stayed visible")?;
+            self.receipt_step = 1;
+            return Ok(None);
+        }
+
+        let tile = TileId(1);
+        let rect = self
+            .workspace
+            .content_rect(tile)
+            .ok_or("fallback receipt has no Frisket content geometry")?;
+        let link = self
+            .workspace
+            .controller(tile)
+            .and_then(|controller| {
+                controller
+                    .links()
+                    .into_iter()
+                    .find(|link| link.url.ends_with("next.html"))
+            })
+            .ok_or("fallback receipt retained document has no next.html link")?;
+        let x = rect.x + link.rect[0] + link.rect[2] * 0.5;
+        let y = rect.y + link.rect[1] + link.rect[3] * 0.5;
+        self.pointer_move(x, y);
+        if !self.pointer_down() || !self.pointer_up() {
+            return Err(
+                "fallback receipt link did not traverse its Frisket content hole".to_owned(),
+            );
+        }
+        self.validate_fallback_route(
+            "Pelt fallback destination",
+            "Fallback navigation stayed local",
+        )?;
+        if !self.workspace.controller(tile).is_some_and(|controller| {
+            controller
+                .address()
+                .replace('\\', "/")
+                .ends_with("/p5-fallback/next.html")
+        }) {
+            return Err("fallback receipt link did not retain its destination address".to_owned());
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(Some(
+            "explicit Scrying pin fell back visibly to Livery; retained link navigation stayed interactive"
+                .to_owned(),
+        ))
+    }
+
+    fn validate_fallback_route(
+        &self,
+        expected_title: &str,
+        expected_heading: &str,
+    ) -> Result<(), String> {
+        let route = self
+            .workspace
+            .route(TileId(1))
+            .ok_or("fallback receipt has no tile route")?;
+        let PeltRouteState::Fallback {
+            active_engine,
+            reason,
+        } = &route.state
+        else {
+            return Err(format!(
+                "fallback receipt did not retain fallback state: {route:?}"
+            ));
+        };
+        if route.selected_engine() != inker::routing::ENGINE_SCRYING_WEB
+            || active_engine != inker::routing::ENGINE_GENET_LIVERY
+            || reason != "surface engine is not registered on this host"
+        {
+            return Err(format!("fallback receipt route drifted: {route:?}"));
+        }
+        let report = self
+            .workspace
+            .controller(TileId(1))
+            .and_then(PeltController::inspect)
+            .ok_or("fallback receipt Livery document has no report")?;
+        if report.title.as_deref() != Some(expected_title) || report.headings != [expected_heading]
+        {
+            return Err(format!(
+                "fallback receipt document report drifted: {report:?}"
+            ));
+        }
+        let title = self
+            .workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .find(|tile| tile.id == TileId(1))
+            .map(|tile| tile.title.as_str())
+            .ok_or("fallback receipt lost its visible Frisket tile title")?;
+        if !title.contains("[scrying.web → genet.livery]") {
+            return Err(format!("fallback receipt hid its route title: {title:?}"));
+        }
+        Ok(())
     }
 
     fn validate_capability_receipt(&self) -> Result<(), String> {
@@ -1439,5 +1895,182 @@ mod tests {
         assert!(surface.tab_rect(TileId(2)).is_some());
         assert!(surface.tab_rect(TileId(3)).is_some());
         assert!(surface.tab_rect(TileId(4)).is_some());
+    }
+
+    #[test]
+    fn named_workspace_receipts_pin_their_capture_contract() {
+        let config =
+            WorkspaceViewerConfig::new(vec!["fallback.html".to_owned()], WindowingMode::Headed)
+                .with_workspace_receipt(WorkspaceReceipt::Fallback, "receipt.png");
+        assert_eq!(config.workspace_receipt, Some(WorkspaceReceipt::Fallback));
+        assert_eq!(config.size, Some((960, 640)));
+        assert_eq!(config.frames, Some(3));
+        assert_eq!(config.artifact.as_deref(), Some(Path::new("receipt.png")));
+        let caller_geometry = config.with_size(800, 500).with_frame_limit(5);
+        assert_eq!(caller_geometry.size, Some((800, 500)));
+        assert_eq!(caller_geometry.frames, Some(5));
+
+        let mixed = WorkspaceViewerConfig::new(
+            vec!["native.gmi".to_owned(), "surface.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(WorkspaceReceipt::Mixed, "mixed.png");
+        assert_eq!(mixed.size, Some((960, 640)));
+        assert_eq!(mixed.frames, Some(600));
+    }
+
+    #[test]
+    fn named_workspace_receipts_reject_the_older_receipt_drivers() {
+        let fallback = || {
+            WorkspaceViewerConfig::new(vec!["fallback.html".to_owned()], WindowingMode::Headless)
+                .with_workspace_receipt(WorkspaceReceipt::Fallback, "receipt.png")
+        };
+        let p3 = run_livery_workspace_viewer(fallback().with_interaction_receipt())
+            .expect_err("P3 and P5 receipt drivers are mutually exclusive");
+        assert!(p3.contains("P3 or P4"));
+        let p4 = run_livery_workspace_viewer(fallback().with_capability_receipt())
+            .expect_err("P4 and P5 receipt drivers are mutually exclusive");
+        assert!(p4.contains("P3 or P4"));
+    }
+
+    #[test]
+    fn fallback_receipt_keeps_held_html_in_livery_without_scrying() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p5-fallback/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let mut workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("fallback receipt routes through the owned document engine");
+        let initial = workspace.route(TileId(1)).expect("ordinary Livery route");
+        assert_eq!(
+            initial.selected_engine(),
+            inker::routing::ENGINE_GENET_LIVERY
+        );
+        assert!(matches!(initial.state, PeltRouteState::Document));
+        let mut frisket = FrisketSurface::new(workspace.tree());
+        let pane = frisket.frame(960, 640).expect("fallback Frisket frame");
+        workspace.set_content_rects(pane.content_rects);
+        let _ = workspace.frame();
+        let config = WorkspaceViewerConfig::new(vec![fixture], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Fallback, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        assert_eq!(
+            app.drive_fallback_workspace_receipt_step()
+                .expect("fallback policy step"),
+            None
+        );
+        let pane = app
+            .frisket
+            .frame(960, 640)
+            .expect("fallback Frisket frame after route selection");
+        app.workspace.set_content_rects(pane.content_rects);
+        let _ = app.workspace.frame();
+        let assertion = app
+            .drive_fallback_workspace_receipt_step()
+            .expect("fallback interaction step")
+            .expect("fallback receipt completes after navigation");
+        assert_eq!(
+            assertion,
+            "explicit Scrying pin fell back visibly to Livery; retained link navigation stayed interactive"
+        );
+        let route = app.workspace.route(TileId(1)).expect("fallback route");
+        assert_eq!(route.selected_engine(), inker::routing::ENGINE_SCRYING_WEB);
+        assert!(matches!(
+            route.state,
+            PeltRouteState::Fallback {
+                ref active_engine,
+                reason: ref actual_reason,
+            } if active_engine == inker::routing::ENGINE_GENET_LIVERY
+                && actual_reason == "surface engine is not registered on this host"
+        ));
+        let report = app
+            .workspace
+            .controller(TileId(1))
+            .and_then(PeltController::inspect)
+            .expect("fallback keeps its navigated Livery controller");
+        assert_eq!(report.title.as_deref(), Some("Pelt fallback destination"));
+        assert!(
+            report
+                .headings
+                .iter()
+                .any(|heading| heading == "Fallback navigation stayed local")
+        );
+    }
+
+    #[cfg(all(feature = "scripted", feature = "smolweb"))]
+    #[test]
+    fn mixed_receipt_reroutes_only_the_clicked_gemtext_tile() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p4");
+        let urls = ["native.gmi", "static.html", "scripted.html", "surface.html"]
+            .into_iter()
+            .map(|name| root.join(name).to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let overrides = HashMap::from([
+            (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
+            (2, inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+            (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+            (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+        ]);
+        let mut workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("mixed receipt tree contains only documents");
+                };
+                let engine = overrides
+                    .get(&tile.id.0)
+                    .expect("every mixed receipt tile has a pinned engine");
+                Ok(PeltTileRequest::new(address, (960, 640)).with_engine_override(engine.clone()))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("mixed receipt routes all four capabilities");
+        let mut frisket = FrisketSurface::new(workspace.tree());
+        let pane = frisket.frame(960, 640).expect("mixed Frisket frame");
+        workspace.set_content_rects(pane.content_rects);
+        let _ = workspace.pump();
+        let _ = workspace.frame();
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Mixed, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let assertion = app
+            .drive_mixed_workspace_receipt_step()
+            .expect("mixed semantic receipt")
+            .expect("GPU-free fallback needs no native import wait");
+        assert_eq!(assertion, MIXED_WORKSPACE_ASSERTION);
     }
 }

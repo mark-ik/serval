@@ -50,6 +50,7 @@ pub(crate) fn main() {
     let mut with_tiles = false;
     let mut tile_receipt = false;
     let mut capability_receipt = false;
+    let mut workspace_receipt: Option<pelt_desktop::WorkspaceReceipt> = None;
     let mut tile_engine_overrides = Vec::new();
     let mut tile_urls = Vec::new();
     let mut netrender_smoke = false;
@@ -149,6 +150,20 @@ pub(crate) fn main() {
                 with_tiles = true;
                 capability_receipt = true;
             },
+            "--workspace-receipt" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--workspace-receipt requires mixed or fallback");
+                    std::process::exit(2);
+                };
+                workspace_receipt = Some(parse_workspace_receipt(&value));
+                with_tiles = true;
+            },
+            value if value.starts_with("--workspace-receipt=") => {
+                workspace_receipt = Some(parse_workspace_receipt(
+                    &value["--workspace-receipt=".len()..],
+                ));
+                with_tiles = true;
+            },
             "--tile-engine" => {
                 let Some(value) = args.next() else {
                     eprintln!("--tile-engine requires N=engine-id");
@@ -236,8 +251,8 @@ pub(crate) fn main() {
             std::process::exit(2);
         }
         url = Some(product_receipt_fixture(receipt));
-    } else if artifact.is_some() {
-        eprintln!("--artifact is only accepted with --product-receipt");
+    } else if artifact.is_some() && workspace_receipt.is_none() {
+        eprintln!("--artifact is only accepted with a named receipt");
         std::process::exit(2);
     }
 
@@ -312,6 +327,39 @@ pub(crate) fn main() {
     }
 
     if with_tiles {
+        if workspace_receipt.is_some() && (tile_receipt || capability_receipt) {
+            eprintln!(
+                "--workspace-receipt is separate from the P3 tile and P4 native capability receipts"
+            );
+            std::process::exit(2);
+        }
+        if let Some(receipt) = workspace_receipt {
+            if artifact.is_none() {
+                eprintln!(
+                    "--workspace-receipt {} needs --artifact <png>",
+                    receipt.id()
+                );
+                std::process::exit(2);
+            }
+            match receipt {
+                pelt_desktop::WorkspaceReceipt::Mixed => {
+                    if !cfg!(all(feature = "scripted", feature = "smolweb")) {
+                        eprintln!("--workspace-receipt mixed needs `--features scripted,smolweb`");
+                        std::process::exit(2);
+                    }
+                    tile_urls = capability_fixture_urls();
+                    tile_engine_overrides = vec![
+                        (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
+                        (2, inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+                        (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+                        (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+                    ];
+                },
+                pelt_desktop::WorkspaceReceipt::Fallback => {
+                    tile_urls = vec![fallback_fixture_url()];
+                },
+            }
+        }
         if capability_receipt {
             if !cfg!(all(feature = "scripted", feature = "smolweb")) {
                 eprintln!("--capability-receipt needs `--features scripted,smolweb`");
@@ -328,7 +376,7 @@ pub(crate) fn main() {
         if tile_urls.is_empty() {
             tile_urls.push(url.clone());
         }
-        if !capability_receipt {
+        if !capability_receipt && workspace_receipt.is_none() {
             let profile_engine = match selected_engine {
                 SelectedEngine::Livery => None,
                 SelectedEngine::Reader => {
@@ -371,6 +419,8 @@ pub(crate) fn main() {
             frames,
             tile_receipt,
             capability_receipt,
+            workspace_receipt,
+            artifact,
             tile_engine_overrides,
         );
         #[cfg(not(feature = "livery"))]
@@ -732,10 +782,18 @@ fn run_workspace_profile(
     frames: Option<u32>,
     interaction_receipt: bool,
     capability_receipt: bool,
+    workspace_receipt: Option<pelt_desktop::WorkspaceReceipt>,
+    artifact: Option<std::path::PathBuf>,
     route_overrides: Vec<(u64, String)>,
 ) {
     let mut config =
         pelt_desktop::WorkspaceViewerConfig::new(urls, pelt_desktop::WindowingMode::Headed);
+    if let Some(receipt) = workspace_receipt {
+        config = config.with_workspace_receipt(
+            receipt,
+            artifact.expect("CLI validates workspace receipt artifacts"),
+        );
+    }
     if let Some((width, height)) = size {
         config = config.with_size(width, height);
     }
@@ -752,18 +810,33 @@ fn run_workspace_profile(
         config = config.with_capability_receipt();
     }
     match pelt_desktop::run_livery_workspace_viewer(config) {
-        Ok(outcome) => println!(
-            "pelt workspace first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={} capability_receipt={} routes={}",
-            outcome.first_url,
-            outcome.created_window,
-            outcome.redraws,
-            outcome.size.0,
-            outcome.size.1,
-            outcome.tile_count,
-            outcome.interaction_receipt,
-            outcome.capability_receipt,
-            outcome.routes.join(","),
-        ),
+        Ok(outcome) => {
+            println!(
+                "pelt workspace first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={} capability_receipt={} workspace_receipt={} routes={}",
+                outcome.first_url,
+                outcome.created_window,
+                outcome.redraws,
+                outcome.size.0,
+                outcome.size.1,
+                outcome.tile_count,
+                outcome.interaction_receipt,
+                outcome.capability_receipt,
+                outcome
+                    .workspace_receipt
+                    .as_ref()
+                    .map_or("", |receipt| receipt.id),
+                outcome.routes.join(","),
+            );
+            if let Some(receipt) = outcome.workspace_receipt.as_ref() {
+                println!(
+                    "pelt workspace product receipt={} assertion={} artifact={} digest={:016x}",
+                    receipt.id,
+                    receipt.assertion,
+                    receipt.artifact.display(),
+                    receipt.digest,
+                );
+            }
+        },
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -794,6 +867,49 @@ fn capability_fixture_urls() -> Vec<String> {
         .into_iter()
         .map(|name| root.join(name).to_string_lossy().into_owned())
         .collect()
+}
+
+fn fallback_fixture_url() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("workspace")
+        .join("p5-fallback")
+        .join("index.html")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
+    match value {
+        "mixed" => pelt_desktop::WorkspaceReceipt::Mixed,
+        "fallback" => pelt_desktop::WorkspaceReceipt::Fallback,
+        _ => {
+            eprintln!("--workspace-receipt expects mixed or fallback (got '{value}')");
+            std::process::exit(2);
+        },
+    }
+}
+
+#[cfg(test)]
+mod workspace_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_receipt_parser_keeps_both_named_p5_receipts() {
+        assert_eq!(
+            parse_workspace_receipt("mixed"),
+            pelt_desktop::WorkspaceReceipt::Mixed
+        );
+        assert_eq!(
+            parse_workspace_receipt("fallback"),
+            pelt_desktop::WorkspaceReceipt::Fallback
+        );
+        assert!(
+            fallback_fixture_url()
+                .replace('\\', "/")
+                .ends_with("/ports/pelt/examples/workspace/p5-fallback/index.html")
+        );
+    }
 }
 
 /// Without the scripted profile compiled in, `--engine scripted` is a clean error
@@ -1044,11 +1160,12 @@ Options:
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
     --product-receipt <article|controls|responsive|scripted|text-fragment|resources|gemtext> (bounded fixture + semantic assertion + PNG)
-    --artifact <path.png>              (required with --product-receipt)
+    --artifact <path.png>              (required with a named receipt)
     --tiles                            (route positional URLs in a recursive Frisket workspace)
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
+    --workspace-receipt <mixed|fallback> (P5 named workspace receipt; needs --artifact)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

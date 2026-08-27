@@ -111,7 +111,8 @@ pub use static_viewer::{
 };
 #[cfg(feature = "livery")]
 pub use workspace_viewer::{
-    WorkspaceViewerConfig, WorkspaceViewerOutcome, run_livery_workspace_viewer,
+    WorkspaceReceipt, WorkspaceReceiptOutcome, WorkspaceViewerConfig, WorkspaceViewerOutcome,
+    run_livery_workspace_viewer,
 };
 // `ScriptResourceFetcher` is `genet_scripted::ResourceFetcher` (the external-script
 // byte seam `ScriptedDocument::from_body` takes), distinct from `genet_host_api::
