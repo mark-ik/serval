@@ -1286,6 +1286,131 @@ fn element_style_routes_through_inline_handler_on_nova() {
     element_style_routes_through_inline_handler::<script_engine_nova::NovaEngine>();
 }
 
+/// Shorthand behavior stays generic in Script Runtime: the selected CSS engine
+/// supplies ordered components, canonical expansion, and reconstruction.
+fn element_style_reflects_inline_shorthands<E: ScriptEngine>() {
+    use genet_static_dom::StaticDocument;
+
+    struct Stub;
+    impl crate::InlineStyleHandler for Stub {
+        fn canonicalize(&self, property: &str, value: &str) -> crate::InlineStyleValueResult {
+            match (property, value) {
+                ("pair-second", "") => crate::InlineStyleValueResult::Invalid,
+                ("pair", "left right") => crate::InlineStyleValueResult::Expanded(vec![
+                    ("pair-first".to_string(), "left".to_string()),
+                    ("pair-second".to_string(), "right".to_string()),
+                ]),
+                ("pair", "next final") => crate::InlineStyleValueResult::Expanded(vec![
+                    ("pair-first".to_string(), "next".to_string()),
+                    ("pair-second".to_string(), "final".to_string()),
+                ]),
+                // The runtime must reject a malformed native expansion before
+                // it removes any existing components from the declaration map.
+                ("pair", "malformed") => crate::InlineStyleValueResult::Expanded(vec![
+                    ("pair-first".to_string(), "wrong".to_string()),
+                    ("wrong-second".to_string(), "order".to_string()),
+                ]),
+                ("pair", "escaped") => crate::InlineStyleValueResult::Expanded(vec![
+                    ("pair-first".to_string(), "left\\right".to_string()),
+                    ("pair-second".to_string(), "next\tline\nend".to_string()),
+                ]),
+                ("pair", "var(--pair)") => crate::InlineStyleValueResult::SupportedDeferred,
+                ("pair", _) => crate::InlineStyleValueResult::Invalid,
+                _ => crate::InlineStyleValueResult::PassThrough,
+            }
+        }
+
+        fn shorthand_components(&self, property: &str) -> Vec<String> {
+            if property == "pair" {
+                vec!["pair-first".to_string(), "pair-second".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn shorthands(&self) -> Vec<String> {
+            vec!["pair".to_string()]
+        }
+
+        fn reconstruct_shorthand(
+            &self,
+            property: &str,
+            components: &[(String, String)],
+        ) -> Option<String> {
+            if property != "pair"
+                || components.len() != 2
+                || components[0].0 != "pair-first"
+                || components[1].0 != "pair-second"
+            {
+                return None;
+            }
+            Some(format!("{} {}", components[0].1, components[1].1))
+        }
+    }
+
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.load_dom(&StaticDocument::parse(
+        "<html><body><div id='d' style='other: keep; pair: left right'></div></body></html>",
+    ));
+    rt.set_inline_style_handler(Box::new(Stub));
+    rt.eval(
+        "var s = document.getElementById('d').style;\
+         console.log(s.getPropertyValue('pair') + '|' + s.getPropertyValue('pair-first') + '|' +\
+           s.getPropertyValue('pair-second') + '|' + s.length + '|' + s.item(0) + '|' + s.item(1) + '|' + s.item(2));\
+         console.log(s.cssText);\
+         s.setProperty('pair', 'invalid'); console.log(s.getPropertyValue('pair') + '|' + s.cssText);\
+         s.setProperty('pair-first', ''); console.log(s.getPropertyValue('pair') + '|' + s.cssText);\
+         s.setProperty('pair', 'next final');\
+         s.setProperty('pair', 'malformed'); console.log(s.getPropertyValue('pair') + '|' + s.cssText);\
+         console.log(s.removeProperty('pair') + '|' + s.cssText);\
+         s.setProperty('pair', 'var(--pair)');\
+         console.log(s.getPropertyValue('pair') + '|' + s.getPropertyValue('pair-first') + '|' +\
+           s.getPropertyValue('pair-second') + '|' + s.length + '|' + s.item(0) + '|' +\
+           s.item(1) + '|' + s.item(2) + '|' + s.cssText);\
+         s.setProperty('pair-first', 'changed');\
+         console.log(s.getPropertyValue('pair') + '|' + s.getPropertyValue('pair-first') + '|' +\
+           s.getPropertyValue('pair-second') + '|' + s.cssText);\
+         document.getElementById('d').setAttribute('style', document.getElementById('d').getAttribute('style'));\
+         console.log(s.getPropertyValue('pair') + '|' + s.getPropertyValue('pair-second') + '|' +\
+           s.length + '|' + s.cssText);\
+         s.setProperty('pair', 'escaped');\
+         console.log(s.getPropertyValue('pair-first') + '|' + s.getPropertyValue('pair-second'));\
+         console.log(String(CSS.supports('pair', 'left right')) + '|' +\
+           String(CSS.supports('pair', 'var(--pair)')) + '|' +\
+           String(CSS.supports('pair', 'invalid')));\
+         s.setProperty('pair', ''); console.log(s.cssText);",
+    )
+    .expect("inline shorthand reflection script");
+    assert_eq!(
+        rt.host().borrow().console,
+        vec![
+            "left right|left|right|3|other|pair-first|pair-second",
+            "other: keep; pair: left right;",
+            "left right|other: keep; pair: left right;",
+            "|other: keep; pair-second: right;",
+            "next final|other: keep; pair: next final;",
+            "next final|other: keep;",
+            "var(--pair)|||3|other|pair-first|pair-second|other: keep; pair: var(--pair);",
+            "|changed||other: keep; pair-first: changed; pair-second: ;",
+            "||2|other: keep; pair-first: changed;",
+            "left\\right|next\tline\nend",
+            "true|true|false",
+            "other: keep;",
+        ]
+    );
+}
+
+#[test]
+fn element_style_reflects_inline_shorthands_on_boa() {
+    element_style_reflects_inline_shorthands::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn element_style_reflects_inline_shorthands_on_nova() {
+    element_style_reflects_inline_shorthands::<script_engine_nova::NovaEngine>();
+}
+
 /// `getComputedStyle(el)` reads through the host `ComputedStyleHandler` seam:
 /// supported longhands resolve (camelCase + getPropertyValue), unsupported
 /// ones yield "", and the declaration is read-only.

@@ -17,13 +17,14 @@ use genet_document_resources::{
     ResolvedDocumentResources, ResourceDelta, ResourceFetcher, ResourceLimits,
 };
 use genet_livery::{
-    CssomRuleKind, Device, IncrementalStyle, InteractionStates, LayoutError, LiveryLayout,
-    LiveryPaintList, RestyleStats, RuleMutationError, StylePlane, StyleSet, TextDirective,
-    TextRange, TextSelection, TextSystem, ViewportSizes, canonicalize_specified_value,
-    content_box_size, emit_paint_list_with_text_system_scrolled_with_images, hit_test,
-    is_implemented_shorthand, layout, layout_with_text_system, resolve_container_query_styles,
-    resolve_container_query_styles_with_images, resolve_styles,
-    used_value_context as layout_used_value_context,
+    CssomRuleKind, Device, IncrementalStyle, InlineShorthandExpansion, InteractionStates,
+    LayoutError, LiveryLayout, LiveryPaintList, RestyleStats, RuleMutationError, StylePlane,
+    StyleSet, TextDirective, TextRange, TextSelection, TextSystem, ViewportSizes,
+    canonicalize_specified_value, classify_specified_shorthand, content_box_size,
+    emit_paint_list_with_text_system_scrolled_with_images, hit_test, is_implemented_shorthand,
+    layout, layout_with_text_system, reconstruct_specified_shorthand,
+    resolve_container_query_styles, resolve_container_query_styles_with_images, resolve_styles,
+    specified_shorthand_longhands, used_value_context as layout_used_value_context,
 };
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{
@@ -967,17 +968,47 @@ struct LiveryInlineStyle;
 
 impl InlineStyleHandler for LiveryInlineStyle {
     fn canonicalize(&self, property: &str, value: &str) -> InlineStyleValueResult {
+        if is_implemented_shorthand(property) {
+            return match classify_specified_shorthand(property, value) {
+                InlineShorthandExpansion::Expanded(components) => InlineStyleValueResult::Expanded(
+                    components
+                        .into_iter()
+                        .map(|component| (component.name.to_string(), component.value))
+                        .collect(),
+                ),
+                InlineShorthandExpansion::Deferred => InlineStyleValueResult::SupportedDeferred,
+                InlineShorthandExpansion::Invalid => InlineStyleValueResult::Invalid,
+            };
+        }
         if let Some(value) = canonicalize_specified_value(property, value) {
             InlineStyleValueResult::Canonical(value)
-        } else if (genet_livery::PropertyId::from_css_name(&property.to_ascii_lowercase())
-            .is_some()
-            || is_implemented_shorthand(property))
+        } else if genet_livery::PropertyId::from_css_name(&property.to_ascii_lowercase()).is_some()
             && !value.to_ascii_lowercase().contains("var(")
         {
             InlineStyleValueResult::Invalid
         } else {
             InlineStyleValueResult::PassThrough
         }
+    }
+
+    fn shorthand_components(&self, property: &str) -> Vec<String> {
+        specified_shorthand_longhands(property)
+            .unwrap_or_default()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect()
+    }
+
+    fn shorthands(&self) -> Vec<String> {
+        vec!["flex".to_string(), "flex-flow".to_string()]
+    }
+
+    fn reconstruct_shorthand(
+        &self,
+        property: &str,
+        components: &[(String, String)],
+    ) -> Option<String> {
+        reconstruct_specified_shorthand(property, components)
     }
 }
 
@@ -1846,16 +1877,23 @@ mod tests {
                 "var card = document.getElementById('card');\
                  var s = card.style;\
                  s.flex = '1';\
-                 console.log(s.flex);\
+                 console.log(s.flex + '|' + s.flexGrow + '|' + s.flexShrink + '|' +\
+                   s.flexBasis + '|' + s.length);\
                  s.flex = 'none 1';\
                  console.log(s.flex);\
                  s.flexFlow = 'nowrap column';\
-                 console.log(s.flexFlow);\
+                 console.log(s.flexFlow + '|' + s.flexDirection + '|' + s.flexWrap + '|' +\
+                   s.length);\
                  s.flexFlow = 'nowrap row nowrap';\
                  console.log(s.flexFlow);\
+                 console.log(s.removeProperty('flex') + '|' + s.flex + '|' +\
+                   s.flexFlow + '|' + s.length);\
+                 s.flex = '1';\
                  console.log(String(CSS.supports('flex', '1')) + '|' +\
+                   String(CSS.supports('flex', 'var(--flex)')) + '|' +\
                    String(CSS.supports('flex', 'none 1')) + '|' +\
                    String(CSS.supports('flex-flow', 'column wrap')) + '|' +\
+                   String(CSS.supports('flex-flow', 'var(--flow)')) + '|' +\
                    String(CSS.supports('flex-flow', 'column wrap column')));\
                  console.log(getComputedStyle(card).flex + '|' +\
                    getComputedStyle(card).flexFlow);",
@@ -1865,11 +1903,12 @@ mod tests {
         assert_eq!(
             runtime.host().borrow().console,
             vec![
+                "1 1 0%|1|1|0%|3",
                 "1 1 0%",
-                "1 1 0%",
+                "column|column|nowrap|5",
                 "column",
-                "column",
-                "true|false|true|false",
+                "1 1 0%||column|2",
+                "true|true|false|true|true|false",
                 "1 1 0%|column",
             ],
         );

@@ -709,6 +709,7 @@
     var oldValue = __getAttribute(this.__ref, name);
     var newValue = String(value);
     __setAttribute(this.__ref, name, newValue);
+    if (name === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, name, oldValue, newValue);
   };
   Element.prototype.getAttribute = function(name) { return __getAttribute(this.__ref, String(name)); };
@@ -739,6 +740,7 @@
     var oldValue = __getAttribute(this.__ref, qname);
     var newValue = String(value);
     __setAttribute(this.__ref, qname, newValue);
+    if (qname === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, qname, oldValue, newValue);
   };
   Element.prototype.getAttributeNS = function(ns, local) { return __getAttribute(this.__ref, String(local)); };
@@ -748,6 +750,7 @@
     if (this.namespaceURI === 'http://www.w3.org/1999/xhtml') name = name.toLowerCase();
     var oldValue = __getAttribute(this.__ref, name);
     __removeAttribute(this.__ref, name);
+    if (name === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, name, oldValue, null);
   };
   Element.prototype.toggleAttribute = function(name, force) {
@@ -809,49 +812,259 @@
     }
     return out;
   }
+  // Native inline-style records are line-oriented, so values are escaped before
+  // crossing the boundary. Keep decoding strict: a malformed native expansion
+  // must not turn into a partial CSS declaration update.
+  function cssDecodeField(field) {
+    var out = '';
+    for (var i = 0; i < field.length; i++) {
+      var ch = field.charAt(i);
+      if (ch !== '\\') { out += ch; continue; }
+      if (++i >= field.length) return null;
+      ch = field.charAt(i);
+      if (ch === '\\') out += '\\';
+      else if (ch === 'n') out += '\n';
+      else if (ch === 'r') out += '\r';
+      else if (ch === 't') out += '\t';
+      else return null;
+    }
+    return out;
+  }
+  function cssEncodeField(field) {
+    return String(field).replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+  }
+  function cssDecodeList(record) {
+    if (record === '') return [];
+    var raw = record.split('\n');
+    var values = [];
+    for (var i = 0; i < raw.length; i++) {
+      var value = cssDecodeField(raw[i]);
+      if (value === null || value === '') return null;
+      values.push(value);
+    }
+    return values;
+  }
+  function cssDecodePairs(record) {
+    if (record === '') return [];
+    var raw = record.split('\n');
+    var pairs = [];
+    for (var i = 0; i < raw.length; i++) {
+      var tab = raw[i].indexOf('\t');
+      if (tab <= 0 || raw[i].indexOf('\t', tab + 1) >= 0) return null;
+      var name = cssDecodeField(raw[i].slice(0, tab));
+      var value = cssDecodeField(raw[i].slice(tab + 1));
+      if (name === null || name === '' || value === null) return null;
+      pairs.push([name, value]);
+    }
+    return pairs;
+  }
+  function cssEncodePairs(pairs) {
+    var lines = [];
+    for (var i = 0; i < pairs.length; i++) {
+      lines.push(cssEncodeField(pairs[i][0]) + '\t' + cssEncodeField(pairs[i][1]));
+    }
+    return lines.join('\n');
+  }
+  function cssShorthandComponents(name) {
+    var components = cssDecodeList(String(__inlineStyleShorthandComponents(name)));
+    return components === null ? [] : components;
+  }
+  function cssShorthands() {
+    var names = cssDecodeList(String(__inlineStyleShorthands()));
+    return names === null ? [] : names;
+  }
+  function cssPendingShorthand(map, shorthand, components) {
+    var pending = null;
+    for (var i = 0; i < components.length; i++) {
+      var index = cssIdx(map, components[i]);
+      if (index < 0 || !map[index][2]) return null;
+      var origin = map[index][2];
+      if (origin[0] !== shorthand) return null;
+      if (pending === null) pending = origin;
+      else if (pending[1] !== origin[1]) return null;
+    }
+    return pending;
+  }
+  function cssShorthandSerialization(map, shorthand, components) {
+    if (components.length === 0) return null;
+    var rows = [];
+    var first = map.length;
+    var hasPending = false;
+    for (var i = 0; i < components.length; i++) {
+      var index = cssIdx(map, components[i]);
+      if (index < 0) return null;
+      first = Math.min(first, index);
+      if (map[index][2]) hasPending = true;
+      rows.push([components[i], map[index][1]]);
+    }
+    var pending = cssPendingShorthand(map, shorthand, components);
+    if (pending !== null) return { first: first, value: pending[1], components: components };
+    if (hasPending) return null;
+    var value = cssDecodeField(String(__inlineStyleShorthandValue(shorthand, cssEncodePairs(rows))));
+    return value === null || value === '' ? null : { first: first, value: value, components: components };
+  }
   function cssSerialize(map) {
+    var shorthands = cssShorthands();
+    var serializations = [];
+    for (var i = 0; i < shorthands.length; i++) {
+      var components = cssShorthandComponents(shorthands[i]);
+      var serialization = cssShorthandSerialization(map, shorthands[i], components);
+      if (serialization !== null) {
+        serialization.name = shorthands[i];
+        serializations.push(serialization);
+      }
+    }
     var parts = [];
-    for (var i = 0; i < map.length; i++) { parts.push(map[i][0] + ': ' + map[i][1] + ';'); }
+    var consumed = [];
+    for (var j = 0; j < map.length; j++) consumed.push(false);
+    for (var index = 0; index < map.length; index++) {
+      if (consumed[index]) continue;
+      var emitted = false;
+      for (var k = 0; k < serializations.length; k++) {
+        var candidate = serializations[k];
+        if (candidate.first !== index) continue;
+        parts.push(candidate.name + ': ' + candidate.value + ';');
+        for (var c = 0; c < candidate.components.length; c++) {
+          var component = cssIdx(map, candidate.components[c]);
+          if (component >= 0) consumed[component] = true;
+        }
+        emitted = true;
+        break;
+      }
+      if (!emitted && !consumed[index]) {
+        // A pending-substitution longhand is unobservable on its own. This
+        // matters after a later longhand mutation breaks an authored shorthand.
+        parts.push(map[index][0] + ': ' + (map[index][2] ? '' : map[index][1]) + ';');
+      }
+    }
     return parts.join(' ');
   }
-  function cssCanonicalValue(name, value) {
+  function cssStyleValue(name, value) {
     var record = String(__inlineStyleValue(name, value));
     var split = record.indexOf('\n');
     var kind = split < 0 ? record : record.slice(0, split);
     if (kind === 'invalid') return null;
-    if (kind === 'canonical') return record.slice(split + 1);
-    return value;
+    if (kind === 'canonical') {
+      var canonical = cssDecodeField(record.slice(split + 1));
+      return canonical === null ? null : { kind: kind, entries: [[name, canonical]] };
+    }
+    if (kind === 'expanded') {
+      var entries = cssDecodePairs(record.slice(split + 1));
+      return entries === null || entries.length === 0 ? null : { kind: kind, entries: entries };
+    }
+    return { kind: kind, entries: [[name, value]] };
+  }
+  function cssIdx(map, name) {
+    for (var i = 0; i < map.length; i++) { if (map[i][0] === name) return i; }
+    return -1;
+  }
+  function cssRemoveNames(map, names) {
+    var removed = false;
+    for (var i = map.length - 1; i >= 0; i--) {
+      if (names.indexOf(map[i][0]) >= 0) { map.splice(i, 1); removed = true; }
+    }
+    return removed;
+  }
+  function cssPut(map, name, value, pending) {
+    var i = cssIdx(map, name);
+    if (i >= 0) {
+      map[i][1] = value;
+      map[i][2] = pending;
+    } else {
+      map.push(pending ? [name, value, pending] : [name, value]);
+    }
+  }
+  function cssMatchesComponents(entries, components) {
+    if (entries.length !== components.length) return false;
+    for (var i = 0; i < components.length; i++) {
+      if (entries[i][0] !== components[i]) return false;
+    }
+    return true;
+  }
+  function cssApplyDeclaration(map, name, value) {
+    var normalized = cssStyleValue(name, value);
+    if (normalized === null) return false;
+    var components = cssShorthandComponents(name);
+    if (normalized.kind === 'expanded' &&
+        (components.length === 0 || !cssMatchesComponents(normalized.entries, components))) return false;
+    if (normalized.kind === 'deferred' && components.length === 0) return false;
+    if (components.length > 0) cssRemoveNames(map, [name].concat(components));
+    if (normalized.kind === 'expanded') {
+      for (var i = 0; i < normalized.entries.length; i++) {
+        cssPut(map, normalized.entries[i][0], normalized.entries[i][1]);
+      }
+    } else if (normalized.kind === 'deferred') {
+      for (var j = 0; j < components.length; j++) {
+        cssPut(map, components[j], value, [name, value]);
+      }
+    } else {
+      cssPut(map, name, normalized.entries[0][1]);
+    }
+    return true;
   }
   function cssCanonicalMap(map) {
     var out = [];
     for (var i = 0; i < map.length; i++) {
-      var value = cssCanonicalValue(map[i][0], map[i][1]);
-      if (value !== null) out.push([map[i][0], value]);
+      cssApplyDeclaration(out, map[i][0], map[i][1]);
     }
     return out;
   }
-  function makeStyleDecl(el) {
-    function read() { return cssCanonicalMap(cssParse(el.getAttribute('style'))); }
-    function write(map) {
-      if (map.length === 0) { el.removeAttribute('style'); } else { el.setAttribute('style', cssSerialize(map)); }
+  function cssPropertyValue(map, name) {
+    var direct = cssIdx(map, name);
+    if (direct >= 0) return map[direct][2] ? '' : map[direct][1];
+    var components = cssShorthandComponents(name);
+    if (components.length === 0) return '';
+    var pending = cssPendingShorthand(map, name, components);
+    if (pending !== null) return pending[1];
+    var rows = [];
+    for (var i = 0; i < components.length; i++) {
+      var component = cssIdx(map, components[i]);
+      if (component < 0 || map[component][2]) return '';
+      rows.push([components[i], map[component][1]]);
     }
-    function idx(map, name) { for (var i = 0; i < map.length; i++) { if (map[i][0] === name) return i; } return -1; }
+    var shorthand = cssDecodeField(String(__inlineStyleShorthandValue(name, cssEncodePairs(rows))));
+    return shorthand === null ? '' : shorthand;
+  }
+  function cssRemoveProperty(map, name) {
+    return cssRemoveNames(map, [name].concat(cssShorthandComponents(name)));
+  }
+  // The content attribute cannot retain the internal pending-substitution
+  // marker. Keep that unobservable state beside the element while its serialized
+  // attribute is unchanged, and invalidate it if the attribute is edited by a
+  // different DOM path.
+  var inlineStyleStates = new WeakMap();
+  function cssCloneMap(map) {
+    var cloned = [];
+    for (var i = 0; i < map.length; i++) {
+      cloned.push(map[i][2] ? [map[i][0], map[i][1], [map[i][2][0], map[i][2][1]]] : [map[i][0], map[i][1]]);
+    }
+    return cloned;
+  }
+  function makeStyleDecl(el) {
+    function read() {
+      var text = el.getAttribute('style');
+      var state = inlineStyleStates.get(el);
+      if (state && state.text === text) return cssCloneMap(state.map);
+      return cssCanonicalMap(cssParse(text));
+    }
+    function write(map) {
+      var text = map.length === 0 ? null : cssSerialize(map);
+      if (text === null) el.removeAttribute('style'); else el.setAttribute('style', text);
+      inlineStyleStates.set(el, { text: text, map: cssCloneMap(map) });
+    }
     var api = {
-      getPropertyValue: function(name) { var m = read(); var i = idx(m, String(name).toLowerCase()); return i < 0 ? '' : m[i][1]; },
+      getPropertyValue: function(name) { return cssPropertyValue(read(), String(name).toLowerCase()); },
       setProperty: function(name, value) {
         name = String(name).toLowerCase();
         value = (value === undefined || value === null) ? '' : String(value);
-        var m = read(); var i = idx(m, name);
-        if (value === '') { if (i >= 0) { m.splice(i, 1); write(m); } return; }
-        value = cssCanonicalValue(name, value);
-        if (value === null) return;
-        if (i >= 0) { m[i][1] = value; } else { m.push([name, value]); }
-        write(m);
+        var m = read();
+        if (value === '') { if (cssRemoveProperty(m, name)) write(m); return; }
+        if (cssApplyDeclaration(m, name, value)) write(m);
       },
       removeProperty: function(name) {
         name = String(name).toLowerCase();
-        var m = read(); var i = idx(m, name); var old = i < 0 ? '' : m[i][1];
-        if (i >= 0) { m.splice(i, 1); write(m); }
+        var m = read(); var old = cssPropertyValue(m, name);
+        if (cssRemoveProperty(m, name)) write(m);
         return old;
       },
       item: function(i) { var m = read(); i = i >>> 0; return i < m.length ? m[i][0] : ''; },

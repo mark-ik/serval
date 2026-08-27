@@ -152,6 +152,9 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<CreateElementNS>("__createElementNS", 2)?;
     engine.set_function::<AttributeNames>("__attributeNames", 1)?;
     engine.set_function::<InlineStyleValue>("__inlineStyleValue", 2)?;
+    engine.set_function::<InlineStyleShorthandComponents>("__inlineStyleShorthandComponents", 1)?;
+    engine.set_function::<InlineStyleShorthands>("__inlineStyleShorthands", 0)?;
+    engine.set_function::<InlineStyleShorthandValue>("__inlineStyleShorthandValue", 2)?;
     engine.set_function::<SupportsStyleValue>("__supportsStyleValue", 2)?;
     engine.set_function::<ComputedStyleValue>("__computedStyleValue", 2)?;
     engine.set_function::<ComputedStyleValueInContext>("__computedStyleValueInContext", 3)?;
@@ -240,11 +243,38 @@ pub enum InlineStyleValueResult {
     PassThrough,
     Invalid,
     Canonical(String),
+    /// A recognized value whose custom-property substitution must remain
+    /// deferred. It is supported, but cannot yet be expanded into longhands.
+    SupportedDeferred,
+    /// A canonical shorthand expansion in the CSS engine's longhand order.
+    Expanded(Vec<(String, String)>),
 }
 
 /// The selected CSS engine's specified-value seam for `element.style`.
 pub trait InlineStyleHandler {
     fn canonicalize(&self, property: &str, value: &str) -> InlineStyleValueResult;
+
+    /// Ordered longhands for a recognized shorthand. The runtime uses this
+    /// metadata for generic declaration-map replacement and removal.
+    fn shorthand_components(&self, _property: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Supported shorthand names, in a stable serialization order.  This lets
+    /// the shared declaration surface serialize complete component sets without
+    /// knowing any engine-specific shorthand names.
+    fn shorthands(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Reconstruct a shorthand from its complete current longhand set.
+    fn reconstruct_shorthand(
+        &self,
+        _property: &str,
+        _components: &[(String, String)],
+    ) -> Option<String> {
+        None
+    }
 }
 
 fn host_inline_style<E: ScriptEngine>(
@@ -256,8 +286,79 @@ fn host_inline_style<E: ScriptEngine>(
     handler
 }
 
-/// `__inlineStyleValue(property, value)` -> a line record consumed by the JS
-/// CSSStyleDeclaration: `pass`, `invalid`, or `canonical` plus the value.
+/// Escape a CSS text field for the compact line protocol shared with the JS
+/// bootstrap.  Escaping keeps embedded tabs/newlines from changing record
+/// boundaries without making the protocol depend on a JSON implementation.
+fn escape_inline_style_field(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn unescape_inline_style_field(value: &str) -> Option<String> {
+    let mut unescaped = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            unescaped.push(character);
+            continue;
+        }
+        match characters.next()? {
+            '\\' => unescaped.push('\\'),
+            'n' => unescaped.push('\n'),
+            'r' => unescaped.push('\r'),
+            't' => unescaped.push('\t'),
+            _ => return None,
+        }
+    }
+    Some(unescaped)
+}
+
+fn encode_inline_style_components(
+    components: impl IntoIterator<Item = (String, String)>,
+) -> String {
+    components
+        .into_iter()
+        .map(|(name, value)| {
+            format!(
+                "{}\t{}",
+                escape_inline_style_field(&name),
+                escape_inline_style_field(&value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn decode_inline_style_components(record: &str) -> Option<Vec<(String, String)>> {
+    if record.is_empty() {
+        return Some(Vec::new());
+    }
+    record
+        .split('\n')
+        .map(|line| {
+            let (name, value) = line.split_once('\t')?;
+            if value.contains('\t') {
+                return None;
+            }
+            Some((
+                unescape_inline_style_field(name)?,
+                unescape_inline_style_field(value)?,
+            ))
+        })
+        .collect()
+}
+
+/// `__inlineStyleValue(property, value)` -> an escaped line record consumed by
+/// the JS CSSStyleDeclaration.
 struct InlineStyleValue;
 impl<E: ScriptEngine> NativeFn<E> for InlineStyleValue {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
@@ -272,9 +373,73 @@ impl<E: ScriptEngine> NativeFn<E> for InlineStyleValue {
         let record = match result {
             InlineStyleValueResult::PassThrough => "pass\n".to_string(),
             InlineStyleValueResult::Invalid => "invalid\n".to_string(),
-            InlineStyleValueResult::Canonical(value) => format!("canonical\n{value}"),
+            InlineStyleValueResult::Canonical(value) => {
+                format!("canonical\n{}", escape_inline_style_field(&value))
+            },
+            InlineStyleValueResult::SupportedDeferred => "deferred\n".to_string(),
+            InlineStyleValueResult::Expanded(components) => {
+                format!("expanded\n{}", encode_inline_style_components(components))
+            },
         };
         cx.make_string(&record)
+    }
+}
+
+/// `__inlineStyleShorthandComponents(property)` -> escaped newline-separated
+/// ordered longhand names, or the empty string for an unknown shorthand.
+struct InlineStyleShorthandComponents;
+impl<E: ScriptEngine> NativeFn<E> for InlineStyleShorthandComponents {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let property_value = cx.arg(0);
+        let property = cx.value_to_string(&property_value)?;
+        let components = host_inline_style::<E>(cx)
+            .map(|handler| handler.shorthand_components(&property))
+            .unwrap_or_default();
+        cx.make_string(
+            &components
+                .into_iter()
+                .map(|component| escape_inline_style_field(&component))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+}
+
+/// `__inlineStyleShorthands()` -> escaped newline-separated shorthand names in
+/// the CSS engine's stable serialization order.
+struct InlineStyleShorthands;
+impl<E: ScriptEngine> NativeFn<E> for InlineStyleShorthands {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let shorthands = host_inline_style::<E>(cx)
+            .map(|handler| handler.shorthands())
+            .unwrap_or_default();
+        cx.make_string(
+            &shorthands
+                .into_iter()
+                .map(|shorthand| escape_inline_style_field(&shorthand))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+}
+
+/// `__inlineStyleShorthandValue(property, components)` -> the reconstructed
+/// shorthand, or the empty string. Components use the escaped `name\tvalue`
+/// line record used by shorthand expansion.
+struct InlineStyleShorthandValue;
+impl<E: ScriptEngine> NativeFn<E> for InlineStyleShorthandValue {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let property_value = cx.arg(0);
+        let property = cx.value_to_string(&property_value)?;
+        let record_value = cx.arg(1);
+        let record = cx.value_to_string(&record_value)?;
+        let value = decode_inline_style_components(&record)
+            .and_then(|components| {
+                host_inline_style::<E>(cx)
+                    .and_then(|handler| handler.reconstruct_shorthand(&property, &components))
+            })
+            .unwrap_or_default();
+        cx.make_string(&escape_inline_style_field(&value))
     }
 }
 
@@ -293,6 +458,8 @@ impl<E: ScriptEngine> NativeFn<E> for SupportsStyleValue {
                 matches!(
                     handler.canonicalize(&property, &value),
                     InlineStyleValueResult::Canonical(_)
+                        | InlineStyleValueResult::SupportedDeferred
+                        | InlineStyleValueResult::Expanded(_)
                 )
             });
         cx.make_string(if supported { "true" } else { "false" })
