@@ -552,7 +552,7 @@ identity. It recorded `redirected identity, imported cascade, linked image/font,
 and fetch trace held`, with digest `b2736b2a574240f7`. Two successive captures
 were byte-identical at 88,850 bytes with SHA-256
 `77b75a5b7da67b354c63513f6f339b317a3690b4eddc13a8b57feb4a702b2f65`.
-The focused retained-resource assertion passes, followed by the full 16/16
+The focused retained-resource assertion passes, followed by the full 15/15
 `pelt-desktop` Livery test wall and its doc-test wall.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
@@ -616,8 +616,8 @@ terminal.
 ## Immediate next lane
 
 Continue P5 from the completed ordinary-article, controls, responsive-layout,
-and scripted-navigation receipts. Add named receipts for resource graphs,
-protocol-native content, the mixed workspace, and the explicit fallback.
+scripted-navigation, and redirected-resource-graph receipts. Add named receipts
+for protocol-native content, the mixed workspace, and the explicit fallback.
 The Reader tile must carry held source bytes rather than teaching Fleece to
 fetch. Each remaining fixture needs a bounded command, captured artifact, and
 interaction assertion. The completed Windows P4 route remains the external
