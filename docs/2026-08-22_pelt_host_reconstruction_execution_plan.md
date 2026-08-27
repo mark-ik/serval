@@ -719,7 +719,8 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
-**Status:** open after P5 completion 2026-08-27.
+**Status:** active. The first bounded Chrome receipt completed on Windows
+2026-08-27; the broader presentability and inspection lane remains open.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -729,6 +730,42 @@ accessibility state.
 Done when the chrome is itself a Cambium/Livery composition, remains usable at
 small window sizes and high DPI, and exposes failures without consulting the
 terminal.
+
+The first bounded Chrome receipt is:
+
+```sh
+cargo run --offline -p pelt --no-default-features \
+  --features livery,scripted,smolweb -j 1 -- \
+  --workspace-receipt chrome \
+  --artifact target/pelt-receipts/workspace-chrome.png
+```
+
+It reuses P4's four mixed-engine fixtures, but leaves tile 2 as an ordinary
+automatic HTML-to-Livery route. The retained Pelt chrome owns a focused-tile
+address field, Back, Forward, Reload, title, full route indicator, loading or
+failure status, and an Engine control. The control cycles that one tile through
+automatic, Livery, Scripted when compiled, and automatic again through
+`PeltWorkspace::set_route_override`; the other Gemtext, Scripted, and Scrying
+lanes remain intact. The address driver enters `surface.html` through the same
+key path used by the window adapter, submits it, traverses Back and Forward,
+reloads the same focused history entry, and then checks the engine cycle.
+
+The chrome is a Pelt-specific retained wrapper around Cambium Frisket, rendered
+by Livery and laid out by Buckram. Frisket still owns the pane tree, tab and
+divider semantics, and active content holes. To keep a tab title from running
+into its close control, the Pelt wrapper supplies a compact visible title while
+the chrome carries the full focused title and route; Frisket gives each tab a
+fixed 28px close gutter. Ordinary `pelt --tiles` uses chrome. The older P3,
+P4, and P5 captures deliberately retain their existing frameless surfaces, so
+their named evidence does not silently change.
+
+The GPU-free `pelt-desktop` test drives the full sequence without a registered
+Scrying producer and therefore requires tile 4's visible Livery fallback. The
+headed Windows run created one 960x640 window, retained all four lanes,
+captured after 275 redraws, and recorded four native frames, one import, four
+fence waits, and 275 compositions. Its assertion was `focused-tile chrome
+navigated history and applied a per-tile engine override while the mixed
+workspace held`; the captured compositor digest was `31aee86abd210644`.
 
 ## Cross-gate rules
 
@@ -746,10 +783,9 @@ terminal.
 
 ## Immediate next lane
 
-Begin P6 with Cambium/Livery chrome over the retained Pelt core. The first
-bounded receipt should expose the focused tile's address, history controls,
-route indicator, loading or failure state, and an actual per-tile engine
-override control while preserving the P5 mixed-workspace composition. The
+Continue P6 from the Chrome receipt with a real engine-choice menu and
+settings surface, dedicated loading/error documents, structural inspection,
+theme and accessibility state, and narrow-width/high-DPI evidence. The
 Reader-in-workspace lane must carry held source bytes rather than teaching
 Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
 than an unrecorded ninth P5 fixture.

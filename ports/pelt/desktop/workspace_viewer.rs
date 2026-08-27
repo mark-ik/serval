@@ -20,8 +20,8 @@ use inker::{FrameHandleOwnership, NativeTextureHandle};
 use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
-    PeltController, PeltHostEffect, PeltRegistries, PeltRouteState, PeltTileRequest, PeltWorkspace,
-    WorkspaceRect,
+    PeltController, PeltHostEffect, PeltRegistries, PeltRouteSource, PeltRouteState,
+    PeltTileRequest, PeltWorkspace, WorkspaceRect,
 };
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -33,7 +33,7 @@ use winit::window::{Window, WindowId};
 
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
-use crate::frisket_surface::{FrisketHit, FrisketSurface};
+use crate::frisket_surface::{ChromeAction, FrisketHit, FrisketSurface, WorkspaceChrome};
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
 use crate::{WindowingMode, static_viewer};
@@ -42,6 +42,7 @@ const RECEIPT_STEPS: u8 = 8;
 const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
+const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history and applied a per-tile engine override while the mixed workspace held";
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +51,8 @@ pub enum WorkspaceReceipt {
     Mixed,
     /// An unavailable external engine visibly falls back to the owned Livery lane.
     Fallback,
+    /// P6 host chrome controls a focused tile while the P5 mixed workspace remains live.
+    Chrome,
 }
 
 impl WorkspaceReceipt {
@@ -57,6 +60,7 @@ impl WorkspaceReceipt {
         match self {
             Self::Mixed => "mixed",
             Self::Fallback => "fallback",
+            Self::Chrome => "chrome",
         }
     }
 
@@ -66,6 +70,10 @@ impl WorkspaceReceipt {
 
     fn default_frames(self) -> u32 {
         3
+    }
+
+    fn keeps_chrome(self) -> bool {
+        matches!(self, Self::Chrome)
     }
 }
 
@@ -80,8 +88,10 @@ pub struct WorkspaceViewerConfig {
     pub interaction_receipt: bool,
     /// Drive the mixed P4 routing receipt after the first shared frame.
     pub capability_receipt: bool,
-    /// Named P5 workspace receipt with a captured compositor artifact.
+    /// Named P5/P6 workspace receipt with a captured compositor artifact.
     pub workspace_receipt: Option<WorkspaceReceipt>,
+    /// Show the retained P6 chrome above the Frisket pane frame.
+    pub chrome: bool,
     /// Ordered physical client sizes for a live workspace resize receipt.
     pub workspace_size_matrix: Option<Vec<(u32, u32)>>,
     /// Maximum elapsed time for each mixed-receipt readiness or resize stage.
@@ -102,6 +112,7 @@ impl WorkspaceViewerConfig {
             interaction_receipt: false,
             capability_receipt: false,
             workspace_receipt: None,
+            chrome: true,
             workspace_size_matrix: None,
             workspace_receipt_stage_timeout: WORKSPACE_RECEIPT_STAGE_TIMEOUT,
             artifact: None,
@@ -121,6 +132,7 @@ impl WorkspaceViewerConfig {
 
     pub fn with_interaction_receipt(mut self) -> Self {
         self.interaction_receipt = true;
+        self.chrome = false;
         self.frames = Some(self.frames.unwrap_or(0).max(u32::from(RECEIPT_STEPS) + 1));
         self
     }
@@ -132,6 +144,7 @@ impl WorkspaceViewerConfig {
 
     pub fn with_capability_receipt(mut self) -> Self {
         self.capability_receipt = true;
+        self.chrome = false;
         self.frames = Some(self.frames.unwrap_or(0).max(600));
         self
     }
@@ -144,6 +157,7 @@ impl WorkspaceViewerConfig {
         self.size = Some(receipt.default_size());
         self.frames = Some(receipt.default_frames());
         self.workspace_receipt = Some(receipt);
+        self.chrome = receipt.keeps_chrome();
         self.artifact = Some(artifact.as_ref().to_owned());
         self
     }
@@ -278,7 +292,10 @@ pub fn run_livery_workspace_viewer(
     }
     #[cfg(target_os = "windows")]
     if app.config.capability_receipt
-        || app.config.workspace_receipt == Some(WorkspaceReceipt::Mixed)
+        || matches!(
+            app.config.workspace_receipt,
+            Some(WorkspaceReceipt::Mixed | WorkspaceReceipt::Chrome)
+        )
     {
         let native = app.native_surfaces.stats();
         println!(
@@ -445,6 +462,30 @@ enum PointerGesture {
     Tab(TabDrag),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ChromeStatus {
+    Ready,
+    Loading,
+    Message(String),
+    Error(String),
+}
+
+impl ChromeStatus {
+    fn label(&self) -> String {
+        match self {
+            Self::Ready => "Ready".to_owned(),
+            Self::Loading => "Loading".to_owned(),
+            Self::Message(message) | Self::Error(message) => message.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ChromeAddressInput {
+    value: String,
+    replace_on_insert: bool,
+}
+
 struct WorkspaceApp {
     config: WorkspaceViewerConfig,
     workspace: PeltWorkspace<Scene>,
@@ -465,6 +506,8 @@ struct WorkspaceApp {
     pending_workspace_assertion: Option<String>,
     workspace_receipt_outcome: Option<WorkspaceReceiptOutcome>,
     workspace_receipt_stage_started: Instant,
+    chrome_status: ChromeStatus,
+    chrome_address: Option<ChromeAddressInput>,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -515,6 +558,8 @@ impl WorkspaceApp {
             pending_workspace_assertion: None,
             workspace_receipt_outcome: None,
             workspace_receipt_stage_started: Instant::now(),
+            chrome_status: ChromeStatus::Ready,
+            chrome_address: None,
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -577,6 +622,286 @@ impl WorkspaceApp {
         )
     }
 
+    fn refresh_chrome(&mut self) {
+        let chrome = self.config.chrome.then(|| self.chrome_model());
+        self.frisket.set_chrome(chrome);
+    }
+
+    fn chrome_model(&self) -> WorkspaceChrome {
+        let Some(tile) = self.workspace.focused_tile() else {
+            return WorkspaceChrome {
+                title: "No focused tile".to_owned(),
+                address: String::new(),
+                route: "No route".to_owned(),
+                status: self.chrome_status.label(),
+                address_focused: self.chrome_address.is_some(),
+                can_go_back: false,
+                can_go_forward: false,
+                engine_label: "Auto".to_owned(),
+            };
+        };
+        let controller = self.workspace.controller(tile);
+        let title = controller
+            .and_then(PeltController::title)
+            .or_else(|| {
+                self.workspace
+                    .tree()
+                    .tiles()
+                    .into_iter()
+                    .find(|candidate| candidate.id == tile)
+                    .map(|candidate| candidate.title.clone())
+            })
+            .unwrap_or_else(|| format!("Tile {}", tile.0));
+        let title = title
+            .split_once(" [")
+            .map_or(title.as_str(), |(base, _)| base)
+            .trim()
+            .to_owned();
+        let address = self
+            .chrome_address
+            .as_ref()
+            .map(|input| input.value.clone())
+            .unwrap_or_else(|| self.focused_address());
+        let route = self
+            .workspace
+            .route(tile)
+            .map(|route| {
+                let source = match route.source {
+                    PeltRouteSource::Automatic => "Automatic",
+                    PeltRouteSource::UserOverride => "Pinned",
+                };
+                match &route.state {
+                    PeltRouteState::Document => {
+                        format!("{source}: {} · document", route.selected_engine())
+                    },
+                    PeltRouteState::Surface => {
+                        format!("{source}: {} · surface", route.selected_engine())
+                    },
+                    PeltRouteState::Fallback {
+                        active_engine,
+                        reason,
+                    } => format!(
+                        "{source}: {} → {active_engine} · {reason}",
+                        route.selected_engine()
+                    ),
+                }
+            })
+            .unwrap_or_else(|| "No route".to_owned());
+        let engine_label = self
+            .workspace
+            .route(tile)
+            .map(|route| match route.source {
+                PeltRouteSource::Automatic => "Auto".to_owned(),
+                PeltRouteSource::UserOverride => route.selected_engine().to_owned(),
+            })
+            .unwrap_or_else(|| "Auto".to_owned());
+        WorkspaceChrome {
+            title,
+            address,
+            route,
+            status: self.chrome_status.label(),
+            address_focused: self.chrome_address.is_some(),
+            can_go_back: controller.is_some_and(PeltController::can_go_back),
+            can_go_forward: controller.is_some_and(PeltController::can_go_forward),
+            engine_label,
+        }
+    }
+
+    fn focused_address(&self) -> String {
+        let Some(tile) = self.workspace.focused_tile() else {
+            return String::new();
+        };
+        self.workspace
+            .controller(tile)
+            .map(PeltController::address)
+            .map(str::to_owned)
+            .or_else(|| {
+                self.workspace
+                    .tree()
+                    .tiles()
+                    .into_iter()
+                    .find(|candidate| candidate.id == tile)
+                    .and_then(|candidate| match &candidate.content {
+                        ContentSource::Document(DocumentRef(address)) => Some(address.clone()),
+                        _ => None,
+                    })
+            })
+            .unwrap_or_default()
+    }
+
+    fn begin_address_edit(&mut self) {
+        self.chrome_address = Some(ChromeAddressInput {
+            value: self.focused_address(),
+            replace_on_insert: true,
+        });
+        self.chrome_status = ChromeStatus::Ready;
+        self.set_chrome_ime_allowed(true);
+    }
+
+    fn clear_chrome_address(&mut self) {
+        self.chrome_address = None;
+        self.set_chrome_ime_allowed(false);
+    }
+
+    fn set_chrome_ime_allowed(&self, allowed: bool) {
+        if let Some(window) = &self.window {
+            window.set_ime_allowed(allowed);
+        }
+    }
+
+    fn append_chrome_address(&mut self, text: &str) {
+        if self.chrome_address.is_none() {
+            self.begin_address_edit();
+        }
+        let input = self
+            .chrome_address
+            .as_mut()
+            .expect("address edit was installed above");
+        if input.replace_on_insert {
+            input.value.clear();
+            input.replace_on_insert = false;
+        }
+        input.value.push_str(text);
+    }
+
+    fn backspace_chrome_address(&mut self) {
+        let Some(input) = self.chrome_address.as_mut() else {
+            return;
+        };
+        if input.replace_on_insert {
+            input.value.clear();
+            input.replace_on_insert = false;
+        } else {
+            input.value.pop();
+        }
+    }
+
+    fn submit_chrome_address(&mut self) -> bool {
+        let Some(input) = self.chrome_address.take() else {
+            return false;
+        };
+        self.set_chrome_ime_allowed(false);
+        let address = input.value.trim();
+        if address.is_empty() {
+            self.chrome_status = ChromeStatus::Error("Address is empty".to_owned());
+            return true;
+        }
+        let effect = self
+            .workspace
+            .command(SessionNavigationCommand::Address(address.to_owned()));
+        self.apply_effect(effect);
+        true
+    }
+
+    fn cycle_chrome_engine(&mut self) -> bool {
+        let Some(tile) = self.workspace.focused_tile() else {
+            return false;
+        };
+        let current = self.workspace.route(tile).and_then(|route| {
+            (route.source == PeltRouteSource::UserOverride)
+                .then(|| route.selected_engine().to_owned())
+        });
+        #[cfg(feature = "scripted")]
+        let choices = vec![
+            None,
+            Some(inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+            Some(inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+        ];
+        #[cfg(not(feature = "scripted"))]
+        let choices = vec![None, Some(inker::routing::ENGINE_GENET_LIVERY.to_owned())];
+        let next = choices
+            .iter()
+            .position(|choice| choice == &current)
+            .map(|index| choices[(index + 1) % choices.len()].clone())
+            .unwrap_or_else(|| choices[0].clone());
+        match self.workspace.set_route_override(tile, next.clone()) {
+            Ok(changed) => {
+                if !changed {
+                    return false;
+                }
+                self.frisket.set_tree(self.workspace.tree());
+                self.chrome_status = ChromeStatus::Message(match next {
+                    Some(engine) => format!("Engine pinned: {engine}"),
+                    None => "Automatic route restored".to_owned(),
+                });
+                if let Some(window) = &self.window {
+                    window.set_title(&self.window_title());
+                }
+                true
+            },
+            Err(error) => {
+                self.chrome_status = ChromeStatus::Error(error);
+                true
+            },
+        }
+    }
+
+    fn apply_chrome_action(&mut self, action: ChromeAction) -> bool {
+        if action != ChromeAction::Address {
+            self.clear_chrome_address();
+        }
+        match action {
+            ChromeAction::Back => {
+                let effect = self.workspace.command(SessionNavigationCommand::Back);
+                let redraw = effect.redraw || effect.navigated;
+                self.apply_effect(effect);
+                redraw
+            },
+            ChromeAction::Forward => {
+                let effect = self.workspace.command(SessionNavigationCommand::Forward);
+                let redraw = effect.redraw || effect.navigated;
+                self.apply_effect(effect);
+                redraw
+            },
+            ChromeAction::Reload => {
+                let effect = self.workspace.command(SessionNavigationCommand::Reload);
+                let redraw = effect.redraw || effect.navigated;
+                self.apply_effect(effect);
+                redraw
+            },
+            ChromeAction::Address => {
+                self.begin_address_edit();
+                true
+            },
+            ChromeAction::NextEngine => self.cycle_chrome_engine(),
+        }
+    }
+
+    fn handle_chrome_key(&mut self, key: &Key, state: ElementState) -> bool {
+        if self.chrome_address.is_none() || state != ElementState::Pressed {
+            return false;
+        }
+        match key {
+            Key::Named(NamedKey::Enter) => self.submit_chrome_address(),
+            Key::Named(NamedKey::Escape) => {
+                self.clear_chrome_address();
+                self.chrome_status = ChromeStatus::Ready;
+                true
+            },
+            Key::Named(NamedKey::Backspace) => {
+                self.backspace_chrome_address();
+                true
+            },
+            Key::Character(text)
+                if !self.modifiers.control && !self.modifiers.alt && !self.modifiers.meta =>
+            {
+                self.append_chrome_address(text);
+                true
+            },
+            _ => true,
+        }
+    }
+
+    fn handle_chrome_ime(&mut self, ime: &winit::event::Ime) -> bool {
+        if self.chrome_address.is_none() {
+            return false;
+        }
+        if let winit::event::Ime::Commit(text) = ime {
+            self.append_chrome_address(text);
+        }
+        true
+    }
+
     fn logical_size(&self) -> (u32, u32) {
         (
             static_viewer::logical_extent(self.width, self.scale_factor),
@@ -619,6 +944,7 @@ impl WorkspaceApp {
             }
         }
 
+        self.refresh_chrome();
         let (logical_width, logical_height) = self.logical_size();
         let pane_frame = match self.frisket.frame(logical_width, logical_height) {
             Ok(frame) => frame,
@@ -878,9 +1204,16 @@ impl WorkspaceApp {
         if self.config.workspace_receipt.is_some() && self.receipt_complete {
             self.workspace_receipt_redraws += 1;
         }
+        let chrome_loading_settled =
+            self.config.chrome && self.chrome_status == ChromeStatus::Loading;
+        if chrome_loading_settled {
+            self.chrome_status = ChromeStatus::Ready;
+        }
 
-        if self.config.workspace_receipt == Some(WorkspaceReceipt::Mixed)
-            && !self.receipt_complete
+        if matches!(
+            self.config.workspace_receipt,
+            Some(WorkspaceReceipt::Mixed | WorkspaceReceipt::Chrome)
+        ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
                 >= self.config.workspace_receipt_stage_timeout
         {
@@ -899,7 +1232,7 @@ impl WorkspaceApp {
             #[cfg(not(target_os = "windows"))]
             let progress = "native surface unavailable on this platform".to_owned();
             self.receipt_error = Some(format!(
-                "mixed workspace receipt timed out after {}s at {}x{} ({progress})",
+                "native workspace receipt timed out after {}s at {}x{} ({progress})",
                 self.config.workspace_receipt_stage_timeout.as_secs_f32(),
                 self.width,
                 self.height
@@ -923,7 +1256,11 @@ impl WorkspaceApp {
             })
         {
             event_loop.exit();
-        } else if self.config.interaction_receipt || more || self.config.frames.is_some() {
+        } else if self.config.interaction_receipt
+            || more
+            || self.config.frames.is_some()
+            || chrome_loading_settled
+        {
             self.request_redraw();
         }
     }
@@ -936,6 +1273,7 @@ impl WorkspaceApp {
         {
             WorkspaceReceipt::Mixed => self.drive_mixed_workspace_receipt_step(),
             WorkspaceReceipt::Fallback => self.drive_fallback_workspace_receipt_step(),
+            WorkspaceReceipt::Chrome => self.drive_chrome_workspace_receipt_step(),
         }
     }
 
@@ -1197,6 +1535,163 @@ impl WorkspaceApp {
         Ok(MIXED_WORKSPACE_ASSERTION.to_owned())
     }
 
+    fn drive_chrome_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        #[cfg(target_os = "windows")]
+        if self.scrying_host.is_some() && !self.mixed_native_receipt_ready() {
+            return Ok(None);
+        }
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 4)?;
+                let address = self
+                    .frisket
+                    .chrome_rect("address")
+                    .ok_or("chrome receipt has no retained address field")?;
+                let engine = self
+                    .frisket
+                    .chrome_rect("engine-next")
+                    .ok_or("chrome receipt has no retained engine control")?;
+                let tile = self
+                    .workspace
+                    .content_rect(TileId(1))
+                    .ok_or("chrome receipt has no first tile geometry")?;
+                if address.width <= 0.0
+                    || engine.width <= 0.0
+                    || tile.y <= address.y + address.height
+                {
+                    return Err(
+                        "chrome receipt did not reserve a header above the pane frame".to_owned(),
+                    );
+                }
+                self.click_tab(TileId(2))?;
+            },
+            1 => {
+                let route = self
+                    .workspace
+                    .route(TileId(2))
+                    .ok_or("chrome receipt lost focused Livery tile")?;
+                if self.workspace.focused_tile() != Some(TileId(2))
+                    || route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                    || route.source != PeltRouteSource::Automatic
+                    || !matches!(route.state, PeltRouteState::Document)
+                {
+                    return Err(format!(
+                        "chrome receipt did not focus ordinary Livery tile: {route:?}"
+                    ));
+                }
+                self.click_chrome("address")?;
+            },
+            2 => {
+                if !self.handle_chrome_key(
+                    &Key::Character("surface.html".into()),
+                    ElementState::Pressed,
+                ) || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err("chrome receipt could not submit the address field".to_owned());
+                }
+                if !self
+                    .workspace
+                    .controller(TileId(2))
+                    .is_some_and(|controller| controller.address().ends_with("surface.html"))
+                {
+                    return Err(
+                        "chrome receipt address field did not navigate the focused tile".to_owned(),
+                    );
+                }
+                if self.chrome_status != ChromeStatus::Loading {
+                    return Err("chrome receipt did not expose its loading state".to_owned());
+                }
+            },
+            3 => {
+                self.click_chrome("back")?;
+                let controller = self
+                    .workspace
+                    .controller(TileId(2))
+                    .ok_or("chrome receipt lost focused controller after Back")?;
+                if !controller.address().ends_with("static.html") || !controller.can_go_forward() {
+                    return Err("chrome receipt Back did not retain forward history".to_owned());
+                }
+            },
+            4 => {
+                self.click_chrome("forward")?;
+                let controller = self
+                    .workspace
+                    .controller(TileId(2))
+                    .ok_or("chrome receipt lost focused controller after Forward")?;
+                if !controller.address().ends_with("surface.html") || !controller.can_go_back() {
+                    return Err("chrome receipt Forward did not retain back history".to_owned());
+                }
+            },
+            5 => {
+                self.click_chrome("reload")?;
+                let controller = self
+                    .workspace
+                    .controller(TileId(2))
+                    .ok_or("chrome receipt lost focused controller after Reload")?;
+                if !controller.address().ends_with("surface.html") || !controller.can_go_back() {
+                    return Err("chrome receipt Reload did not retain focused history".to_owned());
+                }
+            },
+            6 => {
+                self.click_chrome("engine-next")?;
+                let route = self
+                    .workspace
+                    .route(TileId(2))
+                    .ok_or("chrome receipt lost route after engine pin")?;
+                if route.source != PeltRouteSource::UserOverride
+                    || route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                {
+                    return Err(format!("chrome receipt did not pin Livery: {route:?}"));
+                }
+            },
+            7 => {
+                self.click_chrome("engine-next")?;
+                let route = self
+                    .workspace
+                    .route(TileId(2))
+                    .ok_or("chrome receipt lost route after second engine choice")?;
+                #[cfg(feature = "scripted")]
+                if route.source != PeltRouteSource::UserOverride
+                    || route.selected_engine() != inker::routing::ENGINE_GENET_SCRIPTED
+                {
+                    return Err(format!(
+                        "chrome receipt did not select scripted engine: {route:?}"
+                    ));
+                }
+                #[cfg(not(feature = "scripted"))]
+                if route.source != PeltRouteSource::Automatic
+                    || route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                {
+                    return Err(format!(
+                        "chrome receipt did not restore automatic Livery: {route:?}"
+                    ));
+                }
+            },
+            8 => {
+                #[cfg(feature = "scripted")]
+                self.click_chrome("engine-next")?;
+                let route = self
+                    .workspace
+                    .route(TileId(2))
+                    .ok_or("chrome receipt lost route while restoring automatic selection")?;
+                if route.source != PeltRouteSource::Automatic
+                    || route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                    || !matches!(route.state, PeltRouteState::Document)
+                {
+                    return Err(format!(
+                        "chrome receipt did not restore automatic Livery: {route:?}"
+                    ));
+                }
+                self.validate_chrome_workspace_receipt()?;
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(CHROME_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(CHROME_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
     #[cfg(target_os = "windows")]
     fn mixed_native_receipt_ready(&mut self) -> bool {
         if !self.capability_receipt_ready() {
@@ -1339,6 +1834,23 @@ impl WorkspaceApp {
     }
 
     fn validate_capability_receipt(&self) -> Result<(), String> {
+        self.validate_mixed_workspace("P4", "Static Livery", "Static Livery")
+    }
+
+    fn validate_chrome_workspace_receipt(&self) -> Result<(), String> {
+        self.validate_mixed_workspace(
+            "chrome receipt",
+            "Scrying native surface",
+            "Scrying native surface",
+        )
+    }
+
+    fn validate_mixed_workspace(
+        &self,
+        receipt: &str,
+        expected_second_title: &str,
+        expected_second_heading: &str,
+    ) -> Result<(), String> {
         let expected = [
             (1, inker::routing::ENGINE_NEMATIC_GEMTEXT),
             (2, inker::routing::ENGINE_GENET_LIVERY),
@@ -1358,11 +1870,23 @@ impl WorkspaceApp {
             }
         }
         #[cfg(target_os = "windows")]
-        if !matches!(
-            self.workspace.route(TileId(4)).map(|route| &route.state),
-            Some(PeltRouteState::Surface)
-        ) {
+        if self.scrying_host.is_some()
+            && !matches!(
+                self.workspace.route(TileId(4)).map(|route| &route.state),
+                Some(PeltRouteState::Surface)
+            )
+        {
             return Err("P4 external surface tile did not retain its native producer".to_owned());
+        }
+        #[cfg(target_os = "windows")]
+        if self.scrying_host.is_none()
+            && !matches!(
+                self.workspace.route(TileId(4)).map(|route| &route.state),
+                Some(PeltRouteState::Fallback { active_engine, .. })
+                    if active_engine == inker::routing::ENGINE_GENET_LIVERY
+            )
+        {
+            return Err("P4 external surface tile did not expose its Livery fallback".to_owned());
         }
         #[cfg(not(target_os = "windows"))]
         if !matches!(
@@ -1400,10 +1924,12 @@ impl WorkspaceApp {
         let static_report = second
             .inspect()
             .ok_or("P4 static tile did not expose a structural report")?;
-        if static_report.title.as_deref() != Some("Static Livery")
-            || static_report.headings != ["Static Livery"]
+        if static_report.title.as_deref() != Some(expected_second_title)
+            || static_report.headings != [expected_second_heading]
         {
-            return Err("P4 static tile did not retain its Livery semantics".to_owned());
+            return Err(format!(
+                "{receipt} focused Livery tile did not retain {expected_second_title:?}: {static_report:?}"
+            ));
         }
         let scripted = third
             .inspect()
@@ -1442,19 +1968,29 @@ impl WorkspaceApp {
     }
 
     fn apply_effect(&mut self, effect: PeltHostEffect) {
-        let navigated = effect.navigated;
-        if let Some(error) = effect.error {
+        let PeltHostEffect {
+            redraw,
+            cursor,
+            editable,
+            navigated,
+            error,
+            ..
+        } = effect;
+        if let Some(error) = error {
             eprintln!("[pelt-workspace] {error}");
+            self.chrome_status = ChromeStatus::Error(error);
+        } else if navigated {
+            self.chrome_status = ChromeStatus::Loading;
         }
         if let Some(window) = &self.window {
-            if let Some(cursor) = effect.cursor {
+            if let Some(cursor) = cursor {
                 window.set_cursor(match cursor {
                     SessionCursor::Default => winit::window::CursorIcon::Default,
                     SessionCursor::Pointer => winit::window::CursorIcon::Pointer,
                     SessionCursor::Text => winit::window::CursorIcon::Text,
                 });
             }
-            window.set_ime_allowed(effect.editable);
+            window.set_ime_allowed(editable);
             if navigated {
                 window.set_title(&self.window_title());
             }
@@ -1462,7 +1998,7 @@ impl WorkspaceApp {
         if navigated {
             self.frisket.set_tree(self.workspace.tree());
         }
-        if effect.redraw {
+        if redraw {
             self.request_redraw();
         }
     }
@@ -1519,7 +2055,11 @@ impl WorkspaceApp {
     fn pointer_down(&mut self) -> bool {
         let (x, y) = self.cursor;
         match self.frisket.hit(x, y) {
-            Some(FrisketHit::Close(tile)) => self.apply_tile_event(TileEvent::Closed(tile)),
+            Some(FrisketHit::ChromeAction(action)) => self.apply_chrome_action(action),
+            Some(FrisketHit::Close(tile)) => {
+                self.clear_chrome_address();
+                self.apply_tile_event(TileEvent::Closed(tile))
+            },
             Some(FrisketHit::Divider { target, split_rect }) => {
                 let Some(fractions) = self.workspace.tree().fractions_at(&target.path) else {
                     return false;
@@ -1545,6 +2085,7 @@ impl WorkspaceApp {
                 true
             },
             Some(FrisketHit::Tab(tile)) => {
+                self.clear_chrome_address();
                 self.gesture = Some(PointerGesture::Tab(TabDrag {
                     tile,
                     start: self.cursor,
@@ -1553,6 +2094,7 @@ impl WorkspaceApp {
                 true
             },
             Some(FrisketHit::Content(_)) => {
+                self.clear_chrome_address();
                 self.gesture = Some(PointerGesture::Content);
                 let effect = self.workspace.input(SessionInput::PointerButton {
                     x,
@@ -1756,6 +2298,21 @@ impl WorkspaceApp {
         self.pointer_up();
         Ok(())
     }
+
+    fn click_chrome(&mut self, action: &str) -> Result<(), String> {
+        let rect = self
+            .frisket
+            .chrome_rect(action)
+            .ok_or_else(|| format!("chrome control {action:?} has no retained geometry"))?;
+        self.pointer_move(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        if !self.pointer_down() {
+            return Err(format!(
+                "chrome control {action:?} did not handle its pointer press"
+            ));
+        }
+        let _ = self.pointer_up();
+        Ok(())
+    }
 }
 
 fn discard_unimported_surface_frame(frame: SurfaceFrame) {
@@ -1927,6 +2484,10 @@ impl ApplicationHandler for WorkspaceApp {
                 }
             },
             WindowEvent::KeyboardInput { event, .. } => {
+                if self.handle_chrome_key(&event.logical_key, event.state) {
+                    self.request_redraw();
+                    return;
+                }
                 let navigation =
                     navigation_command(&event.logical_key, event.state, self.modifiers);
                 if let Some(command) = navigation {
@@ -1953,6 +2514,10 @@ impl ApplicationHandler for WorkspaceApp {
                 }
             },
             WindowEvent::Ime(ime) => {
+                if self.handle_chrome_ime(&ime) {
+                    self.request_redraw();
+                    return;
+                }
                 let effect = self.workspace.input(SessionInput::Ime(session_ime(ime)));
                 self.apply_effect(effect);
             },
@@ -2308,5 +2873,66 @@ mod tests {
             .expect("mixed semantic receipt")
             .expect("GPU-free fallback needs no native import wait");
         assert_eq!(assertion, MIXED_WORKSPACE_ASSERTION);
+    }
+
+    #[cfg(all(feature = "scripted", feature = "smolweb"))]
+    #[test]
+    fn chrome_receipt_controls_one_focused_tile_without_disturbing_neighbors() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p4");
+        let urls = ["native.gmi", "static.html", "scripted.html", "surface.html"]
+            .into_iter()
+            .map(|name| root.join(name).to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let overrides = HashMap::from([
+            (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
+            (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+            (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+        ]);
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("chrome receipt tree contains only documents");
+                };
+                let request = PeltTileRequest::new(address, (960, 640));
+                Ok(overrides.get(&tile.id.0).map_or(request.clone(), |engine| {
+                    request.with_engine_override(engine.clone())
+                }))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("chrome receipt routes all four capabilities");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Chrome, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        for _ in 0..12 {
+            app.refresh_chrome();
+            let pane = app.frisket.frame(960, 640).expect("chrome Frisket frame");
+            app.workspace.set_content_rects(pane.content_rects);
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            if let Some(assertion) = app
+                .drive_chrome_workspace_receipt_step()
+                .expect("chrome semantic receipt")
+            {
+                assert_eq!(assertion, CHROME_WORKSPACE_ASSERTION);
+                return;
+            }
+        }
+        panic!("chrome receipt did not complete its bounded interaction sequence");
     }
 }

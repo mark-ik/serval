@@ -63,10 +63,10 @@ pub const FRISKET_CSS: &str = "\
     .frisket-branch { display: flex; } \
     .frisket-stack { width: 100%; height: 100%; } \
     .frisket-tabbar { display: flex; flex-grow: 0; flex-shrink: 0; flex-basis: 44px; align-items: stretch; height: 44px; padding: 4px 2px 0 2px; background: #33333a; } \
-    .frisket-tab { display: flex; align-items: center; min-width: 0; padding: 8px 14px; font-size: 15px; line-height: 1.2; color: #cccccc; background: #2a2a30; margin-right: 3px; } \
+    .frisket-tab { display: flex; align-items: center; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; max-width: 360px; overflow: hidden; padding: 8px 10px; font-size: 15px; line-height: 1.2; color: #cccccc; background: #2a2a30; margin-right: 3px; } \
     .frisket-tab.active { color: #ffffff; background: #4a4a55; } \
-    .frisket-label { flex-grow: 1; flex-shrink: 1; flex-basis: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } \
-    .frisket-close { flex-grow: 0; flex-shrink: 0; flex-basis: auto; margin-left: 10px; padding: 0 5px; font-size: 15px; color: #999999; } \
+    .frisket-label { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; overflow: hidden; white-space: nowrap; } \
+    .frisket-close { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-left: 4px; padding: 4px 0; text-align: center; font-size: 15px; color: #999999; } \
     .frisket-content { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-height: 0; background: #ffffff; } \
     .frisket-divider { flex-grow: 0; flex-shrink: 0; flex-basis: 10px; background: #1a1a1f; }";
 

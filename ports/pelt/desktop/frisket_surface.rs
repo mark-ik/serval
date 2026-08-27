@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use cambium::{
     AnyView, DividerTarget, DomHandle, FRISKET_CSS, FRISKET_TILE_ATTR, GenetAppRunner, GenetCtx,
-    GenetElement, close_target, content_target, divider_target, frisket, stack_target,
+    GenetElement, close_target, content_target, divider_target, el, frisket, stack_target,
     tab_drop_index, tab_target,
 };
 use genet_host_api::tile::{TileId, TilePath, TileTree};
@@ -19,10 +19,86 @@ type FrameLogic = fn(&FrameState) -> FrameView;
 
 struct FrameState {
     tree: TileTree,
+    chrome: Option<WorkspaceChrome>,
 }
 
 fn frame_view(state: &FrameState) -> FrameView {
-    Box::new(frisket(&state.tree, |_state: &mut FrameState, _event| {}))
+    let pane: FrameView = Box::new(frisket(&state.tree, |_state: &mut FrameState, _event| {}));
+    match state.chrome.as_ref() {
+        Some(chrome) => chrome_view(chrome, pane),
+        None => pane,
+    }
+}
+
+const ATTR_CHROME_ACTION: &str = "data-pelt-chrome";
+
+fn chrome_button(action: &str, label: &str, accessible_label: &str, disabled: bool) -> FrameView {
+    let class = if disabled {
+        "pelt-chrome-button disabled"
+    } else {
+        "pelt-chrome-button"
+    };
+    Box::new(
+        el::<_, FrameState, ()>("div", label.to_owned())
+            .attr("class", class)
+            .attr("role", "button")
+            .attr("aria-label", accessible_label)
+            .attr("aria-disabled", if disabled { "true" } else { "false" })
+            .attr(ATTR_CHROME_ACTION, action),
+    )
+}
+
+fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
+    let address = format!(
+        "{}{}",
+        chrome.address,
+        if chrome.address_focused { " |" } else { "" }
+    );
+    let toolbar: Vec<FrameView> = vec![
+        chrome_button("back", "←", "Back", !chrome.can_go_back),
+        chrome_button("forward", "→", "Forward", !chrome.can_go_forward),
+        chrome_button("reload", "R", "Reload", false),
+        Box::new(
+            el::<_, FrameState, ()>("div", address)
+                .attr("class", "pelt-address")
+                .attr("role", "textbox")
+                .attr("aria-label", "Address")
+                .attr("aria-readonly", "false")
+                .attr(ATTR_CHROME_ACTION, "address"),
+        ),
+        Box::new(
+            el::<_, FrameState, ()>("div", format!("Engine: {}", chrome.engine_label))
+                .attr("class", "pelt-engine")
+                .attr("role", "button")
+                .attr("aria-label", "Choose engine for focused tile")
+                .attr(ATTR_CHROME_ACTION, "engine-next"),
+        ),
+    ];
+    let details: Vec<FrameView> = vec![
+        Box::new(el::<_, FrameState, ()>("div", chrome.title.clone()).attr("class", "pelt-title")),
+        Box::new(el::<_, FrameState, ()>("div", chrome.route.clone()).attr("class", "pelt-route")),
+        Box::new(
+            el::<_, FrameState, ()>("div", chrome.status.clone()).attr("class", "pelt-status"),
+        ),
+    ];
+    let header: FrameView = Box::new(
+        el::<_, FrameState, ()>(
+            "div",
+            vec![
+                Box::new(el::<_, FrameState, ()>("div", toolbar).attr("class", "pelt-toolbar"))
+                    as FrameView,
+                Box::new(el::<_, FrameState, ()>("div", details).attr("class", "pelt-details"))
+                    as FrameView,
+            ],
+        )
+        .attr("class", "pelt-chrome"),
+    );
+    let pane: FrameView = Box::new(
+        el::<_, FrameState, ()>("div", pane)
+            .attr("class", "pelt-pane")
+            .attr("aria-label", "Workspace panes"),
+    );
+    Box::new(el::<_, FrameState, ()>("div", vec![header, pane]).attr("class", "pelt-workspace"))
 }
 
 /// One laid-out Frisket frame and the active content holes it authorizes.
@@ -37,6 +113,7 @@ pub(crate) enum FrisketHit {
     Content(TileId),
     Close(TileId),
     Tab(TileId),
+    ChromeAction(ChromeAction),
     Divider {
         target: DividerTarget,
         split_rect: WorkspaceRect,
@@ -44,10 +121,36 @@ pub(crate) enum FrisketHit {
     Chrome,
 }
 
+/// The small set of host-owned controls layered over the generic Frisket pane
+/// frame. Frisket continues to own split and tab semantics; these actions are
+/// deliberately Pelt-specific browser chrome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChromeAction {
+    Back,
+    Forward,
+    Reload,
+    Address,
+    NextEngine,
+}
+
+/// Snapshot rendered by the retained Pelt chrome above Frisket.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkspaceChrome {
+    pub title: String,
+    pub address: String,
+    pub route: String,
+    pub status: String,
+    pub address_focused: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub engine_label: String,
+}
+
 /// A retained, GPU-free pane frame. Its DOM is produced by Cambium Frisket;
 /// Livery/Buckram supplies both its scene and the geometry consumed by Pelt.
 pub(crate) struct FrisketSurface {
     tree: TileTree,
+    chrome: Option<WorkspaceChrome>,
     viewport: (u32, u32),
     document: LiveryDocument<ScriptedDom>,
 }
@@ -57,21 +160,35 @@ impl FrisketSurface {
         let viewport = (800, 600);
         Self {
             tree: tree.clone(),
+            chrome: None,
             viewport,
-            document: document_for(tree, viewport.0, viewport.1),
+            document: document_for(tree, None, viewport.0, viewport.1),
         }
     }
 
     pub fn set_tree(&mut self, tree: &TileTree) {
         self.tree = tree.clone();
-        self.document = document_for(tree, self.viewport.0, self.viewport.1);
+        self.document = document_for(tree, self.chrome.as_ref(), self.viewport.0, self.viewport.1);
+    }
+
+    pub fn set_chrome(&mut self, chrome: Option<WorkspaceChrome>) {
+        if self.chrome.as_ref() == chrome.as_ref() {
+            return;
+        }
+        self.chrome = chrome;
+        self.document = document_for(
+            &self.tree,
+            self.chrome.as_ref(),
+            self.viewport.0,
+            self.viewport.1,
+        );
     }
 
     pub fn frame(&mut self, width: u32, height: u32) -> Result<FrisketFrame, String> {
         let viewport = (width.max(1), height.max(1));
         if self.viewport != viewport {
             self.viewport = viewport;
-            self.document = document_for(&self.tree, viewport.0, viewport.1);
+            self.document = document_for(&self.tree, self.chrome.as_ref(), viewport.0, viewport.1);
         }
         let list = self
             .document
@@ -97,6 +214,9 @@ impl FrisketSurface {
     pub fn hit(&self, x: f32, y: f32) -> Option<FrisketHit> {
         let node = self.document.hit_test(x, y)?;
         let dom = self.document.dom();
+        if let Some(action) = chrome_action(dom, node) {
+            return Some(FrisketHit::ChromeAction(action));
+        }
         if let Some(tile) = close_target(dom, node) {
             return Some(FrisketHit::Close(tile));
         }
@@ -138,6 +258,10 @@ impl FrisketSurface {
             .map(workspace_rect)
     }
 
+    pub fn chrome_rect(&self, action: &str) -> Option<WorkspaceRect> {
+        self.rect_for_attr(ATTR_CHROME_ACTION, action)
+    }
+
     pub fn divider_rect(&self, target: &DividerTarget) -> Option<WorkspaceRect> {
         nodes_with_attr(self.document.dom(), "data-divider")
             .into_iter()
@@ -155,12 +279,21 @@ impl FrisketSurface {
     }
 }
 
-fn document_for(tree: &TileTree, width: u32, height: u32) -> LiveryDocument<ScriptedDom> {
+fn document_for(
+    tree: &TileTree,
+    chrome: Option<&WorkspaceChrome>,
+    width: u32,
+    height: u32,
+) -> LiveryDocument<ScriptedDom> {
+    let tree = chrome.map_or_else(|| tree.clone(), |_| compact_tab_tree(tree));
     let handle: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
     let runner = GenetAppRunner::new(
         handle.clone(),
         frame_view as FrameLogic,
-        FrameState { tree: tree.clone() },
+        FrameState {
+            tree,
+            chrome: chrome.cloned(),
+        },
     );
     let html = handle.borrow().outer_html(runner.root());
     let dom = ScriptedDom::from_serialized_document(&html);
@@ -171,10 +304,74 @@ fn document_for(tree: &TileTree, width: u32, height: u32) -> LiveryDocument<Scri
     );
     LiveryDocument::new(
         dom,
-        StyleSet::cambium(&[&host_css, FRISKET_CSS]),
+        StyleSet::cambium(&[&host_css, FRISKET_CSS, PELT_CHROME_CSS]),
         Device::screen(width as f32, height as f32),
     )
 }
+
+fn compact_tab_tree(tree: &TileTree) -> TileTree {
+    let mut compact = tree.clone();
+    let ids = compact
+        .tiles()
+        .into_iter()
+        .map(|tile| tile.id)
+        .collect::<Vec<_>>();
+    for id in ids {
+        if let Some(tile) = compact.tile_mut(id) {
+            let base = tile
+                .title
+                .split_once(" [")
+                .map_or(tile.title.as_str(), |(base, _)| base);
+            tile.title = truncated(base.trim(), 28);
+        }
+    }
+    compact
+}
+
+fn truncated(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let prefix = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
+    let mut node = hit;
+    loop {
+        let action = attr(dom, node, ATTR_CHROME_ACTION);
+        if let Some(action) = action.as_deref() {
+            if attr(dom, node, "aria-disabled").as_deref() == Some("true") {
+                return None;
+            }
+            return match action {
+                "back" => Some(ChromeAction::Back),
+                "forward" => Some(ChromeAction::Forward),
+                "reload" => Some(ChromeAction::Reload),
+                "address" => Some(ChromeAction::Address),
+                "engine-next" => Some(ChromeAction::NextEngine),
+                _ => None,
+            };
+        }
+        node = dom.parent(node)?;
+    }
+}
+
+const PELT_CHROME_CSS: &str = "\
+    .pelt-workspace { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #202027; } \
+    .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 70px; min-height: 70px; padding: 4px 6px; background: #24242d; border-bottom: 1px solid #3c3c48; } \
+    .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; } \
+    .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 4px; padding: 4px 0; text-align: center; color: #e8e8ee; background: #3a3a46; border: 1px solid #555565; } \
+    .pelt-chrome-button.disabled { color: #777783; background: #2c2c34; border-color: #363640; } \
+    .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: #f0f0f4; background: #16161d; border: 1px solid #555565; } \
+    .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 5px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: #bfe9ff; background: #30384a; border: 1px solid #566d91; } \
+    .pelt-details { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 26px; min-width: 0; overflow: hidden; } \
+    .pelt-title { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; overflow: hidden; white-space: nowrap; color: #ffffff; font-size: 13px; } \
+    .pelt-route { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 260px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: #9ccdf0; font-size: 12px; } \
+    .pelt-status { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 160px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: #a8d6a8; font-size: 12px; } \
+    .pelt-pane { display: flex; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; min-height: 0; }";
 
 fn attr(dom: &ScriptedDom, node: NodeId, name: &str) -> Option<String> {
     dom.attribute(node, &Namespace::default(), &LocalName::from(name))
@@ -297,5 +494,55 @@ mod tests {
             ),
             Some(FrisketHit::Divider { .. })
         ));
+    }
+
+    #[test]
+    fn chrome_reserves_host_geometry_and_keeps_tab_labels_compact() {
+        let mut tree = nested_tree();
+        tree.tile_mut(TileId(1)).expect("first tile").title =
+            "A deliberately long workspace title that would collide with its close control"
+                .to_owned();
+        let mut surface = FrisketSurface::new(&tree);
+        surface.set_chrome(Some(WorkspaceChrome {
+            title: "Focused document".to_owned(),
+            address: "C:/example/static.html".to_owned(),
+            route: "Automatic: genet.livery · document".to_owned(),
+            status: "Ready".to_owned(),
+            address_focused: false,
+            can_go_back: false,
+            can_go_forward: false,
+            engine_label: "Auto".to_owned(),
+        }));
+        let frame = surface.frame(800, 600).expect("chrome Frisket frame");
+        let address = surface.chrome_rect("address").expect("address geometry");
+        let engine = surface.chrome_rect("engine-next").expect("engine geometry");
+        let first = frame
+            .content_rects
+            .iter()
+            .find_map(|(tile, rect)| (*tile == TileId(1)).then_some(*rect))
+            .expect("first content geometry");
+        assert!(address.width > engine.width);
+        assert!(first.y > address.y + address.height);
+        assert_eq!(
+            surface.hit(
+                address.x + address.width / 2.0,
+                address.y + address.height / 2.0
+            ),
+            Some(FrisketHit::ChromeAction(ChromeAction::Address))
+        );
+        let back = surface.chrome_rect("back").expect("back geometry");
+        assert_eq!(
+            surface.hit(back.x + back.width / 2.0, back.y + back.height / 2.0),
+            Some(FrisketHit::Chrome)
+        );
+
+        let compact = compact_tab_tree(&tree);
+        let title = compact
+            .find(TileId(1))
+            .expect("compact first tile")
+            .title
+            .as_str();
+        assert!(title.ends_with('…'));
+        assert!(title.chars().count() <= 29);
     }
 }

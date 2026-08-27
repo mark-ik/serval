@@ -153,7 +153,7 @@ pub(crate) fn main() {
             },
             "--workspace-receipt" => {
                 let Some(value) = args.next() else {
-                    eprintln!("--workspace-receipt requires mixed or fallback");
+                    eprintln!("--workspace-receipt requires mixed, fallback, or chrome");
                     std::process::exit(2);
                 };
                 workspace_receipt = Some(parse_workspace_receipt(&value));
@@ -364,18 +364,33 @@ pub(crate) fn main() {
                 std::process::exit(2);
             }
             match receipt {
-                pelt_desktop::WorkspaceReceipt::Mixed => {
+                pelt_desktop::WorkspaceReceipt::Mixed | pelt_desktop::WorkspaceReceipt::Chrome => {
                     if !cfg!(all(feature = "scripted", feature = "smolweb")) {
-                        eprintln!("--workspace-receipt mixed needs `--features scripted,smolweb`");
+                        eprintln!(
+                            "--workspace-receipt {} needs `--features scripted,smolweb`",
+                            receipt.id()
+                        );
                         std::process::exit(2);
                     }
                     tile_urls = capability_fixture_urls();
-                    tile_engine_overrides = vec![
-                        (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
-                        (2, inker::routing::ENGINE_GENET_LIVERY.to_owned()),
-                        (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
-                        (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
-                    ];
+                    tile_engine_overrides = match receipt {
+                        pelt_desktop::WorkspaceReceipt::Mixed => vec![
+                            (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
+                            (2, inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+                            (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+                            (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+                        ],
+                        // P6 begins with a real automatic HTML route, then uses
+                        // its retained control to pin and release that one tile.
+                        pelt_desktop::WorkspaceReceipt::Chrome => vec![
+                            (1, inker::routing::ENGINE_NEMATIC_GEMTEXT.to_owned()),
+                            (3, inker::routing::ENGINE_GENET_SCRIPTED.to_owned()),
+                            (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
+                        ],
+                        pelt_desktop::WorkspaceReceipt::Fallback => unreachable!(
+                            "fallback was handled by the separate workspace receipt branch"
+                        ),
+                    };
                 },
                 pelt_desktop::WorkspaceReceipt::Fallback => {
                     tile_urls = vec![fallback_fixture_url()];
@@ -982,8 +997,9 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
     match value {
         "mixed" => pelt_desktop::WorkspaceReceipt::Mixed,
         "fallback" => pelt_desktop::WorkspaceReceipt::Fallback,
+        "chrome" => pelt_desktop::WorkspaceReceipt::Chrome,
         _ => {
-            eprintln!("--workspace-receipt expects mixed or fallback (got '{value}')");
+            eprintln!("--workspace-receipt expects mixed, fallback, or chrome (got '{value}')");
             std::process::exit(2);
         },
     }
@@ -994,7 +1010,7 @@ mod workspace_receipt_tests {
     use super::*;
 
     #[test]
-    fn workspace_receipt_parser_keeps_both_named_p5_receipts() {
+    fn workspace_receipt_parser_keeps_named_workspace_receipts() {
         assert_eq!(
             parse_workspace_receipt("mixed"),
             pelt_desktop::WorkspaceReceipt::Mixed
@@ -1002,6 +1018,10 @@ mod workspace_receipt_tests {
         assert_eq!(
             parse_workspace_receipt("fallback"),
             pelt_desktop::WorkspaceReceipt::Fallback
+        );
+        assert_eq!(
+            parse_workspace_receipt("chrome"),
+            pelt_desktop::WorkspaceReceipt::Chrome
         );
         assert!(
             fallback_fixture_url()
@@ -1321,7 +1341,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback> (P5 named workspace receipt; needs --artifact)
+    --workspace-receipt <mixed|fallback|chrome> (P5/P6 named workspace receipt; needs --artifact)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")
