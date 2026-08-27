@@ -137,7 +137,7 @@ index 6127476..0427f51 100644
                  border,
                  margin: resolved_margin,
 diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
-index ce4d990..4df8113 100644
+index ce4d990..b808fbf 100644
 --- a/src/compute/flexbox.rs
 +++ b/src/compute/flexbox.rs
 @@ -27,6 +27,12 @@ struct FlexItem {
@@ -202,7 +202,70 @@ index ce4d990..4df8113 100644
                  size: child_style
                      .size()
                      .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-@@ -2067,6 +2090,7 @@ fn calculate_flex_item(
+@@ -731,12 +754,39 @@ fn determine_flex_base_size(
+             (padding + border).sum_axes()
+         } else {
+             Size::ZERO
+-        }
+-        .main(dir);
+-        let flex_basis = child_style
+-            .flex_basis()
+-            .maybe_resolve(container_width, |val, basis| tree.calc(val, basis))
+-            .maybe_add(box_sizing_adjustment);
++        };
++        let flex_basis = child_style.flex_basis();
++        // Step B uses only an explicitly authored cross size. `child.size`
++        // may also contain a cross size synthesized from the preferred main
++        // size through the aspect ratio; using that here would let an authored
++        // main size leak back into a `content` flex basis.
++        let explicit_cross_size = child_style
++            .size()
++            .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
++            .maybe_add(box_sizing_adjustment)
++            .cross(dir)
++            // Step B ignores main-axis min/max. A transferred main minimum
++            // must not overwrite an explicit cross size through the ratio.
++            .maybe_clamp(child.min_size.cross(dir), child.max_size.cross(dir));
++        let resolved_flex_basis = flex_basis
++            .into_dimension()
++            .and_then(|basis| basis.maybe_resolve(container_width, |val, basis| tree.calc(val, basis)))
++            .maybe_add(box_sizing_adjustment.main(dir));
++        let content_aspect_ratio_basis = if flex_basis.is_content() {
++            explicit_cross_size.zip(child.aspect_ratio).map(|(cross_size, ratio)| {
++                let padding_border = child.padding + child.border;
++                let inner_cross_size =
++                    (cross_size - padding_border.cross_axis_sum(dir)).max(0.0);
++                let inner_main_size = if dir.is_row() {
++                    inner_cross_size * ratio
++                } else {
++                    inner_cross_size / ratio
++                };
++                inner_main_size + padding_border.main_axis_sum(dir)
++            })
++        } else {
++            None
++        };
+ 
+         drop(child_style);
+ 
+@@ -748,10 +798,12 @@ fn determine_flex_base_size(
+             //    then the flex base size is calculated from its inner
+             //    cross size and the flex item’s intrinsic aspect ratio.
+ 
+-            // Note: `child.size` has already been resolved against aspect_ratio in generate_anonymous_flex_items
+-            // So B will just work here by using main_size without special handling for aspect_ratio
+-            let main_size = child.size.main(dir);
+-            if let Some(flex_basis) = flex_basis.or(main_size) {
++            // `auto` retrieves a definite preferred main size here. `content`
++            // bypasses that fallback and continues to intrinsic measurement below.
++            let preferred_main_size = if flex_basis.is_auto() { child.size.main(dir) } else { None };
++            if let Some(flex_basis) =
++                resolved_flex_basis.or(content_aspect_ratio_basis).or(preferred_main_size)
++            {
+                 break 'flex_basis flex_basis;
+             };
+ 
+@@ -2067,6 +2119,7 @@ fn calculate_flex_item(
              content_size,
              scrollbar_size,
              location,
@@ -210,7 +273,7 @@ index ce4d990..4df8113 100644
              padding: item.padding,
              border: item.border,
              margin: item.margin,
-@@ -2401,8 +2425,72 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2401,8 +2454,72 @@ fn perform_absolute_layout_on_absolute_children(
          let cross_end_scrollbar_offset =
              if cross_is_rtl { 0.0 } else { constants.scrollbar_gutter.cross(constants.dir) };
  
@@ -285,7 +348,7 @@ index ce4d990..4df8113 100644
          let offset_main = if start_main.is_some() || end_main.is_some() {
              if main_is_rtl && end_main.is_some() {
                  constants.container_size.main(constants.dir)
-@@ -2425,90 +2513,14 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2425,90 +2542,14 @@ fn perform_absolute_layout_on_absolute_children(
                      - resolved_margin.main_end(constants.dir)
              }
          } else {
@@ -380,7 +443,7 @@ index ce4d990..4df8113 100644
              let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
                  > constants.container_size.cross(constants.dir)
                      - constants.content_box_inset.cross_axis_sum(constants.dir);
-@@ -2562,6 +2574,31 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2562,6 +2603,31 @@ fn perform_absolute_layout_on_absolute_children(
              }
          };
  
@@ -412,7 +475,7 @@ index ce4d990..4df8113 100644
          let location = match constants.is_row {
              true => Point { x: offset_main, y: offset_cross },
              false => Point { x: offset_cross, y: offset_main },
-@@ -2579,6 +2616,10 @@ fn perform_absolute_layout_on_absolute_children(
+@@ -2579,6 +2645,10 @@ fn perform_absolute_layout_on_absolute_children(
                  content_size: layout_output.content_size,
                  scrollbar_size,
                  location,
@@ -692,11 +755,220 @@ index b283083..ffe4750 100644
  }
  
  #[cfg(test)]
+diff --git a/src/prelude.rs b/src/prelude.rs
+index cc3381d..7218816 100644
+--- a/src/prelude.rs
++++ b/src/prelude.rs
+@@ -15,7 +15,7 @@ pub use crate::{
+ };
+ 
+ #[cfg(feature = "flexbox")]
+-pub use crate::style::{FlexDirection, FlexWrap};
++pub use crate::style::{FlexBasis, FlexDirection, FlexWrap};
+ 
+ #[cfg(feature = "grid")]
+ pub use crate::style::{
+diff --git a/src/style/compact_length.rs b/src/style/compact_length.rs
+index 8ef65ae..d2f0fb0 100644
+--- a/src/style/compact_length.rs
++++ b/src/style/compact_length.rs
+@@ -1,5 +1,5 @@
+ //! A tagged-pointer abstraction that allows size styles in Taffy to be represented
+-//! in just 64 bits. Wrapped by types in the `super::dimension` and `super::grid` modules.
++//! in just 64 bits. Wrapped by types in the `super::dimension`, `super::flex`, and `super::grid` modules.
+ use super::LengthPercentage;
+ use crate::style_helpers::{
+     FromFr, FromLength, FromPercent, TaffyAuto, TaffyFitContent, TaffyMaxContent, TaffyMinContent, TaffyZero,
+@@ -210,6 +210,10 @@ use inner::CompactLengthInner;
+ pub struct CompactLength(CompactLengthInner);
+ 
+ impl CompactLength {
++    /// A flex-basis `content` value.
++    pub(crate) const FLEX_BASIS_CONTENT: Self =
++        Self(CompactLengthInner::from_tag(Self::FLEX_BASIS_CONTENT_TAG));
++
+     /// The tag indicating a calc() value
+     #[cfg(feature = "calc")]
+     pub const CALC_TAG: usize = 0b000;
+@@ -229,6 +233,11 @@ impl CompactLength {
+     pub const FIT_CONTENT_PX_TAG: usize = 0b00010111;
+     /// The tag indicating a fit-content value with percent limit
+     pub const FIT_CONTENT_PERCENT_TAG: usize = 0b00011111;
++    /// The tag indicating a flex-basis `content` value.
++    ///
++    /// This is non-zero so it cannot be mistaken for a `calc()` pointer when
++    /// the `calc` feature is enabled.
++    pub(crate) const FLEX_BASIS_CONTENT_TAG: usize = 0b0010_0111;
+ }
+ 
+ impl CompactLength {
+@@ -531,6 +540,7 @@ impl<'de> serde::Deserialize<'de> for CompactLength {
+                 | CompactLength::FIT_CONTENT_PX_TAG
+                 | CompactLength::FIT_CONTENT_PERCENT_TAG
+                 | CompactLength::FR_TAG
++                | CompactLength::FLEX_BASIS_CONTENT_TAG
+         ) {
+             Ok(value)
+         } else {
 diff --git a/src/style/flex.rs b/src/style/flex.rs
-index e4c7654..e5bd68a 100644
+index e4c7654..2402c9a 100644
 --- a/src/style/flex.rs
 +++ b/src/style/flex.rs
-@@ -64,6 +64,18 @@ pub trait FlexboxItemStyle: CoreStyle {
+@@ -1,6 +1,143 @@
+ //! Style types for Flexbox layout
+-use super::{AlignContent, AlignItems, AlignSelf, CoreStyle, Dimension, JustifyContent, LengthPercentage, Style};
++use super::{
++    AlignContent, AlignItems, AlignSelf, CompactLength, CoreStyle, Dimension, JustifyContent,
++    LengthPercentage, Style,
++};
+ use crate::geometry::Size;
++use crate::style_helpers::{FromLength, FromPercent, TaffyAuto, TaffyZero};
++#[cfg(feature = "parse")]
++use crate::util::parse::{CssParseResult, FromCss, Parser, Token, from_str_from_css};
++
++/// The used kind of a flex item's flex basis.
++///
++/// CSS `auto` uses a definite preferred main size before falling back to
++/// content sizing, whereas `content` bypasses that preferred-size fallback.
++/// A generic [`Dimension`] cannot retain that distinction because both values
++/// otherwise resolve to an absent definite length.
++#[derive(Copy, Clone, PartialEq, Debug)]
++#[repr(transparent)]
++pub struct FlexBasis(CompactLength);
++
++impl Default for FlexBasis {
++    fn default() -> Self {
++        Self::AUTO
++    }
++}
++
++impl FlexBasis {
++    /// Resolve a preferred main size when one is definite, otherwise use
++    /// content sizing.
++    pub const AUTO: Self = Self(CompactLength::AUTO);
++
++    /// Use content sizing without consulting the preferred main size.
++    pub const CONTENT: Self = Self(CompactLength::FLEX_BASIS_CONTENT);
++
++    /// Construct an automatic flex basis.
++    #[inline(always)]
++    pub const fn auto() -> Self {
++        Self::AUTO
++    }
++
++    /// Construct a content-sized flex basis.
++    #[inline(always)]
++    pub const fn content() -> Self {
++        Self::CONTENT
++    }
++
++    /// Returns true when this is a content-sized flex basis.
++    #[inline(always)]
++    pub fn is_content(self) -> bool {
++        self.0.tag() == CompactLength::FLEX_BASIS_CONTENT_TAG
++    }
++
++    /// Returns true when this is an automatic flex basis.
++    #[inline(always)]
++    pub fn is_auto(self) -> bool {
++        self.0.is_auto()
++    }
++
++    #[inline(always)]
++    pub(crate) fn into_dimension(self) -> Option<Dimension> {
++        if self.is_content() {
++            None
++        } else {
++            Some(Dimension(self.0))
++        }
++    }
++}
++
++impl TaffyAuto for FlexBasis {
++    const AUTO: Self = Self(CompactLength::AUTO);
++}
++
++impl TaffyZero for FlexBasis {
++    const ZERO: Self = Self(CompactLength::ZERO);
++}
++
++impl FromLength for FlexBasis {
++    fn from_length<Input: Into<f64> + Copy>(value: Input) -> Self {
++        Self(CompactLength::length(value.into() as f32))
++    }
++}
++
++impl FromPercent for FlexBasis {
++    fn from_percent<Input: Into<f64> + Copy>(value: Input) -> Self {
++        Self(CompactLength::percent(value.into() as f32))
++    }
++}
++
++impl From<Dimension> for FlexBasis {
++    fn from(value: Dimension) -> Self {
++        Self(value.0)
++    }
++}
++
++#[cfg(feature = "parse")]
++impl FromCss for FlexBasis {
++    fn from_css<'i>(parser: &mut Parser<'i, '_>) -> CssParseResult<'i, Self> {
++        if let Ok(dimension) = parser.try_parse(Dimension::from_css) {
++            return Ok(dimension.into());
++        }
++        match parser.next()?.clone() {
++            Token::Ident(ident) if ident == "content" => Ok(Self::CONTENT),
++            token => Err(parser.new_unexpected_token_error(token))?,
++        }
++    }
++}
++
++#[cfg(feature = "parse")]
++from_str_from_css!(FlexBasis);
++
++#[cfg(feature = "serde")]
++impl serde::Serialize for FlexBasis {
++    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
++    where
++        S: serde::Serializer,
++    {
++        self.0.serialize(serializer)
++    }
++}
++
++#[cfg(feature = "serde")]
++impl<'de> serde::Deserialize<'de> for FlexBasis {
++    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++    where
++        D: serde::Deserializer<'de>,
++    {
++        let value = CompactLength::deserialize(deserializer)?;
++        if matches!(
++            value.tag(),
++            CompactLength::LENGTH_TAG
++                | CompactLength::PERCENT_TAG
++                | CompactLength::AUTO_TAG
++                | CompactLength::FLEX_BASIS_CONTENT_TAG
++        ) {
++            Ok(Self(value))
++        } else {
++            Err(serde::de::Error::custom("Invalid flex basis tag"))
++        }
++    }
++}
+ 
+ /// The set of styles required for a Flexbox container
+ pub trait FlexboxContainerStyle: CoreStyle {
+@@ -44,7 +181,7 @@ pub trait FlexboxContainerStyle: CoreStyle {
+ pub trait FlexboxItemStyle: CoreStyle {
+     /// Sets the initial main axis size of the item
+     #[inline(always)]
+-    fn flex_basis(&self) -> Dimension {
++    fn flex_basis(&self) -> FlexBasis {
+         Style::<Self::CustomIdent>::DEFAULT.flex_basis
+     }
+     /// The relative rate at which this item grows when it is expanding to fill space
+@@ -64,6 +201,18 @@ pub trait FlexboxItemStyle: CoreStyle {
      fn align_self(&self) -> Option<AlignSelf> {
          Style::<Self::CustomIdent>::DEFAULT.align_self
      }
@@ -716,10 +988,27 @@ index e4c7654..e5bd68a 100644
  
  use crate::geometry::AbsoluteAxis;
 diff --git a/src/style/mod.rs b/src/style/mod.rs
-index c32a9c5..4b4915d 100644
+index c32a9c5..4f07089 100644
 --- a/src/style/mod.rs
 +++ b/src/style/mod.rs
-@@ -161,6 +161,12 @@ pub trait CoreStyle {
+@@ -25,7 +25,7 @@ use crate::sys::DefaultCheapStr;
+ #[cfg(feature = "block_layout")]
+ pub use self::block::{BlockContainerStyle, BlockItemStyle, TextAlign};
+ #[cfg(feature = "flexbox")]
+-pub use self::flex::{FlexDirection, FlexWrap, FlexboxContainerStyle, FlexboxItemStyle};
++pub use self::flex::{FlexBasis, FlexDirection, FlexWrap, FlexboxContainerStyle, FlexboxItemStyle};
+ #[cfg(feature = "float_layout")]
+ pub use self::float::{Clear, Float, FloatDirection};
+ #[cfg(feature = "grid")]
+@@ -42,7 +42,6 @@ pub use self::grid::{GridTemplateArea, GridTemplateAreas, NamedGridLine, Templat
+ pub(crate) use self::grid::{NonNamedGridPlacement, OriginZeroGridPlacement};
+ 
+ use crate::geometry::{Point, Rect, Size};
+-use crate::style_helpers::TaffyAuto as _;
+ use core::fmt::Debug;
+ 
+ #[cfg(feature = "grid")]
+@@ -161,6 +160,12 @@ pub trait CoreStyle {
      fn aspect_ratio(&self) -> Option<f32> {
          Style::<Self::CustomIdent>::DEFAULT.aspect_ratio
      }
@@ -732,7 +1021,7 @@ index c32a9c5..4b4915d 100644
  
      // Spacing Properties
      /// How large should the margin be on each side?
-@@ -492,6 +498,9 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
+@@ -492,6 +497,9 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
      ///
      /// The ratio is calculated as width divided by height.
      pub aspect_ratio: Option<f32>,
@@ -742,7 +1031,16 @@ index c32a9c5..4b4915d 100644
  
      // Spacing Properties
      /// How large should the margin be on each side?
-@@ -557,6 +566,9 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
+@@ -546,7 +554,7 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
+     // Flexbox item properties
+     /// Sets the initial main axis size of the item
+     #[cfg(feature = "flexbox")]
+-    pub flex_basis: Dimension,
++    pub flex_basis: FlexBasis,
+     /// The relative rate at which this item grows when it is expanding to fill space
+     ///
+     /// 0.0 is the default value, and this value must be positive.
+@@ -557,6 +565,9 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
      /// 1.0 is the default value, and this value must be positive.
      #[cfg(feature = "flexbox")]
      pub flex_shrink: f32,
@@ -752,7 +1050,7 @@ index c32a9c5..4b4915d 100644
  
      // Grid container properies
      /// Defines the track sizing functions (heights) of the grid rows
-@@ -619,6 +631,7 @@ impl<S: CheapCloneStr> Style<S> {
+@@ -619,6 +630,7 @@ impl<S: CheapCloneStr> Style<S> {
          min_size: Size::auto(),
          max_size: Size::auto(),
          aspect_ratio: None,
@@ -760,16 +1058,18 @@ index c32a9c5..4b4915d 100644
          #[cfg(any(feature = "flexbox", feature = "grid"))]
          gap: Size::zero(),
          // Alignment
-@@ -647,6 +660,8 @@ impl<S: CheapCloneStr> Style<S> {
+@@ -647,7 +659,9 @@ impl<S: CheapCloneStr> Style<S> {
          #[cfg(feature = "flexbox")]
          flex_shrink: 1.0,
          #[cfg(feature = "flexbox")]
+-        flex_basis: Dimension::AUTO,
 +        order: 0,
 +        #[cfg(feature = "flexbox")]
-         flex_basis: Dimension::AUTO,
++        flex_basis: FlexBasis::AUTO,
          // Grid
          #[cfg(feature = "grid")]
-@@ -738,6 +753,10 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
+         grid_template_rows: GridTrackVec::new(),
+@@ -738,6 +752,10 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
          self.aspect_ratio
      }
      #[inline(always)]
@@ -780,7 +1080,7 @@ index c32a9c5..4b4915d 100644
      fn margin(&self) -> Rect<LengthPercentageAuto> {
          self.margin
      }
-@@ -807,6 +826,10 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
+@@ -807,6 +825,10 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
          (*self).aspect_ratio()
      }
      #[inline(always)]
@@ -791,7 +1091,16 @@ index c32a9c5..4b4915d 100644
      fn margin(&self) -> Rect<LengthPercentageAuto> {
          (*self).margin()
      }
-@@ -957,6 +980,10 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
+@@ -945,7 +967,7 @@ impl<T: FlexboxContainerStyle> FlexboxContainerStyle for &'_ T {
+ #[cfg(feature = "flexbox")]
+ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
+     #[inline(always)]
+-    fn flex_basis(&self) -> Dimension {
++    fn flex_basis(&self) -> FlexBasis {
+         self.flex_basis
+     }
+     #[inline(always)]
+@@ -957,6 +979,10 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
          self.flex_shrink
      }
      #[inline(always)]
@@ -802,7 +1111,16 @@ index c32a9c5..4b4915d 100644
      fn align_self(&self) -> Option<AlignSelf> {
          self.align_self
      }
-@@ -977,6 +1004,10 @@ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
+@@ -965,7 +991,7 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
+ #[cfg(feature = "flexbox")]
+ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
+     #[inline(always)]
+-    fn flex_basis(&self) -> Dimension {
++    fn flex_basis(&self) -> FlexBasis {
+         (*self).flex_basis()
+     }
+     #[inline(always)]
+@@ -977,6 +1003,10 @@ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
          (*self).flex_shrink()
      }
      #[inline(always)]
@@ -813,13 +1131,14 @@ index c32a9c5..4b4915d 100644
      fn align_self(&self) -> Option<AlignSelf> {
          (*self).align_self()
      }
-@@ -1274,11 +1305,14 @@ mod tests {
+@@ -1274,11 +1304,14 @@ mod tests {
              #[cfg(feature = "flexbox")]
              flex_shrink: 1.0,
              #[cfg(feature = "flexbox")]
+-            flex_basis: super::Dimension::AUTO,
 +            order: 0,
 +            #[cfg(feature = "flexbox")]
-             flex_basis: super::Dimension::AUTO,
++            flex_basis: super::FlexBasis::AUTO,
              size: Size::auto(),
              min_size: Size::auto(),
              max_size: Size::auto(),
@@ -828,6 +1147,14 @@ index c32a9c5..4b4915d 100644
              #[cfg(feature = "grid")]
              grid_template_rows: Default::default(),
              #[cfg(feature = "grid")]
+@@ -1341,6 +1374,7 @@ mod tests {
+         assert_type_size::<LengthPercentage>(8);
+         assert_type_size::<LengthPercentageAuto>(8);
+         assert_type_size::<Dimension>(8);
++        assert_type_size::<FlexBasis>(8);
+         assert_type_size::<Size<LengthPercentage>>(16);
+         assert_type_size::<Size<LengthPercentageAuto>>(16);
+         assert_type_size::<Size<Dimension>>(16);
 @@ -1375,12 +1409,12 @@ mod tests {
          assert_type_size::<GridTemplateComponent<String>>(56);
          assert_type_size::<GridPlacement<String>>(32);

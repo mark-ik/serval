@@ -765,7 +765,9 @@ fn determine_flex_base_size(
             .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
             .maybe_add(box_sizing_adjustment)
             .cross(dir)
-            .maybe_clamp(transferred_min_size.cross(dir), transferred_max_size.cross(dir));
+            // Step B ignores main-axis min/max. A transferred main minimum
+            // must not overwrite an explicit cross size through the ratio.
+            .maybe_clamp(child.min_size.cross(dir), child.max_size.cross(dir));
         let resolved_flex_basis = flex_basis
             .into_dimension()
             .and_then(|basis| basis.maybe_resolve(container_width, |val, basis| tree.calc(val, basis)))

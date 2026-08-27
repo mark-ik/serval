@@ -1092,10 +1092,7 @@ where
         return AlgorithmSize::new(0.0, 0.0);
     };
     if let Some((width, height)) = context.replaced_size {
-        return AlgorithmSize::new(
-            known.width.unwrap_or(width),
-            known.height.unwrap_or(height),
-        );
+        return AlgorithmSize::new(known.width.unwrap_or(width), known.height.unwrap_or(height));
     }
     let (query_width, definite_cap, intrinsic_kind) = match available.width {
         AlgorithmAvailableSpace::Definite(width) => (width, Some(width), None),
@@ -2487,12 +2484,28 @@ where
         }) {
             plane.intrinsic_inline.insert(box_id, intrinsic);
         }
-        state.tree.compute_layout_with_measure(
-            root,
+        // An inline replaced root contributes its natural box to the line.
+        // Formatting it against the viewport first turns an auto canvas into
+        // a viewport-wide atomic fragment, and that stale rectangle is then
+        // also reused by flex-basis: content's max-content query.
+        let replaced_atomic_root = matches!(
+            boxes[box_id].origin,
+            BoxOrigin::Element(node) if is_replaced_element(dom, node)
+        );
+        let available = if replaced_atomic_root {
+            AlgorithmSize::new(
+                AlgorithmAvailableSpace::MaxContent,
+                AlgorithmAvailableSpace::MaxContent,
+            )
+        } else {
             AlgorithmSize::new(
                 AlgorithmAvailableSpace::Definite(viewport_width),
                 AlgorithmAvailableSpace::Definite(viewport_height),
-            ),
+            )
+        };
+        state.tree.compute_layout_with_measure(
+            root,
+            available,
             |known, available, _, context, _| {
                 let Some(context) = context else {
                     return AlgorithmSize::new(0.0, 0.0);
@@ -3110,33 +3123,32 @@ where
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
-                let node = if let Some((width, height)) =
-                    replaced_size.filter(|_| children.is_empty())
-                {
-                    self.tree.new_leaf_with_context_and_block_style(
-                        block_style,
-                        taffy_style,
-                        InlineMeasure {
-                            owner: Some(box_id),
-                            roots: vec![box_id],
-                            style: computed.clone(),
-                            width,
-                            height,
-                            replaced_size: Some((width, height)),
-                            layouts: Vec::new(),
-                            placement_constraints: None,
-                        },
-                        vec![box_id],
-                    )
-                } else {
-                    self.tree.new_with_children_and_block_style(
-                        kind,
-                        block_style,
-                        taffy_style,
-                        &children,
-                        vec![box_id],
-                    )
-                };
+                let node =
+                    if let Some((width, height)) = replaced_size.filter(|_| children.is_empty()) {
+                        self.tree.new_leaf_with_context_and_block_style(
+                            block_style,
+                            taffy_style,
+                            InlineMeasure {
+                                owner: Some(box_id),
+                                roots: vec![box_id],
+                                style: computed.clone(),
+                                width,
+                                height,
+                                replaced_size: Some((width, height)),
+                                layouts: Vec::new(),
+                                placement_constraints: None,
+                            },
+                            vec![box_id],
+                        )
+                    } else {
+                        self.tree.new_with_children_and_block_style(
+                            kind,
+                            block_style,
+                            taffy_style,
+                            &children,
+                            vec![box_id],
+                        )
+                    };
                 enable_flex_grid_static_position_provider(
                     &mut self.tree,
                     self.styles,
@@ -3178,7 +3190,8 @@ where
                 if supports_intrinsic_shrink_to_fit(
                     &self.tree,
                     node,
-                    &self.boxes[box_id],
+                    self.boxes,
+                    box_id,
                     &computed,
                     block_style,
                     kind,
@@ -4544,28 +4557,27 @@ where
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
-                let node = if let Some((width, height)) =
-                    replaced_size.filter(|_| children.is_empty())
-                {
-                    self.tree.new_leaf_with_context_and_block_style(
-                        block_style,
-                        taffy_style,
-                        TextMeasure {
-                            min_width: width,
-                            max_width: width,
-                            height,
-                        },
-                        Some(box_id),
-                    )
-                } else {
-                    self.tree.new_with_children_and_block_style(
-                        kind,
-                        block_style,
-                        taffy_style,
-                        &children,
-                        Some(box_id),
-                    )
-                };
+                let node =
+                    if let Some((width, height)) = replaced_size.filter(|_| children.is_empty()) {
+                        self.tree.new_leaf_with_context_and_block_style(
+                            block_style,
+                            taffy_style,
+                            TextMeasure {
+                                min_width: width,
+                                max_width: width,
+                                height,
+                            },
+                            Some(box_id),
+                        )
+                    } else {
+                        self.tree.new_with_children_and_block_style(
+                            kind,
+                            block_style,
+                            taffy_style,
+                            &children,
+                            Some(box_id),
+                        )
+                    };
                 enable_flex_grid_static_position_provider(
                     &mut self.tree,
                     self.styles,
@@ -4610,7 +4622,8 @@ where
                 if supports_intrinsic_shrink_to_fit(
                     &self.tree,
                     node,
-                    &self.boxes[box_id],
+                    self.boxes,
+                    box_id,
                     &computed,
                     block_style,
                     kind,
@@ -6116,28 +6129,41 @@ fn supports_float_avoidance<Id>(
 fn supports_intrinsic_shrink_to_fit<Id, Context, Source>(
     tree: &AlgorithmTree<Style, Context, Source>,
     node: AlgorithmNodeId,
-    css_box: &CssBox<Id>,
+    boxes: &GeneratedBoxTree<Id>,
+    box_id: BoxId,
     computed: &ComputedValues,
     block_style: BlockStyle,
     kind: AlgorithmKind,
 ) -> bool {
+    let css_box = &boxes[box_id];
     let float_root = css_box.display.outside == Some(DisplayOutside::Block)
         && block_style.float != FloatSide::None;
     let atomic_inline_root = css_box.display.outside == Some(DisplayOutside::Inline)
         && block_style.float == FloatSide::None;
-    kind == AlgorithmKind::Block
-        && matches!(
-            css_box.display.inside,
-            Some(DisplayInside::Flow | DisplayInside::FlowRoot)
+    // A flex item is blockified before its contents are formatted. It must
+    // not enter the atomic inline shrink-to-fit lane merely because its
+    // authored outside display was inline (for example, a canvas flex item).
+    let direct_flex_item = css_box
+        .parent()
+        .is_some_and(|parent| boxes[parent].display.inside == Some(DisplayInside::Flex));
+    matches!(
+        kind,
+        AlgorithmKind::Block | AlgorithmKind::Leaf | AlgorithmKind::Flex | AlgorithmKind::Grid
+    ) && matches!(
+        css_box.display.inside,
+        Some(
+            DisplayInside::Flow
+                | DisplayInside::FlowRoot
+                | DisplayInside::Flex
+                | DisplayInside::Grid
         )
-        && css_box.display.internal_table.is_none()
+    ) && css_box.display.internal_table.is_none()
         && block_style.position == BuckramBlockPosition::Static
         && block_style.shrink_to_fit
-        && !block_style.replaced
         && computed.vertical_align == VerticalAlign::Baseline
         && block_style.flow.is_horizontal()
         && block_style.containing_flow.is_horizontal()
-        && (float_root || atomic_inline_root)
+        && (float_root || (atomic_inline_root && !direct_flex_item))
         && tree.supports_intrinsic_shrink_to_fit(node)
 }
 
@@ -14687,7 +14713,10 @@ mod tests {
         let n3 = rect("n3");
 
         assert!((s1.width - 50.0).abs() <= 0.01, "s1={s1:?}");
-        assert!((s2.x - s1.x - s1.width).abs() <= 0.01, "s1={s1:?}, s2={s2:?}");
+        assert!(
+            (s2.x - s1.x - s1.width).abs() <= 0.01,
+            "s1={s1:?}, s2={s2:?}"
+        );
         assert!((s3.y - s1.y - 20.0).abs() <= 0.01, "s1={s1:?}, s3={s3:?}");
         assert!((s3.width - 100.0).abs() <= 0.01, "s3={s3:?}");
         assert_eq!((s1.width, s1.height), (e1.width, e1.height));

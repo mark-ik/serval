@@ -134,6 +134,8 @@ struct AlgorithmNode<S, Context, Source> {
     float_line_constraints_enabled: bool,
     float_avoidance_enabled: bool,
     intrinsic_shrink_to_fit_enabled: bool,
+    flex_content_base_query: bool,
+    flex_content_base_probe_active: bool,
     intrinsic_inline_sizes: Option<IntrinsicSizes>,
     table_wrapper_inline_size: Option<f32>,
     style: S,
@@ -248,6 +250,8 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             float_line_constraints_enabled: false,
             float_avoidance_enabled: false,
             intrinsic_shrink_to_fit_enabled: false,
+            flex_content_base_query: false,
+            flex_content_base_probe_active: false,
             intrinsic_inline_sizes: None,
             table_wrapper_inline_size: None,
             style,
@@ -534,8 +538,10 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     /// a completed backend layout.
     pub fn supports_intrinsic_shrink_to_fit(&self, id: AlgorithmNodeId) -> bool {
         let node = &self.nodes[id.index()];
-        node.kind == AlgorithmKind::Block
-            && node.block_style.shrink_to_fit
+        matches!(
+            node.kind,
+            AlgorithmKind::Block | AlgorithmKind::Leaf | AlgorithmKind::Flex | AlgorithmKind::Grid
+        ) && node.block_style.shrink_to_fit
             && self.intrinsic_inline_subtree_is_admitted(id, true)
     }
 
@@ -543,10 +549,15 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     /// shrink-to-fit lane.
     pub fn enable_intrinsic_shrink_to_fit(&mut self, id: AlgorithmNodeId) {
         let node = &self.nodes[id.index()];
-        assert_eq!(
-            node.kind,
-            AlgorithmKind::Block,
-            "intrinsic shrink-to-fit requires a block formatting context"
+        assert!(
+            matches!(
+                node.kind,
+                AlgorithmKind::Block
+                    | AlgorithmKind::Leaf
+                    | AlgorithmKind::Flex
+                    | AlgorithmKind::Grid
+            ),
+            "intrinsic shrink-to-fit requires an admitted formatting context"
         );
         assert!(
             node.block_style.shrink_to_fit,
@@ -625,6 +636,13 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
 
     fn intrinsic_inline_subtree_is_admitted(&self, id: AlgorithmNodeId, is_root: bool) -> bool {
         let node = &self.nodes[id.index()];
+        let measured_replaced_leaf =
+            node.kind == AlgorithmKind::Leaf && node.context.is_some() && node.block_style.replaced;
+        if (node.block_style.replaced || node.block_style.aspect_ratio.is_some())
+            && !measured_replaced_leaf
+        {
+            return false;
+        }
         if !intrinsic_inline_style_is_admitted(node.block_style, is_root) {
             return false;
         }
@@ -639,7 +657,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
         {
             return false;
         }
-        match node.kind {
+        let admitted = match node.kind {
             AlgorithmKind::Hidden => true,
             // A context-free leaf represents an empty formatting root. Its
             // min-content and max-content contributions are both zero, so it
@@ -653,7 +671,8 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
                 .all(|child| self.intrinsic_inline_subtree_is_admitted(child, false)),
             // K4d owns table intrinsic admission when live dispatch lands.
             AlgorithmKind::Table => false,
-        }
+        };
+        admitted
     }
 
     pub fn children(&self, id: AlgorithmNodeId) -> &[AlgorithmNodeId] {
@@ -1587,6 +1606,11 @@ where
                     let children = self.tree.nodes[node.index()].children.clone();
                     let mut min_content = 0.0_f32;
                     let mut max_content = 0.0_f32;
+                    // Floats participate in a max-content query as an
+                    // unwrapped float line. Keep adjacent floats together,
+                    // but end the line before an in-flow block or `clear`.
+                    let mut float_min_content = 0.0_f32;
+                    let mut float_max_content = 0.0_f32;
                     for child in children {
                         let child_style = self.tree.nodes[child.index()].block_style;
                         let child_sizes =
@@ -1601,9 +1625,26 @@ where
                                     orthogonal_inline_constraint,
                                 )?
                             };
+                        if child_style.float != FloatSide::None {
+                            if child_style.clear != ClearSide::None {
+                                min_content = min_content.max(float_min_content);
+                                max_content = max_content.max(float_max_content);
+                                float_min_content = 0.0;
+                                float_max_content = 0.0;
+                            }
+                            float_min_content = float_min_content.max(child_sizes.min_content);
+                            float_max_content += child_sizes.max_content;
+                            continue;
+                        }
+                        min_content = min_content.max(float_min_content);
+                        max_content = max_content.max(float_max_content);
+                        float_min_content = 0.0;
+                        float_max_content = 0.0;
                         min_content = min_content.max(child_sizes.min_content);
                         max_content = max_content.max(child_sizes.max_content);
                     }
+                    min_content = min_content.max(float_min_content);
+                    max_content = max_content.max(float_max_content);
                     IntrinsicSizes::new(min_content, max_content)
                         .ok_or(BlockDeferral::IntrinsicSize)?
                 },
@@ -1949,29 +1990,300 @@ where
         )
     }
 
+    /// Whether a row flex item's used basis falls through to its content.
+    ///
+    /// `auto` consults the preferred main size first, while `content` skips
+    /// it. The narrow bridge below only covers the shared content case where
+    /// `auto` has no preferred width to use.
+    fn row_flex_basis_uses_content(&self, node: AlgorithmNodeId) -> bool {
+        let flex_basis = self.style(node.into_taffy()).flex_basis;
+        flex_basis.is_content()
+            || (flex_basis.is_auto()
+                && matches!(
+                    self.tree.nodes[node.index()].block_style.size.width,
+                    BlockSizeValue::Auto
+                ))
+    }
+
+    /// The column counterpart of [`Self::row_flex_basis_uses_content`].
+    ///
+    /// In a column, `auto` first consults the preferred height. It reaches
+    /// the content-sizing path only when that preferred height is itself
+    /// automatic.
+    fn column_flex_basis_uses_content(&self, node: AlgorithmNodeId) -> bool {
+        let flex_basis = self.style(node.into_taffy()).flex_basis;
+        flex_basis.is_content()
+            || (flex_basis.is_auto()
+                && matches!(
+                    self.tree.nodes[node.index()].block_style.size.height,
+                    BlockSizeValue::Auto
+                ))
+    }
+
+    fn flex_basis_uses_content(&self, node: AlgorithmNodeId) -> bool {
+        let Some(parent) = self.tree.nodes[node.index()].parent else {
+            return false;
+        };
+        if self.tree.nodes[parent.index()].kind != AlgorithmKind::Flex {
+            return false;
+        }
+        match self.style(parent.into_taffy()).flex_direction {
+            taffy::FlexDirection::Row | taffy::FlexDirection::RowReverse => {
+                self.row_flex_basis_uses_content(node)
+            },
+            taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse => {
+                self.column_flex_basis_uses_content(node)
+            },
+        }
+    }
+
+    /// Derive the fit-content inline border box Flexbox §9.2 Step E needs
+    /// while it measures a column item's content-based main size.
+    fn column_flex_content_inline_size(
+        &mut self,
+        node: AlgorithmNodeId,
+        style: BlockStyle,
+        inputs: LayoutInput,
+    ) -> Result<f32, BlockDeferral> {
+        let constraint = inputs
+            .parent_size
+            .width
+            .or(inputs.available_space.width.into_option())
+            .filter(|width| width.is_finite() && *width >= 0.0)
+            .ok_or(BlockDeferral::IndefiniteInlineSize)?;
+        // Flexbox substitutes fit-content for an indefinite automatic cross
+        // size during this main-axis query. Reuse the admitted intrinsic
+        // provider, but keep the stored style unchanged for the subsequent
+        // owned-block format at the resolved width.
+        let original_style = style;
+        let mut query_style = style;
+        query_style.shrink_to_fit = true;
+        self.clear_subtree_cache(node);
+        self.tree.nodes[node.index()].block_style = query_style;
+        let result = self.resolve_intrinsic_shrink_to_fit(node, query_style, constraint);
+        self.tree.nodes[node.index()].block_style = original_style;
+        self.clear_subtree_cache(node);
+        result.map(|used_inline| used_inline.border_box)
+    }
+
+    /// Answer Flexbox §9.2 Step E's max-content query for an ordinary block
+    /// subtree. The general owned-block route deliberately accepts only a
+    /// full normal-flow layout; using Taffy's generic block fallback here
+    /// loses Buckram's intrinsic inline-subtree measurement before the flex
+    /// algorithm can establish the base size.
+    fn compute_flex_base_intrinsic_block(
+        &mut self,
+        node: AlgorithmNodeId,
+        inputs: LayoutInput,
+    ) -> Result<Option<LayoutOutput>, BlockDeferral> {
+        let parent_direction = self.tree.nodes[node.index()].parent.and_then(|parent| {
+            (self.tree.nodes[parent.index()].kind == AlgorithmKind::Flex)
+                .then(|| self.style(parent.into_taffy()).flex_direction)
+        });
+        let parent_is_row_flex = matches!(
+            parent_direction,
+            Some(taffy::FlexDirection::Row | taffy::FlexDirection::RowReverse)
+        );
+        let parent_is_column_flex = matches!(
+            parent_direction,
+            Some(taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse)
+        );
+        let exact_row_flex_base_query = parent_is_row_flex
+            && inputs.run_mode == RunMode::ComputeSize
+            && inputs.sizing_mode == SizingMode::ContentSize
+            && inputs.axis == taffy::RequestedAxis::Horizontal
+            && inputs.available_space.width == taffy::AvailableSpace::MaxContent
+            && self.row_flex_basis_uses_content(node);
+        let exact_column_flex_base_query = parent_is_column_flex
+            && !self.tree.nodes[node.index()].flex_content_base_probe_active
+            && inputs.run_mode == RunMode::ComputeSize
+            && inputs.sizing_mode == SizingMode::ContentSize
+            && inputs.axis == taffy::RequestedAxis::Vertical
+            && inputs.known_dimensions.height.is_none()
+            && inputs.available_space.height == taffy::AvailableSpace::MaxContent
+            && self.column_flex_basis_uses_content(node);
+        let exact_column_cross_query = parent_is_column_flex
+            && self.tree.nodes[node.index()].flex_content_base_query
+            && inputs.run_mode == RunMode::ComputeSize
+            && inputs.sizing_mode == SizingMode::ContentSize
+            && inputs.axis == taffy::RequestedAxis::Horizontal
+            && inputs.known_dimensions.width.is_none()
+            && inputs.known_dimensions.height.is_some()
+            && self.column_flex_basis_uses_content(node);
+        if !exact_row_flex_base_query && !exact_column_flex_base_query && !exact_column_cross_query
+        {
+            return Ok(None);
+        }
+
+        let style = self.tree.nodes[node.index()].block_style;
+        if !style.flow.is_horizontal()
+            || style.flow != style.containing_flow
+            || style.deferral().is_some()
+        {
+            return Err(BlockDeferral::BackendSizingMode);
+        }
+        if exact_column_cross_query {
+            let width = self.column_flex_content_inline_size(node, style, inputs)?;
+            return Ok(Some(LayoutOutput::from_outer_size(taffy::Size {
+                width,
+                height: inputs
+                    .known_dimensions
+                    .height
+                    .expect("column cross query requires a resolved main size"),
+            })));
+        }
+
+        if exact_column_flex_base_query {
+            let width = match inputs.known_dimensions.width {
+                Some(width) => width,
+                None => self.column_flex_content_inline_size(node, style, inputs)?,
+            };
+            // The fitting-width query establishes only the cross size. The
+            // existing owned-block formatter still supplies the block-axis
+            // contribution that Step E adopts as the flex base size.
+            let previous_marker = self.tree.nodes[node.index()].flex_content_base_query;
+            let previous_probe_active =
+                self.tree.nodes[node.index()].flex_content_base_probe_active;
+            self.tree.nodes[node.index()].flex_content_base_query = true;
+            self.tree.nodes[node.index()].flex_content_base_probe_active = true;
+            // `content` replaces the preferred main size for this query.
+            // `auto` reaches the same branch only when its preferred height
+            // is already automatic, so it needs no substitution.
+            let ignores_preferred_height = self.style(node.into_taffy()).flex_basis.is_content();
+            if ignores_preferred_height {
+                let mut probe_style = style;
+                probe_style.size.height = BlockSizeValue::Auto;
+                self.clear_subtree_cache(node);
+                self.tree.nodes[node.index()].block_style = probe_style;
+            }
+            let result = self.compute_owned_block_layout(
+                node.into_taffy(),
+                LayoutInput {
+                    run_mode: RunMode::ComputeSize,
+                    sizing_mode: SizingMode::ContentSize,
+                    axis: taffy::RequestedAxis::Vertical,
+                    known_dimensions: taffy::Size {
+                        width: Some(width),
+                        height: None,
+                    },
+                    parent_size: inputs.parent_size,
+                    available_space: inputs.available_space,
+                    vertical_margins_are_collapsible: taffy::Line::FALSE,
+                },
+            );
+            if ignores_preferred_height {
+                self.tree.nodes[node.index()].block_style = style;
+                self.clear_subtree_cache(node);
+            }
+            self.tree.nodes[node.index()].flex_content_base_probe_active = previous_probe_active;
+            if result.is_err() {
+                self.tree.nodes[node.index()].flex_content_base_query = previous_marker;
+            }
+            return result.map(Some);
+        }
+
+        // Step E substitutes the used flex basis for the item's main size.
+        // A definite preferred inline size therefore cannot participate in
+        // this query, even though it remains authored for the final layout.
+        let original_style = style;
+        let mut intrinsic_style = style;
+        intrinsic_style.size.width = BlockSizeValue::Auto;
+        self.clear_subtree_cache(node);
+        self.tree.nodes[node.index()].block_style = intrinsic_style;
+        let previous_fixed_leaf_intrinsics =
+            std::mem::replace(&mut self.fixed_leaf_intrinsics_enabled, true);
+        let intrinsic = self.measure_intrinsic_inline_subtree(node, None);
+        self.fixed_leaf_intrinsics_enabled = previous_fixed_leaf_intrinsics;
+        self.tree.nodes[node.index()].block_style = original_style;
+        self.clear_subtree_cache(node);
+        let intrinsic = intrinsic?;
+        // This exact query succeeded, so the final layout may take Buckram's
+        // normal block-formatting route even though its direct parent is a
+        // flex container. Other flex children keep Taffy's fallback.
+        self.tree.nodes[node.index()].flex_content_base_query = true;
+        let (padding_border_start, padding_border_end) = intrinsic_inline_padding_border(style)?;
+        let width = intrinsic.max_content + padding_border_start + padding_border_end;
+        Ok(Some(LayoutOutput::from_outer_size(taffy::Size {
+            width,
+            height: inputs.known_dimensions.height.unwrap_or(0.0),
+        })))
+    }
+
     fn compute_owned_block_layout(
         &mut self,
         node_id: NodeId,
         inputs: LayoutInput,
     ) -> Result<LayoutOutput, BlockDeferral> {
-        if inputs.run_mode != RunMode::PerformLayout
-            || inputs.sizing_mode != SizingMode::InherentSize
-            || inputs.axis != taffy::RequestedAxis::Both
-        {
+        let node = AlgorithmNodeId::from_taffy(node_id);
+        if let Some(output) = self.compute_flex_base_intrinsic_block(node, inputs)? {
+            return Ok(output);
+        }
+        let node_index = node.index();
+        let measured_content_flex_item = self.tree.nodes[node_index].flex_content_base_query
+            && self.flex_basis_uses_content(node)
+            && self.tree.nodes[node_index]
+                .parent
+                .is_some_and(|parent| self.tree.nodes[parent.index()].kind == AlgorithmKind::Flex);
+        let parent_is_row_flex = self.tree.nodes[node_index].parent.is_some_and(|parent| {
+            self.tree.nodes[parent.index()].kind == AlgorithmKind::Flex
+                && matches!(
+                    self.style(parent.into_taffy()).flex_direction,
+                    taffy::FlexDirection::Row | taffy::FlexDirection::RowReverse
+                )
+        });
+        let parent_is_column_flex = self.tree.nodes[node_index].parent.is_some_and(|parent| {
+            self.tree.nodes[parent.index()].kind == AlgorithmKind::Flex
+                && matches!(
+                    self.style(parent.into_taffy()).flex_direction,
+                    taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse
+                )
+        });
+        let content_row_height_query = measured_content_flex_item
+            && parent_is_row_flex
+            && inputs.run_mode == RunMode::ComputeSize
+            && inputs.sizing_mode == SizingMode::ContentSize
+            && inputs.axis == taffy::RequestedAxis::Vertical
+            && inputs.known_dimensions.width.is_some()
+            && inputs.known_dimensions.height.is_none()
+            && inputs.available_space.height == taffy::AvailableSpace::MaxContent;
+        // A column Step E query first supplies the fit-content inline size
+        // itself, then asks Buckram for the item's auto block contribution.
+        let content_column_base_probe = measured_content_flex_item
+            && parent_is_column_flex
+            && inputs.run_mode == RunMode::ComputeSize
+            && inputs.sizing_mode == SizingMode::ContentSize
+            && inputs.axis == taffy::RequestedAxis::Vertical
+            && inputs.known_dimensions.width.is_some()
+            && inputs.known_dimensions.height.is_none()
+            && inputs.available_space.height == taffy::AvailableSpace::MaxContent;
+        // Taffy enters the final flex-item pass with ContentSize after the
+        // Step E query. Admit that one pass only after the exact Buckram
+        // content measurement above succeeded.
+        let final_content_layout = inputs.run_mode == RunMode::PerformLayout
+            && inputs.axis == taffy::RequestedAxis::Both
+            && (inputs.sizing_mode == SizingMode::InherentSize
+                || (measured_content_flex_item && inputs.sizing_mode == SizingMode::ContentSize));
+        // Flexbox asks for the auto cross size after Step E fixes the main
+        // size. Let the existing owned-block formatter answer that exact
+        // query at its supplied width, which preserves a flex item's BFC.
+        if !final_content_layout && !content_row_height_query && !content_column_base_probe {
             return Err(BlockDeferral::BackendSizingMode);
         }
 
-        let node = AlgorithmNodeId::from_taffy(node_id);
-        let node_index = node.index();
         self.tree.nodes[node_index].exported_float_state = None;
         let parent_is_block = self.tree.nodes[node_index]
             .parent
             .is_none_or(|parent| self.tree.nodes[parent.index()].kind == AlgorithmKind::Block);
-        if !parent_is_block {
+        if !parent_is_block && !measured_content_flex_item {
             return Err(BlockDeferral::BackendSizingMode);
         }
 
-        let style = self.tree.nodes[node_index].block_style;
+        let mut style = self.tree.nodes[node_index].block_style;
+        // Flex items establish an independent formatting context for their
+        // contents. The regular Livery block style records only properties
+        // authored on the item itself, so retain that parent-derived fact for
+        // the narrow Buckram route above.
+        style.establishes_bfc |= measured_content_flex_item;
         let is_layout_root = self.tree.nodes[node_index].parent.is_none();
         if let Some(deferral) = style.deferral() {
             let resolved_shrink_to_fit = self.resolved_shrink_to_fit == Some(node)
@@ -2593,15 +2905,13 @@ where
 fn intrinsic_inline_style_is_admitted(style: BlockStyle, is_root: bool) -> bool {
     if style.flow != style.containing_flow
         || style.position != crate::BlockPosition::Static
-        || style.replaced
-        || style.aspect_ratio.is_some()
         || style.size_containment.width
         || style.size_containment.height
         || style.has_nonlinear_lengths
     {
         return false;
     }
-    if !is_root && (style.float != FloatSide::None || style.shrink_to_fit) {
+    if !is_root && style.shrink_to_fit {
         return false;
     }
 
@@ -2611,6 +2921,13 @@ fn intrinsic_inline_style_is_admitted(style: BlockStyle, is_root: bool) -> bool 
     let child_size_is_supported = matches!(inline_size, BlockSizeValue::Auto)
         || intrinsic_absolute_size(inline_size).is_some();
     if !child_size_is_supported {
+        return false;
+    }
+    // A fixed-size float contributes a definite outer box to the parent's
+    // max-content float line. Auto-width floats retain the dedicated
+    // shrink-to-fit admission instead of being guessed from this traversal.
+    if !is_root && style.float != FloatSide::None && intrinsic_absolute_size(inline_size).is_none()
+    {
         return false;
     }
     if !is_root

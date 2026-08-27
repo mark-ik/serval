@@ -36,7 +36,8 @@ use crate::{
     text::{TextFrame, TextSystem},
 };
 use buckram::{
-    BoxId, FragmentId, GridEdgeOrientation, PhysicalSize, TableBorderStyle, TableFragmentRole,
+    BoxId, DisplayInside, FragmentId, GridEdgeOrientation, PhysicalSize, TableBorderStyle,
+    TableFragmentRole,
 };
 
 /// Genet paint output produced by the Livery CSS/layout path.
@@ -536,6 +537,26 @@ fn record_host_leaf_slot<D>(
     }
 }
 
+/// Flex and grid items are blockified for layout and paint even when their
+/// computed outside display was inline. Keep decoration selection aligned with
+/// the generated box tree, rather than treating a canvas flex item as an IFC
+/// fragment that has no line-owned decoration record.
+fn is_blockified_item<Id>(fragments: &LiveryLayout<Id>, id: Id) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let boxes = fragments.boxes();
+    boxes
+        .principal_box(id)
+        .and_then(|box_id| boxes[box_id].parent())
+        .is_some_and(|parent| {
+            matches!(
+                boxes[parent].display.inside,
+                Some(DisplayInside::Flex | DisplayInside::Grid)
+            )
+        })
+}
+
 fn begin_node<'a, D>(
     dom: &D,
     styles: &'a StylePlane<D::NodeId>,
@@ -559,7 +580,9 @@ where
             text.system
                 .prepare_inline_children(text.frame, dom, styles, fragments, id, style);
             let background_propagated = scope.canvas_background_source == Some(id);
-            if matches!(style.display, Display::Inline | Display::InlineBlock) {
+            let paints_as_inline = matches!(style.display, Display::Inline | Display::InlineBlock)
+                && !is_blockified_item(fragments, id);
+            if paints_as_inline {
                 if !background_propagated && !fragments.table_paint_manages_node(id) {
                     emit_inline_element_decoration(text.frame, fragments, id, style, list);
                 }
@@ -585,7 +608,7 @@ where
             // The overflow clip stays on the outer box: CSS Tables 3 section
             // 3.6.1 puts `overflow` on the table wrapper box, so a clipping
             // table clips at the box that contains its captions.
-            if !matches!(style.display, Display::Inline | Display::InlineBlock)
+            if !paints_as_inline
                 && let Some(fragment) = fragments.get(id)
                 && let Some(clip) = descendant_clip(style, fragment, list.viewport)
             {

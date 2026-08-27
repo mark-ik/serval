@@ -39,6 +39,16 @@ the fork field's `false`/`false` default. A clean round trip reproduced all 50
 vendored `src/` files byte for byte. The resulting patch SHA-256 is
 `B54137572659DEA2384129C9A1BF13C31EC48313D8F035A7209ED12747C04521`.
 
+**0.13.1 Row 18 content-basis refresh (2026-08-27).** Regenerated `0000`
+after the `flex-basis: content` Step B path was corrected to derive an
+aspect-ratio basis from an authored cross size only. In particular, a
+main-axis minimum transferred through the ratio cannot overwrite an explicit
+cross size and feed back into the content basis. A pristine-source apply and
+full `src/` comparison reproduce the vendored tree byte for byte; the
+standalone all-features run records 131 unit tests and 5 doc tests passing.
+The resulting patch SHA-256 is
+`BDE982DE04A4DF21FE50E071E07220044E973095793A31F11276D8EE8238AF7D`.
+
 To bump taffy:
 
 1. Regenerate the delta against the release currently vendored, and prove it
@@ -95,6 +105,13 @@ normal-flow cursor, flex hoists its main- and cross-axis alignment into
 `static_offset_main` / `static_offset_cross` so the aligned position survives
 inset placement, and grid records the position produced within the area 0006
 selects. Buckram reads it through `AlgorithmTree::static_layout`.
+
+It also carries the Row 18 flex content-basis correction. When a flex item
+has both an explicit cross size and an intrinsic ratio, Flexbox Step B may use
+that pair to form the content basis. The fork takes the cross min/max from the
+authored cross axis at that point, rather than min/max values transferred from
+the main axis. This keeps a main-axis constraint from replacing the explicit
+cross size before the ratio is applied.
 
 Note for the next re-vendor: taffy 0.13.0 reworked the flex abspos alignment
 this hoist sits in (writing-mode-relative `start`/`end`, new
