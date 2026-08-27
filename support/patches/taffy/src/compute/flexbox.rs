@@ -754,13 +754,37 @@ fn determine_flex_base_size(
             (padding + border).sum_axes()
         } else {
             Size::ZERO
-        }
-        .main(dir);
+        };
         let flex_basis = child_style.flex_basis();
+        // Step B uses only an explicitly authored cross size. `child.size`
+        // may also contain a cross size synthesized from the preferred main
+        // size through the aspect ratio; using that here would let an authored
+        // main size leak back into a `content` flex basis.
+        let explicit_cross_size = child_style
+            .size()
+            .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
+            .maybe_add(box_sizing_adjustment)
+            .cross(dir)
+            .maybe_clamp(transferred_min_size.cross(dir), transferred_max_size.cross(dir));
         let resolved_flex_basis = flex_basis
             .into_dimension()
             .and_then(|basis| basis.maybe_resolve(container_width, |val, basis| tree.calc(val, basis)))
-            .maybe_add(box_sizing_adjustment);
+            .maybe_add(box_sizing_adjustment.main(dir));
+        let content_aspect_ratio_basis = if flex_basis.is_content() {
+            explicit_cross_size.zip(child.aspect_ratio).map(|(cross_size, ratio)| {
+                let padding_border = child.padding + child.border;
+                let inner_cross_size =
+                    (cross_size - padding_border.cross_axis_sum(dir)).max(0.0);
+                let inner_main_size = if dir.is_row() {
+                    inner_cross_size * ratio
+                } else {
+                    inner_cross_size / ratio
+                };
+                inner_main_size + padding_border.main_axis_sum(dir)
+            })
+        } else {
+            None
+        };
 
         drop(child_style);
 
@@ -775,7 +799,9 @@ fn determine_flex_base_size(
             // `auto` retrieves a definite preferred main size here. `content`
             // bypasses that fallback and continues to intrinsic measurement below.
             let preferred_main_size = if flex_basis.is_auto() { child.size.main(dir) } else { None };
-            if let Some(flex_basis) = resolved_flex_basis.or(preferred_main_size) {
+            if let Some(flex_basis) =
+                resolved_flex_basis.or(content_aspect_ratio_basis).or(preferred_main_size)
+            {
                 break 'flex_basis flex_basis;
             };
 

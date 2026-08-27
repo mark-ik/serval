@@ -963,6 +963,8 @@ struct InlineMeasure {
     style: ComputedValues,
     width: f32,
     height: f32,
+    /// Natural content-box dimensions for a directly measured replaced leaf.
+    replaced_size: Option<(f32, f32)>,
     layouts: Vec<InlineLayoutEntry>,
     placement_constraints: Option<FloatLineConstraints>,
 }
@@ -1035,6 +1037,9 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    if let Some(size) = context.replaced_size {
+        return size;
+    }
     let InlineMeasureGeometry {
         width,
         intrinsic_kind,
@@ -1086,6 +1091,12 @@ where
     let Some(context) = context else {
         return AlgorithmSize::new(0.0, 0.0);
     };
+    if let Some((width, height)) = context.replaced_size {
+        return AlgorithmSize::new(
+            known.width.unwrap_or(width),
+            known.height.unwrap_or(height),
+        );
+    }
     let (query_width, definite_cap, intrinsic_kind) = match available.width {
         AlgorithmAvailableSpace::Definite(width) => (width, Some(width), None),
         // A nearly-zero line asks Parley to break at every legal
@@ -3087,7 +3098,7 @@ where
                 )?;
                 let table_handoff = self.pending_table_handoff.take();
                 let mut taffy_style = to_taffy_style(&computed, font_size);
-                apply_replaced_intrinsic_size(
+                let replaced_size = apply_replaced_intrinsic_style(
                     &mut taffy_style,
                     self.dom,
                     node,
@@ -3099,13 +3110,33 @@ where
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
-                let node = self.tree.new_with_children_and_block_style(
-                    kind,
-                    block_style,
-                    taffy_style,
-                    &children,
-                    vec![box_id],
-                );
+                let node = if let Some((width, height)) =
+                    replaced_size.filter(|_| children.is_empty())
+                {
+                    self.tree.new_leaf_with_context_and_block_style(
+                        block_style,
+                        taffy_style,
+                        InlineMeasure {
+                            owner: Some(box_id),
+                            roots: vec![box_id],
+                            style: computed.clone(),
+                            width,
+                            height,
+                            replaced_size: Some((width, height)),
+                            layouts: Vec::new(),
+                            placement_constraints: None,
+                        },
+                        vec![box_id],
+                    )
+                } else {
+                    self.tree.new_with_children_and_block_style(
+                        kind,
+                        block_style,
+                        taffy_style,
+                        &children,
+                        vec![box_id],
+                    )
+                };
                 enable_flex_grid_static_position_provider(
                     &mut self.tree,
                     self.styles,
@@ -3969,6 +4000,7 @@ where
                 style: parent_style.clone(),
                 width,
                 height,
+                replaced_size: None,
                 layouts: Vec::new(),
                 placement_constraints: None,
             },
@@ -4500,7 +4532,7 @@ where
                     dimension_with_basis(computed.max_width, font_size, containing_size.0);
                 taffy_style.max_size.height =
                     dimension_with_basis(computed.max_height, font_size, containing_size.1);
-                apply_replaced_intrinsic_size(
+                let replaced_size = apply_replaced_intrinsic_style(
                     &mut taffy_style,
                     self.dom,
                     node,
@@ -4512,13 +4544,28 @@ where
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
                 let dom_node = node;
-                let node = self.tree.new_with_children_and_block_style(
-                    kind,
-                    block_style,
-                    taffy_style,
-                    &children,
-                    Some(box_id),
-                );
+                let node = if let Some((width, height)) =
+                    replaced_size.filter(|_| children.is_empty())
+                {
+                    self.tree.new_leaf_with_context_and_block_style(
+                        block_style,
+                        taffy_style,
+                        TextMeasure {
+                            min_width: width,
+                            max_width: width,
+                            height,
+                        },
+                        Some(box_id),
+                    )
+                } else {
+                    self.tree.new_with_children_and_block_style(
+                        kind,
+                        block_style,
+                        taffy_style,
+                        &children,
+                        Some(box_id),
+                    )
+                };
                 enable_flex_grid_static_position_provider(
                     &mut self.tree,
                     self.styles,
@@ -7420,14 +7467,15 @@ where
         })
 }
 
-fn apply_replaced_intrinsic_size<D>(
+fn apply_replaced_intrinsic_style<D>(
     style: &mut Style,
     dom: &D,
     id: D::NodeId,
     computed: &ComputedValues,
     image_sources: &ImageSources,
     font_size: f32,
-) where
+) -> Option<(f32, f32)>
+where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
@@ -7438,8 +7486,6 @@ fn apply_replaced_intrinsic_size<D>(
 
     // Attribute-derived dimensions already reached `computed` through the
     // presentational-hint origin. Layout owns only natural-size resolution.
-    let width_specified = !matches!(computed.width, CssSize::Auto);
-    let height_specified = !matches!(computed.height, CssSize::Auto);
     let width = definite_size(computed.width, font_size);
     let height = definite_size(computed.height, font_size);
     if computed.aspect_ratio.uses_natural_ratio()
@@ -7451,28 +7497,7 @@ fn apply_replaced_intrinsic_size<D>(
         // while at least one axis still needs intrinsic resolution.
         style.aspect_ratio = natural_ratio;
     }
-    match (
-        width,
-        height,
-        width_specified,
-        height_specified,
-        style.aspect_ratio,
-        intrinsic,
-    ) {
-        (Some(width), _, true, false, Some(ratio), _) => {
-            style.size.width = Dimension::length(width);
-            style.size.height = Dimension::length(width / ratio);
-        },
-        (_, Some(height), false, true, Some(ratio), _) => {
-            style.size.width = Dimension::length(height * ratio);
-            style.size.height = Dimension::length(height);
-        },
-        (None, None, false, false, _, Some((intrinsic_width, intrinsic_height))) => {
-            style.size.width = Dimension::length(intrinsic_width);
-            style.size.height = Dimension::length(intrinsic_height);
-        },
-        _ => {},
-    }
+    intrinsic
 }
 
 /// Pass natural replaced dimensions across the browser-facing K5d edge.
