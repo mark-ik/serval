@@ -1,5 +1,5 @@
 //! A tagged-pointer abstraction that allows size styles in Taffy to be represented
-//! in just 64 bits. Wrapped by types in the `super::dimension` and `super::grid` modules.
+//! in just 64 bits. Wrapped by types in the `super::dimension`, `super::flex`, and `super::grid` modules.
 use super::LengthPercentage;
 use crate::style_helpers::{
     FromFr, FromLength, FromPercent, TaffyAuto, TaffyFitContent, TaffyMaxContent, TaffyMinContent, TaffyZero,
@@ -210,6 +210,10 @@ use inner::CompactLengthInner;
 pub struct CompactLength(CompactLengthInner);
 
 impl CompactLength {
+    /// A flex-basis `content` value.
+    pub(crate) const FLEX_BASIS_CONTENT: Self =
+        Self(CompactLengthInner::from_tag(Self::FLEX_BASIS_CONTENT_TAG));
+
     /// The tag indicating a calc() value
     #[cfg(feature = "calc")]
     pub const CALC_TAG: usize = 0b000;
@@ -229,6 +233,11 @@ impl CompactLength {
     pub const FIT_CONTENT_PX_TAG: usize = 0b00010111;
     /// The tag indicating a fit-content value with percent limit
     pub const FIT_CONTENT_PERCENT_TAG: usize = 0b00011111;
+    /// The tag indicating a flex-basis `content` value.
+    ///
+    /// This is non-zero so it cannot be mistaken for a `calc()` pointer when
+    /// the `calc` feature is enabled.
+    pub(crate) const FLEX_BASIS_CONTENT_TAG: usize = 0b0010_0111;
 }
 
 impl CompactLength {
@@ -531,6 +540,7 @@ impl<'de> serde::Deserialize<'de> for CompactLength {
                 | CompactLength::FIT_CONTENT_PX_TAG
                 | CompactLength::FIT_CONTENT_PERCENT_TAG
                 | CompactLength::FR_TAG
+                | CompactLength::FLEX_BASIS_CONTENT_TAG
         ) {
             Ok(value)
         } else {

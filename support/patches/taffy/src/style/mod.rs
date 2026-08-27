@@ -25,7 +25,7 @@ use crate::sys::DefaultCheapStr;
 #[cfg(feature = "block_layout")]
 pub use self::block::{BlockContainerStyle, BlockItemStyle, TextAlign};
 #[cfg(feature = "flexbox")]
-pub use self::flex::{FlexDirection, FlexWrap, FlexboxContainerStyle, FlexboxItemStyle};
+pub use self::flex::{FlexBasis, FlexDirection, FlexWrap, FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "float_layout")]
 pub use self::float::{Clear, Float, FloatDirection};
 #[cfg(feature = "grid")]
@@ -42,7 +42,6 @@ pub use self::grid::{GridTemplateArea, GridTemplateAreas, NamedGridLine, Templat
 pub(crate) use self::grid::{NonNamedGridPlacement, OriginZeroGridPlacement};
 
 use crate::geometry::{Point, Rect, Size};
-use crate::style_helpers::TaffyAuto as _;
 use core::fmt::Debug;
 
 #[cfg(feature = "grid")]
@@ -555,7 +554,7 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     // Flexbox item properties
     /// Sets the initial main axis size of the item
     #[cfg(feature = "flexbox")]
-    pub flex_basis: Dimension,
+    pub flex_basis: FlexBasis,
     /// The relative rate at which this item grows when it is expanding to fill space
     ///
     /// 0.0 is the default value, and this value must be positive.
@@ -662,7 +661,7 @@ impl<S: CheapCloneStr> Style<S> {
         #[cfg(feature = "flexbox")]
         order: 0,
         #[cfg(feature = "flexbox")]
-        flex_basis: Dimension::AUTO,
+        flex_basis: FlexBasis::AUTO,
         // Grid
         #[cfg(feature = "grid")]
         grid_template_rows: GridTrackVec::new(),
@@ -968,7 +967,7 @@ impl<T: FlexboxContainerStyle> FlexboxContainerStyle for &'_ T {
 #[cfg(feature = "flexbox")]
 impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
     #[inline(always)]
-    fn flex_basis(&self) -> Dimension {
+    fn flex_basis(&self) -> FlexBasis {
         self.flex_basis
     }
     #[inline(always)]
@@ -992,7 +991,7 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
 #[cfg(feature = "flexbox")]
 impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
     #[inline(always)]
-    fn flex_basis(&self) -> Dimension {
+    fn flex_basis(&self) -> FlexBasis {
         (*self).flex_basis()
     }
     #[inline(always)]
@@ -1307,7 +1306,7 @@ mod tests {
             #[cfg(feature = "flexbox")]
             order: 0,
             #[cfg(feature = "flexbox")]
-            flex_basis: super::Dimension::AUTO,
+            flex_basis: super::FlexBasis::AUTO,
             size: Size::auto(),
             min_size: Size::auto(),
             max_size: Size::auto(),
@@ -1375,6 +1374,7 @@ mod tests {
         assert_type_size::<LengthPercentage>(8);
         assert_type_size::<LengthPercentageAuto>(8);
         assert_type_size::<Dimension>(8);
+        assert_type_size::<FlexBasis>(8);
         assert_type_size::<Size<LengthPercentage>>(16);
         assert_type_size::<Size<LengthPercentageAuto>>(16);
         assert_type_size::<Size<Dimension>>(16);

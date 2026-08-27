@@ -15,7 +15,7 @@ pub use crate::{
 };
 
 #[cfg(feature = "flexbox")]
-pub use crate::style::{FlexDirection, FlexWrap};
+pub use crate::style::{FlexBasis, FlexDirection, FlexWrap};
 
 #[cfg(feature = "grid")]
 pub use crate::style::{

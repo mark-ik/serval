@@ -1,6 +1,143 @@
 //! Style types for Flexbox layout
-use super::{AlignContent, AlignItems, AlignSelf, CoreStyle, Dimension, JustifyContent, LengthPercentage, Style};
+use super::{
+    AlignContent, AlignItems, AlignSelf, CompactLength, CoreStyle, Dimension, JustifyContent,
+    LengthPercentage, Style,
+};
 use crate::geometry::Size;
+use crate::style_helpers::{FromLength, FromPercent, TaffyAuto, TaffyZero};
+#[cfg(feature = "parse")]
+use crate::util::parse::{CssParseResult, FromCss, Parser, Token, from_str_from_css};
+
+/// The used kind of a flex item's flex basis.
+///
+/// CSS `auto` uses a definite preferred main size before falling back to
+/// content sizing, whereas `content` bypasses that preferred-size fallback.
+/// A generic [`Dimension`] cannot retain that distinction because both values
+/// otherwise resolve to an absent definite length.
+#[derive(Copy, Clone, PartialEq, Debug)]
+#[repr(transparent)]
+pub struct FlexBasis(CompactLength);
+
+impl Default for FlexBasis {
+    fn default() -> Self {
+        Self::AUTO
+    }
+}
+
+impl FlexBasis {
+    /// Resolve a preferred main size when one is definite, otherwise use
+    /// content sizing.
+    pub const AUTO: Self = Self(CompactLength::AUTO);
+
+    /// Use content sizing without consulting the preferred main size.
+    pub const CONTENT: Self = Self(CompactLength::FLEX_BASIS_CONTENT);
+
+    /// Construct an automatic flex basis.
+    #[inline(always)]
+    pub const fn auto() -> Self {
+        Self::AUTO
+    }
+
+    /// Construct a content-sized flex basis.
+    #[inline(always)]
+    pub const fn content() -> Self {
+        Self::CONTENT
+    }
+
+    /// Returns true when this is a content-sized flex basis.
+    #[inline(always)]
+    pub fn is_content(self) -> bool {
+        self.0.tag() == CompactLength::FLEX_BASIS_CONTENT_TAG
+    }
+
+    /// Returns true when this is an automatic flex basis.
+    #[inline(always)]
+    pub fn is_auto(self) -> bool {
+        self.0.is_auto()
+    }
+
+    #[inline(always)]
+    pub(crate) fn into_dimension(self) -> Option<Dimension> {
+        if self.is_content() {
+            None
+        } else {
+            Some(Dimension(self.0))
+        }
+    }
+}
+
+impl TaffyAuto for FlexBasis {
+    const AUTO: Self = Self(CompactLength::AUTO);
+}
+
+impl TaffyZero for FlexBasis {
+    const ZERO: Self = Self(CompactLength::ZERO);
+}
+
+impl FromLength for FlexBasis {
+    fn from_length<Input: Into<f64> + Copy>(value: Input) -> Self {
+        Self(CompactLength::length(value.into() as f32))
+    }
+}
+
+impl FromPercent for FlexBasis {
+    fn from_percent<Input: Into<f64> + Copy>(value: Input) -> Self {
+        Self(CompactLength::percent(value.into() as f32))
+    }
+}
+
+impl From<Dimension> for FlexBasis {
+    fn from(value: Dimension) -> Self {
+        Self(value.0)
+    }
+}
+
+#[cfg(feature = "parse")]
+impl FromCss for FlexBasis {
+    fn from_css<'i>(parser: &mut Parser<'i, '_>) -> CssParseResult<'i, Self> {
+        if let Ok(dimension) = parser.try_parse(Dimension::from_css) {
+            return Ok(dimension.into());
+        }
+        match parser.next()?.clone() {
+            Token::Ident(ident) if ident == "content" => Ok(Self::CONTENT),
+            token => Err(parser.new_unexpected_token_error(token))?,
+        }
+    }
+}
+
+#[cfg(feature = "parse")]
+from_str_from_css!(FlexBasis);
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for FlexBasis {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for FlexBasis {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = CompactLength::deserialize(deserializer)?;
+        if matches!(
+            value.tag(),
+            CompactLength::LENGTH_TAG
+                | CompactLength::PERCENT_TAG
+                | CompactLength::AUTO_TAG
+                | CompactLength::FLEX_BASIS_CONTENT_TAG
+        ) {
+            Ok(Self(value))
+        } else {
+            Err(serde::de::Error::custom("Invalid flex basis tag"))
+        }
+    }
+}
 
 /// The set of styles required for a Flexbox container
 pub trait FlexboxContainerStyle: CoreStyle {
@@ -44,7 +181,7 @@ pub trait FlexboxContainerStyle: CoreStyle {
 pub trait FlexboxItemStyle: CoreStyle {
     /// Sets the initial main axis size of the item
     #[inline(always)]
-    fn flex_basis(&self) -> Dimension {
+    fn flex_basis(&self) -> FlexBasis {
         Style::<Self::CustomIdent>::DEFAULT.flex_basis
     }
     /// The relative rate at which this item grows when it is expanding to fill space

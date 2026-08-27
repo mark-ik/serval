@@ -756,9 +756,10 @@ fn determine_flex_base_size(
             Size::ZERO
         }
         .main(dir);
-        let flex_basis = child_style
-            .flex_basis()
-            .maybe_resolve(container_width, |val, basis| tree.calc(val, basis))
+        let flex_basis = child_style.flex_basis();
+        let resolved_flex_basis = flex_basis
+            .into_dimension()
+            .and_then(|basis| basis.maybe_resolve(container_width, |val, basis| tree.calc(val, basis)))
             .maybe_add(box_sizing_adjustment);
 
         drop(child_style);
@@ -771,10 +772,10 @@ fn determine_flex_base_size(
             //    then the flex base size is calculated from its inner
             //    cross size and the flex item’s intrinsic aspect ratio.
 
-            // Note: `child.size` has already been resolved against aspect_ratio in generate_anonymous_flex_items
-            // So B will just work here by using main_size without special handling for aspect_ratio
-            let main_size = child.size.main(dir);
-            if let Some(flex_basis) = flex_basis.or(main_size) {
+            // `auto` retrieves a definite preferred main size here. `content`
+            // bypasses that fallback and continues to intrinsic measurement below.
+            let preferred_main_size = if flex_basis.is_auto() { child.size.main(dir) } else { None };
+            if let Some(flex_basis) = resolved_flex_basis.or(preferred_main_size) {
                 break 'flex_basis flex_basis;
             };
 

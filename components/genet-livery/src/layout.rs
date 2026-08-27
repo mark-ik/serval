@@ -47,8 +47,8 @@ use taffy::{
     },
     style::{
         AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, BoxSizing, Display,
-        FlexDirection, FlexWrap, Float as TaffyFloat, GridAutoFlow, GridPlacement,
-        GridTemplateComponent, JustifyContent, Overflow, Position, Style,
+        FlexBasis as TaffyFlexBasis, FlexDirection, FlexWrap, Float as TaffyFloat, GridAutoFlow,
+        GridPlacement, GridTemplateComponent, JustifyContent, Overflow, Position, Style,
     },
 };
 
@@ -7680,7 +7680,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             CssFlexWrap::Wrap => FlexWrap::Wrap,
             CssFlexWrap::WrapReverse => FlexWrap::WrapReverse,
         },
-        flex_basis: flex_basis_dimension(computed.flex_basis, font_size),
+        flex_basis: flex_basis(computed.flex_basis, font_size),
         flex_grow: computed.flex_grow.value(),
         flex_shrink: computed.flex_shrink.value(),
         order: computed.order.value(),
@@ -8158,21 +8158,24 @@ fn dimension(size: CssSize, em: f32) -> Dimension {
     }
 }
 
-/// Temporary boundary while vendored Taffy has only `Dimension` for a flex
-/// basis. CSS `content` and intrinsic bases deliberately remain visible in
-/// Livery's computed value and collapse to Taffy `auto` here. They need a
-/// flex-specific Taffy basis API before this lowering can become semantic.
-fn flex_basis_dimension(basis: CssFlexBasis, em: f32) -> Dimension {
+/// Taffy preserves CSS `auto` and `content` as separate used-value paths.
+/// Intrinsic keyword bases remain outside this bounded adapter and continue to
+/// use its `auto` compatibility lowering.
+fn flex_basis(basis: CssFlexBasis, em: f32) -> TaffyFlexBasis {
     match basis {
         CssFlexBasis::Value(value) => match value {
-            CssLengthPercentage::Percentage(value) => Dimension::percent(value),
-            _ => Dimension::length(absolute_length_percentage(value, em, 16.0, 0.0)),
+            CssLengthPercentage::Percentage(value) => {
+                TaffyFlexBasis::from(Dimension::percent(value))
+            },
+            _ => TaffyFlexBasis::from(Dimension::length(absolute_length_percentage(
+                value, em, 16.0, 0.0,
+            ))),
         },
-        CssFlexBasis::Auto
-        | CssFlexBasis::Content
-        | CssFlexBasis::MinContent
-        | CssFlexBasis::MaxContent
-        | CssFlexBasis::FitContent => Dimension::auto(),
+        CssFlexBasis::Auto => TaffyFlexBasis::auto(),
+        CssFlexBasis::Content => TaffyFlexBasis::content(),
+        CssFlexBasis::MinContent | CssFlexBasis::MaxContent | CssFlexBasis::FitContent => {
+            TaffyFlexBasis::auto()
+        },
     }
 }
 
