@@ -5,9 +5,10 @@
 **Status:** In progress. The `flex` and `flex-flow` cascade, bounded
 specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
 generic inline declaration reflection, and physical flex main-axis, alignment,
-and gap projection are complete. The flex-basis content used-value slice and
-its eight focused reftests are complete. Row 18 remains open for automatic
-minimums, the remaining vertical-flex work, and grid.
+and gap projection are complete. The flex-basis content used-value and
+automatic-minimum-size slices are complete. Row 18 remains open for the
+remaining vertical-flex work, shared `ex` and zero-percentage provenance, and
+grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -323,7 +324,7 @@ The executable, predecessor and final maps, native details, and commands are
 recorded under
 `testing/genet/wpt-ledger/2026-08-27_flex_cssom_reflection`.
 
-## Remaining Row 18 work
+## Row 18 closure and remaining work
 
 The `flex-basis: content` slice is complete: `content` bypasses the preferred
 main-size fallback while `auto` retains it; the row and column content queries
@@ -331,15 +332,28 @@ measure Buckram-owned content at the required max-content or fit-content size;
 and all eight `flexbox-flex-basis-content-*` reftests pass twice under exact
 release receipts in
 `testing/genet/wpt-ledger/2026-08-27_flex_basis_content`. The Taffy complete
-delta is regenerated and verified, but this work does not claim a new
-published `genet-taffy` release.
+delta is regenerated and verified. The automatic-minimum-size candidate is
+also receipt-complete: its focused Genet-Livery regression passes 1 / 1, and
+the exact Livery receipt covers that case plus the eight content-basis
+adjacency cases, all nine passing from HEAD `9d23efc433d`. The receipt is
+recorded at
+`testing/genet/wpt-ledger/2026-08-27_flex_automatic_minimum`, with runner
+SHA-256
+`1711e2b1a3a5b943ac92aa83ac4816fb02ed69272b4c17eed525efcfeb5454c4` and WPT
+manifest SHA-256
+`d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422`.
+The package-gate baseline remains Livery 192 passed / 0 failed / 4 ignored,
+Genet-Livery 223 passed plus the known canvas baseline failure, and Buckram
+254 / 254. The canvas result is unchanged: the pre-existing
+`replaced_html_dimensions_use_computed_css_and_canvas_intrinsics` assertion
+observes `200 x 200` instead of `100 x 100` on the untouched baseline. The
+corresponding `genet-taffy` publication remains pending root confirmation;
+this receipt does not claim a published 0.13.2 release.
 
-- Add shared `ex` font metrics and generic zero-percentage provenance rather
-  than encoding either exception inside `FlexBasis`.
-- Repair the automatic-minimum-size residual in vendored Taffy and publish the
-  corresponding fork release.
 - Validate and repair the remaining vertical-flex cross-axis alignment and
   wrap-reversal surface beyond the main-axis projection.
+- Add shared `ex` font metrics and generic zero-percentage provenance rather
+  than encoding either exception inside `FlexBasis`.
 - Inventory and implement the remaining grid surface, including auto tracks
   and template areas, under its own current-main receipt.
 
@@ -433,3 +447,9 @@ published `genet-taffy` release.
   same `replaced_html_dimensions_use_computed_css_and_canvas_intrinsics`
   failure, which observes `200 × 200` instead of its expected `100 × 100`,
   occurs on the untouched baseline and is not attributed to this slice.
+- Repaired the nested wrapped-column automatic-minimum-size residual in the
+  vendored Taffy candidate and added the focused Genet-Livery geometry
+  regression. The exact frozen Livery receipt passes the automatic-minimum
+  case and all eight content-basis adjacency cases; its runner, manifest, and
+  per-case maps are recorded under
+  `testing/genet/wpt-ledger/2026-08-27_flex_automatic_minimum`.

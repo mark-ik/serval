@@ -8,9 +8,10 @@ rows 19+20+21 are complete. Row 12's rectangular, horizontal rounded,
 relative float-state, and horizontal direction slices are complete, while the
 row remains in progress. Row 18's flex shorthand, bounded CSSOM, distinct
 flex-basis specified/computed model, generic declaration reflection, and
-physical main-axis, alignment, and gap projection slices are complete, while
-the row remains in progress for flex-basis content used values and automatic
-minimums, the remaining vertical-flex work, and grid.
+physical main-axis, alignment, and gap projection slices are complete, as are
+the flex-basis content used-value and automatic-minimum-size slices. Row 18
+remains in progress for the remaining vertical-flex work, shared `ex` and
+zero-percentage provenance, and grid.
 Wave 2 is unblocked. Every other row remains an inventory item until its
 current-main receipt is named below.
 
@@ -79,7 +80,7 @@ plans and receipts.
 | 10 | Writing modes | **Complete** | Orthogonal auto inline sizing now uses the direct perpendicular block child's intrinsic block contribution. The exact writing-modes map moves from 186 to 193 verified passes with seven gains and zero losses. Text orientation, text combine, fragmentation, and algorithm-owned positioned/table/flex/grid residuals retain their named owners. See the [current-main reconciliation](2026-08-24_buckram_writing_modes_reconciliation.md). |
 | 12 | Floats and shapes | **In progress** | Horizontal box-valued shapes use rectangular or circular rounded line-exclusion areas while margin-box placement remains separate. Relative blocks retain float state, and LTR/RTL boundaries mirror that state through descendant content coordinates. The latest exact shape-box map is 27 pass / 15 assigned failures; full CSS has 11 gains and 3 assigned false-pass losses. See the [rectangular](2026-08-25_buckram_float_shape_boxes_reconciliation.md), [rounded](2026-08-25_buckram_rounded_shape_boxes_reconciliation.md), [relative float-state](2026-08-25_buckram_relative_float_state_reconciliation.md), and [horizontal direction](2026-08-25_buckram_horizontal_float_direction_reconciliation.md) reconciliations. |
 | 17 | Counters, lists, generated content | Livery `content`/`counter-*` cascade and marker boxes | Open |
-| 18 | Flex and grid | **In progress** | `flex` and `flex-flow` expand into the existing Taffy-facing longhands, bounded specified/computed CSSOM and generic inline declaration reflection are live, `flex-basis` has its own specified/computed model with deferred relative-length clamping, and logical main-axis, `start/end`, and gap values reach Taffy's physical model. The accepted continuations add 19 exact flexbox reftest gains and 91 parsing-subtest gains with zero losses; the latest reflection slice moves 113 / 183 to 159 / 183. Content used-value sizing, automatic minimums, shared `ex` and zero-percentage support, the remaining vertical-flex surface, and grid stay open. See the [flex shorthand plan](../design_docs/2026-08-25_livery_flex_shorthand_plan.md). |
+| 18 | Flex and grid | **In progress** | `flex` and `flex-flow` expand into the existing Taffy-facing longhands, bounded specified/computed CSSOM and generic inline declaration reflection are live, `flex-basis` has its own specified/computed model with deferred relative-length clamping, and logical main-axis, `start/end`, and gap values reach Taffy's physical model. The accepted continuations add 19 exact flexbox reftest gains and 91 parsing-subtest gains with zero losses; the latest reflection slice moves 113 / 183 to 159 / 183. Content used-value sizing and automatic minimums are complete. The exact nine-case Livery receipt is recorded under `testing/genet/wpt-ledger/2026-08-27_flex_automatic_minimum` from HEAD `9d23efc433d`, with runner SHA-256 `1711e2b1a3a5b943ac92aa83ac4816fb02ed69272b4c17eed525efcfeb5454c4` and manifest SHA-256 `d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422`. The native gates are Genet-Livery 1 / 1 for the focused regression and Buckram 254 / 254; the known canvas baseline remains unchanged. Remaining order: vertical-flex cross-axis alignment and wrap-reversal, shared `ex` and zero-percentage provenance, then grid auto tracks and template areas. The corresponding `genet-taffy` publication remains pending root confirmation. See the [flex shorthand plan](../design_docs/2026-08-25_livery_flex_shorthand_plan.md). |
 
 Lane 8 retained `with_out_of_flow_children_excluded`. It still has named
 fallback and backend-sizing call sites, so deletion is not a condition for
