@@ -4,4 +4,4 @@ This body was held by Pelt and lowered through Nematic.
 
 > P5 protocol-native marker
 
-=> gemini://p5.test/next P5 native link marker
+=> gemini://pelt.test/p5-gemtext/next.gmi Open native next page

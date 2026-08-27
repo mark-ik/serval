@@ -1,0 +1,5 @@
+# P5 native navigation arrived
+
+The native navigation target arrived through the Gemtext route.
+
+=> gemini://pelt.test/p5-gemtext/index.gmi Return to native Gemtext receipt

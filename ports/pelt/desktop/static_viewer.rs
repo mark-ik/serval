@@ -39,7 +39,8 @@ pub enum ProductReceipt {
     TextFragment,
     /// Redirected document with a linked/imported stylesheet resource graph.
     Resources,
-    /// Held Gemtext body lowered through Nematic's native protocol lane.
+    /// Held Gemtext lowered by Nematic and navigated through the retained
+    /// smolweb session controller.
     Gemtext,
 }
 
@@ -66,8 +67,9 @@ impl ProductReceipt {
             | Self::Controls
             | Self::Responsive
             | Self::Scripted
-            | Self::TextFragment => (960, 640),
-            Self::Resources | Self::Gemtext => (960, 640),
+            | Self::TextFragment
+            | Self::Resources
+            | Self::Gemtext => (960, 640),
         }
     }
 
@@ -77,8 +79,9 @@ impl ProductReceipt {
             | Self::Controls
             | Self::Responsive
             | Self::Scripted
-            | Self::TextFragment => 3,
-            Self::Resources | Self::Gemtext => 3,
+            | Self::TextFragment
+            | Self::Resources
+            | Self::Gemtext => 3,
         }
     }
 }
@@ -90,6 +93,9 @@ pub(crate) fn validate_receipt_profile(
     let Some(receipt) = config.product_receipt else {
         return Ok(());
     };
+    if receipt == ProductReceipt::Gemtext {
+        return Err("product receipt gemtext is owned by the smolweb profile".to_owned());
+    }
     if receipt.needs_scripted_profile() == scripted_profile {
         return Ok(());
     }
@@ -346,6 +352,33 @@ mod receipt_profile_tests {
             assert_eq!(
                 result.expect_err("scripted receipt must not enter livery"),
                 "product receipt scripted is owned by the scripted profile"
+            );
+        }
+    }
+
+    #[test]
+    fn livery_entrypoints_reject_the_smolweb_receipt_before_windowing() {
+        for result in [
+            run_static_viewer(
+                StaticViewerConfig::new(
+                    EngineProfile::Livery,
+                    WindowingMode::Headless,
+                    "gemini://pelt.test/p5-gemtext/index.gmi",
+                )
+                .with_product_receipt(ProductReceipt::Gemtext, "unused.png"),
+            ),
+            run_livery_viewer(
+                StaticViewerConfig::new(
+                    EngineProfile::Livery,
+                    WindowingMode::Headless,
+                    "gemini://pelt.test/p5-gemtext/index.gmi",
+                )
+                .with_product_receipt(ProductReceipt::Gemtext, "unused.png"),
+            ),
+        ] {
+            assert_eq!(
+                result.expect_err("Gemtext receipt must not enter Livery"),
+                "product receipt gemtext is owned by the smolweb profile"
             );
         }
     }
@@ -1702,6 +1735,151 @@ impl windowed::ViewerContent for ControllerViewerContent {
                         .to_owned(),
                 )
             },
+            StaticProductReceipt::Gemtext => {
+                const NEXT_URL: &str = "gemini://pelt.test/p5-gemtext/next.gmi";
+                const START_URL: &str = "gemini://pelt.test/p5-gemtext/index.gmi";
+
+                if self.controller.engine_id() != inker::routing::ENGINE_NEMATIC_GEMTEXT {
+                    return Err(format!(
+                        "gemtext receipt routed through {:?} instead of {:?}",
+                        self.controller.engine_id(),
+                        inker::routing::ENGINE_NEMATIC_GEMTEXT,
+                    ));
+                }
+                if !self
+                    .controller
+                    .request()
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| {
+                        body.contains("This body was held by Pelt and lowered through Nematic.")
+                    })
+                {
+                    return Err(
+                        "gemtext receipt did not preserve its host-held initial body".to_owned(),
+                    );
+                }
+                if self.controller.request().content_type.as_deref() != Some("text/gemini") {
+                    return Err(format!(
+                        "gemtext receipt lost its host-held content type: {:?}",
+                        self.controller.request().content_type,
+                    ));
+                }
+                if self.controller.title().as_deref() != Some("P5 native Gemtext receipt") {
+                    return Err(format!(
+                        "gemtext receipt initial title drifted: {:?}",
+                        self.controller.title(),
+                    ));
+                }
+                let initial_report = self.controller.inspect().ok_or_else(|| {
+                    "gemtext receipt has no initial retained document report".to_owned()
+                })?;
+                if !initial_report.links.iter().any(|url| url == NEXT_URL) {
+                    return Err(format!(
+                        "gemtext receipt report lost its outgoing link: {:?}",
+                        initial_report.links,
+                    ));
+                }
+
+                let viewport = self.controller.request().viewport;
+                let initial_scene = self.controller.frame(viewport.0, viewport.1);
+                if !initial_scene.ops.iter().any(|operation| {
+                    matches!(
+                        operation,
+                        netrender::SceneOp::GlyphRun(run) if !run.glyphs.is_empty()
+                    )
+                }) {
+                    return Err("gemtext receipt did not paint retained text".to_owned());
+                }
+                let link = self
+                    .controller
+                    .links()
+                    .into_iter()
+                    .find(|link| link.url == NEXT_URL)
+                    .ok_or_else(|| {
+                        "gemtext receipt could not find its retained native link".to_owned()
+                    })?;
+                let [left, top, width, height] = link.rect;
+                if !link.rect.into_iter().all(f32::is_finite) || width <= 0.0 || height <= 0.0 {
+                    return Err(format!(
+                        "gemtext receipt native link has invalid geometry: {:?}",
+                        link.rect,
+                    ));
+                }
+                let pointer = |state| inker::SessionInput::PointerButton {
+                    x: left + width * 0.5,
+                    y: top + height * 0.5,
+                    button: inker::SessionPointerButton::Primary,
+                    state,
+                    modifiers: inker::SessionModifiers::default(),
+                };
+                let pressed = self
+                    .controller
+                    .input(pointer(inker::SessionButtonState::Pressed));
+                if !pressed.handled
+                    || pressed.pointer_capture != Some(true)
+                    || pressed.error.is_some()
+                {
+                    return Err(format!(
+                        "gemtext receipt native link press did not begin a retained gesture: {pressed:?}"
+                    ));
+                }
+                let released = self
+                    .controller
+                    .input(pointer(inker::SessionButtonState::Released));
+                if released.pointer_capture != Some(false) || released.error.is_some() {
+                    return Err(format!(
+                        "gemtext receipt native link release did not end the retained gesture: {released:?}"
+                    ));
+                }
+                if pressed.navigated == released.navigated {
+                    return Err(format!(
+                        "gemtext receipt native gesture navigated an unexpected number of times: press={pressed:?} release={released:?}"
+                    ));
+                }
+                if self.controller.address() != NEXT_URL {
+                    return Err(format!(
+                        "gemtext receipt navigated to {:?} instead of {NEXT_URL:?}",
+                        self.controller.address(),
+                    ));
+                }
+                if self.controller.request().body.is_some() {
+                    return Err(
+                        "gemtext receipt navigation reused the held initial body".to_owned()
+                    );
+                }
+                if self.controller.request().content_type.is_some() {
+                    return Err(
+                        "gemtext receipt navigation reused the held initial content type"
+                            .to_owned(),
+                    );
+                }
+                let destination = self.controller.inspect().ok_or_else(|| {
+                    "gemtext receipt destination has no retained document report".to_owned()
+                })?;
+                if destination.title.as_deref() != Some("P5 native navigation arrived")
+                    || !destination.links.iter().any(|url| url == START_URL)
+                {
+                    return Err(format!(
+                        "gemtext receipt destination report drifted: {destination:?}"
+                    ));
+                }
+                let destination_scene = self.controller.frame(viewport.0, viewport.1);
+                if !destination_scene.ops.iter().any(|operation| {
+                    matches!(
+                        operation,
+                        netrender::SceneOp::GlyphRun(run) if !run.glyphs.is_empty()
+                    )
+                }) {
+                    return Err(
+                        "gemtext receipt destination did not paint retained text".to_owned()
+                    );
+                }
+                Ok(
+                    "held Gemtext body lowered through Nematic; retained native link navigated through PeltController"
+                        .to_owned(),
+                )
+            },
             StaticProductReceipt::TextFragment => {
                 const TARGET: &str = "The retained text fragment target";
                 let clip = self
@@ -1739,9 +1917,6 @@ impl windowed::ViewerContent for ControllerViewerContent {
                     "text fragment selected, scrolled into view, indicated, and retained one document fetch"
                         .to_owned(),
                 )
-            },
-            StaticProductReceipt::Gemtext => {
-                Err("gemtext receipt is owned by the smolweb viewer".to_owned())
             },
         }
     }

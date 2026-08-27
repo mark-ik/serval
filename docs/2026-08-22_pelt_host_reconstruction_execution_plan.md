@@ -552,8 +552,42 @@ identity. It recorded `redirected identity, imported cascade, linked image/font,
 and fetch trace held`, with digest `b2736b2a574240f7`. Two successive captures
 were byte-identical at 88,850 bytes with SHA-256
 `77b75a5b7da67b354c63513f6f339b317a3690b4eddc13a8b57feb4a702b2f65`.
-The focused retained-resource assertion passes, followed by the full 16/16
+The focused retained-resource assertion passes, followed by the full 15/15
 `pelt-desktop` Livery test wall and its doc-test wall.
+
+The protocol-native Gemtext receipt is:
+
+```sh
+cargo run --locked --offline -p pelt --no-default-features --features smolweb -j 1 -- \
+  --product-receipt gemtext \
+  --artifact target/pelt-receipts/gemtext.png
+```
+
+The receipt owns `examples/p5-gemtext/index.gmi` and its linked `next.gmi`, the
+same 960x640 physical viewport, and three presented frames. Pelt supplies the
+initial `text/gemini` body through `SessionSpawnRequest`; the registered
+`SmolwebSessionEngine` lowers it through Nematic without consulting transport.
+A receipt-local fetcher serves only the two fixed Gemtext URLs so the retained
+native link can open the second document without network access.
+
+The GPU-free driver proves the controller's engine ID is
+`nematic.gemtext`, the held body and content type survive the initial spawn,
+the structural report and retained hit table expose the resolved native link,
+and both documents paint nonempty Gemtext glyph runs. Smolweb currently uses
+Inker's compatibility click-on-press floor: the primary press captures and
+navigates exactly once, pointer-up releases capture, and `PeltController`
+replaces the initial request with a fresh bodyless request for the fixed
+destination. The destination title, return link, and painted scene must all
+pass before capture is accepted.
+
+The 2026-08-27 locked, offline Windows receipt presented three 960x640 frames
+and captured the navigated document with its retained return link. It recorded
+`held Gemtext body lowered through Nematic; retained native link navigated
+through PeltController`, digest `5c8cf8e4e09843d3`, and a 69,169-byte PNG with
+SHA-256
+`8465cb47b4667bb5ca49d283c1bd53804ad98f8727be79aedefa86bf395615c8`.
+The focused routed controller test passes 1/1, followed by the full 17/17
+`pelt-desktop` Smolweb test wall.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 
@@ -569,26 +603,6 @@ contains the exact target, its geometry is visible, and the primary-document
 fetch ledger remains at one. The 2026-08-26 Windows run presented three
 960x640 frames, visibly painted the blue selection indication, and recorded
 digest `bc3106237d566a57`. Its GPU-free semantic driver passed 1/1.
-
-The protocol-native Gemtext receipt is a standalone smolweb proof:
-
-    cargo run --locked --offline -p pelt --no-default-features --features smolweb -j 1 -- \
-      --product-receipt gemtext \
-      --artifact target/pelt-receipts/gemtext.png
-
-Pelt owns the held bytes from `examples/p5-gemtext/index.gmi` and supplies them
-to `SmolwebDocument::parse`. The receipt assertion requires Nematic Gemtext
-provenance (`nematic.gemtext`), `text/gemini`, the exact heading marker, and the
-native link marker. The shared headed shell captures three 960x640 frames; the
-focused GPU-free test proves the same lowering and semantic assertion without a
-transport fetch.
-
-The 2026-08-27 locked, offline Windows receipt presented three 960x640 frames
-and recorded `held Gemtext bytes lowered by Nematic and painted through
-smolweb`, with digest `a87db5192667af1b`. Two successive captures were
-byte-identical at 69,982 bytes with SHA-256
-`e54aea8f30cb0980b7687c82614f9b8d44bf15bbed0c0882a60f9aa1d107c85b`.
-The full smolweb-enabled `pelt-desktop` library wall passes 16/16.
 
 Check in deterministic fixtures and bounded headed capture commands for:
 
