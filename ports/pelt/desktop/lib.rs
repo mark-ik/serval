@@ -106,8 +106,8 @@ pub use static_viewer::run_livery_viewer;
 #[cfg(feature = "reader")]
 pub use static_viewer::run_reader_viewer;
 pub use static_viewer::{
-    StaticProductReceipt, StaticProductReceiptOutcome, StaticViewerConfig, StaticViewerOutcome,
-    run_static_viewer,
+    ProductReceipt, ProductReceiptOutcome, StaticProductReceipt, StaticProductReceiptOutcome,
+    StaticViewerConfig, StaticViewerOutcome, run_static_viewer,
 };
 #[cfg(feature = "livery")]
 pub use workspace_viewer::{

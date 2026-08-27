@@ -1215,15 +1215,6 @@ struct ClipRange<Id> {
     focus_offset: usize,
 }
 
-#[cfg(feature = "scripted")]
-#[derive(Clone, Copy)]
-struct ClipRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
 struct ClipSelection<Id> {
     range: ClipRange<Id>,
     text: String,
@@ -1385,13 +1376,31 @@ where
 }
 
 #[cfg(feature = "scripted")]
-fn rect_intersects_selection(rect: [f32; 4], selected: &ClipRect) -> bool {
-    let selected_right = selected.x + selected.width;
-    let selected_bottom = selected.y + selected.height;
-    rect[0] < selected_right
-        && rect[2] > selected.x
-        && rect[1] < selected_bottom
-        && rect[3] > selected.y
+fn links_for_source_nodes<D>(dom: &D, sources: &[D::NodeId]) -> Vec<String>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq,
+{
+    let mut links = Vec::new();
+    for source in sources {
+        let mut node = Some(*source);
+        while let Some(current) = node {
+            if dom.kind(current) == NodeKind::Element
+                && dom
+                    .element_name(current)
+                    .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("a"))
+                && let Some(href) =
+                    dom.attribute(current, &Namespace::default(), &LocalName::from("href"))
+            {
+                if !links.iter().any(|seen| seen == href) {
+                    links.push(href.to_owned());
+                }
+                break;
+            }
+            node = dom.parent(current);
+        }
+    }
+    links
 }
 
 // ── Scripted lane (genet.scripted / genet.scripted.nova) ────────────────
@@ -1450,6 +1459,8 @@ where
         let mut session = ScriptedDocumentSession {
             doc,
             address: navigation.script_visible_url,
+            pressed_target: None,
+            pointer_active: false,
         };
         if request.hidden {
             session.doc.set_hidden(true);
@@ -1465,6 +1476,8 @@ where
 pub struct ScriptedDocumentSession<E: script_engine_api::ScriptEngine> {
     doc: genet_scripted::LiveryScriptedDocument<E>,
     address: String,
+    pressed_target: Option<genet_scripted_dom::NodeId>,
+    pointer_active: bool,
 }
 
 #[cfg(feature = "scripted")]
@@ -1480,6 +1493,8 @@ impl<E: script_engine_api::ScriptEngine + 'static> ScriptedDocumentSession<E> {
         Self {
             doc,
             address: address.into(),
+            pressed_target: None,
+            pointer_active: false,
         }
     }
 }
@@ -1502,30 +1517,51 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
         self.doc.scroll_for_key(scripted_scroll_key(key))
     }
     fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
-        // The scripted lane's bool is "a handler consumed it"; navigation
-        // flows through the links table, same as the host does today.
-        if self.doc.click_at(x, y) {
-            SessionClick::Handled
-        } else {
-            SessionClick::Miss
+        match self.doc.click_at_result(x, y) {
+            genet_scripted::ScriptedClick::Miss => SessionClick::Miss,
+            genet_scripted::ScriptedClick::Handled => SessionClick::Handled,
+            genet_scripted::ScriptedClick::Navigate(target) => SessionClick::Navigate(target),
         }
     }
     fn pointer_down(&mut self, x: f32, y: f32) -> SessionClick {
-        if self.doc.begin_text_selection(x, y) {
+        let pressed_target = self.doc.click_target_at(x, y);
+        self.pressed_target = pressed_target;
+        self.pointer_active = self.doc.begin_text_selection(x, y) || pressed_target.is_some();
+        if self.pointer_active {
             SessionClick::Handled
         } else {
-            self.click_at(x, y)
+            SessionClick::Miss
         }
     }
     fn pointer_move(&mut self, x: f32, y: f32) -> bool {
         self.doc.extend_text_selection(x, y)
     }
     fn pointer_up(&mut self, x: f32, y: f32) -> SessionClick {
+        if !std::mem::replace(&mut self.pointer_active, false) {
+            self.pressed_target = None;
+            return SessionClick::Miss;
+        }
+        let pressed_target = self.pressed_target.take();
         if self.doc.finish_text_selection(x, y) {
             SessionClick::Handled
-        } else {
+        } else if pressed_target.is_some() && self.doc.click_target_at(x, y) == pressed_target {
             self.click_at(x, y)
+        } else {
+            SessionClick::Miss
         }
+    }
+    fn focus_input(&mut self, focused: bool) {
+        if !focused && self.pointer_active {
+            self.pointer_active = false;
+            self.pressed_target = None;
+            let _ = self.doc.cancel_text_selection();
+        }
+    }
+    fn cancel_input(&mut self) -> bool {
+        let had_pointer = std::mem::replace(&mut self.pointer_active, false)
+            || self.pressed_target.take().is_some();
+        self.pressed_target = None;
+        self.doc.cancel_text_selection() || had_pointer
     }
     fn text_target(&self, text: &str) -> Option<SessionTextTarget> {
         let (anchor, focus) = self.doc.text_target(text)?;
@@ -1551,27 +1587,10 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
         Some(self.doc.with_dom(content_report))
     }
     fn clip(&self) -> Option<DocumentClip> {
-        let links = self.doc.links();
         let selection = self.doc.text_selection();
         self.doc.with_dom(|dom| match selection {
             Some(selection) => {
-                let mut selected_links = Vec::new();
-                for (url, rect) in links {
-                    if selection.rects.iter().any(|selected| {
-                        rect_intersects_selection(
-                            rect,
-                            &ClipRect {
-                                x: selected.x,
-                                y: selected.y,
-                                width: selected.width,
-                                height: selected.height,
-                            },
-                        )
-                    }) && !selected_links.iter().any(|seen| seen == &url)
-                    {
-                        selected_links.push(url);
-                    }
-                }
+                let selected_links = links_for_source_nodes(dom, &selection.source_nodes);
                 semantic_clip_from_selection_with_links(
                     &self.address,
                     dom,
@@ -1933,8 +1952,8 @@ mod tests {
         let request = SessionSpawnRequest::new("https://example.test/report")
             .with_body(
                 "<html><head><title>Live Page</title></head><body style=\"margin:0\">\
-                 <p style=\"margin:0\">before <a id=\"choice\" href=\"/chosen\"></a> after \
-                 <a href=\"/outside\">outside</a></p>\
+                 <p style=\"margin:0\">before <a id=\"choice\" href=\"/chosen\"></a> and \
+                 <a href=\"/also\">second link</a> after <a href=\"/outside\">outside</a></p>\
                  <script>document.getElementById('choice').appendChild(\
                  document.createTextNode('selected link'));</script>\
                  </body></html>",
@@ -1952,17 +1971,20 @@ mod tests {
 
         let target = session
             .text_target("selected link")
-            .expect("post-script text resolves to pointer endpoints");
+            .expect("post-script first link resolves to pointer endpoints");
+        let second = session
+            .text_target("second link")
+            .expect("second link resolves to pointer endpoints");
         assert_eq!(
             session.pointer_down(target.anchor[0], target.anchor[1]),
             SessionClick::Handled
         );
         assert!(
-            session.pointer_move(target.focus[0], target.focus[1]),
+            session.pointer_move(second.focus[0], second.focus[1]),
             "the live range extends through ordinary pointer input"
         );
         assert_eq!(
-            session.pointer_up(target.focus[0], target.focus[1]),
+            session.pointer_up(second.focus[0], second.focus[1]),
             SessionClick::Handled
         );
         let selected = session.frame(640, 200);
@@ -1978,16 +2000,154 @@ mod tests {
 
         let clip = session.clip().expect("live selection supplies a clip");
         assert_eq!(clip.source_url, "https://example.test/report");
-        assert_eq!(clip.text, "selected link");
-        assert_eq!(clip.links, vec!["/chosen"]);
+        assert_eq!(clip.text, "selected link and second link");
+        assert_eq!(clip.links, vec!["/chosen", "/also"]);
         let selector: serde_json::Value =
             serde_json::from_str(clip.selector.as_deref().expect("range selector"))
                 .expect("selector is typed JSON");
         assert_eq!(selector["type"], "dom-range");
         assert_eq!(selector["version"], 1);
-        assert_eq!(selector["quote"], "selected link");
+        assert_eq!(selector["quote"], "selected link and second link");
         assert!(selector["anchor"]["path"].is_array());
         assert!(selector["focus"]["path"].is_array());
+    }
+
+    #[cfg(feature = "scripted")]
+    #[test]
+    fn scripted_session_returns_only_uncancelled_external_navigation() {
+        let engine = ScriptedSessionEngine::<script_engine_boa::BoaEngine, _>::new(
+            "genet.scripted",
+            NoFetch,
+        );
+        let request = SessionSpawnRequest::new("https://example.test/start")
+            .with_body(
+                r#"<body style="margin:0">
+                    <style>a { display:block; width:180px; padding:20px; }</style>
+                    <p>Selection start</p>
+                    <a href="next.html"><span>Open next</span></a>
+                    <a id="blocked" href="blocked.html">Stay here</a>
+                    <a id="changed" href="old.html">Change target</a>
+                    <script>
+                      document.addEventListener('click', function (event) {
+                        if (event.target.id === 'blocked') event.preventDefault();
+                        if (event.target.id === 'changed') {
+                          event.target.setAttribute('href', 'changed.html');
+                        }
+                      });
+                    </script>
+                </body>"#,
+            )
+            .with_viewport(640, 200);
+        let mut session = engine.spawn(&request).expect("scripted lane spawns");
+        let _scene = session.frame(640, 200);
+        session.pump(1.0);
+
+        let right_padding = |target: SessionTextTarget| {
+            (
+                target.focus[0] + 8.0,
+                (target.anchor[1] + target.focus[1]) * 0.5,
+            )
+        };
+        let next_text = session
+            .text_target("Open next")
+            .expect("next link geometry");
+        let next_padding = right_padding(next_text);
+        assert_eq!(
+            session.pointer_down(next_padding.0, next_padding.1),
+            SessionClick::Handled,
+            "an anchor-padding press starts capture without navigating"
+        );
+        assert_eq!(
+            session.pointer_up(
+                next_text.focus[0] - 0.5,
+                (next_text.anchor[1] + next_text.focus[1]) * 0.5,
+            ),
+            SessionClick::Navigate("next.html".to_owned()),
+            "release on the same anchor's inline child keeps one activation target"
+        );
+
+        assert_eq!(
+            session.pointer_down(next_padding.0, next_padding.1),
+            SessionClick::Handled
+        );
+        assert_eq!(
+            session.pointer_up(500.0, 190.0),
+            SessionClick::Handled,
+            "release outside becomes a selection instead of navigation"
+        );
+        assert_eq!(
+            session.pointer_up(next_padding.0, next_padding.1),
+            SessionClick::Miss,
+            "a mismatched release clears the retained press"
+        );
+
+        let blocked = right_padding(
+            session
+                .text_target("Stay here")
+                .expect("cancelled link geometry"),
+        );
+        assert_eq!(
+            session.pointer_down(blocked.0, blocked.1),
+            SessionClick::Handled
+        );
+        assert_eq!(
+            session.pointer_up(blocked.0, blocked.1),
+            SessionClick::Handled,
+            "preventDefault cancels navigation through the ordinary release path"
+        );
+
+        let changed = right_padding(
+            session
+                .text_target("Change target")
+                .expect("mutating link geometry"),
+        );
+        assert_eq!(
+            session.pointer_down(changed.0, changed.1),
+            SessionClick::Handled
+        );
+        assert_eq!(
+            session.pointer_up(changed.0, changed.1),
+            SessionClick::Navigate("changed.html".to_owned()),
+            "the default action reads href after uncancelled listeners run"
+        );
+
+        assert_eq!(
+            session.pointer_down(blocked.0, blocked.1),
+            SessionClick::Handled
+        );
+        let cancelled = session.input(inker::SessionInput::Cancel);
+        assert_eq!(cancelled.effect, SessionEffect::Cancelled);
+        assert_eq!(
+            session.pointer_up(blocked.0, blocked.1),
+            SessionClick::Miss,
+            "cancelled capture cannot activate on a later release"
+        );
+
+        assert_eq!(
+            session.pointer_down(changed.0, changed.1),
+            SessionClick::Handled
+        );
+        let blurred = session.input(inker::SessionInput::Focus(false));
+        assert_eq!(blurred.effect, SessionEffect::Handled);
+        assert_eq!(
+            session.pointer_up(changed.0, changed.1),
+            SessionClick::Miss,
+            "focus loss clears a captured press before its later release"
+        );
+
+        let drag_start = session
+            .text_target("Selection start")
+            .expect("selection start geometry");
+        assert_eq!(
+            session.pointer_down(drag_start.anchor[0], drag_start.anchor[1]),
+            SessionClick::Handled
+        );
+        assert!(session.pointer_move(next_text.focus[0], next_text.focus[1]));
+        assert_eq!(
+            session.pointer_up(next_text.focus[0], next_text.focus[1]),
+            SessionClick::Handled,
+            "a drag selection ending on a link wins over navigation"
+        );
     }
 
     #[cfg(feature = "livery")]

@@ -24,7 +24,7 @@ use std::{
 
 /// One named bounded product receipt implemented by the single-document host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StaticProductReceipt {
+pub enum ProductReceipt {
     /// Ordinary script-free article with linked CSS, font, images, tables, and
     /// an in-page jump-link interaction.
     Article,
@@ -32,32 +32,84 @@ pub enum StaticProductReceipt {
     Controls,
     /// Viewport-driven grid reflow beside a retained two-column table.
     Responsive,
+    /// Parser mutation, a scheduled timer turn, and controller-owned document
+    /// navigation through the scripted Livery/Buckram route.
+    Scripted,
     /// Initial Text Fragment activation in a retained Livery document.
     TextFragment,
 }
 
-impl StaticProductReceipt {
+impl ProductReceipt {
     pub fn id(self) -> &'static str {
         match self {
             Self::Article => "article",
             Self::Controls => "controls",
             Self::Responsive => "responsive",
+            Self::Scripted => "scripted",
             Self::TextFragment => "text-fragment",
         }
     }
 
+    pub fn needs_scripted_profile(self) -> bool {
+        matches!(self, Self::Scripted)
+    }
+
     pub fn default_size(self) -> (u32, u32) {
         match self {
-            Self::Article | Self::Controls | Self::Responsive | Self::TextFragment => (960, 640),
+            Self::Article
+            | Self::Controls
+            | Self::Responsive
+            | Self::Scripted
+            | Self::TextFragment => (960, 640),
         }
     }
 
     pub fn default_frames(self) -> u32 {
         match self {
-            Self::Article | Self::Controls | Self::Responsive | Self::TextFragment => 3,
+            Self::Article
+            | Self::Controls
+            | Self::Responsive
+            | Self::Scripted
+            | Self::TextFragment => 3,
         }
     }
 }
+
+pub(crate) fn validate_receipt_profile(
+    config: &StaticViewerConfig,
+    scripted_profile: bool,
+) -> Result<(), String> {
+    let Some(receipt) = config.product_receipt else {
+        return Ok(());
+    };
+    if receipt.needs_scripted_profile() == scripted_profile {
+        return Ok(());
+    }
+    let expected = if receipt.needs_scripted_profile() {
+        "scripted"
+    } else {
+        "livery"
+    };
+    Err(format!(
+        "product receipt {} is owned by the {expected} profile",
+        receipt.id()
+    ))
+}
+
+#[cfg(feature = "reader")]
+fn reject_product_receipt(config: &StaticViewerConfig, profile: &str) -> Result<(), String> {
+    let Some(receipt) = config.product_receipt else {
+        return Ok(());
+    };
+    Err(format!(
+        "product receipt {} is not owned by the {profile} profile",
+        receipt.id()
+    ))
+}
+
+/// Compatibility spelling retained for embedders that adopted the first
+/// script-free receipts before the same shell gained a scripted lane.
+pub type StaticProductReceipt = ProductReceipt;
 
 /// Configuration for one single-document host run.
 pub struct StaticViewerConfig {
@@ -69,7 +121,7 @@ pub struct StaticViewerConfig {
     /// Exit after this many presented frames. `None` keeps the window interactive.
     pub frames: Option<u32>,
     /// Named semantic receipt driven before the captured frame is accepted.
-    pub product_receipt: Option<StaticProductReceipt>,
+    pub product_receipt: Option<ProductReceipt>,
     /// Caller-owned PNG artifact path for the named receipt.
     pub artifact: Option<PathBuf>,
 }
@@ -103,7 +155,7 @@ impl StaticViewerConfig {
     /// Drive a named product receipt and write its in-process frame capture.
     pub fn with_product_receipt(
         mut self,
-        receipt: StaticProductReceipt,
+        receipt: ProductReceipt,
         artifact: impl AsRef<Path>,
     ) -> Self {
         self.size = Some(receipt.default_size());
@@ -115,12 +167,15 @@ impl StaticViewerConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StaticProductReceiptOutcome {
+pub struct ProductReceiptOutcome {
     pub id: &'static str,
     pub assertion: String,
     pub artifact: PathBuf,
     pub digest: u64,
 }
+
+/// Compatibility spelling for the original script-free receipt outcome.
+pub type StaticProductReceiptOutcome = ProductReceiptOutcome;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticViewerOutcome {
@@ -130,7 +185,7 @@ pub struct StaticViewerOutcome {
     /// The physical client size the headed run actually achieved, or `(0, 0)` when
     /// no window was created.
     pub size: (u32, u32),
-    pub product_receipt: Option<StaticProductReceiptOutcome>,
+    pub product_receipt: Option<ProductReceiptOutcome>,
 }
 
 /// Presentation-level keyboard scroll actions. Engine adapters translate this
@@ -231,11 +286,11 @@ pub(crate) fn logical_position(physical: f32, scale_factor: f32) -> f32 {
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
-struct ViewerClock(std::time::Instant);
+pub(crate) struct ViewerClock(std::time::Instant);
 
 #[cfg(any(feature = "livery", feature = "reader"))]
 impl ViewerClock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(std::time::Instant::now())
     }
 }
@@ -256,6 +311,56 @@ mod dpi_tests {
         assert_eq!(logical_extent(1600, 2.0), 800);
         assert_eq!(logical_extent(900, 1.5), 600);
         assert!((logical_position(640.0, 2.0) - 320.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(all(test, feature = "livery"))]
+mod receipt_profile_tests {
+    use super::{ProductReceipt, StaticViewerConfig, run_livery_viewer, run_static_viewer};
+    use crate::WindowingMode;
+    use genet_host_api::EngineProfile;
+
+    fn scripted_receipt() -> StaticViewerConfig {
+        StaticViewerConfig::new(
+            EngineProfile::Livery,
+            WindowingMode::Headless,
+            "about:blank",
+        )
+        .with_product_receipt(ProductReceipt::Scripted, "unused.png")
+    }
+
+    #[test]
+    fn livery_entrypoints_reject_a_scripted_receipt_before_windowing() {
+        for result in [
+            run_static_viewer(scripted_receipt()),
+            run_livery_viewer(scripted_receipt()),
+        ] {
+            assert_eq!(
+                result.expect_err("scripted receipt must not enter livery"),
+                "product receipt scripted is owned by the scripted profile"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "reader"))]
+mod reader_receipt_profile_tests {
+    use super::{ProductReceipt, StaticViewerConfig, run_reader_viewer};
+    use crate::WindowingMode;
+    use genet_host_api::EngineProfile;
+
+    #[test]
+    fn reader_entrypoint_rejects_an_unowned_receipt_before_windowing() {
+        let config = StaticViewerConfig::new(
+            EngineProfile::Livery,
+            WindowingMode::Headless,
+            "about:blank",
+        )
+        .with_product_receipt(ProductReceipt::Article, "unused.png");
+        assert_eq!(
+            run_reader_viewer(config).expect_err("reader must not accept another lane's receipt"),
+            "product receipt article is not owned by the reader profile"
+        );
     }
 }
 
@@ -303,11 +408,26 @@ mod livery_route_tests {
     use super::{
         ControllerViewerContent, ReceiptResourceFetcher, StaticProductReceipt, ViewerClock,
     };
-    use genet_documents::{LiveryDocumentSession, LiverySessionEngine, LocalFetcher};
+    #[cfg(feature = "scripted")]
+    use genet_documents::ScriptedSessionEngine;
+    use genet_documents::{
+        LiveryDocumentSession, LiverySessionEngine, LocalFetcher, ResourceFetchPolicy,
+    };
     use inker::{SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry};
     use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
     use netrender::{Scene, SceneOp};
     use pelt_core::{PeltController, PeltControllerConfig};
+
+    #[cfg(feature = "scripted")]
+    #[derive(Clone)]
+    struct ReceiptClock(std::rc::Rc<std::cell::Cell<f64>>);
+
+    #[cfg(feature = "scripted")]
+    impl pelt_core::PeltClock for ReceiptClock {
+        fn now_ms(&self) -> f64 {
+            self.0.get()
+        }
+    }
 
     fn node_by_id<D: LayoutDom>(dom: &D, expected: &str) -> D::NodeId {
         fn find<D: LayoutDom>(dom: &D, node: D::NodeId, expected: &str) -> Option<D::NodeId> {
@@ -576,6 +696,72 @@ mod livery_route_tests {
         );
     }
 
+    #[cfg(feature = "scripted")]
+    #[test]
+    fn scripted_product_receipt_pumps_then_navigates_through_the_controller() {
+        let fixture = format!(
+            r"{}\..\examples\p5-scripted\index.html",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+        registry.register(Box::new(ScriptedSessionEngine::<
+            script_engine_boa::BoaEngine,
+            _,
+        >::new(
+            inker::routing::ENGINE_GENET_SCRIPTED,
+            LocalFetcher::with_resource_policy(ResourceFetchPolicy::default()),
+        )));
+        let now = std::rc::Rc::new(std::cell::Cell::new(0.0));
+        let controller = PeltController::new(
+            registry,
+            SurfaceEngineRegistry::new(),
+            PeltControllerConfig::new(inker::routing::ENGINE_GENET_SCRIPTED, fixture, (480, 320)),
+            ReceiptClock(std::rc::Rc::clone(&now)),
+        )
+        .expect("scripted receipt controller");
+        let mut content = ControllerViewerContent::new(controller, None);
+
+        let _initial = content.frame(480, 320);
+        let initial = content.controller.inspect().expect("initial live report");
+        assert!(
+            initial
+                .outline
+                .iter()
+                .any(|entry| entry.name == "Parser mutation ready.")
+        );
+        assert!(
+            initial
+                .outline
+                .iter()
+                .any(|entry| entry.name == "Timer mutation pending."),
+            "the timer mutation is not parser-time state"
+        );
+
+        now.set(1.0);
+        assert!(
+            !content.controller.pump(),
+            "the one-shot timer settles after its virtual-clock turn"
+        );
+        let _timed = content.frame(480, 320);
+        assert!(
+            content
+                .controller
+                .inspect()
+                .expect("timed live report")
+                .outline
+                .iter()
+                .any(|entry| entry.name == "Timer mutation ready.")
+        );
+        assert_eq!(
+            content
+                .drive_product_receipt(StaticProductReceipt::Scripted)
+                .as_deref(),
+            Ok(
+                "parser and timer mutated the live DOM; cancelled default stayed, release navigated, and Back replayed the timer"
+            )
+        );
+    }
+
     #[test]
     fn text_fragment_product_receipt_selects_scrolls_and_fetches_once() {
         let fixture = format!(
@@ -651,6 +837,7 @@ impl genet_host_api::ResourceFetcher for ReceiptResourceFetcher {
 /// Compatibility entrypoint for callers of the former static viewer. Script-free
 /// HTML is always routed to Livery/Buckram.
 pub fn run_static_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
+    validate_receipt_profile(&config, false)?;
     match config.profile.windowing {
         WindowingMode::Headless => Ok(StaticViewerOutcome {
             url: config.url,
@@ -671,6 +858,7 @@ pub fn run_livery_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     use netrender::Scene;
     use pelt_core::{PeltController, PeltControllerConfig};
 
+    validate_receipt_profile(&config, false)?;
     if matches!(config.profile.windowing, WindowingMode::Headless) {
         return Ok(StaticViewerOutcome {
             url: config.url,
@@ -730,6 +918,7 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
     use netrender::Scene;
     use pelt_core::{PeltController, PeltControllerConfig};
 
+    reject_product_receipt(&config, "reader")?;
     if matches!(config.profile.windowing, WindowingMode::Headless) {
         return Ok(StaticViewerOutcome {
             url: config.url,
@@ -778,10 +967,24 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
-struct ControllerViewerContent {
+pub(crate) struct ControllerViewerContent {
     controller: pelt_core::PeltController<netrender::Scene>,
     posture: Option<String>,
     document_fetches: Option<Arc<AtomicUsize>>,
+}
+
+#[cfg(any(feature = "livery", feature = "reader"))]
+impl ControllerViewerContent {
+    pub(crate) fn new(
+        controller: pelt_core::PeltController<netrender::Scene>,
+        posture: Option<String>,
+    ) -> Self {
+        Self {
+            controller,
+            posture,
+            document_fetches: None,
+        }
+    }
 }
 
 #[cfg(any(feature = "livery", feature = "reader"))]
@@ -985,6 +1188,186 @@ impl windowed::ViewerContent for ControllerViewerContent {
                     ));
                 }
                 Ok("viewport resize reflowed the grid and retained the table axes".to_owned())
+            },
+            StaticProductReceipt::Scripted => {
+                let report = self
+                    .controller
+                    .inspect()
+                    .ok_or_else(|| "scripted receipt has no live document report".to_owned())?;
+                let has_name = |name: &str| report.outline.iter().any(|entry| entry.name == name);
+                for expected in ["Parser mutation ready.", "Timer mutation ready."] {
+                    if !has_name(expected) {
+                        return Err(format!(
+                            "scripted receipt did not retain {expected:?} before navigation"
+                        ));
+                    }
+                }
+
+                let original_address = self.controller.address().to_owned();
+                if self.controller.can_go_back() {
+                    return Err(
+                        "scripted receipt began with unexpected controller history".to_owned()
+                    );
+                }
+                let cancelled = self
+                    .controller
+                    .text_target("Stay on scripted page")
+                    .ok_or_else(|| {
+                        "scripted receipt could not resolve its cancelled link geometry".to_owned()
+                    })?;
+                let pointer =
+                    |target: inker::SessionTextTarget, state| inker::SessionInput::PointerButton {
+                        x: (target.anchor[0] + target.focus[0]) * 0.5,
+                        y: (target.anchor[1] + target.focus[1]) * 0.5,
+                        button: inker::SessionPointerButton::Primary,
+                        state,
+                        modifiers: inker::SessionModifiers::default(),
+                    };
+                let cancelled_press = self
+                    .controller
+                    .input(pointer(cancelled, inker::SessionButtonState::Pressed));
+                if !cancelled_press.handled
+                    || cancelled_press.navigated
+                    || cancelled_press.pointer_capture != Some(true)
+                    || !self.controller.inspect().is_some_and(|report| {
+                        report
+                            .outline
+                            .iter()
+                            .any(|entry| entry.name == "Stay on scripted page")
+                    })
+                {
+                    return Err(
+                        "scripted receipt dispatched its cancelled click before release".to_owned(),
+                    );
+                }
+                let cancelled_release = self
+                    .controller
+                    .input(pointer(cancelled, inker::SessionButtonState::Released));
+                if !cancelled_release.handled
+                    || cancelled_release.navigated
+                    || cancelled_release.pointer_capture != Some(false)
+                    || cancelled_release.error.is_some()
+                    || self.controller.address() != original_address
+                    || self.controller.can_go_back()
+                {
+                    return Err(format!(
+                        "preventDefault lineage drifted: release={cancelled_release:?} address={:?} expected={original_address:?} can_go_back={}",
+                        self.controller.address(),
+                        self.controller.can_go_back(),
+                    ));
+                }
+
+                let _link = self
+                    .controller
+                    .links()
+                    .into_iter()
+                    .find(|link| link.url == "next.html")
+                    .ok_or_else(|| {
+                        "scripted receipt could not find its external next-page link".to_owned()
+                    })?;
+                let target = self
+                    .controller
+                    .text_target("Open scripted next page")
+                    .ok_or_else(|| {
+                        "scripted receipt could not resolve its link text geometry".to_owned()
+                    })?;
+                let pressed = self
+                    .controller
+                    .input(pointer(target, inker::SessionButtonState::Pressed));
+                if !pressed.handled || pressed.navigated || pressed.pointer_capture != Some(true) {
+                    return Err(
+                        "scripted receipt link press did not begin a retained gesture".to_owned(),
+                    );
+                }
+                let released = self
+                    .controller
+                    .input(pointer(target, inker::SessionButtonState::Released));
+                if !released.handled
+                    || !released.navigated
+                    || released.pointer_capture != Some(false)
+                {
+                    return Err(
+                        "scripted receipt link release did not replace the document".to_owned()
+                    );
+                }
+                if !self
+                    .controller
+                    .address()
+                    .replace('\\', "/")
+                    .ends_with("/p5-scripted/next.html")
+                {
+                    return Err(format!(
+                        "scripted receipt resolved the next page to {:?}",
+                        self.controller.address()
+                    ));
+                }
+
+                let viewport = self.controller.request().viewport;
+                let _next = self.controller.frame(viewport.0, viewport.1);
+                let next = self.controller.inspect().ok_or_else(|| {
+                    "scripted receipt replacement has no document report".to_owned()
+                })?;
+                if next.title.as_deref() != Some("Pelt scripted navigation")
+                    || !next
+                        .headings
+                        .iter()
+                        .any(|heading| heading == "Scripted navigation arrived")
+                    || !next
+                        .outline
+                        .iter()
+                        .any(|entry| entry.name == "Replacement script ready.")
+                {
+                    return Err(format!(
+                        "scripted receipt replacement report drifted: {next:?}"
+                    ));
+                }
+
+                let back = self
+                    .controller
+                    .command(inker::SessionNavigationCommand::Back);
+                if !back.handled || !back.navigated || !self.controller.can_go_forward() {
+                    return Err(
+                        "scripted receipt could not traverse controller-owned history".to_owned(),
+                    );
+                }
+                let restored_pending = self.controller.inspect().ok_or_else(|| {
+                    "scripted receipt restored page has no pre-pump report".to_owned()
+                })?;
+                if !restored_pending
+                    .outline
+                    .iter()
+                    .any(|entry| entry.name == "Timer mutation pending.")
+                    || restored_pending
+                        .outline
+                        .iter()
+                        .any(|entry| entry.name == "Timer mutation ready.")
+                {
+                    return Err(
+                        "Back retained already-fired timer state instead of respawning the page"
+                            .to_owned(),
+                    );
+                }
+                if self.controller.pump() {
+                    return Err("restored one-shot timer did not settle".to_owned());
+                }
+                let _original = self.controller.frame(viewport.0, viewport.1);
+                let restored = self.controller.inspect().ok_or_else(|| {
+                    "scripted receipt restored page has no document report".to_owned()
+                })?;
+                if !restored
+                    .outline
+                    .iter()
+                    .any(|entry| entry.name == "Timer mutation ready.")
+                {
+                    return Err(
+                        "scripted receipt restored page did not rerun its timer mutation"
+                            .to_owned(),
+                    );
+                }
+                Ok(
+                    "parser and timer mutated the live DOM; cancelled default stayed, release navigated, and Back replayed the timer"
+                        .to_owned(),
+                )
             },
             StaticProductReceipt::TextFragment => {
                 const TARGET: &str = "The retained text fragment target";
@@ -1681,6 +2064,11 @@ pub(crate) mod windowed {
                     self.apply_action(action);
                 },
                 WindowEvent::Focused(focused) => {
+                    if !focused && self.pointer_captured {
+                        let action = self.doc.input(SessionInput::Cancel);
+                        self.apply_action(action);
+                        self.pointer_captured = false;
+                    }
                     let action = self.doc.input(SessionInput::Focus(focused));
                     self.apply_action(action);
                 },

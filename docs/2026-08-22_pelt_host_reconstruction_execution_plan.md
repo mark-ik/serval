@@ -424,7 +424,7 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
-**Status:** in progress 2026-08-26. Fixtures 1-3 are complete; fixtures 4-8
+**Status:** in progress 2026-08-26. Fixtures 1-4 are complete; fixtures 5-8
 remain open.
 
 The ordinary-article receipt is:
@@ -482,6 +482,46 @@ viewport before capture. The 2026-08-26 Windows run presented all three 960x640
 frames, recorded the viewport-reflow assertion, produced a nonblank PNG, and
 recorded digest `a5d1a743599c5493`. The checked-in GPU-free driver passed in the
 full 13/13 `pelt-desktop` Livery test wall.
+
+The scripted mutation, timer, and navigation receipt is:
+
+```sh
+cargo run --locked --offline -p pelt --no-default-features \
+  --features scripted -j 1 -- \
+  --engine scripted --product-receipt scripted \
+  --artifact target/pelt-receipts/scripted.png
+```
+
+The receipt owns `examples/p5-scripted/index.html` and its replacement
+`next.html`, the same 960x640 physical viewport, and three presented frames.
+The first document mutates one visible status during parser execution and a
+second from a zero-delay timer. Its ordinary external anchor returns a typed
+navigation default only after script listeners have had the opportunity to
+cancel it. The semantic driver presses and releases through retained text
+geometry, lets `PeltController` resolve and replace the document, proves the
+replacement title, heading, and parser mutation, then traverses
+controller-owned Back. The restored document is a new scripted session, so the
+driver also proves that its timer mutation runs again before accepting the
+capture.
+
+The cancellation listener is delegated from `document`, so it remains rooted
+across the frame-cadence GC turn. Element wrappers are still weakly cached while
+their native nodes remain attached; element-local listener and expando lifetime
+across that collection boundary is open scripted-runtime hardening. This receipt
+does not claim that broader cross-heap identity guarantee.
+
+The 2026-08-26 locked Windows receipt presented all three frames and recorded
+`parser and timer mutated the live DOM; cancelled default stayed, release
+navigated, and Back replayed the timer`, with digest `9fdce1c66a85e37a` and
+SHA-256
+`7d7f6bb1a11fc801823dd5a93aaec5f6f1540747fa83d159516ccd4f52449179`.
+The GPU-free driver compiled inside the `pelt-desktop` scripted wall; executing
+that wall is blocked on this Windows toolchain by `LNK1140` while writing its
+oversized test PDB. The same driver passed in the bounded headed binary, and the
+full 18/18 `genet-documents` scripted wall passes. That wall recovered the
+P0-deferred scripted selection test by painting selection overlays on cached
+frames and deriving clipped links from selected text-node ancestry instead of
+overlapping element rectangles.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
 
@@ -543,8 +583,8 @@ terminal.
 
 ## Immediate next lane
 
-Continue P5 from the completed ordinary-article, controls, and responsive-layout
-receipts. Add named receipts for scripted mutation, resource graphs,
+Continue P5 from the completed ordinary-article, controls, responsive-layout,
+and scripted-navigation receipts. Add named receipts for resource graphs,
 protocol-native content, the mixed workspace, and the explicit fallback.
 The Reader tile must carry held source bytes rather than teaching Fleece to
 fetch. Each remaining fixture needs a bounded command, captured artifact, and

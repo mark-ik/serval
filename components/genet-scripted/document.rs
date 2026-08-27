@@ -68,10 +68,10 @@ use script_engine_api::ScriptEngine;
 use script_runtime_api::ComputedStyleHandler;
 use script_runtime_api::{CookieProvider, Runtime, WebGlFactory};
 
-#[cfg(feature = "livery")]
-use crate::LiveryCssom;
 use crate::ResourceFetcher;
 use crate::capture::DomCaptureRecorder;
+#[cfg(feature = "livery")]
+use crate::{LiveryCssom, ScriptedClick};
 
 /// Host-neutral keyboard scrolling for either scripted layout engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1077,7 +1077,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
             || navigation.element_fragment.is_some())
-            .then_some(navigation);
+        .then_some(navigation);
         Ok(document)
     }
 
@@ -1096,7 +1096,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
             || navigation.element_fragment.is_some())
-            .then_some(navigation);
+        .then_some(navigation);
         Ok(document)
     }
 
@@ -1236,9 +1236,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             let text_activated = self
                 .cssom
                 .activate_text_directives(&navigation.text_directives);
-            if !text_activated
-                && let Some(fragment) = navigation.element_fragment.as_deref()
-            {
+            if !text_activated && let Some(fragment) = navigation.element_fragment.as_deref() {
                 self.scroll_to_fragment(fragment);
             }
             // Reframe retained geometry only. The source bytes were fetched and
@@ -1290,9 +1288,22 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     }
 
     pub fn click_at(&mut self, x: f32, y: f32) -> bool {
-        let handled = self.cssom.click_at(&mut self.rt, x, y);
+        !matches!(self.click_at_result(x, y), ScriptedClick::Miss)
+    }
+
+    /// Resolve the live pointer target without dispatching its click default.
+    /// Session adapters retain the nearest link activation owner, or the
+    /// ordinary pointer target, from press to release.
+    pub fn click_target_at(&self, x: f32, y: f32) -> Option<NodeId> {
+        self.cssom.activation_target_at(&self.rt, x, y)
+    }
+
+    /// Dispatch a live-DOM click and preserve its typed external-navigation
+    /// default for the embedding document session.
+    pub fn click_at_result(&mut self, x: f32, y: f32) -> ScriptedClick {
+        let outcome = self.cssom.click_at_result(&mut self.rt, x, y);
         self.flush_dom_capture();
-        handled
+        outcome
     }
 
     pub fn links(&self) -> Vec<(String, [f32; 4])> {
@@ -1312,6 +1323,10 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
 
     pub fn finish_text_selection(&mut self, x: f32, y: f32) -> bool {
         self.cssom.finish_text_selection(x, y)
+    }
+
+    pub fn cancel_text_selection(&mut self) -> bool {
+        self.cssom.cancel_text_selection()
     }
 
     pub fn text_selection(&self) -> Option<genet_livery::TextSelection<NodeId>> {
@@ -1445,7 +1460,9 @@ mod livery_text_fragment_tests {
         let _scene = document.frame(320, 160);
         assert_eq!(
             document.console(),
-            vec!["https://example.test/article#fallback|https://example.test/article#fallback|#fallback"],
+            vec![
+                "https://example.test/article#fallback|https://example.test/article#fallback|#fallback"
+            ],
         );
         let selection = document
             .text_selection()

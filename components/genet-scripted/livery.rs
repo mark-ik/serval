@@ -64,6 +64,18 @@ const SELECTION_COLOR: ColorF = ColorF {
     a: 0.40,
 };
 
+/// The default action produced by a click through the live scripted layout.
+///
+/// Script listeners run before this result is chosen. A listener that calls
+/// `preventDefault()` therefore leaves the click handled without asking the
+/// embedding host to replace the addressed document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScriptedClick {
+    Miss,
+    Handled,
+    Navigate(String),
+}
+
 /// Geometry retained beside a live runtime-owned DOM. It is deliberately not a
 /// second DOM or a `LiveryDocument`: the runtime remains the mutable owner.
 struct LiveFrame {
@@ -448,7 +460,9 @@ impl LiveryCssom {
             && let Some((cached_viewport, frame)) = &state.cached_frame
             && *cached_viewport == viewport
         {
-            return Ok(frame.clone().translated(-state.scroll.0, -state.scroll.1));
+            let mut displayed = frame.clone().translated(-state.scroll.0, -state.scroll.1);
+            push_selection_overlay(&mut displayed, &state);
+            return Ok(displayed);
         }
 
         let styles = {
@@ -523,19 +537,7 @@ impl LiveryCssom {
             content_extent,
         });
         let mut displayed = frame.translated(-state.scroll.0, -state.scroll.1);
-        if let Some(selection) = live_text_selection(&state) {
-            for rect in selection.rects {
-                if rect.width > 0.0 && rect.height > 0.0 {
-                    displayed.push_overlay_rect(
-                        LayoutRect::from_origin_and_size(
-                            LayoutPoint::new(rect.x, rect.y),
-                            LayoutSize::new(rect.width, rect.height),
-                        ),
-                        SELECTION_COLOR,
-                    );
-                }
-            }
-        }
+        push_selection_overlay(&mut displayed, &state);
         drop(state);
 
         let mut drained = Vec::new();
@@ -630,11 +632,10 @@ impl LiveryCssom {
                 Some(frame) => frame,
                 None => return false,
             };
-            let range = match directives.iter().find_map(|directive| {
-                frame
-                    .fragments
-                    .text_range_for_text_directive(directive)
-            }) {
+            let range = match directives
+                .iter()
+                .find_map(|directive| frame.fragments.text_range_for_text_directive(directive))
+            {
                 Some(range) => range,
                 None => return false,
             };
@@ -693,6 +694,22 @@ impl LiveryCssom {
         .and_then(|node| pointer_event_target(&host.dom, node))
     }
 
+    /// Resolve the stable activation owner for a press/release gesture.
+    ///
+    /// A hit inside an anchor can move between an inline child and the anchor's
+    /// own padding while remaining the same activation. Non-link targets retain
+    /// their ordinary pointer-event element identity.
+    pub fn activation_target_at<E: ScriptEngine>(
+        &self,
+        runtime: &Runtime<E>,
+        x: f32,
+        y: f32,
+    ) -> Option<NodeId> {
+        let target = self.hit_test(runtime, x, y)?;
+        let host = runtime.host().borrow();
+        Some(link_target(&host.dom, target).unwrap_or(target))
+    }
+
     /// Begin a primary-pointer selection against the live shaped frame.
     pub fn begin_text_selection(&self, x: f32, y: f32) -> bool {
         let mut state = self.state.borrow_mut();
@@ -745,6 +762,15 @@ impl LiveryCssom {
         }
     }
 
+    /// Drop an unfinished or retained selection when the host cancels input.
+    pub fn cancel_text_selection(&self) -> bool {
+        let mut state = self.state.borrow_mut();
+        let had_selection =
+            state.selection_anchor.take().is_some() || state.selection_range.is_some();
+        state.selection_range = None;
+        had_selection
+    }
+
     /// Recompute live selection text and viewport geometry from the retained
     /// source range.
     pub fn text_selection(&self) -> Option<TextSelection<NodeId>> {
@@ -774,15 +800,27 @@ impl LiveryCssom {
         ))
     }
 
-    /// Dispatch a click at the Livery hit-tested live node. The runtime owns
-    /// event propagation; Livery supplies the geometry and the in-page anchor
-    /// default after a listener has had a chance to prevent it.
+    /// Compatibility boolean for callers that do not own navigation. Hosts
+    /// should consume [`Self::click_at_result`] so external links cross a typed
+    /// document-replacement seam.
     pub fn click_at<E: ScriptEngine>(&self, runtime: &mut Runtime<E>, x: f32, y: f32) -> bool {
+        !matches!(self.click_at_result(runtime, x, y), ScriptedClick::Miss)
+    }
+
+    /// Dispatch a click at the Livery hit-tested live node. The runtime owns
+    /// event propagation; Livery supplies the geometry and returns the default
+    /// action only after a listener has had a chance to prevent it.
+    pub fn click_at_result<E: ScriptEngine>(
+        &self,
+        runtime: &mut Runtime<E>,
+        x: f32,
+        y: f32,
+    ) -> ScriptedClick {
         let target = {
             let host = runtime.host().borrow();
             let state = self.state.borrow();
             let Some(frame) = state.frame.as_ref() else {
-                return false;
+                return ScriptedClick::Miss;
             };
             hit_test(
                 &host.dom,
@@ -797,25 +835,34 @@ impl LiveryCssom {
             pointer_event_target(&host.dom, node)
         });
         let Some(target) = target else {
-            return false;
-        };
-        let fragment = {
-            let host = runtime.host().borrow();
-            link_fragment(&host.dom, target)
+            return ScriptedClick::Miss;
         };
         let proceed = runtime
             .dispatch_event(target.raw(), "click")
             .unwrap_or(true);
-        if proceed
-            && let Some(fragment) = fragment
-            && let Some(target) = {
-                let host = runtime.host().borrow();
-                find_element_id(&host.dom, host.dom.document(), &fragment)
-            }
-        {
-            let _ = self.scroll_to_id(target);
+        if !proceed {
+            return ScriptedClick::Handled;
         }
-        true
+        let href = {
+            let host = runtime.host().borrow();
+            link_href(&host.dom, target)
+        };
+        let Some(href) = href else {
+            return ScriptedClick::Handled;
+        };
+        if let Some(fragment) = href.strip_prefix('#') {
+            if !fragment.is_empty()
+                && let Some(target) = {
+                    let host = runtime.host().borrow();
+                    find_element_id(&host.dom, host.dom.document(), fragment)
+                }
+            {
+                let _ = self.scroll_to_id(target);
+            }
+            ScriptedClick::Handled
+        } else {
+            ScriptedClick::Navigate(href)
+        }
     }
 }
 
@@ -832,6 +879,21 @@ fn live_text_selection(state: &LiveryState) -> Option<TextSelection<NodeId>> {
     Some(selection)
 }
 
+fn push_selection_overlay(displayed: &mut LiveryPaintList, state: &LiveryState) {
+    if let Some(selection) = live_text_selection(state) {
+        for rect in selection.rects {
+            if rect.width > 0.0 && rect.height > 0.0 {
+                displayed.push_overlay_rect(
+                    LayoutRect::from_origin_and_size(
+                        LayoutPoint::new(rect.x, rect.y),
+                        LayoutSize::new(rect.width, rect.height),
+                    ),
+                    SELECTION_COLOR,
+                );
+            }
+        }
+    }
+}
 fn document_content_extent<D: LayoutDom>(dom: &D, fragments: &LiveryLayout<D::NodeId>) -> (f32, f32)
 where
     D::NodeId: Copy + Eq + std::hash::Hash,
@@ -858,23 +920,27 @@ where
     extent
 }
 
-fn link_fragment<D: LayoutDom>(dom: &D, mut node: D::NodeId) -> Option<String> {
+fn link_target<D: LayoutDom>(dom: &D, mut node: D::NodeId) -> Option<D::NodeId> {
     loop {
         if dom.kind(node) == NodeKind::Element
             && dom
                 .element_name(node)
                 .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("a"))
-            && let Some(href) = dom.attribute(node, &Namespace::default(), &LocalName::from("href"))
+            && dom
+                .attribute(node, &Namespace::default(), &LocalName::from("href"))
+                .is_some()
         {
-            return href
-                .strip_prefix('#')
-                .filter(|fragment| !fragment.is_empty())
-                .map(str::to_owned);
+            return Some(node);
         }
         node = dom.parent(node)?;
     }
 }
 
+fn link_href<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<String> {
+    let link = link_target(dom, node)?;
+    dom.attribute(link, &Namespace::default(), &LocalName::from("href"))
+        .map(str::to_owned)
+}
 /// A layout hit can land on a text fragment, but DOM pointer listeners are
 /// attached to elements. Walk that text node to the nearest element before
 /// dispatching through the scripted runtime.

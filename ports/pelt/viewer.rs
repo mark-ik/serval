@@ -45,7 +45,7 @@ pub(crate) fn main() {
     let mut size: Option<(u32, u32)> = None;
     // Bounded headed capture/smoke run. Interactive profiles leave this unset.
     let mut frames: Option<u32> = None;
-    let mut product_receipt: Option<pelt_desktop::StaticProductReceipt> = None;
+    let mut product_receipt: Option<pelt_desktop::ProductReceipt> = None;
     let mut artifact: Option<std::path::PathBuf> = None;
     let mut with_tiles = false;
     let mut tile_receipt = false;
@@ -203,10 +203,16 @@ pub(crate) fn main() {
     }
 
     if let Some(receipt) = product_receipt {
-        if selected_engine != SelectedEngine::Livery {
+        let receipt_engine = if receipt.needs_scripted_profile() {
+            SelectedEngine::Scripted
+        } else {
+            SelectedEngine::Livery
+        };
+        if selected_engine != receipt_engine {
             eprintln!(
-                "product receipt {} is owned by the livery profile",
-                receipt.id()
+                "product receipt {} is owned by the {} profile",
+                receipt.id(),
+                receipt_engine.label()
             );
             std::process::exit(2);
         }
@@ -395,7 +401,7 @@ pub(crate) fn main() {
         SelectedEngine::Scripted => {
             // Runs inline scripts on the chosen backend and retains the mutated
             // document through the same owned Livery/Buckram route.
-            run_scripted_profile(url, js_engine, size, frames);
+            run_scripted_profile(url, js_engine, size, frames, product_receipt, artifact);
         },
     }
 }
@@ -476,40 +482,37 @@ fn parse_frames(value: &str) -> u32 {
     }
 }
 
-fn parse_product_receipt(value: &str) -> pelt_desktop::StaticProductReceipt {
+fn parse_product_receipt(value: &str) -> pelt_desktop::ProductReceipt {
     match value {
-        "article" => pelt_desktop::StaticProductReceipt::Article,
-        "controls" => pelt_desktop::StaticProductReceipt::Controls,
-        "responsive" => pelt_desktop::StaticProductReceipt::Responsive,
-        "text-fragment" => pelt_desktop::StaticProductReceipt::TextFragment,
+        "article" => pelt_desktop::ProductReceipt::Article,
+        "controls" => pelt_desktop::ProductReceipt::Controls,
+        "responsive" => pelt_desktop::ProductReceipt::Responsive,
+        "scripted" => pelt_desktop::ProductReceipt::Scripted,
+        "text-fragment" => pelt_desktop::ProductReceipt::TextFragment,
         _ => {
             eprintln!(
-                "--product-receipt expects article, controls, responsive, or text-fragment (got '{value}')"
+                "--product-receipt expects article, controls, responsive, scripted, or text-fragment (got '{value}')"
             );
             std::process::exit(2);
         },
     }
 }
 
-fn product_receipt_fixture(receipt: pelt_desktop::StaticProductReceipt) -> String {
+fn product_receipt_fixture(receipt: pelt_desktop::ProductReceipt) -> String {
     match receipt {
-        pelt_desktop::StaticProductReceipt::Article => {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("examples")
-                .join("livery-route")
-                .join("index.html")
-                .to_string_lossy()
-                .into_owned()
-        },
-        pelt_desktop::StaticProductReceipt::Controls => {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("examples")
-                .join("p5-controls")
-                .join("index.html")
-                .to_string_lossy()
-                .into_owned()
-        },
-        pelt_desktop::StaticProductReceipt::Responsive => {
+        pelt_desktop::ProductReceipt::Article => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("livery-route")
+            .join("index.html")
+            .to_string_lossy()
+            .into_owned(),
+        pelt_desktop::ProductReceipt::Controls => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("p5-controls")
+            .join("index.html")
+            .to_string_lossy()
+            .into_owned(),
+        pelt_desktop::ProductReceipt::Responsive => {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("examples")
                 .join("p5-responsive")
@@ -517,7 +520,13 @@ fn product_receipt_fixture(receipt: pelt_desktop::StaticProductReceipt) -> Strin
                 .to_string_lossy()
                 .into_owned()
         },
-        pelt_desktop::StaticProductReceipt::TextFragment => {
+        pelt_desktop::ProductReceipt::Scripted => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("p5-scripted")
+            .join("index.html")
+            .to_string_lossy()
+            .into_owned(),
+        pelt_desktop::ProductReceipt::TextFragment => {
             let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("examples")
                 .join("text-fragment")
@@ -558,7 +567,14 @@ fn run_smolweb_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32
 /// Dispatch the scripted profile to the on-screen scripted viewer on the chosen JS
 /// backend. Present only when built with `--features scripted`.
 #[cfg(feature = "scripted")]
-fn run_scripted_profile(url: String, js: String, size: Option<(u32, u32)>, frames: Option<u32>) {
+fn run_scripted_profile(
+    url: String,
+    js: String,
+    size: Option<(u32, u32)>,
+    frames: Option<u32>,
+    product_receipt: Option<pelt_desktop::ProductReceipt>,
+    artifact: Option<std::path::PathBuf>,
+) {
     let Some(engine) = pelt_desktop::ScriptedEngine::parse(&js) else {
         eprintln!("--js expects boa or nova (got '{js}')");
         std::process::exit(2);
@@ -568,6 +584,12 @@ fn run_scripted_profile(url: String, js: String, size: Option<(u32, u32)>, frame
         pelt_desktop::WindowingMode::Headed,
         url,
     );
+    if let Some(receipt) = product_receipt {
+        config = config.with_product_receipt(
+            receipt,
+            artifact.expect("the CLI requires an artifact for a product receipt"),
+        );
+    }
     if let Some((width, height)) = size {
         config = config.with_size(width, height);
     }
@@ -575,15 +597,26 @@ fn run_scripted_profile(url: String, js: String, size: Option<(u32, u32)>, frame
         config = config.with_frame_limit(limit);
     }
     match pelt_desktop::run_scripted_viewer(config, engine) {
-        Ok(outcome) => println!(
-            "pelt scripted viewer engine={} url={} window={} redraws={} size={}x{}",
-            engine.label(),
-            outcome.url,
-            outcome.created_window,
-            outcome.redraws,
-            outcome.size.0,
-            outcome.size.1,
-        ),
+        Ok(outcome) => {
+            println!(
+                "pelt scripted viewer engine={} url={} window={} redraws={} size={}x{}",
+                engine.label(),
+                outcome.url,
+                outcome.created_window,
+                outcome.redraws,
+                outcome.size.0,
+                outcome.size.1,
+            );
+            if let Some(receipt) = outcome.product_receipt {
+                println!(
+                    "pelt product receipt={} assertion={} artifact={} digest={:016x}",
+                    receipt.id,
+                    receipt.assertion,
+                    receipt.artifact.display(),
+                    receipt.digest
+                );
+            }
+        },
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -597,7 +630,7 @@ fn run_livery_profile(
     url: String,
     size: Option<(u32, u32)>,
     frames: Option<u32>,
-    product_receipt: Option<pelt_desktop::StaticProductReceipt>,
+    product_receipt: Option<pelt_desktop::ProductReceipt>,
     artifact: Option<std::path::PathBuf>,
 ) {
     let mut config = pelt_desktop::StaticViewerConfig::new(
@@ -724,6 +757,8 @@ fn run_scripted_profile(
     _js: String,
     _size: Option<(u32, u32)>,
     _frames: Option<u32>,
+    _product_receipt: Option<pelt_desktop::ProductReceipt>,
+    _artifact: Option<std::path::PathBuf>,
 ) {
     eprintln!(
         "pelt was built without the scripted profile; rebuild with `--features scripted` \
@@ -961,7 +996,7 @@ Options:
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
-    --product-receipt <article|controls|responsive|text-fragment> (bounded fixture + semantic assertion + PNG)
+    --product-receipt <article|controls|responsive|scripted|text-fragment> (bounded fixture + semantic assertion + PNG)
     --artifact <path.png>              (required with --product-receipt)
     --tiles                            (route positional URLs in a recursive Frisket workspace)
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)

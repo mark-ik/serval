@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Pelt scripted receipt</title>
+  <style>
+    :root {
+      font: 18px/1.45 sans-serif;
+      background: #f3eee4;
+      color: #28241f;
+    }
+    body {
+      margin: 0;
+      padding: 16px;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .eyebrow {
+      margin: 0 0 2px;
+      color: #6b4c2d;
+      font-weight: bold;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 26px;
+      line-height: 1.1;
+    }
+    .receipt {
+      padding: 10px;
+      background: #fffaf0;
+      border: 2px solid #b99a70;
+    }
+    .status {
+      margin: 0 0 4px;
+      padding: 4px 8px;
+      background: #e5efe7;
+      color: #173a26;
+    }
+    .actions {
+      margin-top: 6px;
+    }
+    a {
+      display: block;
+      width: 210px;
+      margin-top: 4px;
+      padding: 3px 8px;
+      background: #283f5b;
+      color: white;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body data-parser="pending" data-timer="pending">
+  <main>
+    <p class="eyebrow">P5 fixture 4</p>
+    <h1>One live document, driven through time</h1>
+    <section class="receipt">
+      <p id="parser-status" class="status">Parser mutation pending.</p>
+      <p id="timer-status" class="status">Timer mutation pending.</p>
+      <div class="actions">
+        <a id="cancelled-link" href="blocked.html">Stay on scripted page</a>
+        <a href="next.html">Open scripted next page</a>
+      </div>
+    </section>
+  </main>
+  <script>
+    var parserStatus = document.getElementById('parser-status');
+    var timerStatus = document.getElementById('timer-status');
+    parserStatus.textContent = 'Parser mutation ready.';
+    document.body.setAttribute('data-parser', 'ready');
+    document.addEventListener('click', function (event) {
+      if (event.target && event.target.id === 'cancelled-link') {
+        event.preventDefault();
+      }
+    });
+    setTimeout(function () {
+      timerStatus.textContent = 'Timer mutation ready.';
+      document.body.setAttribute('data-timer', 'ready');
+    }, 0);
+  </script>
+</body>
+</html>

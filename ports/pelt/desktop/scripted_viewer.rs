@@ -5,54 +5,22 @@
 //! The on-screen scripted document viewer (`pelt --engine scripted <url>`).
 //!
 //! The windowed half of the scripted profile: load a [`ScriptedDocument`] on the
-//! chosen JS engine and present it through the shared [`ViewerApp`](crate::static_viewer)
-//! shell — the same winit loop the static viewer uses, here also driving the page's
-//! script timers and the GC tick at frame cadence (via [`ViewerContent::pump`]). Gated
-//! on both `present` (the present stack) and `scripted` (the runtime); the GPU-free
-//! document core lives in [`crate::scripted`].
+//! chosen JS engine and present it through Pelt's public controller and shared
+//! single-document shell. The controller retains document replacement and history;
+//! the shell drives script timers and the GC tick at frame cadence. Gated on both
+//! `present` (the present stack) and `scripted` (the runtime).
 
 use script_engine_api::ScriptEngine;
 
-use crate::scripted::{ScriptedDocument, ScriptedEngine};
-use crate::static_viewer::ViewerScrollKey;
-use crate::static_viewer::run_headed_with;
-use crate::static_viewer::windowed::ViewerContent;
+use crate::scripted::ScriptedEngine;
+use crate::static_viewer::{
+    ControllerViewerContent, ViewerClock, run_headed_with, validate_receipt_profile,
+};
 use crate::{StaticViewerConfig, StaticViewerOutcome, WindowingMode};
-use genet_documents::LocalFetcher;
-
-fn scripted_scroll_key(key: ViewerScrollKey) -> genet_scripted::ScrollKey {
-    match key {
-        ViewerScrollKey::Up => genet_scripted::ScrollKey::Up,
-        ViewerScrollKey::Down => genet_scripted::ScrollKey::Down,
-        ViewerScrollKey::Left => genet_scripted::ScrollKey::Left,
-        ViewerScrollKey::Right => genet_scripted::ScrollKey::Right,
-        ViewerScrollKey::PageUp => genet_scripted::ScrollKey::PageUp,
-        ViewerScrollKey::PageDown => genet_scripted::ScrollKey::PageDown,
-        ViewerScrollKey::Home => genet_scripted::ScrollKey::Home,
-        ViewerScrollKey::End => genet_scripted::ScrollKey::End,
-    }
-}
-
-impl<E: ScriptEngine> ViewerContent for ScriptedDocument<E> {
-    fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
-        ScriptedDocument::frame(self, width, height)
-    }
-    fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-        ScriptedDocument::scroll_by(self, dx, dy)
-    }
-    fn scroll_for_key(&mut self, key: ViewerScrollKey) -> bool {
-        ScriptedDocument::scroll_for_key(self, scripted_scroll_key(key))
-    }
-    fn click_at(&mut self, x: f32, y: f32) -> bool {
-        ScriptedDocument::click_at(self, x, y)
-    }
-    fn pump(&mut self, now_ms: f64) -> bool {
-        // Run due timers + the frame-cadence GC tick, then report whether more timers
-        // are pending so the shell keeps the frame loop alive for animation / churn.
-        let _ = ScriptedDocument::pump(self, now_ms);
-        self.has_pending_work()
-    }
-}
+use genet_documents::{LocalFetcher, ResourceFetchPolicy};
+use inker::{SessionRegistry, SurfaceEngineRegistry};
+use netrender::Scene;
+use pelt_core::{PeltController, PeltControllerConfig};
 
 /// Run the scripted viewer for `config` on `engine`: headed opens a window and
 /// presents the live, script-driven document; headless returns immediately with no
@@ -62,6 +30,7 @@ pub fn run_scripted_viewer(
     config: StaticViewerConfig,
     engine: ScriptedEngine,
 ) -> Result<StaticViewerOutcome, String> {
+    validate_receipt_profile(&config, true)?;
     match config.profile.windowing {
         WindowingMode::Headless => Ok(StaticViewerOutcome {
             url: config.url,
@@ -80,22 +49,71 @@ fn run_scripted_headed(
 ) -> Result<StaticViewerOutcome, String> {
     match engine {
         ScriptedEngine::Boa => {
-            let doc =
-                ScriptedDocument::<script_engine_boa::BoaEngine>::load(LocalFetcher, &config.url)?;
-            run_headed_with(config, doc)
+            let content = scripted_controller::<script_engine_boa::BoaEngine>(
+                &config,
+                inker::routing::ENGINE_GENET_SCRIPTED,
+                "Scripted · Boa",
+            )?;
+            run_headed_with(config, content)
         },
         #[cfg(feature = "scripted-nova")]
         ScriptedEngine::Nova => {
-            let doc = ScriptedDocument::<script_engine_nova::NovaEngine>::load(
-                LocalFetcher,
-                &config.url,
+            let content = scripted_controller::<script_engine_nova::NovaEngine>(
+                &config,
+                inker::routing::ENGINE_GENET_SCRIPTED_NOVA,
+                "Scripted · Nova",
             )?;
-            run_headed_with(config, doc)
+            run_headed_with(config, content)
         },
         #[cfg(not(feature = "scripted-nova"))]
         ScriptedEngine::Nova => Err(
             "the Nova engine needs `--features scripted-nova` (this build links Boa only)"
                 .to_string(),
         ),
+    }
+}
+
+fn scripted_controller<E: ScriptEngine + 'static>(
+    config: &StaticViewerConfig,
+    engine_id: &str,
+    posture: &str,
+) -> Result<ControllerViewerContent, String> {
+    let (width, height) = config.size.unwrap_or((800, 600));
+    let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+    let fetcher = LocalFetcher::with_resource_policy(ResourceFetchPolicy::default());
+    registry.register(Box::new(
+        genet_documents::ScriptedSessionEngine::<E, _>::new(engine_id, fetcher),
+    ));
+    let controller = PeltController::new(
+        registry,
+        SurfaceEngineRegistry::new(),
+        PeltControllerConfig::new(engine_id, &config.url, (width, height)),
+        ViewerClock::new(),
+    )?;
+    Ok(ControllerViewerContent::new(
+        controller,
+        Some(posture.to_owned()),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_scripted_viewer;
+    use crate::{ProductReceipt, ScriptedEngine, StaticViewerConfig, WindowingMode};
+    use genet_host_api::EngineProfile;
+
+    #[test]
+    fn scripted_entrypoint_rejects_a_livery_receipt_before_windowing() {
+        let config = StaticViewerConfig::new(
+            EngineProfile::Scripted,
+            WindowingMode::Headless,
+            "about:blank",
+        )
+        .with_product_receipt(ProductReceipt::Article, "unused.png");
+        assert_eq!(
+            run_scripted_viewer(config, ScriptedEngine::Boa)
+                .expect_err("livery receipt must not enter scripted"),
+            "product receipt article is owned by the livery profile"
+        );
     }
 }

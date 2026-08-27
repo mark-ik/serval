@@ -32,7 +32,7 @@ mod livery;
 pub use document::LiveryScriptedDocument;
 pub use document::{ScriptedDocument, ScriptedEngine, ScrollKey};
 #[cfg(feature = "livery")]
-pub use livery::LiveryCssom;
+pub use livery::{LiveryCssom, ScriptedClick};
 
 /// Byte-loading seam supplied by a shell or worker host. Networking and filesystem
 /// policy stay above the scripted document owner. This is the shared host contract;
