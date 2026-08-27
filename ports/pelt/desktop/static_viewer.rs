@@ -39,6 +39,8 @@ pub enum ProductReceipt {
     TextFragment,
     /// Redirected document with a linked/imported stylesheet resource graph.
     Resources,
+    /// Held Gemtext body lowered through Nematic's native protocol lane.
+    Gemtext,
 }
 
 impl ProductReceipt {
@@ -50,6 +52,7 @@ impl ProductReceipt {
             Self::Scripted => "scripted",
             Self::TextFragment => "text-fragment",
             Self::Resources => "resources",
+            Self::Gemtext => "gemtext",
         }
     }
 
@@ -64,7 +67,7 @@ impl ProductReceipt {
             | Self::Responsive
             | Self::Scripted
             | Self::TextFragment => (960, 640),
-            Self::Resources => (960, 640),
+            Self::Resources | Self::Gemtext => (960, 640),
         }
     }
 
@@ -75,7 +78,7 @@ impl ProductReceipt {
             | Self::Responsive
             | Self::Scripted
             | Self::TextFragment => 3,
-            Self::Resources => 3,
+            Self::Resources | Self::Gemtext => 3,
         }
     }
 }
@@ -1736,6 +1739,9 @@ impl windowed::ViewerContent for ControllerViewerContent {
                     "text fragment selected, scrolled into view, indicated, and retained one document fetch"
                         .to_owned(),
                 )
+            },
+            StaticProductReceipt::Gemtext => {
+                Err("gemtext receipt is owned by the smolweb viewer".to_owned())
             },
         }
     }

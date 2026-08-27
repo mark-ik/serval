@@ -231,6 +231,10 @@ pub(crate) fn main() {
             eprintln!("--product-receipt {} needs --artifact <png>", receipt.id());
             std::process::exit(2);
         }
+        if receipt == pelt_desktop::ProductReceipt::Gemtext && !cfg!(feature = "smolweb") {
+            eprintln!("--product-receipt gemtext needs --features smolweb");
+            std::process::exit(2);
+        }
         url = Some(product_receipt_fixture(receipt));
     } else if artifact.is_some() {
         eprintln!("--artifact is only accepted with --product-receipt");
@@ -384,7 +388,7 @@ pub(crate) fn main() {
             // the same headed host. P4 will move this choice into Inker routing.
             #[cfg(feature = "smolweb")]
             if is_smolweb_url(&url) {
-                run_smolweb_profile(url, size, frames);
+                run_smolweb_profile(url, size, frames, product_receipt, artifact);
                 return;
             }
 
@@ -490,9 +494,10 @@ fn parse_product_receipt(value: &str) -> pelt_desktop::ProductReceipt {
         "scripted" => pelt_desktop::ProductReceipt::Scripted,
         "text-fragment" => pelt_desktop::ProductReceipt::TextFragment,
         "resources" => pelt_desktop::ProductReceipt::Resources,
+        "gemtext" => pelt_desktop::ProductReceipt::Gemtext,
         _ => {
             eprintln!(
-                "--product-receipt expects article, controls, responsive, scripted, text-fragment, or resources (got '{value}')"
+                "--product-receipt expects article, controls, responsive, scripted, text-fragment, resources, or gemtext (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -543,12 +548,21 @@ fn product_receipt_fixture(receipt: pelt_desktop::ProductReceipt) -> String {
                 .into_owned();
             format!("{fixture}#:~:text=The%20retained%20text%20fragment%20target")
         },
+        pelt_desktop::ProductReceipt::Gemtext => {
+            "gemini://pelt.test/p5-gemtext/index.gmi".to_owned()
+        },
     }
 }
 
 /// Dispatch a smolweb URL to the owned headed document viewer.
 #[cfg(feature = "smolweb")]
-fn run_smolweb_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32>) {
+fn run_smolweb_profile(
+    url: String,
+    size: Option<(u32, u32)>,
+    frames: Option<u32>,
+    product_receipt: Option<pelt_desktop::ProductReceipt>,
+    artifact: Option<std::path::PathBuf>,
+) {
     let mut config = pelt_desktop::StaticViewerConfig::new(
         EngineProfile::Livery,
         pelt_desktop::WindowingMode::Headed,
@@ -560,11 +574,36 @@ fn run_smolweb_profile(url: String, size: Option<(u32, u32)>, frames: Option<u32
     if let Some(limit) = frames {
         config = config.with_frame_limit(limit);
     }
-    match pelt_desktop::run_smolweb_viewer(config) {
-        Ok(outcome) => println!(
-            "pelt smolweb viewer url={} window={} redraws={} size={}x{}",
-            outcome.url, outcome.created_window, outcome.redraws, outcome.size.0, outcome.size.1
+    let outcome = match product_receipt {
+        Some(receipt) => pelt_desktop::run_smolweb_receipt(
+            config.with_product_receipt(
+                receipt,
+                artifact.expect("the CLI requires an artifact for a product receipt"),
+            ),
+            include_str!("examples/p5-gemtext/index.gmi"),
         ),
+        None => pelt_desktop::run_smolweb_viewer(config),
+    };
+    match outcome {
+        Ok(outcome) => {
+            println!(
+                "pelt smolweb viewer url={} window={} redraws={} size={}x{}",
+                outcome.url,
+                outcome.created_window,
+                outcome.redraws,
+                outcome.size.0,
+                outcome.size.1
+            );
+            if let Some(receipt) = outcome.product_receipt {
+                println!(
+                    "pelt product receipt={} assertion={} artifact={} digest={:016x}",
+                    receipt.id,
+                    receipt.assertion,
+                    receipt.artifact.display(),
+                    receipt.digest
+                );
+            }
+        },
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -1004,7 +1043,7 @@ Options:
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
     --frames <N>                       (headed profiles: exit after N presented frames)
-    --product-receipt <article|controls|responsive|scripted|text-fragment|resources> (bounded fixture + semantic assertion + PNG)
+    --product-receipt <article|controls|responsive|scripted|text-fragment|resources|gemtext> (bounded fixture + semantic assertion + PNG)
     --artifact <path.png>              (required with --product-receipt)
     --tiles                            (route positional URLs in a recursive Frisket workspace)
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)

@@ -1,0 +1,7 @@
+# P5 native Gemtext receipt
+
+This body was held by Pelt and lowered through Nematic.
+
+> P5 protocol-native marker
+
+=> gemini://p5.test/next P5 native link marker

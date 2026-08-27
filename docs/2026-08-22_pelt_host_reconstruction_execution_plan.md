@@ -424,7 +424,7 @@ Deferred platform and hardening lanes:
 
 ### P5: make Pelt the product receipt for Livery/Buckram
 
-**Status:** in progress 2026-08-26. Fixtures 1-5 are complete; fixtures 6-8
+**Status:** in progress 2026-08-27. Fixtures 1-6 are complete; fixtures 7-8
 remain open.
 
 The ordinary-article receipt is:
@@ -552,7 +552,7 @@ identity. It recorded `redirected identity, imported cascade, linked image/font,
 and fetch trace held`, with digest `b2736b2a574240f7`. Two successive captures
 were byte-identical at 88,850 bytes with SHA-256
 `77b75a5b7da67b354c63513f6f339b317a3690b4eddc13a8b57feb4a702b2f65`.
-The focused retained-resource assertion passes, followed by the full 15/15
+The focused retained-resource assertion passes, followed by the full 16/16
 `pelt-desktop` Livery test wall and its doc-test wall.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
@@ -569,6 +569,26 @@ contains the exact target, its geometry is visible, and the primary-document
 fetch ledger remains at one. The 2026-08-26 Windows run presented three
 960x640 frames, visibly painted the blue selection indication, and recorded
 digest `bc3106237d566a57`. Its GPU-free semantic driver passed 1/1.
+
+The protocol-native Gemtext receipt is a standalone smolweb proof:
+
+    cargo run --locked --offline -p pelt --no-default-features --features smolweb -j 1 -- \
+      --product-receipt gemtext \
+      --artifact target/pelt-receipts/gemtext.png
+
+Pelt owns the held bytes from `examples/p5-gemtext/index.gmi` and supplies them
+to `SmolwebDocument::parse`. The receipt assertion requires Nematic Gemtext
+provenance (`nematic.gemtext`), `text/gemini`, the exact heading marker, and the
+native link marker. The shared headed shell captures three 960x640 frames; the
+focused GPU-free test proves the same lowering and semantic assertion without a
+transport fetch.
+
+The 2026-08-27 locked, offline Windows receipt presented three 960x640 frames
+and recorded `held Gemtext bytes lowered by Nematic and painted through
+smolweb`, with digest `a87db5192667af1b`. Two successive captures were
+byte-identical at 69,982 bytes with SHA-256
+`e54aea8f30cb0980b7687c82614f9b8d44bf15bbed0c0882a60f9aa1d107c85b`.
+The full smolweb-enabled `pelt-desktop` library wall passes 16/16.
 
 Check in deterministic fixtures and bounded headed capture commands for:
 
@@ -616,8 +636,8 @@ terminal.
 ## Immediate next lane
 
 Continue P5 from the completed ordinary-article, controls, responsive-layout,
-scripted-navigation, and redirected-resource-graph receipts. Add named receipts
-for protocol-native content, the mixed workspace, and the explicit fallback.
+scripted-navigation, redirected-resource-graph, and protocol-native Gemtext
+receipts. Add named receipts for the mixed workspace and explicit fallback.
 The Reader tile must carry held source bytes rather than teaching Fleece to
 fetch. Each remaining fixture needs a bounded command, captured artifact, and
 interaction assertion. The completed Windows P4 route remains the external
