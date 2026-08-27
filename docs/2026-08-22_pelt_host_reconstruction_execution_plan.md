@@ -546,12 +546,13 @@ proves the final response identity, the scene proves the image, named Ahem font
 bytes, and imported accent color, and a shared fetch trace proves the complete
 request sequence.
 
-The 2026-08-26 locked, offline Windows receipt presented three 960x640 frames
-and recorded `redirected identity, imported cascade, linked image/font, and
-fetch trace held`, with digest `b2736b2a574240f7`. Its visually inspected PNG
-is 88,850 bytes with SHA-256
+The 2026-08-27 locked, offline Windows receipt presented three 960x640 frames
+after each flattened font source was resolved against its final stylesheet
+identity. It recorded `redirected identity, imported cascade, linked image/font,
+and fetch trace held`, with digest `b2736b2a574240f7`. Two successive captures
+were byte-identical at 88,850 bytes with SHA-256
 `77b75a5b7da67b354c63513f6f339b317a3690b4eddc13a8b57feb4a702b2f65`.
-The focused retained-resource assertion passes, followed by the full 15/15
+The focused retained-resource assertion passes, followed by the full 16/16
 `pelt-desktop` Livery test wall and its doc-test wall.
 
 Fleece's retained Text Fragment follow-through has an additional named receipt:
