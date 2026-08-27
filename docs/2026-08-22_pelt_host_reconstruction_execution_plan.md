@@ -596,15 +596,25 @@ The mixed tiled-workspace receipt is:
 cargo run --locked --offline -p pelt --no-default-features \
   --features livery,scripted,smolweb -j 1 -- \
   --workspace-receipt mixed \
+  --workspace-size-matrix 960x640,1024x768,1280x800,1440x900 \
   --artifact target/pelt-receipts/workspace-mixed.png
 ```
 
-The receipt reuses the four P4 fixtures and owns a 960x640 capture with three
-postcondition frames. A 600-redraw warmup first requires the Scrying fixture's
-timer to run, its imported texture to advance to a newer fenced frame, and that
-frame to be composed at least twice. It then clicks the retained Gemtext
-`static.html` link through tile 1's real content hole. Smolweb navigates on
-primary press and releases capture on pointer-up.
+The receipt reuses the four P4 fixtures and starts at 960x640. The optional
+physical-size matrix resizes the same live window through XGA, WXGA, and
+1440x900. Each stage accepts the actual `WindowEvent::Resized`, rebuilds
+Frisket content holes, and requires tile 4 to publish a newly imported texture
+whose physical extent matches its current content hole. Fenced waits and
+compositions must also advance before the next resize. The final 1440x900
+state owns the PNG and three postcondition frames.
+
+Readiness uses a configurable monotonic deadline, 20 seconds by default, for
+each stage. The acquire and present cycle runs before expiry is checked, so
+Scrying's own stalled-capture restart can publish a recovery frame. This
+replaces the coupled 600-redraw host bound, which could exit on the same poll
+that restarted capture. After the matrix is verified, the receipt clicks the
+retained Gemtext `static.html` link through tile 1's real content hole.
+Smolweb navigates on primary press and releases capture on pointer-up.
 
 The driver then removes only tile 1's receipt pin and lets shared routing select
 Livery for the new HTML address. It proves the same content hole remains tile
@@ -626,6 +636,13 @@ were byte-identical with SHA-256
 The GPU-free mixed driver passes without a Scrying producer by requiring the
 same explicit Livery fallback for tile 4 while still proving locality across
 all four tiles.
+
+The 2026-08-27 live-resize receipt verified `960x640`, `1024x768`,
+`1280x800`, and `1440x900` in one window. It accepted seven native frames with
+four imports and seven fence waits, recorded 267 native compositions, and
+captured the final 1440x900 state with compositor digest
+`cecca1bbdde70a0d`. The 147,416-byte PNG has SHA-256
+`8af66f6d5b16de45c3cf502612d9296396128b357ab08011e2315cee848438e9`.
 
 The explicit external-engine fallback receipt is:
 
@@ -655,11 +672,11 @@ digest is `b12523eac8a17028`; both 105,832-byte PNGs have SHA-256
 `556d49064fce0cc18f1f81839920a072b6dc2e8962cd6f1dcf60de574307b8e3`.
 The GPU-free test drives the same two policy-and-navigation steps.
 
-`WorkspaceReceiptOutcome` retains the receipt id, assertion, artifact path, and
-compositor digest through the host outcome, and the CLI prints that evidence
-alongside routes and frame bounds. Named workspace receipts reject the older P3
-and P4 receipt drivers so two semantic sequences cannot silently share one
-capture. The full locked, offline `pelt-desktop` wall with
+`WorkspaceReceiptOutcome` retains the receipt id, assertion, artifact path,
+compositor digest, and ordered verified physical sizes through the host
+outcome. The CLI prints that evidence alongside routes and frame bounds. Named
+workspace receipts reject the older P3 and P4 receipt drivers so two semantic
+sequences cannot silently share one capture. The full locked, offline `pelt-desktop` wall with
 `livery,scripted,smolweb` passes 23/23, including both new GPU-free drivers;
 the focused Pelt CLI parser receipt passes 1/1, and the three-test `pelt-core`
 integration wall passes. The final Windows wall used

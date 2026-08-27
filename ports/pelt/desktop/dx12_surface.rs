@@ -248,6 +248,12 @@ impl Dx12SurfaceCache {
         self.textures.get(&tile).map(|surface| &surface.view)
     }
 
+    pub(crate) fn dimensions(&self, tile: TileId) -> Option<(u32, u32)> {
+        self.textures
+            .get(&tile)
+            .map(|surface| (surface.width, surface.height))
+    }
+
     pub(crate) fn retain_tiles(&mut self, mut keep: impl FnMut(TileId) -> bool) {
         self.textures.retain(|tile, _| keep(*tile));
     }

@@ -47,6 +47,7 @@ pub(crate) fn main() {
     let mut frames: Option<u32> = None;
     let mut product_receipt: Option<pelt_desktop::ProductReceipt> = None;
     let mut artifact: Option<std::path::PathBuf> = None;
+    let mut workspace_size_matrix: Option<Vec<(u32, u32)>> = None;
     let mut with_tiles = false;
     let mut tile_receipt = false;
     let mut capability_receipt = false;
@@ -164,6 +165,18 @@ pub(crate) fn main() {
                 ));
                 with_tiles = true;
             },
+            "--workspace-size-matrix" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--workspace-size-matrix requires comma-separated WxH values");
+                    std::process::exit(2);
+                };
+                workspace_size_matrix = Some(parse_workspace_size_matrix(&value));
+            },
+            value if value.starts_with("--workspace-size-matrix=") => {
+                workspace_size_matrix = Some(parse_workspace_size_matrix(
+                    &value["--workspace-size-matrix=".len()..],
+                ));
+            },
             "--tile-engine" => {
                 let Some(value) = args.next() else {
                     eprintln!("--tile-engine requires N=engine-id");
@@ -253,6 +266,15 @@ pub(crate) fn main() {
         url = Some(product_receipt_fixture(receipt));
     } else if artifact.is_some() && workspace_receipt.is_none() {
         eprintln!("--artifact is only accepted with a named receipt");
+        std::process::exit(2);
+    }
+
+    if let Err(error) = validate_workspace_size_matrix(
+        workspace_receipt,
+        workspace_size_matrix.as_deref(),
+        size.is_some(),
+    ) {
+        eprintln!("{error}");
         std::process::exit(2);
     }
 
@@ -421,6 +443,7 @@ pub(crate) fn main() {
             capability_receipt,
             workspace_receipt,
             artifact,
+            workspace_size_matrix,
             tile_engine_overrides,
         );
         #[cfg(not(feature = "livery"))]
@@ -509,19 +532,85 @@ fn is_smolweb_url(url: &str) -> bool {
 
 /// Parse a physical client size accepted by headed profiles.
 fn parse_size(value: &str) -> (u32, u32) {
+    match parse_size_value(value) {
+        Ok(size) => size,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        },
+    }
+}
+
+fn parse_size_value(value: &str) -> Result<(u32, u32), String> {
     let Some((width, height)) = value.split_once(['x', 'X']) else {
-        eprintln!("--size expects WxH in physical pixels (got '{value}')");
-        std::process::exit(2);
+        return Err(format!(
+            "--size expects WxH in physical pixels (got '{value}')"
+        ));
     };
     let width = width.parse::<u32>().ok().filter(|value| *value > 0);
     let height = height.parse::<u32>().ok().filter(|value| *value > 0);
     match (width, height) {
-        (Some(width), Some(height)) => (width, height),
-        _ => {
-            eprintln!("--size expects positive WxH dimensions (got '{value}')");
+        (Some(width), Some(height)) => Ok((width, height)),
+        _ => Err(format!(
+            "--size expects positive WxH dimensions (got '{value}')"
+        )),
+    }
+}
+
+fn parse_workspace_size_matrix(value: &str) -> Vec<(u32, u32)> {
+    match parse_workspace_size_matrix_value(value) {
+        Ok(sizes) => sizes,
+        Err(error) => {
+            eprintln!("{error}");
             std::process::exit(2);
         },
     }
+}
+
+fn parse_workspace_size_matrix_value(value: &str) -> Result<Vec<(u32, u32)>, String> {
+    if value.trim().is_empty() {
+        return Err("--workspace-size-matrix requires at least two sizes".to_owned());
+    }
+    let mut sizes = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            return Err("--workspace-size-matrix expects comma-separated WxH values".to_owned());
+        }
+        let size = parse_size_value(item)
+            .map_err(|error| error.replacen("--size", "--workspace-size-matrix", 1))?;
+        if sizes.contains(&size) {
+            return Err(format!(
+                "--workspace-size-matrix contains duplicate size {}x{}",
+                size.0, size.1
+            ));
+        }
+        sizes.push(size);
+    }
+    if sizes.len() < 2 {
+        return Err("--workspace-size-matrix requires at least two sizes".to_owned());
+    }
+    Ok(sizes)
+}
+
+fn validate_workspace_size_matrix(
+    receipt: Option<pelt_desktop::WorkspaceReceipt>,
+    sizes: Option<&[(u32, u32)]>,
+    has_single_size: bool,
+) -> Result<(), String> {
+    let Some(_sizes) = sizes else {
+        return Ok(());
+    };
+    if receipt != Some(pelt_desktop::WorkspaceReceipt::Mixed) {
+        return Err("--workspace-size-matrix requires --workspace-receipt mixed".to_owned());
+    }
+    if has_single_size {
+        return Err(
+            "--workspace-size-matrix cannot be combined with --size; put the initial size first"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// Parse a deterministic headed-frame limit. Zero would open and immediately close a
@@ -784,6 +873,7 @@ fn run_workspace_profile(
     capability_receipt: bool,
     workspace_receipt: Option<pelt_desktop::WorkspaceReceipt>,
     artifact: Option<std::path::PathBuf>,
+    workspace_size_matrix: Option<Vec<(u32, u32)>>,
     route_overrides: Vec<(u64, String)>,
 ) {
     let mut config =
@@ -799,6 +889,9 @@ fn run_workspace_profile(
     }
     if let Some(limit) = frames {
         config = config.with_frame_limit(limit);
+    }
+    if let Some(sizes) = workspace_size_matrix {
+        config = config.with_workspace_size_matrix(sizes);
     }
     if interaction_receipt {
         config = config.with_interaction_receipt();
@@ -828,8 +921,14 @@ fn run_workspace_profile(
                 outcome.routes.join(","),
             );
             if let Some(receipt) = outcome.workspace_receipt.as_ref() {
+                let verified_sizes = receipt
+                    .verified_sizes
+                    .iter()
+                    .map(|(width, height)| format!("{width}x{height}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 println!(
-                    "pelt workspace product receipt={} assertion={} artifact={} digest={:016x}",
+                    "pelt workspace product receipt={} assertion={} artifact={} digest={:016x} verified_sizes={verified_sizes}",
                     receipt.id,
                     receipt.assertion,
                     receipt.artifact.display(),
@@ -908,6 +1007,62 @@ mod workspace_receipt_tests {
             fallback_fixture_url()
                 .replace('\\', "/")
                 .ends_with("/ports/pelt/examples/workspace/p5-fallback/index.html")
+        );
+    }
+
+    #[test]
+    fn workspace_size_matrix_parser_keeps_order_and_accepts_mixed_case() {
+        assert_eq!(
+            parse_workspace_size_matrix_value("960x640, 1024X768,1280x800"),
+            Ok(vec![(960, 640), (1024, 768), (1280, 800)])
+        );
+    }
+
+    #[test]
+    fn workspace_size_matrix_parser_rejects_bad_or_duplicate_values() {
+        for (value, expected) in [
+            ("", "at least two"),
+            ("960x640", "at least two"),
+            ("960x640,960x640", "duplicate"),
+            ("960x640,", "comma-separated"),
+            ("960x0,1280x800", "positive"),
+        ] {
+            assert!(
+                parse_workspace_size_matrix_value(value)
+                    .expect_err("invalid matrix")
+                    .contains(expected),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_size_matrix_requires_mixed_workspace_receipt() {
+        let sizes = [(960, 640), (1024, 768)];
+        assert!(validate_workspace_size_matrix(None, Some(&sizes), false).is_err());
+        assert!(
+            validate_workspace_size_matrix(
+                Some(pelt_desktop::WorkspaceReceipt::Fallback),
+                Some(&sizes),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_workspace_size_matrix(
+                Some(pelt_desktop::WorkspaceReceipt::Mixed),
+                Some(&sizes),
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            validate_workspace_size_matrix(
+                Some(pelt_desktop::WorkspaceReceipt::Mixed),
+                Some(&sizes),
+                false
+            )
+            .is_ok()
         );
     }
 }
@@ -1158,6 +1313,7 @@ Options:
     --engine <livery|reader|scripted>  (diagnostic override; legacy aliases accepted)
     --js <boa|nova>                    (scripted profile; nova needs --features scripted-nova)
     --size <WxH>                       (physical client size)
+    --workspace-size-matrix <WxH,...>  (live physical-size matrix; mixed receipt only)
     --frames <N>                       (headed profiles: exit after N presented frames)
     --product-receipt <article|controls|responsive|scripted|text-fragment|resources|gemtext> (bounded fixture + semantic assertion + PNG)
     --artifact <path.png>              (required with a named receipt)

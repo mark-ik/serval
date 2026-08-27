@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use genet_host_api::tile::{
     ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
@@ -39,7 +39,7 @@ use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
 use crate::{WindowingMode, static_viewer};
 
 const RECEIPT_STEPS: u8 = 8;
-const WORKSPACE_RECEIPT_WARMUP_LIMIT: u32 = 600;
+const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
 
@@ -82,6 +82,10 @@ pub struct WorkspaceViewerConfig {
     pub capability_receipt: bool,
     /// Named P5 workspace receipt with a captured compositor artifact.
     pub workspace_receipt: Option<WorkspaceReceipt>,
+    /// Ordered physical client sizes for a live workspace resize receipt.
+    pub workspace_size_matrix: Option<Vec<(u32, u32)>>,
+    /// Maximum elapsed time for each mixed-receipt readiness or resize stage.
+    pub workspace_receipt_stage_timeout: Duration,
     /// Caller-owned PNG path for the named workspace receipt.
     pub artifact: Option<PathBuf>,
     /// One-based tile number to explicit engine id.
@@ -98,6 +102,8 @@ impl WorkspaceViewerConfig {
             interaction_receipt: false,
             capability_receipt: false,
             workspace_receipt: None,
+            workspace_size_matrix: None,
+            workspace_receipt_stage_timeout: WORKSPACE_RECEIPT_STAGE_TIMEOUT,
             artifact: None,
             route_overrides: HashMap::new(),
         }
@@ -141,6 +147,21 @@ impl WorkspaceViewerConfig {
         self.artifact = Some(artifact.as_ref().to_owned());
         self
     }
+
+    /// Request an ordered matrix of physical client sizes for a live workspace
+    /// receipt. The first size is also the initial window size.
+    pub fn with_workspace_size_matrix(mut self, sizes: Vec<(u32, u32)>) -> Self {
+        if let Some(&(width, height)) = sizes.first() {
+            self.size = Some((width, height));
+        }
+        self.workspace_size_matrix = Some(sizes);
+        self
+    }
+
+    pub fn with_workspace_receipt_stage_timeout(mut self, timeout: Duration) -> Self {
+        self.workspace_receipt_stage_timeout = timeout.max(Duration::from_millis(1));
+        self
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,6 +170,7 @@ pub struct WorkspaceReceiptOutcome {
     pub assertion: String,
     pub artifact: PathBuf,
     pub digest: u64,
+    pub verified_sizes: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,6 +196,25 @@ pub fn run_livery_workspace_viewer(
             "a named workspace receipt cannot be combined with the P3 or P4 receipt driver"
                 .to_owned(),
         );
+    }
+    if let Some(sizes) = config.workspace_size_matrix.as_deref() {
+        if config.workspace_receipt != Some(WorkspaceReceipt::Mixed) {
+            return Err("a workspace size matrix requires the mixed workspace receipt".to_owned());
+        }
+        if sizes.len() < 2
+            || sizes
+                .iter()
+                .any(|&(width, height)| width == 0 || height == 0)
+            || sizes
+                .iter()
+                .enumerate()
+                .any(|(index, size)| sizes[..index].contains(size))
+        {
+            return Err(
+                "a workspace size matrix needs at least two unique positive physical sizes"
+                    .to_owned(),
+            );
+        }
     }
     let tree = tree_from_urls(&config.urls);
     let tile_count = tree.tiles().len();
@@ -423,12 +464,27 @@ struct WorkspaceApp {
     receipt_error: Option<String>,
     pending_workspace_assertion: Option<String>,
     workspace_receipt_outcome: Option<WorkspaceReceiptOutcome>,
+    workspace_receipt_stage_started: Instant,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
     mixed_content_ready_frame: Option<u32>,
     #[cfg(target_os = "windows")]
+    mixed_verified_sizes: Vec<(u32, u32)>,
+    #[cfg(target_os = "windows")]
+    mixed_pending_resize: Option<MixedPendingResize>,
+    #[cfg(target_os = "windows")]
     scrying_host: Option<ScryingReceiptHost>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug)]
+struct MixedPendingResize {
+    target: (u32, u32),
+    frames: u32,
+    imports: u32,
+    waits: u32,
+    compositions: u32,
 }
 
 impl WorkspaceApp {
@@ -458,10 +514,15 @@ impl WorkspaceApp {
             receipt_error: None,
             pending_workspace_assertion: None,
             workspace_receipt_outcome: None,
+            workspace_receipt_stage_started: Instant::now(),
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
             mixed_content_ready_frame: None,
+            #[cfg(target_os = "windows")]
+            mixed_verified_sizes: Vec::new(),
+            #[cfg(target_os = "windows")]
+            mixed_pending_resize: None,
             #[cfg(target_os = "windows")]
             scrying_host,
         }
@@ -530,18 +591,7 @@ impl WorkspaceApp {
                     self.pending_workspace_assertion = Some(assertion);
                     self.receipt_complete = true;
                 },
-                Ok(None) => {
-                    if self.config.workspace_receipt == Some(WorkspaceReceipt::Mixed)
-                        && self.redraws >= WORKSPACE_RECEIPT_WARMUP_LIMIT
-                    {
-                        self.receipt_error = Some(
-                            "mixed workspace receipt reached its warmup bound before the native surface was ready"
-                                .to_owned(),
-                        );
-                        event_loop.exit();
-                        return;
-                    }
-                },
+                Ok(None) => {},
                 Err(error) => {
                     self.receipt_error = Some(error);
                     event_loop.exit();
@@ -799,6 +849,20 @@ impl WorkspaceApp {
                 assertion,
                 artifact: captured.path.clone(),
                 digest: captured.digest,
+                verified_sizes: {
+                    #[cfg(target_os = "windows")]
+                    {
+                        if self.mixed_verified_sizes.is_empty() {
+                            vec![(self.width, self.height)]
+                        } else {
+                            self.mixed_verified_sizes.clone()
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        vec![(self.width, self.height)]
+                    }
+                },
             });
             host.renderer().compose_external_texture(
                 &captured.view,
@@ -813,6 +877,35 @@ impl WorkspaceApp {
         self.redraws += 1;
         if self.config.workspace_receipt.is_some() && self.receipt_complete {
             self.workspace_receipt_redraws += 1;
+        }
+
+        if self.config.workspace_receipt == Some(WorkspaceReceipt::Mixed)
+            && !self.receipt_complete
+            && self.workspace_receipt_stage_started.elapsed()
+                >= self.config.workspace_receipt_stage_timeout
+        {
+            #[cfg(target_os = "windows")]
+            let progress = {
+                let stats = self.native_surfaces.stats();
+                format!(
+                    "frames={} imports={} waits={} compositions={} verified_sizes={:?}",
+                    stats.frames,
+                    stats.imports,
+                    stats.waits,
+                    stats.compositions,
+                    self.mixed_verified_sizes
+                )
+            };
+            #[cfg(not(target_os = "windows"))]
+            let progress = "native surface unavailable on this platform".to_owned();
+            self.receipt_error = Some(format!(
+                "mixed workspace receipt timed out after {}s at {}x{} ({progress})",
+                self.config.workspace_receipt_stage_timeout.as_secs_f32(),
+                self.width,
+                self.height
+            ));
+            event_loop.exit();
+            return;
         }
 
         let workspace_receipt_finished = self.config.workspace_receipt.is_some()
@@ -848,7 +941,7 @@ impl WorkspaceApp {
 
     fn drive_mixed_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
         #[cfg(target_os = "windows")]
-        if self.scrying_host.is_some() && !self.mixed_native_receipt_ready() {
+        if self.scrying_host.is_some() && !self.mixed_size_matrix_ready()? {
             return Ok(None);
         }
         if self.receipt_step == 0 {
@@ -856,6 +949,116 @@ impl WorkspaceApp {
             self.receipt_step = 1;
         }
         Ok(Some(MIXED_WORKSPACE_ASSERTION.to_owned()))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn mixed_size_matrix_ready(&mut self) -> Result<bool, String> {
+        let Some(sizes) = self.config.workspace_size_matrix.clone() else {
+            return Ok(self.mixed_native_receipt_ready());
+        };
+        let Some(&initial) = sizes.first() else {
+            return Err("mixed workspace size matrix is empty".to_owned());
+        };
+
+        if self.mixed_verified_sizes.is_empty() {
+            if !self.mixed_native_receipt_ready() || !self.mixed_size_is_composed(initial, None)? {
+                return Ok(false);
+            }
+            self.mixed_verified_sizes.push(initial);
+            if sizes.len() == 1 {
+                return Ok(true);
+            }
+            self.request_mixed_resize(sizes[1]);
+            return Ok(false);
+        }
+
+        let Some(pending) = self.mixed_pending_resize else {
+            return Err("mixed workspace size matrix lost its pending resize".to_owned());
+        };
+        if !self.mixed_size_is_composed(pending.target, Some(pending))? {
+            return Ok(false);
+        }
+        self.mixed_verified_sizes.push(pending.target);
+        self.mixed_pending_resize = None;
+        if let Some(&next) = sizes.get(self.mixed_verified_sizes.len()) {
+            self.request_mixed_resize(next);
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn mixed_size_is_composed(
+        &self,
+        target: (u32, u32),
+        baseline: Option<MixedPendingResize>,
+    ) -> Result<bool, String> {
+        if (self.width, self.height) != target {
+            return Ok(false);
+        }
+        let route = self
+            .workspace
+            .route(TileId(4))
+            .ok_or("mixed resize receipt lost surface tile 4")?;
+        if !matches!(route.state, PeltRouteState::Surface) {
+            return Err(format!(
+                "mixed resize receipt changed tile 4 from a native surface: {route:?}"
+            ));
+        }
+        let rect = self
+            .workspace
+            .content_rect(TileId(4))
+            .ok_or("mixed resize receipt has no content geometry for tile 4")?;
+        let (logical_width, logical_height) = self.logical_size();
+        if !rect.x.is_finite()
+            || !rect.y.is_finite()
+            || !rect.width.is_finite()
+            || !rect.height.is_finite()
+            || rect.width <= 0.0
+            || rect.height <= 0.0
+            || rect.x < 0.0
+            || rect.y < 0.0
+            || rect.x + rect.width > logical_width as f32 + 1.0
+            || rect.y + rect.height > logical_height as f32 + 1.0
+        {
+            return Err(format!(
+                "mixed resize receipt produced invalid tile 4 geometry at {}x{}: {rect:?}",
+                target.0, target.1
+            ));
+        }
+        let expected = (
+            physical_extent(rect.width, self.scale_factor),
+            physical_extent(rect.height, self.scale_factor),
+        );
+        if self.native_surfaces.dimensions(TileId(4)) != Some(expected) {
+            return Ok(false);
+        }
+        let Some(baseline) = baseline else {
+            return Ok(true);
+        };
+        let stats = self.native_surfaces.stats();
+        Ok(stats.frames > baseline.frames
+            && stats.imports > baseline.imports
+            && stats.waits > baseline.waits
+            && stats.compositions > baseline.compositions)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn request_mixed_resize(&mut self, target: (u32, u32)) {
+        let stats = self.native_surfaces.stats();
+        self.mixed_pending_resize = Some(MixedPendingResize {
+            target,
+            frames: stats.frames,
+            imports: stats.imports,
+            waits: stats.waits,
+            compositions: stats.compositions,
+        });
+        self.workspace_receipt_stage_started = Instant::now();
+        if let Some(window) = self.window.as_ref() {
+            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(target.0, target.1));
+        }
+        self.request_redraw();
     }
 
     fn drive_mixed_workspace_receipt(&mut self) -> Result<String, String> {
@@ -1645,6 +1848,7 @@ impl ApplicationHandler for WorkspaceApp {
                 return;
             },
         }
+        self.workspace_receipt_stage_started = Instant::now();
         window.request_redraw();
         self.window = Some(window);
     }
