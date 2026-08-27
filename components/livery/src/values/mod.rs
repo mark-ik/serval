@@ -321,10 +321,7 @@ impl ResolveViewport for Size {
 
 impl ResolveViewport for FlexBasis {
     fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
-        match *self {
-            Self::Value(value) => Self::Value(value.resolve_relative(environment)),
-            value => value,
-        }
+        self.resolve_relative(environment)
     }
 }
 

@@ -140,12 +140,14 @@ fn flex_basis_interpolates_numeric_values_and_preserves_unresolved_environment_t
     assert_eq!(negative.resolve_font_relative(40.0, 16.0).to_string(), "0");
 
     let container_relative = "calc(10cqw - 1em)".parse::<FlexBasis>().unwrap();
-    assert!(
-        container_relative
-            .resolve_font_relative(16.0, 16.0)
-            .to_string()
-            .contains("cqw")
-    );
+    let unresolved = container_relative.resolve_font_relative(16.0, 16.0);
+    assert!(unresolved.to_string().contains("cqw"));
+    let resolved = unresolved.resolve_relative_lengths(RelativeLengthEnvironment::containers(
+        ViewportSizes::uniform(100.0, 100.0),
+        Some(100.0),
+        Some(100.0),
+    ));
+    assert_eq!(resolved.to_string(), "0");
 }
 
 #[test]

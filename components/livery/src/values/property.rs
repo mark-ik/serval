@@ -2784,6 +2784,27 @@ pub enum FlexBasis {
 }
 
 impl FlexBasis {
+    fn clamp_definite_nonnegative(self) -> Self {
+        let Self::Value(value) = self else {
+            return self;
+        };
+        let value = match value {
+            LengthPercentage::Length(length) if length.unit == super::LengthUnit::Px => {
+                LengthPercentage::Length(Length::px(length.value.max(0.0)))
+            },
+            LengthPercentage::Calc(calc)
+                if calc.percentage == 0.0
+                    && calc.em == 0.0
+                    && calc.rem == 0.0
+                    && !calc.has_unresolved_relative() =>
+            {
+                LengthPercentage::Length(Length::px(calc.px.max(0.0)))
+            },
+            value => value,
+        };
+        Self::Value(value)
+    }
+
     /// Resolve font-relative terms for the computed-value boundary. A
     /// definite negative result is clamped as required by flex-basis's
     /// non-negative range; percentage-dependent results remain deferred.
@@ -2791,18 +2812,17 @@ impl FlexBasis {
         let Self::Value(value) = self else {
             return self;
         };
-        let value = value.resolve_font_relative(em, rem);
-        let value = match value {
-            // `LengthPercentage::resolve_font_relative` has already reduced
-            // every definite length to px. Keep an unresolved container,
-            // viewport, or metric-relative length intact for its later
-            // environment-specific resolution instead of calling `to_px`.
-            LengthPercentage::Length(length) if !length.unit.is_relative() => {
-                LengthPercentage::Length(Length::px(length.value.max(0.0)))
-            },
-            value => value,
+        Self::Value(value.resolve_font_relative(em, rem)).clamp_definite_nonnegative()
+    }
+
+    /// Resolve available environment-relative terms and reapply the computed
+    /// non-negative range once the result becomes definite. Font-relative and
+    /// percentage-dependent values remain deferred to their own boundaries.
+    pub fn resolve_relative(self, environment: RelativeLengthEnvironment) -> Self {
+        let Self::Value(value) = self else {
+            return self;
         };
-        Self::Value(value)
+        Self::Value(value.resolve_relative(environment)).clamp_definite_nonnegative()
     }
 
     /// Interpolate numeric bases through their shared length-percentage
