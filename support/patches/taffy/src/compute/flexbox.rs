@@ -892,7 +892,7 @@ fn determine_flex_base_size(
                     child_known_dimensions,
                     child_parent_size,
                     child_available_space,
-                    SizingMode::ContentSize,
+                    SizingMode::ContentSizeForAutomaticMinimum,
                     dir.main_axis(),
                     Line::FALSE,
                 )

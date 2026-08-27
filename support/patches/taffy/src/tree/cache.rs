@@ -326,4 +326,26 @@ mod tests {
 
         assert!(cache.get(&content_size).is_none());
     }
+
+    #[test]
+    fn compute_size_cache_distinguishes_content_size_after_inherent_size() {
+        let content_size = compute_size_input(SizingMode::ContentSize);
+        let inherent_size = compute_size_input(SizingMode::InherentSize);
+        let mut cache = Cache::new();
+
+        cache.store(&inherent_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
+
+        assert!(cache.get(&content_size).is_none());
+    }
+
+    #[test]
+    fn compute_size_cache_distinguishes_inherent_size_after_content_size() {
+        let content_size = compute_size_input(SizingMode::ContentSize);
+        let inherent_size = compute_size_input(SizingMode::InherentSize);
+        let mut cache = Cache::new();
+
+        cache.store(&content_size, LayoutOutput::from_outer_size(Size { width: 10.0, height: 20.0 }));
+
+        assert!(cache.get(&inherent_size).is_none());
+    }
 }
