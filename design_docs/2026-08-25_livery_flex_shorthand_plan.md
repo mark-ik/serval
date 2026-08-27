@@ -4,9 +4,10 @@
 
 **Status:** In progress. The `flex` and `flex-flow` cascade, bounded
 specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
-and physical flex main-axis, alignment, and gap projection are complete. Row
-18 remains open for generic declaration reflection, flex-basis content used
-values and automatic minimums, the remaining vertical-flex work, and grid.
+generic inline declaration reflection, and physical flex main-axis, alignment,
+and gap projection are complete. Row 18 remains open for flex-basis content
+used values and automatic minimums, the remaining vertical-flex work, and
+grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -131,6 +132,28 @@ preserving `normal` as its distinct computed value and flex-start used value.
 both directions, unequal gaps prove the physical component mapping, live RTL
 and `sideways-lr` geometry passes, both assigned direction/gap WPT residuals
 move fail-to-pass, and the full flexbox reftest map has no unexplained loss.
+
+## Phase 6: generic inline declaration reflection
+
+Keep shorthand grammar and component metadata in Livery while making the
+shared Script Runtime declaration store generic. Normal shorthand assignments
+expand atomically into ordered longhands. Complete longhand sets reconstruct
+for shorthand reads and declaration-block serialization. A variable-bearing
+shorthand creates one hidden pending-substitution entry per longhand; those
+longhands serialize as empty individually, while a complete set from one
+origin reflects the authored shorthand value.
+
+The native string bridge escapes record delimiters, verifies the exact
+component count and order before mutation, and rejects malformed expansion as
+an atomic no-op. The Runtime receives supported shorthand names, components,
+expansion, and reconstruction from the selected CSS engine rather than naming
+`flex` or `flex-flow` itself.
+
+**Done condition:** focused Boa and Nova receipts cover expansion, removal,
+`cssText` reconstruction, pending substitution, later longhand mutation,
+external attribute reparse, malformed expansion, and escaped fields. The exact
+flex parsing map moves only `flex-shorthand.html` and
+`flex-flow-shorthand.html`, with zero loss.
 
 ## Findings
 
@@ -265,6 +288,41 @@ The reproducible commands, all runner hashes, exact transition identities,
 and focused maps are recorded under
 `testing/genet/wpt-ledger/2026-08-26_flex_axis_cssom`.
 
+## Phase 6 native and frozen receipts
+
+The accepted predecessor is `6f0fd483a460`; the generic reflection
+implementation ends at `48e4ce58123` after rebasing onto `6b65d8df327`.
+Current main's intervening resource work required one
+offline lock update, adding only `genet-document-resources` to
+`pelt-desktop`. The resulting Cargo.lock SHA-256 is
+`D7B7F329F75C91E975F4328E8439F47C76CD512CEA304E5EE072C8C4538D34D8`.
+
+- Frozen runner: `genet-wpt-candidate-48e4ce58123-nodebug.exe`.
+- Runner SHA-256:
+  `4FAA9FDD155419A816E5C87FCE7A42D77C433BE7E3D7F2F0838A1B42CEB96E09`.
+- Manifest SHA-256:
+  `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`.
+- Livery: 192 passed, zero failed, four ignored.
+- Genet-Livery: 224 / 224 library tests and every integration binary passed.
+- Genet-Scripted: 26 / 26 passed.
+- Script Runtime: 122 / 122 library, 16 / 16 fetch, and 7 / 7 WebGL tests
+  passed.
+
+| Exact receipt | Predecessor | Final | Movement |
+|---|---:|---:|---:|
+| `css/css-flexbox/parsing` testharness | 113 / 183 | 159 / 183 | 46 fail-to-pass, 0 pass-to-fail |
+| `flex-shorthand.html` | 0 / 40 | 40 / 40 | 40 fail-to-pass |
+| `flex-flow-shorthand.html` | 0 / 6 | 6 / 6 | 6 fail-to-pass |
+
+All 183 identities are present in both maps. Every other subtest is
+status-identical. The final map SHA-256 is
+`639BB0A3E4293A1254786C6E8AB4DACA20ED9F2FA205457BC38349BD1A241D6F`.
+The pre-final `b68957e555b` map is status-identical to the final map and remains
+in the ledger for provenance.
+The executable, predecessor and final maps, native details, and commands are
+recorded under
+`testing/genet/wpt-ledger/2026-08-27_flex_cssom_reflection`.
+
 ## Remaining Row 18 work
 
 - Carry `auto` and `content` distinctly through Taffy's flex-basis API, skip
@@ -272,8 +330,6 @@ and focused maps are recorded under
   eight focused `flexbox-flex-basis-content-*` layout residuals.
 - Add shared `ex` font metrics and generic zero-percentage provenance rather
   than encoding either exception inside `FlexBasis`.
-- Implement generic `CSSStyleDeclaration` shorthand-to-longhand reflection for
-  `flex` and `flex-flow`, including the variable-bearing `CSS.supports()` seam.
 - Repair the automatic-minimum-size residual in vendored Taffy and publish the
   corresponding fork release.
 - Validate and repair the remaining vertical-flex cross-axis alignment and
@@ -336,3 +392,16 @@ and focused maps are recorded under
 - Characterized all eight `flexbox-flex-basis-content-001a` through `004b`
   reftests. They remain local failures in both maps, so this slice makes no
   content used-value or layout claim.
+
+### 2026-08-27
+
+- Added generic inline shorthand expansion and reconstruction metadata through
+  Livery, Genet-Livery, Script Runtime, and Genet-Scripted.
+- Modeled variable-bearing shorthands as per-longhand pending-substitution
+  values, including empty longhand serialization, common-origin shorthand
+  reads, later longhand mutation, and external style-attribute reparse.
+- Replaced the raw line bridge with escaped fields and exact ordered expansion
+  validation before mutation.
+- Froze the rebased WPT runner. The complete parsing map moves from 113 / 183
+  to 159 / 183 through the 40 `flex` and six `flex-flow` shorthand subtests,
+  with zero losses and no other identity movement.
