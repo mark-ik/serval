@@ -612,6 +612,10 @@ pub(crate) struct WorkspaceChrome {
 pub(crate) struct FrisketSurface {
     tree: TileTree,
     chrome: Option<WorkspaceChrome>,
+    /// Optional host-authored Chrome layer. It remains outside the document
+    /// tile/session path so previews can restyle the shell without changing a
+    /// route, controller, or content-hole geometry.
+    chrome_stylesheet: Option<String>,
     content_a11y: HashMap<TileId, FrisketContentA11y>,
     viewport: (u32, u32),
     document: LiveryDocument<ScriptedDom>,
@@ -623,15 +627,16 @@ impl FrisketSurface {
         Self {
             tree: tree.clone(),
             chrome: None,
+            chrome_stylesheet: None,
             content_a11y: HashMap::new(),
             viewport,
-            document: document_for(tree, None, viewport.0, viewport.1),
+            document: document_for(tree, None, None, viewport.0, viewport.1),
         }
     }
 
     pub fn set_tree(&mut self, tree: &TileTree) {
         self.tree = tree.clone();
-        self.document = document_for(tree, self.chrome.as_ref(), self.viewport.0, self.viewport.1);
+        self.rebuild_document();
     }
 
     pub fn set_chrome(&mut self, chrome: Option<WorkspaceChrome>) {
@@ -639,12 +644,20 @@ impl FrisketSurface {
             return;
         }
         self.chrome = chrome;
-        self.document = document_for(
-            &self.tree,
-            self.chrome.as_ref(),
-            self.viewport.0,
-            self.viewport.1,
-        );
+        self.rebuild_document();
+    }
+
+    /// Append or remove a host-owned author layer for the workspace shell.
+    ///
+    /// This deliberately has no document-tile input: Pelt keeps session,
+    /// routing, and content composition authority while the retained Livery
+    /// document supplies the Chrome preview.
+    pub fn set_chrome_stylesheet(&mut self, stylesheet: Option<String>) {
+        if self.chrome_stylesheet == stylesheet {
+            return;
+        }
+        self.chrome_stylesheet = stylesheet;
+        self.rebuild_document();
     }
 
     /// Supply Pelt's per-tile accessibility declarations without changing the
@@ -663,7 +676,7 @@ impl FrisketSurface {
         let viewport = (width.max(1), height.max(1));
         if self.viewport != viewport {
             self.viewport = viewport;
-            self.document = document_for(&self.tree, self.chrome.as_ref(), viewport.0, viewport.1);
+            self.rebuild_document();
         }
         let list = self
             .document
@@ -850,6 +863,15 @@ impl FrisketSurface {
         self.rect_for_attr(ATTR_CHROME_ACTION, action)
     }
 
+    /// Read a resolved style from a named shell class for a focused receipt.
+    /// It avoids exposing the transient DOM node identifiers which become
+    /// invalid every time the retained Chrome document is rebuilt.
+    pub fn chrome_computed_style(&self, class: &str, property: &str) -> Option<String> {
+        let dom = self.document.dom();
+        dom.first_with_class(dom.document(), class)
+            .and_then(|node| self.document.computed_style(node, property))
+    }
+
     pub fn divider_rect(&self, target: &DividerTarget) -> Option<WorkspaceRect> {
         nodes_with_attr(self.document.dom(), "data-divider")
             .into_iter()
@@ -865,11 +887,22 @@ impl FrisketSurface {
             .and_then(|node| self.document.fragment_rect(node))
             .map(workspace_rect)
     }
+
+    fn rebuild_document(&mut self) {
+        self.document = document_for(
+            &self.tree,
+            self.chrome.as_ref(),
+            self.chrome_stylesheet.as_deref(),
+            self.viewport.0,
+            self.viewport.1,
+        );
+    }
 }
 
 fn document_for(
     tree: &TileTree,
     chrome: Option<&WorkspaceChrome>,
+    chrome_stylesheet: Option<&str>,
     width: u32,
     height: u32,
 ) -> LiveryDocument<ScriptedDom> {
@@ -890,14 +923,20 @@ fn document_for(
          * {{ box-sizing: border-box; }} \
          .frisket-body {{ width: {width}px; height: {height}px; }}"
     );
+    let mut stylesheets = vec![
+        host_css.as_str(),
+        FRISKET_CSS,
+        PELT_CHROME_CSS,
+        PELT_LIGHT_THEME_CSS,
+    ];
+    if chrome.is_some() {
+        if let Some(stylesheet) = chrome_stylesheet {
+            stylesheets.push(stylesheet);
+        }
+    }
     LiveryDocument::new(
         dom,
-        StyleSet::cambium(&[
-            &host_css,
-            FRISKET_CSS,
-            PELT_CHROME_CSS,
-            PELT_LIGHT_THEME_CSS,
-        ]),
+        StyleSet::cambium(&stylesheets),
         Device::screen(width as f32, height as f32),
     )
 }
@@ -988,49 +1027,73 @@ fn diagnostic_target(dom: &ScriptedDom, hit: NodeId) -> Option<TileId> {
 }
 
 const PELT_CHROME_CSS: &str = "\
-    .pelt-workspace { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #202027; } \
-    .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 70px; min-height: 70px; padding: 4px 6px; background: #24242d; border-bottom: 1px solid #3c3c48; } \
+    .pelt-workspace { \
+        --pelt-chrome-workspace: #202027; --pelt-chrome-surface: #24242d; --pelt-chrome-border: #3c3c48; \
+        --pelt-chrome-control-text: #e8e8ee; --pelt-chrome-control-surface: #3a3a46; --pelt-chrome-control-border: #555565; \
+        --pelt-chrome-disabled-text: #777783; --pelt-chrome-disabled-surface: #2c2c34; --pelt-chrome-disabled-border: #363640; \
+        --pelt-chrome-accent-text: #ffffff; --pelt-chrome-accent-surface: #41506b; --pelt-chrome-accent-border: #83a3d5; \
+        --pelt-chrome-address-text: #f0f0f4; --pelt-chrome-address-surface: #16161d; \
+        --pelt-chrome-context-text: #bfe9ff; --pelt-chrome-context-surface: #30384a; --pelt-chrome-context-border: #566d91; \
+        --pelt-chrome-selection-text: #ffffff; --pelt-chrome-selection-surface: #46628a; --pelt-chrome-selection-border: #9cc8ff; \
+        --pelt-chrome-heading: #ffffff; --pelt-chrome-route: #9ccdf0; --pelt-chrome-status: #a8d6a8; \
+        --pelt-chrome-panel-text: #e8e8ee; --pelt-chrome-panel-surface: #1b1b23; --pelt-chrome-panel-border: #3c3c48; \
+        --pelt-chrome-summary: #c8c8d4; --pelt-chrome-section: #8bb9eb; --pelt-chrome-entry: #e1e1ea; --pelt-chrome-muted: #a0a0b0; \
+        --pelt-chrome-diagnostic-border: #596071; --pelt-chrome-loading-text: #dbeeff; --pelt-chrome-loading-surface: #1d2839; --pelt-chrome-loading-border: #527aa6; \
+        --pelt-chrome-error-text: #ffe7e5; --pelt-chrome-error-surface: #392025; --pelt-chrome-error-border: #a35e63; \
+        --pelt-chrome-diagnostic-address: #bfe0ff; --pelt-chrome-diagnostic-note: #d2d2df; \
+        --pelt-chrome-tabbar: #33333a; --pelt-chrome-tab-text: #cccccc; --pelt-chrome-tab-surface: #2a2a30; \
+        --pelt-chrome-tab-active-text: #ffffff; --pelt-chrome-tab-active-surface: #4a4a55; --pelt-chrome-tab-close: #999999; \
+        --pelt-chrome-content-surface: #ffffff; --pelt-chrome-divider: #1a1a1f; \
+        position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--pelt-chrome-workspace); \
+    } \
+    .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 70px; min-height: 70px; padding: 4px 6px; background: var(--pelt-chrome-surface); border-bottom: 1px solid var(--pelt-chrome-border); } \
     .pelt-chrome-menu-open { flex-basis: 108px; min-height: 108px; } \
     .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; } \
-    .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 4px; padding: 4px 0; text-align: center; color: #e8e8ee; background: #3a3a46; border: 1px solid #555565; } \
-    .pelt-chrome-button.disabled { color: #777783; background: #2c2c34; border-color: #363640; } \
+    .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 4px; padding: 4px 0; text-align: center; color: var(--pelt-chrome-control-text); background: var(--pelt-chrome-control-surface); border: 1px solid var(--pelt-chrome-control-border); } \
+    .pelt-chrome-button.disabled { color: var(--pelt-chrome-disabled-text); background: var(--pelt-chrome-disabled-surface); border-color: var(--pelt-chrome-disabled-border); } \
     .pelt-chrome-toggle { flex-basis: 62px; width: 62px; margin-left: 5px; font-size: 12px; } \
-    .pelt-chrome-toggle-open { color: #ffffff; background: #41506b; border-color: #83a3d5; } \
-    .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: #f0f0f4; background: #16161d; border: 1px solid #555565; } \
-    .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 5px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: #bfe9ff; background: #30384a; border: 1px solid #566d91; } \
-    .pelt-engine-open { color: #ffffff; background: #41506b; border-color: #83a3d5; } \
+    .pelt-chrome-toggle-open { color: var(--pelt-chrome-accent-text); background: var(--pelt-chrome-accent-surface); border-color: var(--pelt-chrome-accent-border); } \
+    .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-address-text); background: var(--pelt-chrome-address-surface); border: 1px solid var(--pelt-chrome-control-border); } \
+    .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 5px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-context-text); background: var(--pelt-chrome-context-surface); border: 1px solid var(--pelt-chrome-context-border); } \
+    .pelt-engine-open { color: var(--pelt-chrome-accent-text); background: var(--pelt-chrome-accent-surface); border-color: var(--pelt-chrome-accent-border); } \
     .pelt-engine-menu { display: flex; flex-direction: row; flex-grow: 0; flex-shrink: 0; flex-basis: 28px; min-height: 28px; margin: 2px 0; } \
-    .pelt-engine-option { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: #c9d9ef; background: #30384a; border: 1px solid #566d91; } \
-    .pelt-engine-option-selected { color: #ffffff; background: #46628a; border-color: #9cc8ff; } \
+    .pelt-engine-option { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: var(--pelt-chrome-context-text); background: var(--pelt-chrome-context-surface); border: 1px solid var(--pelt-chrome-context-border); } \
+    .pelt-engine-option-selected { color: var(--pelt-chrome-selection-text); background: var(--pelt-chrome-selection-surface); border-color: var(--pelt-chrome-selection-border); } \
     .pelt-details { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 26px; min-width: 0; overflow: hidden; } \
-    .pelt-title { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; overflow: hidden; white-space: nowrap; color: #ffffff; font-size: 13px; } \
-    .pelt-route { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 260px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: #9ccdf0; font-size: 12px; } \
-    .pelt-status { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 160px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: #a8d6a8; font-size: 12px; } \
+    .pelt-title { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-heading); font-size: 13px; } \
+    .pelt-route { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 260px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-route); font-size: 12px; } \
+    .pelt-status { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 160px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-status); font-size: 12px; } \
     .pelt-body { position: relative; display: flex; flex-direction: row; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; min-height: 0; } \
     .pelt-pane { display: flex; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; min-height: 0; } \
-    .pelt-inspector { position: absolute; top: 0px; right: 0px; bottom: 0px; z-index: 1; display: flex; flex-direction: column; width: 248px; min-width: 248px; min-height: 0; padding: 8px; overflow: hidden; pointer-events: none; color: #e8e8ee; background: #1b1b23; border-left: 1px solid #3c3c48; } \
-    .pelt-inspector-heading { flex-grow: 0; flex-shrink: 0; color: #ffffff; font-size: 14px; font-weight: bold; } \
-    .pelt-inspector-capability { flex-grow: 0; flex-shrink: 0; margin-top: 4px; color: #9ccdf0; font-size: 12px; } \
-    .pelt-inspector-title { flex-grow: 0; flex-shrink: 0; margin-top: 6px; overflow: hidden; white-space: nowrap; color: #ffffff; font-size: 13px; } \
-    .pelt-inspector-summary { flex-grow: 0; flex-shrink: 0; margin-top: 4px; color: #c8c8d4; font-size: 12px; } \
-    .pelt-inspector-section { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: #8bb9eb; font-size: 12px; } \
-    .pelt-inspector-entry { flex-grow: 0; flex-shrink: 0; padding-left: 6px; overflow: hidden; white-space: nowrap; color: #e1e1ea; font-size: 12px; } \
-    .pelt-inspector-more { flex-grow: 0; flex-shrink: 0; padding-left: 6px; color: #a0a0b0; font-size: 12px; } \
-    .pelt-appearance { position: absolute; top: 0px; right: 0px; bottom: 0px; z-index: 3; display: flex; flex-direction: column; width: 260px; min-width: 260px; min-height: 0; padding: 16px; overflow: hidden; color: #e8e8ee; background: #1b1b23; border-left: 1px solid #3c3c48; } \
-    .pelt-appearance-heading { flex-grow: 0; flex-shrink: 0; color: #ffffff; font-size: 16px; font-weight: bold; } \
-    .pelt-appearance-label { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: #9ccdf0; font-size: 13px; } \
+    .pelt-inspector { position: absolute; top: 0px; right: 0px; bottom: 0px; z-index: 1; display: flex; flex-direction: column; width: 248px; min-width: 248px; min-height: 0; padding: 8px; overflow: hidden; pointer-events: none; color: var(--pelt-chrome-panel-text); background: var(--pelt-chrome-panel-surface); border-left: 1px solid var(--pelt-chrome-panel-border); } \
+    .pelt-inspector-heading { flex-grow: 0; flex-shrink: 0; color: var(--pelt-chrome-heading); font-size: 14px; font-weight: bold; } \
+    .pelt-inspector-capability { flex-grow: 0; flex-shrink: 0; margin-top: 4px; color: var(--pelt-chrome-route); font-size: 12px; } \
+    .pelt-inspector-title { flex-grow: 0; flex-shrink: 0; margin-top: 6px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-heading); font-size: 13px; } \
+    .pelt-inspector-summary { flex-grow: 0; flex-shrink: 0; margin-top: 4px; color: var(--pelt-chrome-summary); font-size: 12px; } \
+    .pelt-inspector-section { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: var(--pelt-chrome-section); font-size: 12px; } \
+    .pelt-inspector-entry { flex-grow: 0; flex-shrink: 0; padding-left: 6px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-entry); font-size: 12px; } \
+    .pelt-inspector-more { flex-grow: 0; flex-shrink: 0; padding-left: 6px; color: var(--pelt-chrome-muted); font-size: 12px; } \
+    .pelt-appearance { position: absolute; top: 0px; right: 0px; bottom: 0px; z-index: 3; display: flex; flex-direction: column; width: 260px; min-width: 260px; min-height: 0; padding: 16px; overflow: hidden; color: var(--pelt-chrome-panel-text); background: var(--pelt-chrome-panel-surface); border-left: 1px solid var(--pelt-chrome-panel-border); } \
+    .pelt-appearance-heading { flex-grow: 0; flex-shrink: 0; color: var(--pelt-chrome-heading); font-size: 16px; font-weight: bold; } \
+    .pelt-appearance-label { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: var(--pelt-chrome-route); font-size: 13px; } \
     .pelt-appearance-options { display: flex; flex-direction: row; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; margin-top: 6px; } \
-    .pelt-appearance-option { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; padding: 7px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: #c9d9ef; background: #30384a; border: 1px solid #566d91; } \
-    .pelt-appearance-option-selected { color: #ffffff; background: #46628a; border-color: #9cc8ff; } \
-    .pelt-appearance-scope { flex-grow: 0; flex-shrink: 0; margin-top: 18px; color: #e1e1ea; font-size: 13px; } \
-    .pelt-appearance-note { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: #a0a0b0; font-size: 12px; } \
-    .pelt-diagnostic { position: absolute; z-index: 2; display: flex; flex-direction: column; box-sizing: border-box; min-width: 0; min-height: 0; padding: 24px; overflow: hidden; pointer-events: none; border: 1px solid #596071; } \
-    .pelt-diagnostic-loading { color: #dbeeff; background: #1d2839; border-color: #527aa6; } \
-    .pelt-diagnostic-error { color: #ffe7e5; background: #392025; border-color: #a35e63; } \
-    .pelt-diagnostic-heading { flex-grow: 0; flex-shrink: 0; color: #ffffff; font-size: 20px; font-weight: bold; } \
-    .pelt-diagnostic-address { flex-grow: 0; flex-shrink: 0; margin-top: 10px; overflow: hidden; white-space: nowrap; color: #bfe0ff; font-size: 13px; } \
+    .pelt-appearance-option { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; padding: 7px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: var(--pelt-chrome-context-text); background: var(--pelt-chrome-context-surface); border: 1px solid var(--pelt-chrome-context-border); } \
+    .pelt-appearance-option-selected { color: var(--pelt-chrome-selection-text); background: var(--pelt-chrome-selection-surface); border-color: var(--pelt-chrome-selection-border); } \
+    .pelt-appearance-scope { flex-grow: 0; flex-shrink: 0; margin-top: 18px; color: var(--pelt-chrome-entry); font-size: 13px; } \
+    .pelt-appearance-note { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: var(--pelt-chrome-muted); font-size: 12px; } \
+    .pelt-diagnostic { position: absolute; z-index: 2; display: flex; flex-direction: column; box-sizing: border-box; min-width: 0; min-height: 0; padding: 24px; overflow: hidden; pointer-events: none; border: 1px solid var(--pelt-chrome-diagnostic-border); } \
+    .pelt-diagnostic-loading { color: var(--pelt-chrome-loading-text); background: var(--pelt-chrome-loading-surface); border-color: var(--pelt-chrome-loading-border); } \
+    .pelt-diagnostic-error { color: var(--pelt-chrome-error-text); background: var(--pelt-chrome-error-surface); border-color: var(--pelt-chrome-error-border); } \
+    .pelt-diagnostic-heading { flex-grow: 0; flex-shrink: 0; color: var(--pelt-chrome-heading); font-size: 20px; font-weight: bold; } \
+    .pelt-diagnostic-address { flex-grow: 0; flex-shrink: 0; margin-top: 10px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-diagnostic-address); font-size: 13px; } \
     .pelt-diagnostic-message { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: inherit; font-size: 14px; } \
-    .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: #d2d2df; font-size: 13px; } \
+    .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: var(--pelt-chrome-diagnostic-note); font-size: 13px; } \
+    .pelt-workspace .frisket-tabbar { background: var(--pelt-chrome-tabbar); } \
+    .pelt-workspace .frisket-tab { color: var(--pelt-chrome-tab-text); background: var(--pelt-chrome-tab-surface); } \
+    .pelt-workspace .frisket-tab.active { color: var(--pelt-chrome-tab-active-text); background: var(--pelt-chrome-tab-active-surface); } \
+    .pelt-workspace .frisket-close { color: var(--pelt-chrome-tab-close); } \
+    .pelt-workspace .frisket-content { background: var(--pelt-chrome-content-surface); } \
+    .pelt-workspace .frisket-divider { background: var(--pelt-chrome-divider); } \
     @media (max-width: 420px) { \
         .pelt-chrome { flex-basis: 108px; min-height: 108px; } \
         .pelt-chrome-menu-open { flex-basis: 146px; min-height: 146px; } \
@@ -1043,37 +1106,24 @@ const PELT_CHROME_CSS: &str = "\
     }";
 
 const PELT_LIGHT_THEME_CSS: &str = "\
-    .pelt-workspace.pelt-theme-light { background: #f4f6f8; } \
-    .pelt-theme-light .pelt-chrome { background: #f7f8fa; border-color: #c7ccd4; } \
-    .pelt-theme-light .pelt-chrome-button { color: #202933; background: #ffffff; border-color: #aeb7c3; } \
-    .pelt-theme-light .pelt-chrome-button.disabled { color: #8d97a3; background: #edf0f3; border-color: #d7dce3; } \
-    .pelt-theme-light .pelt-chrome-toggle-open { color: #153e60; background: #e0f0ff; border-color: #79acd5; } \
-    .pelt-theme-light .pelt-address { color: #1d2730; background: #ffffff; border-color: #aeb7c3; } \
-    .pelt-theme-light .pelt-engine { color: #184b73; background: #eaf4ff; border-color: #86afd0; } \
-    .pelt-theme-light .pelt-engine-open { color: #164d74; background: #dcefff; border-color: #70a9d4; } \
-    .pelt-theme-light .pelt-engine-option { color: #234f75; background: #edf5fb; border-color: #9bbbd5; } \
-    .pelt-theme-light .pelt-engine-option-selected { color: #133e64; background: #d9edff; border-color: #75add8; } \
-    .pelt-theme-light .pelt-title { color: #202933; } \
-    .pelt-theme-light .pelt-route { color: #18618e; } \
-    .pelt-theme-light .pelt-status { color: #276638; } \
-    .pelt-theme-light .pelt-inspector, .pelt-theme-light .pelt-appearance { color: #27323d; background: #ffffff; border-color: #c7ccd4; } \
-    .pelt-theme-light .pelt-inspector-heading, .pelt-theme-light .pelt-inspector-title, .pelt-theme-light .pelt-appearance-heading { color: #202933; } \
-    .pelt-theme-light .pelt-inspector-capability, .pelt-theme-light .pelt-inspector-section, .pelt-theme-light .pelt-appearance-label { color: #18618e; } \
-    .pelt-theme-light .pelt-inspector-summary, .pelt-theme-light .pelt-inspector-entry, .pelt-theme-light .pelt-appearance-scope { color: #3d4752; } \
-    .pelt-theme-light .pelt-inspector-more, .pelt-theme-light .pelt-appearance-note { color: #67727e; } \
-    .pelt-theme-light .pelt-appearance-option { color: #234f75; background: #edf5fb; border-color: #9bbbd5; } \
-    .pelt-theme-light .pelt-appearance-option-selected { color: #133e64; background: #d9edff; border-color: #75add8; } \
-    .pelt-theme-light .pelt-diagnostic-loading { color: #183f63; background: #eaf4ff; border-color: #73a5d5; } \
-    .pelt-theme-light .pelt-diagnostic-error { color: #7a242a; background: #fff1f0; border-color: #d88488; } \
-    .pelt-theme-light .pelt-diagnostic-heading { color: #202933; } \
-    .pelt-theme-light .pelt-diagnostic-address { color: #18527d; } \
-    .pelt-theme-light .pelt-diagnostic-note { color: #4e5965; } \
-    .pelt-theme-light .frisket-tabbar { background: #e3e7ec; } \
-    .pelt-theme-light .frisket-tab { color: #4c5966; background: #f5f7f9; } \
-    .pelt-theme-light .frisket-tab.active { color: #202933; background: #d9e8f5; } \
-    .pelt-theme-light .frisket-close { color: #65717d; } \
-    .pelt-theme-light .frisket-content { background: #ffffff; } \
-    .pelt-theme-light .frisket-divider { background: #cbd2da; }";
+    .pelt-workspace.pelt-theme-light { \
+        --pelt-chrome-workspace: #f4f6f8; --pelt-chrome-surface: #f7f8fa; --pelt-chrome-border: #c7ccd4; \
+        --pelt-chrome-control-text: #202933; --pelt-chrome-control-surface: #ffffff; --pelt-chrome-control-border: #aeb7c3; \
+        --pelt-chrome-disabled-text: #8d97a3; --pelt-chrome-disabled-surface: #edf0f3; --pelt-chrome-disabled-border: #d7dce3; \
+        --pelt-chrome-accent-text: #153e60; --pelt-chrome-accent-surface: #e0f0ff; --pelt-chrome-accent-border: #79acd5; \
+        --pelt-chrome-address-text: #1d2730; --pelt-chrome-address-surface: #ffffff; \
+        --pelt-chrome-context-text: #234f75; --pelt-chrome-context-surface: #edf5fb; --pelt-chrome-context-border: #9bbbd5; \
+        --pelt-chrome-selection-text: #133e64; --pelt-chrome-selection-surface: #d9edff; --pelt-chrome-selection-border: #75add8; \
+        --pelt-chrome-heading: #202933; --pelt-chrome-route: #18618e; --pelt-chrome-status: #276638; \
+        --pelt-chrome-panel-text: #27323d; --pelt-chrome-panel-surface: #ffffff; --pelt-chrome-panel-border: #c7ccd4; \
+        --pelt-chrome-summary: #3d4752; --pelt-chrome-section: #18618e; --pelt-chrome-entry: #3d4752; --pelt-chrome-muted: #67727e; \
+        --pelt-chrome-diagnostic-border: #c7ccd4; --pelt-chrome-loading-text: #183f63; --pelt-chrome-loading-surface: #eaf4ff; --pelt-chrome-loading-border: #73a5d5; \
+        --pelt-chrome-error-text: #7a242a; --pelt-chrome-error-surface: #fff1f0; --pelt-chrome-error-border: #d88488; \
+        --pelt-chrome-diagnostic-address: #18527d; --pelt-chrome-diagnostic-note: #4e5965; \
+        --pelt-chrome-tabbar: #e3e7ec; --pelt-chrome-tab-text: #4c5966; --pelt-chrome-tab-surface: #f5f7f9; \
+        --pelt-chrome-tab-active-text: #202933; --pelt-chrome-tab-active-surface: #d9e8f5; --pelt-chrome-tab-close: #65717d; \
+        --pelt-chrome-content-surface: #ffffff; --pelt-chrome-divider: #cbd2da; \
+    }";
 
 fn attr(dom: &ScriptedDom, node: NodeId, name: &str) -> Option<String> {
     dom.attribute(node, &Namespace::default(), &LocalName::from(name))
@@ -1310,6 +1360,112 @@ mod tests {
             .as_str();
         assert!(title.ends_with('…'));
         assert!(title.chars().count() <= 29);
+    }
+
+    #[test]
+    fn appended_chrome_stylesheet_recolors_shell_without_moving_content_or_close_targets() {
+        let mut chrome = WorkspaceChrome {
+            title: "Focused document".to_owned(),
+            address: "C:/example/static.html".to_owned(),
+            route: "Automatic: genet.livery · document".to_owned(),
+            status: "Ready".to_owned(),
+            theme: ChromeTheme::Dark,
+            address_focused: false,
+            can_go_back: false,
+            can_go_forward: false,
+            engine_label: "Auto".to_owned(),
+            engine_menu_open: false,
+            engine_selected: Some(ChromeEngineChoice::Automatic),
+            engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
+            inspector: None,
+            appearance: None,
+            diagnostic: None,
+        };
+        let mut surface = FrisketSurface::new(&nested_tree());
+        surface.set_chrome(Some(chrome.clone()));
+        let baseline = surface.frame(800, 600).expect("baseline Chrome frame");
+        let baseline_color = surface
+            .chrome_computed_style("pelt-chrome", "background-color")
+            .expect("baseline Chrome surface color");
+        let baseline_close = surface.close_rect(TileId(1)).expect("first close target");
+
+        surface.set_chrome_stylesheet(Some(
+            ".pelt-workspace, .pelt-workspace.pelt-theme-light { \
+                --pelt-chrome-surface: #123456; --pelt-chrome-tabbar: #102030; \
+                --pelt-chrome-content-surface: #f0e0d0; --pelt-chrome-divider: #a0b0c0; \
+            }"
+            .to_owned(),
+        ));
+        let preview = surface.frame(800, 600).expect("preview Chrome frame");
+        assert_eq!(preview.content_rects, baseline.content_rects);
+        assert_eq!(surface.close_rect(TileId(1)), Some(baseline_close));
+        assert_eq!(
+            surface
+                .chrome_computed_style("pelt-chrome", "background-color")
+                .as_deref(),
+            Some("rgb(18, 52, 86)")
+        );
+
+        // Light's built-in variables have higher specificity than a bare
+        // workspace selector, so a portable artifact maps both selectors.
+        chrome.theme = ChromeTheme::Light;
+        surface.set_chrome(Some(chrome.clone()));
+        let light_preview = surface.frame(800, 600).expect("light preview Chrome frame");
+        assert_eq!(light_preview.content_rects, baseline.content_rects);
+        assert_eq!(surface.close_rect(TileId(1)), Some(baseline_close));
+        assert_eq!(
+            surface
+                .chrome_computed_style("pelt-chrome", "background-color")
+                .as_deref(),
+            Some("rgb(18, 52, 86)")
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-tabbar", "background-color")
+                .as_deref(),
+            Some("rgb(16, 32, 48)")
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-content", "background-color")
+                .as_deref(),
+            Some("rgb(240, 224, 208)")
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-divider", "background-color")
+                .as_deref(),
+            Some("rgb(160, 176, 192)")
+        );
+
+        chrome.theme = ChromeTheme::Dark;
+        surface.set_chrome(Some(chrome));
+        surface.set_chrome_stylesheet(None);
+        let restored = surface.frame(800, 600).expect("restored Chrome frame");
+        assert_eq!(restored.content_rects, baseline.content_rects);
+        assert_eq!(surface.close_rect(TileId(1)), Some(baseline_close));
+        assert_eq!(
+            surface
+                .chrome_computed_style("pelt-chrome", "background-color")
+                .as_deref(),
+            Some(baseline_color.as_str())
+        );
+    }
+
+    #[test]
+    fn chrome_stylesheet_waits_for_the_workspace_shell() {
+        let mut surface = FrisketSurface::new(&nested_tree());
+        surface.set_chrome_stylesheet(Some(".frisket-content { background: #123456; }".to_owned()));
+        surface
+            .frame(800, 600)
+            .expect("unstyled Frisket fallback frame");
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-content", "background-color")
+                .as_deref(),
+            Some("rgb(255, 255, 255)"),
+            "a Chrome author sheet cannot style the generic Frisket fallback"
+        );
     }
 
     #[test]

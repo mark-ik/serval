@@ -29,6 +29,9 @@ livery = [
     "dep:genet-render", "dep:accesskit", "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
     "dep:windows", "dep:windows-sys", "dep:dpi", "dep:scrying-engine",
 ]
+# Named developer receipt for applying a Tabard artifact to Pelt Chrome. This
+# stays optional so the generic shell has no Tabard runtime dependency.
+tabard-preview = ["livery", "dep:tabard", "dep:tinct"]
 # Shared fleece reader lane over the portable document canvas.
 reader = [
     "present", "dep:genet-documents", "genet-documents/reader", "dep:inker",
@@ -121,6 +124,8 @@ genet-render = { path = "../../../components/genet-render", optional = true }
 inker = { workspace = true, optional = true }
 accesskit = { workspace = true, optional = true }
 pelt-core = { workspace = true }
+tabard = { path = "../../tabard", optional = true }
+tinct = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 raw-window-handle = { workspace = true, optional = true }
 webgl_wgpu = { workspace = true, optional = true }

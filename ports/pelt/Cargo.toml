@@ -32,6 +32,9 @@ viewer-engine = ["dep:pelt-desktop"]
 viewer-netrender = ["livery", "pelt-desktop/netrender"]
 # Owned CSS/layout route and the default reference-browser engine.
 livery = ["viewer-engine", "pelt-desktop/livery"]
+# Developer-only Tabard-to-Pelt Chrome receipt. It layers authored Tabard
+# tokens through Pelt's shell mapping and does not make a durable UI choice.
+tabard-preview = ["livery", "pelt-desktop/tabard-preview"]
 # Render held HTML through fleece and the shared document engine.
 reader = ["viewer-engine", "pelt-desktop/reader"]
 # The scripted profile (V4): `pelt --engine scripted <file>` runs a page's inline

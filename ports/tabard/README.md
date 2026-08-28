@@ -10,7 +10,8 @@ emits syntax spans that the derived syntax palette colours, and palette-aware
 icons can recolour at render time.
 
 Tabard authors portable theme artifacts. Livery consumes stylesheets Tabard
-emits. Pelt may later preview those artifacts, but does not own their model.
+emits. Pelt has an optional named preview receipt for those artifacts, but does
+not own their model.
 Tinct remains the small, serde-only derivation crate. Illume continues to name
 syntax spans rather than decide their appearance.
 
@@ -26,9 +27,13 @@ The first implementation is deliberately portable and library-only:
 - Theme::css_custom_properties emits a deterministic :root stylesheet with the
   same palette as --tabard-color-* custom properties. Livery can consume it
   as an ordinary author sheet.
+- Pelt's optional `tabard-preview` receipt maps those generic properties onto
+  Pelt-owned Chrome roles. It proves the shell recolors while the focused
+  document, session history, tabs, and content aperture remain held. It is not
+  a persistent appearance setting and does not recolor document content.
 
-This slice deliberately does not add a Pelt preview, host theme structs,
-syntax-color policy, icon policy, persistence, imports, or a DTCG resolver.
+This slice deliberately does not add host theme structs, syntax-color policy,
+icon policy, persistence, imports, or a DTCG resolver.
 Those become consumer work after the shared artifact has a stable shape.
 
 ## License
