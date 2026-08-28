@@ -61,6 +61,7 @@ const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept con
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
 const READER_WORKSPACE_ASSERTION: &str = "Reader reused the focused tile's held Livery response, exposed Fleece lineage, and restored the original Livery document without a second fetch";
+const TABARD_PREVIEW_WORKSPACE_ASSERTION: &str = "Tabard changed the computed Pelt Chrome color while the focused document, session history, tabs, and content aperture held";
 const READER_FIXTURE_SOURCE: &str = include_str!("../examples/workspace/reader/index.html");
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
@@ -88,6 +89,9 @@ pub enum WorkspaceReceipt {
     /// Reader extracts a focused tile's already-held source response in the
     /// shared workspace, then releases it back to its original Livery route.
     Reader,
+    /// A developer-only Tabard palette preview over the retained Pelt Chrome.
+    /// This does not persist a Pelt appearance preference or recolor documents.
+    TabardPreview,
 }
 
 impl WorkspaceReceipt {
@@ -102,6 +106,7 @@ impl WorkspaceReceipt {
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
+            Self::TabardPreview => "tabard-preview",
         }
     }
 
@@ -123,6 +128,7 @@ impl WorkspaceReceipt {
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
+                | Self::TabardPreview
         )
     }
 
@@ -319,6 +325,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
+                | WorkspaceReceipt::TabardPreview
         )
     );
     #[cfg(target_os = "windows")]
@@ -629,6 +636,68 @@ struct AppearanceReceiptBaseline {
     can_go_back: bool,
 }
 
+/// The Tabard receipt changes only the retained Chrome stylesheet. Keep the
+/// document-facing state and Frisket geometry explicit so the preview cannot
+/// accidentally become a navigation or layout path.
+#[derive(Clone, Debug, PartialEq)]
+struct TabardPreviewBaseline {
+    focused_tile: TileId,
+    tile_count: usize,
+    content: WorkspaceRect,
+    tab: WorkspaceRect,
+    address: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    chrome_background: String,
+}
+
+#[cfg(feature = "tabard-preview")]
+fn tabard_preview_stylesheet() -> String {
+    let theme = tabard::Theme::new(
+        "Pelt Tabard preview",
+        tinct::Seeds {
+            primary: tinct::Srgb::rgb(0x33, 0x66, 0xc8),
+            secondary: tinct::Srgb::rgb(0x2e, 0x9d, 0xa6),
+            tertiary: tinct::Srgb::rgb(0xe0, 0xa8, 0x46),
+            neutral: tinct::Srgb::rgb(0x10, 0x14, 0x22),
+            text_header: None,
+            text_body: None,
+            success: tinct::Srgb::rgb(0x4f, 0xb3, 0x6e),
+            danger: tinct::Srgb::rgb(0xd5, 0x4e, 0x4e),
+            dark: true,
+        },
+    );
+    let mut stylesheet = theme.css_custom_properties().replacen(
+        ":root",
+        ".pelt-workspace, .pelt-workspace.pelt-theme-light",
+        1,
+    );
+    // Pelt's Light appearance declares the same roles on the compound
+    // selector. Keep equal specificity here so a Tabard preview owns either
+    // session appearance without making Tabard responsible for Chrome names.
+    stylesheet.push_str(
+        "\
+.pelt-workspace, .pelt-workspace.pelt-theme-light { \
+--pelt-chrome-workspace: var(--tabard-color-bg); --pelt-chrome-surface: var(--tabard-color-surface); --pelt-chrome-border: var(--tabard-color-surface-2); \
+--pelt-chrome-control-text: var(--tabard-color-text); --pelt-chrome-control-surface: var(--tabard-color-surface-2); --pelt-chrome-control-border: var(--tabard-color-surface-hover); \
+--pelt-chrome-disabled-text: var(--tabard-color-text-disabled); --pelt-chrome-disabled-surface: var(--tabard-color-surface); --pelt-chrome-disabled-border: var(--tabard-color-surface-2); \
+--pelt-chrome-accent-text: var(--tabard-color-on-primary); --pelt-chrome-accent-surface: var(--tabard-color-primary); --pelt-chrome-accent-border: var(--tabard-color-secondary); \
+--pelt-chrome-address-text: var(--tabard-color-text); --pelt-chrome-address-surface: var(--tabard-color-bg); \
+--pelt-chrome-context-text: var(--tabard-color-on-secondary); --pelt-chrome-context-surface: var(--tabard-color-secondary); --pelt-chrome-context-border: var(--tabard-color-tertiary); \
+--pelt-chrome-selection-text: var(--tabard-color-on-primary); --pelt-chrome-selection-surface: var(--tabard-color-primary); --pelt-chrome-selection-border: var(--tabard-color-tertiary); \
+--pelt-chrome-heading: var(--tabard-color-text-header); --pelt-chrome-route: var(--tabard-color-secondary); --pelt-chrome-status: var(--tabard-color-success); \
+--pelt-chrome-panel-text: var(--tabard-color-text); --pelt-chrome-panel-surface: var(--tabard-color-surface); --pelt-chrome-panel-border: var(--tabard-color-surface-2); \
+--pelt-chrome-summary: var(--tabard-color-text); --pelt-chrome-section: var(--tabard-color-secondary); --pelt-chrome-entry: var(--tabard-color-text); --pelt-chrome-muted: var(--tabard-color-text-dim); \
+--pelt-chrome-diagnostic-border: var(--tabard-color-surface-hover); --pelt-chrome-loading-text: var(--tabard-color-on-secondary); --pelt-chrome-loading-surface: var(--tabard-color-secondary); --pelt-chrome-loading-border: var(--tabard-color-primary); \
+--pelt-chrome-error-text: var(--tabard-color-on-tertiary); --pelt-chrome-error-surface: var(--tabard-color-danger); --pelt-chrome-error-border: var(--tabard-color-tertiary); \
+--pelt-chrome-diagnostic-address: var(--tabard-color-secondary); --pelt-chrome-diagnostic-note: var(--tabard-color-text-dim); \
+--pelt-chrome-tabbar: var(--tabard-color-surface-2); --pelt-chrome-tab-text: var(--tabard-color-text-dim); --pelt-chrome-tab-surface: var(--tabard-color-surface); \
+--pelt-chrome-tab-active-text: var(--tabard-color-on-primary); --pelt-chrome-tab-active-surface: var(--tabard-color-primary); --pelt-chrome-tab-close: var(--tabard-color-text); \
+--pelt-chrome-content-surface: var(--tabard-color-bg); --pelt-chrome-divider: var(--tabard-color-surface-hover); }\n",
+    );
+    stylesheet
+}
+
 fn capability_label(capability: inker::A11yCapability) -> &'static str {
     match capability {
         inker::A11yCapability::Full => "Full",
@@ -780,6 +849,7 @@ struct WorkspaceApp {
     chrome_theme: ChromeTheme,
     chrome_appearance_open: bool,
     appearance_receipt_baseline: Option<AppearanceReceiptBaseline>,
+    tabard_preview_baseline: Option<TabardPreviewBaseline>,
     accessibility: WorkspaceAccessibility,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
@@ -943,6 +1013,7 @@ impl WorkspaceApp {
             chrome_theme: ChromeTheme::Dark,
             chrome_appearance_open: false,
             appearance_receipt_baseline: None,
+            tabard_preview_baseline: None,
             accessibility: WorkspaceAccessibility::new(),
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
@@ -1810,6 +1881,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
+                        | WorkspaceReceipt::TabardPreview
                 )
             ) || self
                 .config
@@ -2030,7 +2102,8 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::Accessibility
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
-                | WorkspaceReceipt::Reader,
+                | WorkspaceReceipt::Reader
+                | WorkspaceReceipt::TabardPreview,
             ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
@@ -2074,6 +2147,7 @@ impl WorkspaceApp {
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
+            WorkspaceReceipt::TabardPreview => self.drive_tabard_preview_workspace_receipt_step(),
         }
     }
 
@@ -2087,6 +2161,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
+                    | WorkspaceReceipt::TabardPreview
             )
         ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
@@ -3519,6 +3594,90 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_tabard_preview_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        #[cfg(not(feature = "tabard-preview"))]
+        return Err(
+            "tabard-preview workspace receipt needs `--features tabard-preview`".to_owned(),
+        );
+
+        #[cfg(feature = "tabard-preview")]
+        {
+            let tile = self
+                .workspace
+                .focused_tile()
+                .ok_or("tabard-preview receipt has no focused tile")?;
+            match self.receipt_step {
+                0 => {
+                    let controller = self
+                        .workspace
+                        .controller(tile)
+                        .ok_or("tabard-preview receipt has no focused controller")?;
+                    let content = self
+                        .workspace
+                        .content_rect(tile)
+                        .ok_or("tabard-preview receipt has no Frisket content geometry")?;
+                    let tab = self
+                        .frisket
+                        .tab_rect(tile)
+                        .ok_or("tabard-preview receipt has no retained tab geometry")?;
+                    let chrome_background = self
+                        .frisket
+                        .chrome_computed_style("pelt-chrome", "background-color")
+                        .ok_or("tabard-preview receipt could not read the baseline Chrome color")?;
+                    self.tabard_preview_baseline = Some(TabardPreviewBaseline {
+                        focused_tile: tile,
+                        tile_count: self.workspace.tree().tiles().len(),
+                        content,
+                        tab,
+                        address: controller.address().to_owned(),
+                        can_go_back: controller.can_go_back(),
+                        can_go_forward: controller.can_go_forward(),
+                        chrome_background,
+                    });
+                    self.frisket
+                        .set_chrome_stylesheet(Some(tabard_preview_stylesheet()));
+                },
+                1 => {
+                    let baseline = self
+                        .tabard_preview_baseline
+                        .as_ref()
+                        .ok_or("tabard-preview receipt lost its baseline")?;
+                    let controller = self
+                        .workspace
+                        .controller(tile)
+                        .ok_or("tabard-preview receipt lost its focused controller")?;
+                    let chrome_background = self
+                        .frisket
+                        .chrome_computed_style("pelt-chrome", "background-color")
+                        .ok_or("tabard-preview receipt could not read the themed Chrome color")?;
+                    if tile != baseline.focused_tile
+                        || self.workspace.tree().tiles().len() != baseline.tile_count
+                        || self.workspace.content_rect(tile) != Some(baseline.content)
+                        || self.frisket.tab_rect(tile) != Some(baseline.tab)
+                        || controller.address() != baseline.address
+                        || controller.can_go_back() != baseline.can_go_back
+                        || controller.can_go_forward() != baseline.can_go_forward
+                    {
+                        return Err(
+                            "tabard-preview receipt changed document tiles, session history, or Frisket geometry"
+                                .to_owned(),
+                        );
+                    }
+                    if chrome_background == baseline.chrome_background {
+                        return Err(format!(
+                            "tabard-preview receipt did not change computed Chrome background color: {chrome_background}"
+                        ));
+                    }
+                    self.receipt_step = self.receipt_step.saturating_add(1);
+                    return Ok(Some(TABARD_PREVIEW_WORKSPACE_ASSERTION.to_owned()));
+                },
+                _ => return Ok(Some(TABARD_PREVIEW_WORKSPACE_ASSERTION.to_owned())),
+            }
+            self.receipt_step = self.receipt_step.saturating_add(1);
+            Ok(None)
+        }
+    }
+
     fn drive_accessibility_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
         let tile = TileId(1);
         match self.receipt_step {
@@ -4893,6 +5052,22 @@ mod tests {
         assert_eq!(reader.size, Some((960, 640)));
         assert_eq!(reader.frames, Some(3));
         assert!(WorkspaceReceipt::Reader.keeps_chrome());
+
+        let tabard =
+            WorkspaceViewerConfig::new(vec!["tabard.html".to_owned()], WindowingMode::Headed)
+                .with_workspace_receipt(WorkspaceReceipt::TabardPreview, "tabard.png");
+        assert_eq!(tabard.size, Some((960, 640)));
+        assert_eq!(tabard.frames, Some(3));
+        assert!(WorkspaceReceipt::TabardPreview.keeps_chrome());
+        assert_eq!(WorkspaceReceipt::TabardPreview.id(), "tabard-preview");
+    }
+
+    #[cfg(feature = "tabard-preview")]
+    #[test]
+    fn tabard_preview_stylesheet_is_scoped_to_pelt_chrome() {
+        let stylesheet = tabard_preview_stylesheet();
+        assert!(stylesheet.contains(".pelt-workspace, .pelt-workspace.pelt-theme-light"));
+        assert!(stylesheet.contains("--pelt-chrome-surface: var(--tabard-color-surface)"));
     }
 
     #[test]
