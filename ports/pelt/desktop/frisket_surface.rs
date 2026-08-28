@@ -1036,7 +1036,9 @@ const PELT_CHROME_CSS: &str = "\
         --pelt-chrome-error-text: #ffe7e5; --pelt-chrome-error-surface: #392025; --pelt-chrome-error-border: #a35e63; \
         --pelt-chrome-diagnostic-address: #bfe0ff; --pelt-chrome-diagnostic-note: #d2d2df; \
         --pelt-chrome-tabbar: #33333a; --pelt-chrome-tab-text: #cccccc; --pelt-chrome-tab-surface: #2a2a30; \
-        --pelt-chrome-tab-active-text: #ffffff; --pelt-chrome-tab-active-surface: #4a4a55; --pelt-chrome-tab-close: #999999; \
+        --pelt-chrome-tab-active-text: #ffffff; --pelt-chrome-tab-active-surface: #4a4a55; --pelt-chrome-tab-close: #e7e9f0; \
+        --pelt-chrome-tab-close-surface: #383946; --pelt-chrome-tab-close-border: #707487; \
+        --pelt-chrome-tab-close-active-surface: #535768; --pelt-chrome-tab-close-active-border: #b7c2d9; \
         --pelt-chrome-content-surface: #ffffff; --pelt-chrome-divider: #1a1a1f; \
         position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--pelt-chrome-workspace); \
     } \
@@ -1085,7 +1087,9 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-workspace .frisket-tabbar { background: var(--pelt-chrome-tabbar); } \
     .pelt-workspace .frisket-tab { color: var(--pelt-chrome-tab-text); background: var(--pelt-chrome-tab-surface); } \
     .pelt-workspace .frisket-tab.active { color: var(--pelt-chrome-tab-active-text); background: var(--pelt-chrome-tab-active-surface); } \
-    .pelt-workspace .frisket-close { color: var(--pelt-chrome-tab-close); } \
+    .pelt-workspace .frisket-tab.active .frisket-label { font-weight: bold; } \
+    .pelt-workspace .frisket-close { display: flex; align-items: center; justify-content: center; flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-left: 4px; padding: 0; line-height: 1; font-size: 18px; font-weight: bold; color: var(--pelt-chrome-tab-close); background: var(--pelt-chrome-tab-close-surface); border: 1px solid var(--pelt-chrome-tab-close-border); } \
+    .pelt-workspace .frisket-tab.active .frisket-close { background: var(--pelt-chrome-tab-close-active-surface); border-color: var(--pelt-chrome-tab-close-active-border); } \
     .pelt-workspace .frisket-content { background: var(--pelt-chrome-content-surface); } \
     .pelt-workspace .frisket-divider { background: var(--pelt-chrome-divider); } \
     @media (max-width: 420px) { \
@@ -1095,7 +1099,7 @@ const PELT_CHROME_CSS: &str = "\
         .pelt-address { order: 2; flex-grow: 0; flex-basis: 100%; width: 100%; } \
         .pelt-engine { flex-basis: 70px; width: 70px; margin-left: 4px; padding: 5px 3px; font-size: 10px; } \
         .pelt-chrome-toggle { flex-basis: 50px; width: 50px; margin-left: 4px; font-size: 10px; } \
-        .frisket-tab { padding: 8px 2px; font-size: 12px; } \
+        .frisket-tab { padding: 8px 1px; font-size: 12px; } \
         .frisket-close { flex-basis: 28px; width: 28px; margin-left: 2px; } \
     }";
 
@@ -1115,7 +1119,9 @@ const PELT_LIGHT_THEME_CSS: &str = "\
         --pelt-chrome-error-text: #7a242a; --pelt-chrome-error-surface: #fff1f0; --pelt-chrome-error-border: #d88488; \
         --pelt-chrome-diagnostic-address: #18527d; --pelt-chrome-diagnostic-note: #4e5965; \
         --pelt-chrome-tabbar: #e3e7ec; --pelt-chrome-tab-text: #4c5966; --pelt-chrome-tab-surface: #f5f7f9; \
-        --pelt-chrome-tab-active-text: #202933; --pelt-chrome-tab-active-surface: #d9e8f5; --pelt-chrome-tab-close: #65717d; \
+        --pelt-chrome-tab-active-text: #202933; --pelt-chrome-tab-active-surface: #d9e8f5; --pelt-chrome-tab-close: #1f3448; \
+        --pelt-chrome-tab-close-surface: #ffffff; --pelt-chrome-tab-close-border: #8aa7c1; \
+        --pelt-chrome-tab-close-active-surface: #eef7ff; --pelt-chrome-tab-close-active-border: #5c93be; \
         --pelt-chrome-content-surface: #ffffff; --pelt-chrome-divider: #cbd2da; \
     }";
 
@@ -1468,7 +1474,7 @@ mod tests {
         tree.tile_mut(TileId(1)).expect("first tile").title =
             "A deliberately long workspace title that keeps the close target visible".to_owned();
         let mut surface = FrisketSurface::new(&tree);
-        surface.set_chrome(Some(WorkspaceChrome {
+        let chrome = WorkspaceChrome {
             title: "Focused document".to_owned(),
             address: "C:/example/static.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
@@ -1484,7 +1490,8 @@ mod tests {
             inspector: None,
             appearance: None,
             diagnostic: None,
-        }));
+        };
+        surface.set_chrome(Some(chrome.clone()));
         let frame = surface.frame(360, 480).expect("narrow Chrome frame");
         let within = |rect: WorkspaceRect| {
             rect.width > 0.0
@@ -1532,14 +1539,55 @@ mod tests {
         assert!(within(tab));
         assert!(within(label));
         assert!(within(close));
+        assert_eq!(close.width, 28.0);
+        assert_eq!(close.height, 28.0);
         assert!(
             label.width >= 48.0,
             "the tab retains visible label space: label={label:?} tab={tab:?} close={close:?}"
         );
         assert!(close.x >= tab.x && close.x + close.width <= tab.x + tab.width);
         assert_eq!(
+            surface.hit(label.x + label.width / 2.0, label.y + label.height / 2.0),
+            Some(FrisketHit::Tab(TileId(1)))
+        );
+        assert_eq!(
             surface.hit(close.x + close.width / 2.0, close.y + close.height / 2.0),
             Some(FrisketHit::Close(TileId(1)))
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-label", "font-weight")
+                .as_deref(),
+            Some("bold")
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-close", "background-color")
+                .as_deref(),
+            Some("rgb(83, 87, 104)")
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-close", "border-top-color")
+                .as_deref(),
+            Some("rgb(183, 194, 217)")
+        );
+
+        let mut light_chrome = chrome;
+        light_chrome.theme = AppearanceTheme::Light;
+        surface.set_chrome(Some(light_chrome));
+        surface.frame(360, 480).expect("narrow light Chrome frame");
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-close", "background-color")
+                .as_deref(),
+            Some("rgb(238, 247, 255)")
+        );
+        assert_eq!(
+            surface
+                .chrome_computed_style("frisket-close", "border-top-color")
+                .as_deref(),
+            Some("rgb(92, 147, 190)")
         );
     }
 

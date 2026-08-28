@@ -1002,6 +1002,19 @@ byte-identical PNG. The focused Livery-only desktop suite passed 33 tests and
 the Pelt viewer parser/fixture suite passed 4 tests, covering this path without
 GPU or monitor dependence.
 
+Recorded 2026-08-28: Pelt's own Chrome sheet now makes the active tab label
+bold and renders its existing `Close` target as a high-contrast, bordered
+28px control in both dark and light appearances. The narrow GPU-free test
+checks the label centre still selects the tab, the close centre still dispatches
+`Close`, its 28px geometry remains fixed, and both appearances resolve the
+expected close surface and border. The full Livery-only Pelt desktop suite
+passed 43 tests. A headed 2.00x Windows run again completed after eight redraws
+at 720x960 physical pixels with the same semantic assertion and compositor
+digest `7ce57a057fc3f581`; its checked artifact visibly shows the readable
+`Pelt load-state destination` label and distinct close button while the error
+document holds the content hole. This is a Pelt-local visual change: Frisket's
+shared tab semantics, hit routing, and document-engine ownership are unchanged.
+
 The actual high-DPI Chrome receipt is:
 
 ```sh
