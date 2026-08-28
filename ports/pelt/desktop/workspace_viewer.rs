@@ -56,6 +56,9 @@ const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
 const APPEARANCE_WORKSPACE_ASSERTION: &str =
     "session-only appearance changed the live Pelt chrome theme while the focused document held";
 const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the session appearance controls";
+const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
+const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
+    "high-DPI Chrome converted physical pointer input into its retained logical controls";
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -75,6 +78,10 @@ pub enum WorkspaceReceipt {
     Appearance,
     /// P6's retained Chrome/Frisket AccessKit tree and typed action routing.
     Accessibility,
+    /// P6's compact Chrome layout at a small logical viewport.
+    NarrowChrome,
+    /// P6's actual high-DPI Chrome input and capture alignment.
+    ChromeDpi,
 }
 
 impl WorkspaceReceipt {
@@ -86,11 +93,13 @@ impl WorkspaceReceipt {
             Self::LoadingError => "loading-error",
             Self::Appearance => "appearance",
             Self::Accessibility => "accessibility",
+            Self::NarrowChrome => "narrow-chrome",
+            Self::ChromeDpi => "chrome-dpi",
         }
     }
 
     fn default_size(self) -> (u32, u32) {
-        (960, 640)
+        self.logical_viewport().unwrap_or((960, 640))
     }
 
     fn default_frames(self) -> u32 {
@@ -100,8 +109,24 @@ impl WorkspaceReceipt {
     fn keeps_chrome(self) -> bool {
         matches!(
             self,
-            Self::Chrome | Self::LoadingError | Self::Appearance | Self::Accessibility
+            Self::Chrome
+                | Self::LoadingError
+                | Self::Appearance
+                | Self::Accessibility
+                | Self::NarrowChrome
+                | Self::ChromeDpi
         )
+    }
+
+    /// Named geometry receipts pin CSS/layout dimensions in logical pixels;
+    /// Winit resolves their physical client size from the active monitor's
+    /// actual scale factor before the host boots its device.
+    fn logical_viewport(self) -> Option<(u32, u32)> {
+        match self {
+            Self::NarrowChrome => Some((360, 480)),
+            Self::ChromeDpi => Some((960, 640)),
+            _ => None,
+        }
     }
 }
 
@@ -283,6 +308,8 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
                 | WorkspaceReceipt::Accessibility
+                | WorkspaceReceipt::NarrowChrome
+                | WorkspaceReceipt::ChromeDpi
         )
     );
     #[cfg(target_os = "windows")]
@@ -1509,6 +1536,15 @@ impl WorkspaceApp {
         )
     }
 
+    /// Route a physical winit coordinate through the same DPI conversion the
+    /// live window uses before giving it to retained Chrome or Frisket.
+    fn pointer_move_physical(&mut self, x: f32, y: f32) -> bool {
+        self.pointer_move(
+            static_viewer::logical_position(x, self.scale_factor),
+            static_viewer::logical_position(y, self.scale_factor),
+        )
+    }
+
     fn render(&mut self, event_loop: &ActiveEventLoop) {
         if self.config.workspace_receipt.is_some() && self.redraws > 0 && !self.receipt_complete {
             match self.drive_workspace_receipt() {
@@ -1702,6 +1738,8 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::LoadingError
                         | WorkspaceReceipt::Appearance
                         | WorkspaceReceipt::Accessibility
+                        | WorkspaceReceipt::NarrowChrome
+                        | WorkspaceReceipt::ChromeDpi
                 )
             ) || self
                 .config
@@ -1919,7 +1957,9 @@ impl WorkspaceApp {
                 WorkspaceReceipt::Chrome
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
-                | WorkspaceReceipt::Accessibility,
+                | WorkspaceReceipt::Accessibility
+                | WorkspaceReceipt::NarrowChrome
+                | WorkspaceReceipt::ChromeDpi,
             ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
@@ -1960,6 +2000,8 @@ impl WorkspaceApp {
             WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
             WorkspaceReceipt::Appearance => self.drive_appearance_workspace_receipt_step(),
             WorkspaceReceipt::Accessibility => self.drive_accessibility_workspace_receipt_step(),
+            WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
+            WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
         }
     }
 
@@ -1970,6 +2012,8 @@ impl WorkspaceApp {
                 WorkspaceReceipt::LoadingError
                     | WorkspaceReceipt::Appearance
                     | WorkspaceReceipt::Accessibility
+                    | WorkspaceReceipt::NarrowChrome
+                    | WorkspaceReceipt::ChromeDpi
             )
         ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
@@ -2730,6 +2774,348 @@ impl WorkspaceApp {
                 return Ok(Some(LOADING_ERROR_WORKSPACE_ASSERTION.to_owned()));
             },
             _ => return Ok(Some(LOADING_ERROR_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_narrow_chrome_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        let viewport = self.logical_size();
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                if viewport != (360, 480) {
+                    return Err(format!(
+                        "narrow Chrome receipt needs a 360x480 logical viewport, got {}x{} at {:.2}x",
+                        viewport.0, viewport.1, self.scale_factor
+                    ));
+                }
+                let back = self
+                    .frisket
+                    .chrome_rect("back")
+                    .ok_or("narrow Chrome receipt has no Back control")?;
+                let address = self
+                    .frisket
+                    .chrome_rect("address")
+                    .ok_or("narrow Chrome receipt has no retained address field")?;
+                for action in ["forward", "reload", "engine-menu", "inspect", "appearance"] {
+                    let rect = self.frisket.chrome_rect(action).ok_or_else(|| {
+                        format!("narrow Chrome receipt has no {action:?} geometry")
+                    })?;
+                    if !rect_fits_viewport(rect, viewport) {
+                        return Err(format!(
+                            "narrow Chrome control {action:?} escaped its {}x{} logical viewport: {rect:?}",
+                            viewport.0, viewport.1
+                        ));
+                    }
+                }
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("narrow Chrome receipt has no Frisket content geometry")?;
+                let tab = self
+                    .frisket
+                    .tab_rect(tile)
+                    .ok_or("narrow Chrome receipt has no retained tab geometry")?;
+                let label = self
+                    .frisket
+                    .tab_label_rect(tile)
+                    .ok_or("narrow Chrome receipt has no visible tab label geometry")?;
+                let close = self
+                    .frisket
+                    .close_rect(tile)
+                    .ok_or("narrow Chrome receipt has no retained tab close target")?;
+                if !rect_fits_viewport(back, viewport)
+                    || !rect_fits_viewport(address, viewport)
+                    || !rect_fits_viewport(tab, viewport)
+                    || !rect_fits_viewport(label, viewport)
+                    || !rect_fits_viewport(close, viewport)
+                    || address.y < back.y + back.height
+                    || address.width < 300.0
+                    || content.y <= address.y + address.height
+                    || label.width < 48.0
+                    || close.x < tab.x
+                    || close.x + close.width > tab.x + tab.width
+                    || self
+                        .frisket
+                        .hit(close.x + close.width / 2.0, close.y + close.height / 2.0)
+                        != Some(FrisketHit::Close(tile))
+                {
+                    return Err(
+                        "narrow Chrome receipt lost its readable address row, tab label, or independent close target"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("address")?;
+            },
+            1 => {
+                if !self
+                    .handle_chrome_key(&Key::Character("next.html".into()), ElementState::Pressed)
+                    || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err(
+                        "narrow Chrome receipt could not submit its initial document address"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("narrow Chrome receipt lost its focused controller")?;
+                if !controller
+                    .address()
+                    .replace('\\', "/")
+                    .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                    || !matches!(
+                        controller.document_state(),
+                        PeltDocumentState::Loading { address }
+                            if address.replace('\\', "/").ends_with("/p6-load-error/next.html")
+                    )
+                {
+                    return Err(
+                        "narrow Chrome receipt did not retain its successful loading transition"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("narrow Chrome receipt did not compose its loading document")?;
+                if diagnostic.kind != ChromeDocumentKind::Loading
+                    || diagnostic.tile != tile
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                {
+                    return Err(
+                        "narrow Chrome receipt did not keep its loading document in the content hole"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("engine-menu")?;
+            },
+            3 => {
+                let content = self.workspace.content_rect(tile).ok_or(
+                    "narrow Chrome receipt lost its content hole while the engine menu opened",
+                )?;
+                let automatic = self
+                    .frisket
+                    .chrome_rect("engine-automatic")
+                    .ok_or("narrow Chrome receipt did not expose Automatic")?;
+                let livery = self
+                    .frisket
+                    .chrome_rect("engine-livery")
+                    .ok_or("narrow Chrome receipt did not expose Livery")?;
+                if !rect_fits_viewport(automatic, viewport)
+                    || !rect_fits_viewport(livery, viewport)
+                    || content.y <= automatic.y + automatic.height
+                    || content.y <= livery.y + livery.height
+                {
+                    return Err(
+                        "narrow Chrome receipt let its engine choices cover content or escape the viewport"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("engine-menu")?;
+            },
+            4 => {
+                if self.frisket.chrome_rect("engine-automatic").is_some() {
+                    return Err("narrow Chrome receipt did not dismiss its engine menu".to_owned());
+                }
+                self.click_chrome("address")?;
+            },
+            5 => {
+                if !self.handle_chrome_key(
+                    &Key::Character("missing.html".into()),
+                    ElementState::Pressed,
+                ) || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err(
+                        "narrow Chrome receipt could not submit its missing document address"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("narrow Chrome receipt lost its prior controller after failure")?;
+                let PeltDocumentState::Error { address, message } = controller.document_state()
+                else {
+                    return Err(
+                        "narrow Chrome receipt did not expose its failed navigation state"
+                            .to_owned(),
+                    );
+                };
+                if !address
+                    .replace('\\', "/")
+                    .ends_with("/p6-load-error/missing.html")
+                    || !message.contains("could not load")
+                    || !controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                {
+                    return Err(
+                        "narrow Chrome receipt replaced its retained document after a failed navigation"
+                            .to_owned(),
+                    );
+                }
+            },
+            6 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("narrow Chrome receipt did not compose its error document")?;
+                if diagnostic.kind != ChromeDocumentKind::Error
+                    || diagnostic.tile != tile
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                    || !diagnostic
+                        .address
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/missing.html")
+                {
+                    return Err(
+                        "narrow Chrome receipt did not preserve its error document in the content hole"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(NARROW_CHROME_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(NARROW_CHROME_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_chrome_dpi_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        let viewport = self.logical_size();
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                if self.scale_factor < 1.25 {
+                    return Err(format!(
+                        "Chrome DPI receipt needs an actual high-DPI monitor (at least 1.25x), got {:.2}x",
+                        self.scale_factor
+                    ));
+                }
+                let expected_physical = (
+                    physical_extent(960.0, self.scale_factor),
+                    physical_extent(640.0, self.scale_factor),
+                );
+                if viewport != (960, 640) || (self.width, self.height) != expected_physical {
+                    return Err(format!(
+                        "Chrome DPI receipt needs a 960x640 logical viewport at {}x{}, got {}x{} logical at {}x{} physical and {:.2}x",
+                        expected_physical.0,
+                        expected_physical.1,
+                        viewport.0,
+                        viewport.1,
+                        self.width,
+                        self.height,
+                        self.scale_factor
+                    ));
+                }
+                let appearance = self
+                    .frisket
+                    .chrome_rect("appearance")
+                    .ok_or("Chrome DPI receipt has no Theme control")?;
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("Chrome DPI receipt has no Frisket content geometry")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("Chrome DPI receipt lost its focused controller")?;
+                if !rect_fits_viewport(appearance, viewport)
+                    || content.y <= appearance.y + appearance.height
+                    || self.chrome_theme != ChromeTheme::Dark
+                    || self.chrome_appearance_open
+                {
+                    return Err(
+                        "Chrome DPI receipt did not begin with a usable Theme control and content hole"
+                            .to_owned(),
+                    );
+                }
+                self.appearance_receipt_baseline = Some(AppearanceReceiptBaseline {
+                    content,
+                    address: controller.address().to_owned(),
+                    can_go_back: controller.can_go_back(),
+                });
+                self.click_chrome_physical("appearance")?;
+            },
+            1 => {
+                let light = self
+                    .frisket
+                    .chrome_rect("appearance-light")
+                    .ok_or("Chrome DPI receipt did not render a Light choice")?;
+                if !self.chrome_appearance_open
+                    || !rect_fits_viewport(light, viewport)
+                    || !matches!(
+                        self.frisket
+                            .hit(light.x + light.width / 2.0, light.y + light.height / 2.0),
+                        Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
+                            ChromeTheme::Light
+                        )))
+                    )
+                {
+                    return Err(
+                        "Chrome DPI receipt did not expose an interactive retained Light choice"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome_physical("appearance-light")?;
+            },
+            2 => {
+                let baseline = self
+                    .appearance_receipt_baseline
+                    .as_ref()
+                    .ok_or("Chrome DPI receipt lost its baseline document state")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("Chrome DPI receipt lost its focused controller")?;
+                let drawer = self
+                    .frisket
+                    .frame(viewport.0, viewport.1)
+                    .map_err(|error| {
+                        format!("Chrome DPI receipt could not lay out its drawer: {error}")
+                    })?
+                    .appearance_rect
+                    .ok_or("Chrome DPI receipt did not retain its appearance drawer")?;
+                let placement =
+                    fragment_placement(drawer, (self.width, self.height), self.scale_factor);
+                let [x0, y0, x1, y1] = placement.dest_rect;
+                if self.chrome_theme != ChromeTheme::Light
+                    || self.workspace.content_rect(tile) != Some(baseline.content)
+                    || controller.address() != baseline.address.as_str()
+                    || controller.can_go_back() != baseline.can_go_back
+                    || x0 < 0.0
+                    || y0 < 0.0
+                    || x1 > self.width as f32
+                    || y1 > self.height as f32
+                {
+                    return Err(
+                        "Chrome DPI receipt changed document state or produced an out-of-bounds physical drawer crop"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(format!(
+                    "{CHROME_DPI_WORKSPACE_ASSERTION_PREFIX} at {:.2}x; the 960x640 logical shell captured at {}x{} physical without moving its content aperture",
+                    self.scale_factor, self.width, self.height
+                )));
+            },
+            _ => {
+                return Ok(Some(format!(
+                    "{CHROME_DPI_WORKSPACE_ASSERTION_PREFIX} at {:.2}x; the 960x640 logical shell captured at {}x{} physical without moving its content aperture",
+                    self.scale_factor, self.width, self.height
+                )));
+            },
         }
         self.receipt_step = self.receipt_step.saturating_add(1);
         Ok(None)
@@ -3606,6 +3992,32 @@ impl WorkspaceApp {
         let _ = self.pointer_up();
         Ok(())
     }
+
+    fn click_chrome_physical(&mut self, action: &str) -> Result<(), String> {
+        let rect = self
+            .frisket
+            .chrome_rect(action)
+            .ok_or_else(|| format!("chrome control {action:?} has no retained geometry"))?;
+        let physical = (
+            (rect.x + rect.width / 2.0) * self.scale_factor,
+            (rect.y + rect.height / 2.0) * self.scale_factor,
+        );
+        self.pointer_move_physical(physical.0, physical.1);
+        let intended = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        if (self.cursor.0 - intended.0).abs() > 0.01 || (self.cursor.1 - intended.1).abs() > 0.01 {
+            return Err(format!(
+                "physical pointer conversion missed Chrome control {action:?}: expected {intended:?}, got {:?}",
+                self.cursor
+            ));
+        }
+        if !self.pointer_down() {
+            return Err(format!(
+                "physical pointer input did not handle Chrome control {action:?}"
+            ));
+        }
+        let _ = self.pointer_up();
+        Ok(())
+    }
 }
 
 fn a11y_node(tree: &TreeUpdate, label: &str, role: Role) -> Result<AccessNodeId, String> {
@@ -3639,9 +4051,19 @@ impl ApplicationHandler for WorkspaceApp {
         if self.window.is_some() {
             return;
         }
-        let attributes =
+        let mut attributes =
             static_viewer::pelt_window_attributes(self.window_title(), self.width, self.height)
                 .with_visible(false);
+        if let Some((width, height)) = self
+            .config
+            .workspace_receipt
+            .and_then(WorkspaceReceipt::logical_viewport)
+        {
+            attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(
+                f64::from(width),
+                f64::from(height),
+            ));
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -3764,10 +4186,7 @@ impl ApplicationHandler for WorkspaceApp {
                 };
             },
             WindowEvent::CursorMoved { position, .. } => {
-                let redraw = self.pointer_move(
-                    static_viewer::logical_position(position.x as f32, self.scale_factor),
-                    static_viewer::logical_position(position.y as f32, self.scale_factor),
-                );
+                let redraw = self.pointer_move_physical(position.x as f32, position.y as f32);
                 if redraw {
                     self.request_redraw();
                 }
@@ -3883,6 +4302,15 @@ fn nearest_edge(point: (f32, f32), rect: WorkspaceRect) -> Edge {
 
 fn physical_extent(logical: f32, scale_factor: f32) -> u32 {
     ((logical.max(1.0) * scale_factor.max(1.0)).round() as u32).max(1)
+}
+
+fn rect_fits_viewport(rect: WorkspaceRect, viewport: (u32, u32)) -> bool {
+    rect.width > 0.0
+        && rect.height > 0.0
+        && rect.x >= 0.0
+        && rect.y >= 0.0
+        && rect.x + rect.width <= viewport.0 as f32
+        && rect.y + rect.height <= viewport.1 as f32
 }
 
 fn placement(rect: WorkspaceRect, scale_factor: f32) -> ExternalTexturePlacement {
@@ -4092,6 +4520,22 @@ mod tests {
         let caller_geometry = config.with_size(800, 500).with_frame_limit(5);
         assert_eq!(caller_geometry.size, Some((800, 500)));
         assert_eq!(caller_geometry.frames, Some(5));
+
+        let narrow =
+            WorkspaceViewerConfig::new(vec!["narrow.html".to_owned()], WindowingMode::Headed)
+                .with_workspace_receipt(WorkspaceReceipt::NarrowChrome, "narrow.png");
+        assert_eq!(narrow.size, Some((360, 480)));
+        assert_eq!(
+            WorkspaceReceipt::NarrowChrome.logical_viewport(),
+            Some((360, 480))
+        );
+        let dpi = WorkspaceViewerConfig::new(vec!["dpi.html".to_owned()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::ChromeDpi, "dpi.png");
+        assert_eq!(dpi.size, Some((960, 640)));
+        assert_eq!(
+            WorkspaceReceipt::ChromeDpi.logical_viewport(),
+            Some((960, 640))
+        );
     }
 
     #[test]
@@ -4310,6 +4754,172 @@ mod tests {
                 .document_state(),
             &PeltDocumentState::Ready
         );
+    }
+
+    #[test]
+    fn narrow_chrome_receipt_keeps_controls_tabs_and_failure_documents_usable() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-load-error/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("narrow Chrome receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (360, 480)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("narrow Chrome receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::NarrowChrome, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let mut pane = app
+                .frisket
+                .frame(360, 480)
+                .expect("narrow Chrome Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            if app.config.chrome && app.chrome_model().diagnostic.is_some() {
+                app.refresh_chrome();
+                pane = app
+                    .frisket
+                    .frame(360, 480)
+                    .expect("narrow Chrome diagnostic frame");
+                app.workspace
+                    .set_content_rects(pane.content_rects.iter().copied());
+            }
+            app.last_chrome_document = (app.config.chrome && pane.diagnostic_rect.is_some())
+                .then(|| app.chrome_model().diagnostic)
+                .flatten();
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        assert_eq!(app.logical_size(), (360, 480));
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..10 {
+            assertion = app
+                .drive_narrow_chrome_workspace_receipt_step()
+                .expect("narrow Chrome semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            assertion.as_deref(),
+            Some(NARROW_CHROME_WORKSPACE_ASSERTION)
+        );
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("narrow Chrome failure retains its controller");
+        assert!(
+            controller
+                .address()
+                .replace('\\', "/")
+                .ends_with("/p6-load-error/next.html")
+        );
+        assert!(matches!(
+            controller.document_state(),
+            PeltDocumentState::Error { address, .. }
+                if address.replace('\\', "/").ends_with("/p6-load-error/missing.html")
+        ));
+    }
+
+    #[test]
+    fn chrome_dpi_receipt_converts_physical_pointer_input_without_moving_content() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-appearance/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("Chrome DPI receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("Chrome DPI receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::ChromeDpi, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        app.scale_factor = 2.0;
+        app.width = 1920;
+        app.height = 1280;
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let pane = app
+                .frisket
+                .frame(960, 640)
+                .expect("Chrome DPI Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        assert_eq!(app.logical_size(), (960, 640));
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..5 {
+            assertion = app
+                .drive_chrome_dpi_workspace_receipt_step()
+                .expect("Chrome DPI semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert!(
+            assertion
+                .as_deref()
+                .is_some_and(|value| value.starts_with(CHROME_DPI_WORKSPACE_ASSERTION_PREFIX))
+        );
+        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        assert!(app.chrome_appearance_open);
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("Chrome DPI receipt retains its controller");
+        assert_eq!(controller.address(), fixture.as_str());
     }
 
     #[test]

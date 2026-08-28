@@ -819,6 +819,20 @@ impl FrisketSurface {
         self.rect_for_attr("data-tabid", &tile.0.to_string())
     }
 
+    /// Geometry for the tab's visible text region, kept distinct from its
+    /// fixed close gutter so small Chrome receipts can prove both survive.
+    pub fn tab_label_rect(&self, tile: TileId) -> Option<WorkspaceRect> {
+        let id = tile.0.to_string();
+        let dom = self.document.dom();
+        let tab = nodes_with_attr(dom, "data-tabid")
+            .into_iter()
+            .find(|node| attr(dom, *node, "data-tabid").as_deref() == Some(id.as_str()))?;
+        dom.dom_children(tab)
+            .find(|node| attr(dom, *node, "class").as_deref() == Some("frisket-label"))
+            .and_then(|node| self.document.fragment_rect(node))
+            .map(workspace_rect)
+    }
+
     pub fn close_rect(&self, tile: TileId) -> Option<WorkspaceRect> {
         nodes_in_document(self.document.dom())
             .into_iter()
@@ -1010,7 +1024,17 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-diagnostic-heading { flex-grow: 0; flex-shrink: 0; color: #ffffff; font-size: 20px; font-weight: bold; } \
     .pelt-diagnostic-address { flex-grow: 0; flex-shrink: 0; margin-top: 10px; overflow: hidden; white-space: nowrap; color: #bfe0ff; font-size: 13px; } \
     .pelt-diagnostic-message { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: inherit; font-size: 14px; } \
-    .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: #d2d2df; font-size: 13px; }";
+    .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: #d2d2df; font-size: 13px; } \
+    @media (max-width: 420px) { \
+        .pelt-chrome { flex-basis: 108px; min-height: 108px; } \
+        .pelt-chrome-menu-open { flex-basis: 146px; min-height: 146px; } \
+        .pelt-toolbar { flex-wrap: wrap; flex-basis: 64px; min-height: 64px; } \
+        .pelt-address { order: 2; flex-grow: 0; flex-basis: 100%; width: 100%; } \
+        .pelt-engine { flex-basis: 70px; width: 70px; margin-left: 4px; padding: 5px 3px; font-size: 10px; } \
+        .pelt-chrome-toggle { flex-basis: 50px; width: 50px; margin-left: 4px; font-size: 10px; } \
+        .frisket-tab { padding: 8px 2px; font-size: 12px; } \
+        .frisket-close { flex-basis: 28px; width: 28px; margin-left: 2px; } \
+    }";
 
 const PELT_LIGHT_THEME_CSS: &str = "\
     .pelt-workspace.pelt-theme-light { background: #f4f6f8; } \
@@ -1280,6 +1304,87 @@ mod tests {
             .as_str();
         assert!(title.ends_with('…'));
         assert!(title.chars().count() <= 29);
+    }
+
+    #[test]
+    fn narrow_chrome_wraps_the_address_without_covering_tab_close_targets() {
+        let mut tree = nested_tree();
+        tree.tile_mut(TileId(1)).expect("first tile").title =
+            "A deliberately long workspace title that keeps the close target visible".to_owned();
+        let mut surface = FrisketSurface::new(&tree);
+        surface.set_chrome(Some(WorkspaceChrome {
+            title: "Focused document".to_owned(),
+            address: "C:/example/static.html".to_owned(),
+            route: "Automatic: genet.livery · document".to_owned(),
+            status: "Ready".to_owned(),
+            theme: ChromeTheme::Dark,
+            address_focused: false,
+            can_go_back: false,
+            can_go_forward: false,
+            engine_label: "Auto".to_owned(),
+            engine_menu_open: false,
+            engine_selected: Some(ChromeEngineChoice::Automatic),
+            engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
+            inspector: None,
+            appearance: None,
+            diagnostic: None,
+        }));
+        let frame = surface.frame(360, 480).expect("narrow Chrome frame");
+        let within = |rect: WorkspaceRect| {
+            rect.width > 0.0
+                && rect.height > 0.0
+                && rect.x >= 0.0
+                && rect.y >= 0.0
+                && rect.x + rect.width <= 360.0
+                && rect.y + rect.height <= 480.0
+        };
+        let back = surface.chrome_rect("back").expect("back geometry");
+        let address = surface.chrome_rect("address").expect("address geometry");
+        for action in ["forward", "reload", "engine-menu", "inspect", "appearance"] {
+            assert!(
+                within(
+                    surface
+                        .chrome_rect(action)
+                        .expect("narrow Chrome control geometry")
+                ),
+                "{action} stays inside the small Chrome viewport"
+            );
+        }
+        assert!(within(back));
+        assert!(within(address));
+        assert!(
+            address.y >= back.y + back.height,
+            "the address receives its own toolbar row instead of shrinking below usability"
+        );
+        assert!(
+            address.width >= 300.0,
+            "the narrow address remains readable"
+        );
+        let content = frame
+            .content_rects
+            .iter()
+            .find_map(|(tile, rect)| (*tile == TileId(1)).then_some(*rect))
+            .expect("first content hole");
+        assert!(content.y > address.y + address.height);
+        let tab = surface.tab_rect(TileId(1)).expect("first tab geometry");
+        let label = surface
+            .tab_label_rect(TileId(1))
+            .expect("first tab label geometry");
+        let close = surface
+            .close_rect(TileId(1))
+            .expect("first tab close geometry");
+        assert!(within(tab));
+        assert!(within(label));
+        assert!(within(close));
+        assert!(
+            label.width >= 48.0,
+            "the tab retains visible label space: label={label:?} tab={tab:?} close={close:?}"
+        );
+        assert!(close.x >= tab.x && close.x + close.width <= tab.x + tab.width);
+        assert_eq!(
+            surface.hit(close.x + close.width / 2.0, close.y + close.height / 2.0),
+            Some(FrisketHit::Close(TileId(1)))
+        );
     }
 
     fn document_text(dom: &ScriptedDom) -> String {

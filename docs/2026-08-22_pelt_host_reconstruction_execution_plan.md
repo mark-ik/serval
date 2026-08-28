@@ -8,8 +8,8 @@ Windows 2026-08-25 with a registered Scrying producer, native shared-handle
 import, repeated fence waits, and visible same-window composition. P5 completed
 2026-08-27 with all eight deterministic product receipts. P6's focused-tile
 Chrome, structural-inspection, and shell accessibility slices completed
-2026-08-27; its narrow-width and high-DPI Chrome evidence remains active.
-IOSurface and DMA-BUF imports remain separate platform lanes.
+2026-08-27; the narrow-width and high-DPI Chrome receipts completed on Windows
+2026-08-27. IOSurface and DMA-BUF imports remain separate platform lanes.
 
 ## Objective
 
@@ -721,10 +721,10 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
-**Status:** active. The bounded focused-tile Chrome, engine-choice-menu,
-structural-inspection, loading/error-document, session-only appearance, and
-shell AccessKit receipts completed on Windows 2026-08-27; narrow-width and
-high-DPI Chrome evidence remains open.
+**Status:** complete for the retained Pelt shell scope. The bounded focused-tile
+Chrome, engine-choice-menu, structural-inspection, loading/error-document,
+session-only appearance, shell AccessKit, narrow-width Chrome, and actual
+high-DPI Chrome receipts completed on Windows 2026-08-27.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -917,6 +917,60 @@ redraws at 960x640, and produced compositor digest `82555e330e8c7dfd`; their
 PNG SHA-256 was also identical,
 `930938AFB838DCD8C79C14DCE457CE809E49CD39F28CDE4EE3081D3F35C8D4DA`.
 
+The compact Chrome receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt narrow-chrome \
+  --artifact target/pelt-receipts/workspace-narrow-chrome.png
+```
+
+It fixes the viewport at 360x480 logical pixels through Winit's `LogicalSize`.
+The compact retained toolbar uses two rows: navigation, engine, inspection, and
+theme controls remain on the first row while the address retains a full second
+row. The semantic driver requires that every control stay in bounds, the
+address stay at least 300 logical pixels wide, the focused tab retain at least
+48 logical pixels of visible label space, and Frisket's independent 28px close
+gutter still hit `Close` rather than the tab. It then opens and dismisses the
+engine choices, passes through the composed loading state, and captures the
+missing-file error document in the unchanged content hole.
+
+On the 2.00x Windows display recorded 2026-08-27, three headed runs completed
+after eight redraws at 720x960 physical pixels. All three reported the same
+semantic assertion: `compact two-row Chrome kept controls, tab text, and close
+targets usable while loading and error documents held their content hole`. The
+decoded narrow PNGs differed only by one or two raster pixels in the Chrome
+status text, so this receipt deliberately treats its bounded artifact and
+GPU-free geometry assertion as its stability boundary rather than claiming a
+byte-identical PNG. The focused Livery-only desktop suite passed 33 tests and
+the Pelt viewer parser/fixture suite passed 4 tests, covering this path without
+GPU or monitor dependence.
+
+The actual high-DPI Chrome receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt chrome-dpi \
+  --artifact target/pelt-receipts/workspace-chrome-dpi.png
+```
+
+It requests a 960x640 logical viewport and refuses to run below the actual
+Winit monitor scale factor of 1.25. Its driver routes the centres of Theme and
+Light through the same physical-to-logical conversion as `CursorMoved`, then
+proves the Light drawer's physical crop stays in bounds while the active
+document address, history, and content aperture do not move. This makes a
+simulated unit conversion insufficient as headed evidence.
+
+The current Windows monitor reported 2.00x, so the headed run produced a
+1920x1280 physical capture after four redraws. Two runs recorded the same
+assertion and compositor digest `3ad1cf889bdfdf4d`; their PNG SHA-256 was
+identical, `9B46E903CF51A7D46A4ADCC662210F3455C218C5A7AC9664D2321B8AB3102F47`.
+The GPU-free desktop test separately fixes a 2.00x conversion to guard the
+coordinate path on machines where the headed environmental receipt correctly
+declines to run.
+
 ## Cross-gate rules
 
 - One host-owned wgpu device and compositor serve the full workspace.
@@ -933,13 +987,13 @@ PNG SHA-256 was also identical,
 
 ## Immediate next lane
 
-Continue P6 with narrow-width and high-DPI Chrome receipts. The AccessKit tree
-currently covers the retained Pelt shell and labelled content apertures; a
-namespaced child-tree and action-composition protocol remains a separate lane.
-The Appearance drawer stays session-only until Pelt owns a durable configuration
-policy. The Reader-in-workspace lane must carry held source bytes rather than
-teaching Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt
-rather than an unrecorded ninth P5 fixture.
+P6's retained-shell receipts are complete. The AccessKit tree currently covers
+the retained Pelt shell and labelled content apertures; a namespaced child-tree
+and action-composition protocol remains a separate lane. The Appearance drawer
+stays session-only until Pelt owns a durable configuration policy. The next
+product lane is Reader-in-workspace: it must carry held source bytes rather
+than teaching Fleece to fetch, and it remains a distinct Fleece/Pelt integration
+receipt rather than an unrecorded ninth P5 fixture.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and

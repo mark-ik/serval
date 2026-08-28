@@ -154,7 +154,7 @@ pub(crate) fn main() {
             "--workspace-receipt" => {
                 let Some(value) = args.next() else {
                     eprintln!(
-                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, appearance, or accessibility"
+                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, or chrome-dpi"
                     );
                     std::process::exit(2);
                 };
@@ -392,7 +392,9 @@ pub(crate) fn main() {
                         pelt_desktop::WorkspaceReceipt::Fallback
                         | pelt_desktop::WorkspaceReceipt::LoadingError
                         | pelt_desktop::WorkspaceReceipt::Appearance
-                        | pelt_desktop::WorkspaceReceipt::Accessibility => unreachable!(
+                        | pelt_desktop::WorkspaceReceipt::Accessibility
+                        | pelt_desktop::WorkspaceReceipt::NarrowChrome
+                        | pelt_desktop::WorkspaceReceipt::ChromeDpi => unreachable!(
                             "fallback was handled by the separate workspace receipt branch"
                         ),
                     };
@@ -408,6 +410,12 @@ pub(crate) fn main() {
                 },
                 pelt_desktop::WorkspaceReceipt::Accessibility => {
                     tile_urls = vec![accessibility_fixture_url()];
+                },
+                pelt_desktop::WorkspaceReceipt::NarrowChrome => {
+                    tile_urls = vec![loading_error_fixture_url()];
+                },
+                pelt_desktop::WorkspaceReceipt::ChromeDpi => {
+                    tile_urls = vec![appearance_fixture_url()];
                 },
             }
         }
@@ -1045,9 +1053,11 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "loading-error" => pelt_desktop::WorkspaceReceipt::LoadingError,
         "appearance" => pelt_desktop::WorkspaceReceipt::Appearance,
         "accessibility" => pelt_desktop::WorkspaceReceipt::Accessibility,
+        "narrow-chrome" => pelt_desktop::WorkspaceReceipt::NarrowChrome,
+        "chrome-dpi" => pelt_desktop::WorkspaceReceipt::ChromeDpi,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, or accessibility (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, or chrome-dpi (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1083,6 +1093,14 @@ mod workspace_receipt_tests {
         assert_eq!(
             parse_workspace_receipt("accessibility"),
             pelt_desktop::WorkspaceReceipt::Accessibility
+        );
+        assert_eq!(
+            parse_workspace_receipt("narrow-chrome"),
+            pelt_desktop::WorkspaceReceipt::NarrowChrome
+        );
+        assert_eq!(
+            parse_workspace_receipt("chrome-dpi"),
+            pelt_desktop::WorkspaceReceipt::ChromeDpi
         );
         assert!(
             fallback_fixture_url()
@@ -1417,7 +1435,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility> (P5/P6 named workspace receipt; needs --artifact)
+    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|narrow-chrome|chrome-dpi> (P5/P6 named workspace receipt; needs --artifact)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")
