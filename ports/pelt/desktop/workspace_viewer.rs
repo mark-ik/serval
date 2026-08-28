@@ -3,17 +3,21 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use accesskit::{Action, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
 use genet_host_api::tile::{
     ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
     TileTree,
 };
-use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
+use genet_winit_host::{
+    A11yActionRequest, AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit,
+};
 use inker::{
-    EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey,
-    SessionModifiers, SessionNavigationCommand, SessionPointerButton, SessionRegistry,
-    SessionScrollKey, SurfaceEngineRegistry, SurfaceFrame,
+    A11yCapability, EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme,
+    SessionInput, SessionKey, SessionModifiers, SessionNavigationCommand, SessionPointerButton,
+    SessionRegistry, SessionScrollKey, SurfaceEngineRegistry, SurfaceFrame,
 };
 #[cfg(target_os = "windows")]
 use inker::{FrameHandleOwnership, NativeTextureHandle};
@@ -35,8 +39,8 @@ use winit::window::{Window, WindowId};
 use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{
     ChromeAction, ChromeAppearance, ChromeDocument, ChromeDocumentKind, ChromeEngineChoice,
-    ChromeInspector, ChromeInspectorSection, ChromeTheme, FrisketHit, FrisketSurface,
-    WorkspaceChrome,
+    ChromeInspector, ChromeInspectorSection, ChromeTheme, FrisketA11yProjection, FrisketA11yTarget,
+    FrisketContentA11y, FrisketHit, FrisketSurface, WorkspaceChrome,
 };
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
@@ -51,6 +55,7 @@ const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
     "host-owned loading and error documents preserved the focused tile's prior session and history";
 const APPEARANCE_WORKSPACE_ASSERTION: &str =
     "session-only appearance changed the live Pelt chrome theme while the focused document held";
+const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the session appearance controls";
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -68,6 +73,8 @@ pub enum WorkspaceReceipt {
     /// P6's session-only Pelt appearance drawer, without a document theme or
     /// persistence claim.
     Appearance,
+    /// P6's retained Chrome/Frisket AccessKit tree and typed action routing.
+    Accessibility,
 }
 
 impl WorkspaceReceipt {
@@ -78,6 +85,7 @@ impl WorkspaceReceipt {
             Self::Chrome => "chrome",
             Self::LoadingError => "loading-error",
             Self::Appearance => "appearance",
+            Self::Accessibility => "accessibility",
         }
     }
 
@@ -90,7 +98,10 @@ impl WorkspaceReceipt {
     }
 
     fn keeps_chrome(self) -> bool {
-        matches!(self, Self::Chrome | Self::LoadingError | Self::Appearance)
+        matches!(
+            self,
+            Self::Chrome | Self::LoadingError | Self::Appearance | Self::Accessibility
+        )
     }
 }
 
@@ -271,6 +282,7 @@ pub fn run_livery_workspace_viewer(
             WorkspaceReceipt::Fallback
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
+                | WorkspaceReceipt::Accessibility
         )
     );
     #[cfg(target_os = "windows")]
@@ -679,6 +691,7 @@ struct WorkspaceApp {
     chrome_theme: ChromeTheme,
     chrome_appearance_open: bool,
     appearance_receipt_baseline: Option<AppearanceReceiptBaseline>,
+    accessibility: WorkspaceAccessibility,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -689,6 +702,110 @@ struct WorkspaceApp {
     mixed_pending_resize: Option<MixedPendingResize>,
     #[cfg(target_os = "windows")]
     scrying_host: Option<ScryingReceiptHost>,
+}
+
+/// Per-window platform bridge and retained shell action map.
+///
+/// The map deliberately names only Frisket's one DOM. Child document and
+/// native-surface trees need stable per-tile namespaces before they can join
+/// this tree, so they remain labelled apertures in this P6 slice.
+struct WorkspaceAccessibility {
+    bridge: AccessKitBridge,
+    window_revealed: bool,
+    last_install_error: Option<String>,
+    action_map: HashMap<AccessNodeId, genet_scripted_dom::NodeId>,
+    focus: Option<FrisketA11yTarget>,
+    wake: Arc<AtomicBool>,
+}
+
+impl WorkspaceAccessibility {
+    fn new() -> Self {
+        let wake = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&wake);
+        Self {
+            bridge: AccessKitBridge::new(move || {
+                requested.store(true, Ordering::Release);
+            }),
+            window_revealed: false,
+            last_install_error: None,
+            action_map: HashMap::new(),
+            focus: None,
+            wake,
+        }
+    }
+
+    fn prepare(&mut self, projection: FrisketA11yProjection, scale_factor: f64) -> TreeUpdate {
+        self.action_map = projection.nodes;
+        let mut tree = projection.tree;
+        if let Some((_, root)) = tree.nodes.iter_mut().find(|(id, _)| *id == projection.root) {
+            // Livery lays the retained shell out in logical CSS pixels. The
+            // platform tree needs physical client coordinates, matching the
+            // raster and pointer conversion paths below.
+            root.set_transform(Affine::scale(scale_factor));
+        }
+        tree
+    }
+
+    fn sync(
+        &mut self,
+        window: &Window,
+        projection: FrisketA11yProjection,
+        scale_factor: f64,
+    ) -> Vec<A11yActionRequest> {
+        let node_count = projection.tree.nodes.len();
+        let tree = self.prepare(projection, scale_factor);
+        if self.bridge.status() != BridgeStatus::Installed {
+            match self.bridge.install(window, tree) {
+                Ok(()) => {
+                    self.last_install_error = None;
+                    eprintln!(
+                        "[pelt] accessibility {:?}, {node_count} retained shell nodes projected",
+                        self.bridge.status()
+                    );
+                },
+                Err(error) => {
+                    if self.last_install_error.as_deref() != Some(error.as_str()) {
+                        eprintln!("[pelt] accessibility install failed: {error}");
+                    }
+                    self.last_install_error = Some(error);
+                },
+            }
+            // The Windows adapter has to attach before the first visible frame.
+            // An initial failure still leaves ordinary Pelt usable and is tried
+            // again on a later redraw instead of permanently disabling a11y.
+            if !self.window_revealed {
+                window.set_visible(true);
+                self.window_revealed = true;
+            }
+            return self.bridge.drain_actions();
+        }
+        self.bridge.update(tree);
+        self.bridge.drain_actions()
+    }
+
+    fn node_for(&self, id: AccessNodeId) -> Option<genet_scripted_dom::NodeId> {
+        self.action_map.get(&id).copied()
+    }
+
+    fn set_focus(&mut self, target: FrisketA11yTarget) -> bool {
+        if self.focus.as_ref() == Some(&target) {
+            return false;
+        }
+        self.focus = Some(target);
+        true
+    }
+
+    fn status(&self) -> BridgeStatus {
+        self.bridge.status()
+    }
+
+    fn update_window_focus(&mut self, focused: bool) {
+        self.bridge.update_window_focus(focused);
+    }
+
+    fn take_wake(&self) -> bool {
+        self.wake.swap(false, Ordering::AcqRel)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -737,6 +854,7 @@ impl WorkspaceApp {
             chrome_theme: ChromeTheme::Dark,
             chrome_appearance_open: false,
             appearance_receipt_baseline: None,
+            accessibility: WorkspaceAccessibility::new(),
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -803,6 +921,134 @@ impl WorkspaceApp {
         self.dismiss_chrome_engine_menu_if_focus_changed();
         let chrome = self.config.chrome.then(|| self.chrome_model());
         self.frisket.set_chrome(chrome);
+    }
+
+    fn refresh_accessibility_content_regions(&mut self) {
+        let regions = self
+            .workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .map(|tile| {
+                let description = match self
+                    .workspace
+                    .controller(tile.id)
+                    .map(PeltController::a11y_capability)
+                {
+                    Some(A11yCapability::Opaque) => {
+                        "The engine declares opaque accessibility. Pelt cannot inspect or compose this content's semantics."
+                    },
+                    Some(A11yCapability::Partial) => {
+                        "The engine declares partial accessibility. Pelt does not compose its document semantics into this workspace tree yet."
+                    },
+                    Some(A11yCapability::Full) => {
+                        "The engine declares a full semantic tree. Pelt does not compose that child tree into this workspace tree yet."
+                    },
+                    None => {
+                        "Pelt has not received an accessibility declaration for this content."
+                    },
+                };
+                FrisketContentA11y {
+                    tile: tile.id,
+                    label: format!("{} content", tile.title),
+                    description: description.to_owned(),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.frisket.set_content_accessibility(regions);
+    }
+
+    /// Build the currently retained shell tree without a window. This makes the
+    /// semantic projection and the same action map independently testable.
+    fn prepare_accessibility_tree(&mut self) -> Result<TreeUpdate, String> {
+        self.refresh_chrome();
+        self.refresh_accessibility_content_regions();
+        let (width, height) = self.logical_size();
+        self.frisket
+            .frame(width, height)
+            .map_err(|error| format!("could not lay out Frisket for accessibility: {error}"))?;
+        let projection = self
+            .frisket
+            .accessibility_projection(self.accessibility.focus.as_ref())
+            .ok_or_else(|| {
+                "Frisket has no completed retained layout for accessibility".to_owned()
+            })?;
+        Ok(self
+            .accessibility
+            .prepare(projection, self.scale_factor as f64))
+    }
+
+    fn install_accessibility_before_show(&mut self) -> Result<(), String> {
+        let _ = self.prepare_accessibility_tree()?;
+        let Some(window) = self.window.clone() else {
+            return Err("Pelt accessibility install needs its live window".to_owned());
+        };
+        let projection = self
+            .frisket
+            .accessibility_projection(self.accessibility.focus.as_ref())
+            .ok_or_else(|| {
+                "Frisket lost its retained layout before accessibility install".to_owned()
+            })?;
+        let _ = self
+            .accessibility
+            .sync(&window, projection, self.scale_factor as f64);
+        if self.config.workspace_receipt == Some(WorkspaceReceipt::Accessibility)
+            && self.accessibility.status() != BridgeStatus::Installed
+        {
+            return Err(
+                "Pelt accessibility receipt could not install the platform AccessKit bridge"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    fn sync_accessibility(&mut self) -> bool {
+        let Some(window) = self.window.clone() else {
+            return false;
+        };
+        self.refresh_accessibility_content_regions();
+        let Some(projection) = self
+            .frisket
+            .accessibility_projection(self.accessibility.focus.as_ref())
+        else {
+            return false;
+        };
+        self.accessibility
+            .sync(&window, projection, self.scale_factor as f64)
+            .into_iter()
+            .fold(false, |redraw, request| {
+                self.apply_accessibility_request(request) || redraw
+            })
+    }
+
+    fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
+        let Some(node) = self.accessibility.node_for(request.target_node) else {
+            return false;
+        };
+        match request.action {
+            Action::Focus => self
+                .frisket
+                .accessibility_target(node)
+                .is_some_and(|target| self.accessibility.set_focus(target)),
+            Action::Click => match self.frisket.accessibility_target(node) {
+                Some(FrisketA11yTarget::ChromeAction(action)) => self.apply_chrome_action(action),
+                Some(FrisketA11yTarget::Close(tile)) => {
+                    self.clear_chrome_address();
+                    self.clear_chrome_engine_menu();
+                    self.clear_chrome_appearance();
+                    self.apply_tile_event(TileEvent::Closed(tile))
+                },
+                Some(FrisketA11yTarget::Tab(tile)) => {
+                    self.clear_chrome_address();
+                    self.clear_chrome_engine_menu();
+                    self.clear_chrome_appearance();
+                    self.apply_tile_event(TileEvent::Activated(tile))
+                },
+                None => false,
+            },
+            _ => false,
+        }
     }
 
     fn chrome_engine_choices() -> Vec<ChromeEngineChoice> {
@@ -1329,6 +1575,9 @@ impl WorkspaceApp {
         self.last_chrome_document = (self.config.chrome && pane_frame.diagnostic_rect.is_some())
             .then(|| self.chrome_model().diagnostic)
             .flatten();
+        if self.sync_accessibility() {
+            self.request_redraw();
+        }
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
         // Once the Chrome receipt has asserted its final state, keep composing
@@ -1452,6 +1701,7 @@ impl WorkspaceApp {
                     WorkspaceReceipt::Chrome
                         | WorkspaceReceipt::LoadingError
                         | WorkspaceReceipt::Appearance
+                        | WorkspaceReceipt::Accessibility
                 )
             ) || self
                 .config
@@ -1668,7 +1918,8 @@ impl WorkspaceApp {
             Some(
                 WorkspaceReceipt::Chrome
                 | WorkspaceReceipt::LoadingError
-                | WorkspaceReceipt::Appearance,
+                | WorkspaceReceipt::Appearance
+                | WorkspaceReceipt::Accessibility,
             ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
@@ -1708,13 +1959,18 @@ impl WorkspaceApp {
             WorkspaceReceipt::Chrome => self.drive_chrome_workspace_receipt_step(),
             WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
             WorkspaceReceipt::Appearance => self.drive_appearance_workspace_receipt_step(),
+            WorkspaceReceipt::Accessibility => self.drive_accessibility_workspace_receipt_step(),
         }
     }
 
     fn workspace_receipt_timeout_error(&self) -> Option<String> {
         if matches!(
             self.config.workspace_receipt,
-            Some(WorkspaceReceipt::LoadingError | WorkspaceReceipt::Appearance)
+            Some(
+                WorkspaceReceipt::LoadingError
+                    | WorkspaceReceipt::Appearance
+                    | WorkspaceReceipt::Accessibility
+            )
         ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
                 >= self.config.workspace_receipt_stage_timeout
@@ -2576,6 +2832,126 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_accessibility_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "accessibility receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let content = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == Role::Region
+                            && node
+                                .label()
+                                .is_some_and(|label| label.ends_with(" content"))
+                    })
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility receipt did not expose a named content aperture")?;
+                if !content
+                    .description()
+                    .is_some_and(|description| description.contains("partial accessibility"))
+                {
+                    return Err(
+                        "accessibility receipt did not declare the document engine's partial child-tree boundary"
+                            .to_owned(),
+                    );
+                }
+                let theme = a11y_node(&tree, "Toggle session appearance settings", Role::Button)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Focus,
+                    target_node: theme,
+                }) || self.chrome_appearance_open
+                    || self.chrome_theme != ChromeTheme::Dark
+                {
+                    return Err(
+                        "accessibility Focus activated Pelt's appearance control instead of only moving virtual focus"
+                            .to_owned(),
+                    );
+                }
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let theme = a11y_node(&tree, "Toggle session appearance settings", Role::Button)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: theme,
+                }) || !self.chrome_appearance_open
+                {
+                    return Err(
+                        "accessibility Click did not open Pelt's retained appearance controls"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let light = a11y_node(&tree, "Light", Role::RadioButton)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Focus,
+                    target_node: light,
+                }) || self.chrome_theme != ChromeTheme::Dark
+                    || !self.chrome_appearance_open
+                {
+                    return Err(
+                        "accessibility Focus selected a Pelt theme instead of only moving virtual focus"
+                            .to_owned(),
+                    );
+                }
+            },
+            3 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let light = a11y_node(&tree, "Light", Role::RadioButton)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: light,
+                }) || self.chrome_theme != ChromeTheme::Light
+                    || !self.chrome_appearance_open
+                {
+                    return Err(
+                        "accessibility Click did not select Pelt's Light session theme".to_owned(),
+                    );
+                }
+            },
+            4 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let light = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == Role::RadioButton && node.label() == Some("Light")
+                    })
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility receipt lost its Light radio after selection")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility receipt lost its focused controller")?;
+                if light.toggled() != Some(accesskit::Toggled::True)
+                    || controller.address().is_empty()
+                    || self.accessibility.focus.is_none()
+                {
+                    return Err(
+                        "accessibility receipt lost the selected radio state, document, or virtual focus"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
     #[cfg(target_os = "windows")]
     fn mixed_native_receipt_ready(&mut self) -> bool {
         if !self.capability_receipt_ready() {
@@ -3232,6 +3608,14 @@ impl WorkspaceApp {
     }
 }
 
+fn a11y_node(tree: &TreeUpdate, label: &str, role: Role) -> Result<AccessNodeId, String> {
+    tree.nodes
+        .iter()
+        .find(|(_, node)| node.role() == role && node.label() == Some(label))
+        .map(|(id, _)| *id)
+        .ok_or_else(|| format!("accessibility tree has no {role:?} named {label:?}"))
+}
+
 fn discard_unimported_surface_frame(frame: SurfaceFrame) {
     #[cfg(target_os = "windows")]
     if let NativeTextureHandle::D3d12Shared {
@@ -3256,7 +3640,8 @@ impl ApplicationHandler for WorkspaceApp {
             return;
         }
         let attributes =
-            static_viewer::pelt_window_attributes(self.window_title(), self.width, self.height);
+            static_viewer::pelt_window_attributes(self.window_title(), self.width, self.height)
+                .with_visible(false);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -3270,6 +3655,7 @@ impl ApplicationHandler for WorkspaceApp {
         self.width = size.width.max(1);
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
+        self.window = Some(Arc::clone(&window));
         let mut options = NetrenderOptions {
             tile_cache_size: Some(64),
             enable_vello: true,
@@ -3322,9 +3708,19 @@ impl ApplicationHandler for WorkspaceApp {
                 return;
             },
         }
+        if let Err(error) = self.install_accessibility_before_show() {
+            self.receipt_error = Some(error);
+            event_loop.exit();
+            return;
+        }
         self.workspace_receipt_stage_started = Instant::now();
         window.request_redraw();
-        self.window = Some(window);
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.accessibility.take_wake() {
+            self.request_redraw();
+        }
     }
 
     fn window_event(
@@ -3445,6 +3841,7 @@ impl ApplicationHandler for WorkspaceApp {
                 self.apply_effect(effect);
             },
             WindowEvent::Focused(focused) => {
+                self.accessibility.update_window_focus(focused);
                 let effect = self.workspace.input(SessionInput::Focus(focused));
                 self.apply_effect(effect);
             },
@@ -3994,6 +4391,108 @@ mod tests {
                 content.y + content.height / 2.0
             ),
             Some(FrisketHit::Content(TileId(1)))
+        );
+    }
+
+    #[test]
+    fn accessibility_focus_and_click_route_through_the_retained_shell_separately() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-accessibility/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("accessibility receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("accessibility receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Accessibility, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        app.scale_factor = 1.25;
+        let initial = app
+            .prepare_accessibility_tree()
+            .expect("initial retained accessibility tree");
+        let root = initial
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Window)
+            .map(|(_, node)| node)
+            .expect("window root");
+        assert_eq!(root.transform(), Some(&Affine::scale(1.25)));
+        let theme = a11y_node(&initial, "Toggle session appearance settings", Role::Button)
+            .expect("appearance toggle");
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Focus,
+            target_node: theme,
+        }));
+        assert_eq!(app.chrome_theme, ChromeTheme::Dark);
+        assert!(!app.chrome_appearance_open);
+        assert!(app.accessibility.focus.is_some());
+
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: theme,
+        }));
+        assert!(app.chrome_appearance_open);
+        let drawer = app
+            .prepare_accessibility_tree()
+            .expect("appearance accessibility tree");
+        let light = a11y_node(&drawer, "Light", Role::RadioButton).expect("Light radio");
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Focus,
+            target_node: light,
+        }));
+        assert_eq!(app.chrome_theme, ChromeTheme::Dark);
+
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: light,
+        }));
+        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        let selected = app
+            .prepare_accessibility_tree()
+            .expect("selected appearance accessibility tree");
+        let selected_light =
+            a11y_node(&selected, "Light", Role::RadioButton).expect("selected Light radio");
+        let light_node = selected
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == selected_light)
+            .map(|(_, node)| node)
+            .expect("selected Light radio node");
+        assert_eq!(light_node.toggled(), Some(accesskit::Toggled::True));
+        assert_eq!(selected.focus, selected_light);
+        assert_eq!(
+            app.accessibility.focus,
+            Some(FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(
+                ChromeTheme::Light
+            )))
+        );
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("focused document survives chrome action")
+                .address(),
+            fixture
         );
     }
 

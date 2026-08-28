@@ -1,8 +1,10 @@
 //! Frisket rendered through the owned Livery/Buckram lane.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use accesskit::{Action, NodeId as AccessNodeId, Role, TreeUpdate};
 use cambium::{
     AnyView, DividerTarget, DomHandle, FRISKET_CSS, FRISKET_TILE_ATTR, GenetAppRunner, GenetCtx,
     GenetElement, close_target, content_target, divider_target, el, frisket, stack_target,
@@ -10,6 +12,7 @@ use cambium::{
 };
 use genet_host_api::tile::{TileId, TilePath, TileTree};
 use genet_livery::{Device, LiveryDocument, StyleSet};
+use genet_render::accesskit_tree;
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use pelt_core::WorkspaceRect;
@@ -213,6 +216,33 @@ pub(crate) struct FrisketFrame {
     /// Bounds of the session-only appearance drawer. The desktop host restores
     /// this crop after document and native tile composition.
     pub appearance_rect: Option<WorkspaceRect>,
+}
+
+/// Pelt's honest shell-level description of one Frisket content aperture.
+///
+/// The aperture is a named region in Pelt's tree. Its child document or native
+/// surface is deliberately not projected here: each engine still needs a
+/// namespaced composite-tree provider before Pelt can merge it safely.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FrisketContentA11y {
+    pub tile: TileId,
+    pub label: String,
+    pub description: String,
+}
+
+/// One retained Frisket projection plus the current DOM nodes its actions name.
+pub(crate) struct FrisketA11yProjection {
+    pub tree: TreeUpdate,
+    pub root: AccessNodeId,
+    pub nodes: HashMap<AccessNodeId, NodeId>,
+}
+
+/// The shell actions a screen reader may request through the Frisket tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FrisketA11yTarget {
+    ChromeAction(ChromeAction),
+    Close(TileId),
+    Tab(TileId),
 }
 
 /// Semantic result of hit-testing the live Frisket DOM.
@@ -577,6 +607,7 @@ pub(crate) struct WorkspaceChrome {
 pub(crate) struct FrisketSurface {
     tree: TileTree,
     chrome: Option<WorkspaceChrome>,
+    content_a11y: HashMap<TileId, FrisketContentA11y>,
     viewport: (u32, u32),
     document: LiveryDocument<ScriptedDom>,
 }
@@ -587,6 +618,7 @@ impl FrisketSurface {
         Self {
             tree: tree.clone(),
             chrome: None,
+            content_a11y: HashMap::new(),
             viewport,
             document: document_for(tree, None, viewport.0, viewport.1),
         }
@@ -608,6 +640,18 @@ impl FrisketSurface {
             self.viewport.0,
             self.viewport.1,
         );
+    }
+
+    /// Supply Pelt's per-tile accessibility declarations without changing the
+    /// rendered document or asking Livery to relayout it.
+    pub fn set_content_accessibility(
+        &mut self,
+        regions: impl IntoIterator<Item = FrisketContentA11y>,
+    ) {
+        self.content_a11y = regions
+            .into_iter()
+            .map(|region| (region.tile, region))
+            .collect();
     }
 
     pub fn frame(&mut self, width: u32, height: u32) -> Result<FrisketFrame, String> {
@@ -678,6 +722,87 @@ impl FrisketSurface {
             return Some(FrisketHit::Content(tile));
         }
         Some(FrisketHit::Chrome)
+    }
+
+    /// Project the completed Frisket layout into one shell-only AccessKit tree.
+    ///
+    /// Document and native-surface subtrees remain outside this tree until Pelt
+    /// owns a namespaced composite-tree protocol. The corresponding Frisket
+    /// holes stay visible as labelled regions so that absence is declared rather
+    /// than mistaken for an empty document.
+    pub fn accessibility_projection(
+        &self,
+        focus: Option<&FrisketA11yTarget>,
+    ) -> Option<FrisketA11yProjection> {
+        let dom = self.document.dom();
+        // P6 projects only Frisket's fixed shell. Pelt routes wheel and scroll
+        // keys to the active tile engine, never this Livery document. A future
+        // scrollable shell needs visual, scroll-adjusted bounds before it can
+        // reuse this projection.
+        debug_assert_eq!(self.document.scroll(), (0.0, 0.0));
+        debug_assert!(self.document.element_scroll().is_empty());
+        let fragments = self.document.retained_layout()?;
+        let root = AccessNodeId(dom.opaque_id(dom.document()));
+        let nodes = nodes_in_document(dom)
+            .into_iter()
+            .map(|node| (AccessNodeId(dom.opaque_id(node)), node))
+            .collect::<HashMap<_, _>>();
+        let mut tree = accesskit_tree(dom, fragments, None);
+
+        // A Frisket document is rebuilt whenever Chrome state changes, so a
+        // raw ScriptedDom NodeId would become foreign on the next frame. Keep
+        // virtual focus by semantic target and resolve it in this fresh tree.
+        if let Some(focused) = focus.and_then(|target| {
+            tree.nodes.iter().find_map(|(id, access)| {
+                (access.supports_action(Action::Focus)
+                    && nodes.get(id).is_some_and(|node| {
+                        self.accessibility_target(*node).as_ref() == Some(target)
+                    }))
+                .then_some(*id)
+            })
+        }) {
+            tree.focus = focused;
+        }
+
+        for (id, access) in &mut tree.nodes {
+            let Some(node) = nodes.get(id).copied() else {
+                continue;
+            };
+            let Some(tile) = attr(dom, node, FRISKET_TILE_ATTR)
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(TileId)
+            else {
+                continue;
+            };
+            let (label, description) = self.content_a11y.get(&tile).map_or_else(
+                || {
+                    (
+                        format!("Tile {} content", tile.0),
+                        "Pelt has not received an accessibility declaration for this content."
+                            .to_owned(),
+                    )
+                },
+                |region| (region.label.clone(), region.description.clone()),
+            );
+            access.set_role(Role::Region);
+            access.set_label(label);
+            access.set_description(description);
+        }
+
+        Some(FrisketA11yProjection { tree, root, nodes })
+    }
+
+    /// Resolve a screen-reader Click against the same retained shell actions
+    /// used by the pointer path. Focus requests deliberately do not come here.
+    pub fn accessibility_target(&self, node: NodeId) -> Option<FrisketA11yTarget> {
+        let dom = self.document.dom();
+        if let Some(action) = chrome_action(dom, node) {
+            return Some(FrisketA11yTarget::ChromeAction(action));
+        }
+        if let Some(tile) = close_target(dom, node) {
+            return Some(FrisketA11yTarget::Close(tile));
+        }
+        tab_target(dom, node).map(FrisketA11yTarget::Tab)
     }
 
     pub fn tabbar_drop(&self, x: f32, y: f32) -> Option<(TilePath, usize)> {
@@ -1357,6 +1482,118 @@ mod tests {
         let text = document_text(surface.document.dom());
         assert!(text.contains("This Pelt session only."));
         assert!(text.contains("Document content keeps its engine-owned theme."));
+    }
+
+    #[test]
+    fn accesskit_projection_keeps_shell_controls_and_declared_content_boundaries() {
+        let chrome = WorkspaceChrome {
+            title: "Focused document".to_owned(),
+            address: "C:/example/index.html".to_owned(),
+            route: "Automatic: genet.livery · document".to_owned(),
+            status: "Ready".to_owned(),
+            theme: ChromeTheme::Light,
+            address_focused: false,
+            can_go_back: true,
+            can_go_forward: false,
+            engine_label: "Auto".to_owned(),
+            engine_menu_open: true,
+            engine_selected: Some(ChromeEngineChoice::Automatic),
+            engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
+            inspector: None,
+            appearance: Some(ChromeAppearance {
+                theme: ChromeTheme::Light,
+            }),
+            diagnostic: None,
+        };
+        let mut surface = FrisketSurface::new(&nested_tree());
+        surface.set_chrome(Some(chrome.clone()));
+        surface.set_content_accessibility([FrisketContentA11y {
+            tile: TileId(1),
+            label: "Tile 1 content".to_owned(),
+            description: "The engine declares partial accessibility. Pelt does not compose its document semantics into this workspace tree yet.".to_owned(),
+        }]);
+        surface.frame(800, 600).expect("retained Frisket frame");
+        let projection = surface
+            .accessibility_projection(None)
+            .expect("completed retained Frisket layout");
+
+        let content = projection
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Region && node.label() == Some("Tile 1 content"))
+            .map(|(_, node)| node)
+            .expect("named content aperture");
+        assert!(
+            content
+                .description()
+                .is_some_and(|description| description.contains("partial accessibility"))
+        );
+
+        let active_tab = projection
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("Tile 1"))
+            .map(|(_, node)| node)
+            .expect("active Frisket tab");
+        assert_eq!(active_tab.is_selected(), Some(true));
+        assert!(active_tab.supports_action(accesskit::Action::Click));
+
+        let divider = projection
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Splitter)
+            .map(|(_, node)| node)
+            .expect("Frisket split divider");
+        assert_eq!(
+            divider.orientation(),
+            Some(accesskit::Orientation::Vertical)
+        );
+
+        let light = projection
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::RadioButton && node.label() == Some("Light"))
+            .expect("Light appearance radio");
+        assert_eq!(light.1.toggled(), Some(accesskit::Toggled::True));
+        assert!(light.1.supports_action(accesskit::Action::Click));
+        assert!(light.1.supports_action(accesskit::Action::Focus));
+        let light_dom = projection.nodes[&light.0];
+        assert_eq!(
+            surface.accessibility_target(light_dom),
+            Some(FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(
+                ChromeTheme::Light
+            )))
+        );
+
+        let address = projection
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::TextInput && node.label() == Some("Address"))
+            .map(|(_, node)| node)
+            .expect("address accessibility node");
+        let address_rect = surface.chrome_rect("address").expect("address geometry");
+        let bounds = address.bounds().expect("address bounds");
+        assert_eq!(bounds.x0, f64::from(address_rect.x));
+        assert_eq!(bounds.y0, f64::from(address_rect.y));
+        assert_eq!(bounds.x1, f64::from(address_rect.x + address_rect.width));
+        assert_eq!(bounds.y1, f64::from(address_rect.y + address_rect.height));
+
+        surface.set_chrome(Some(WorkspaceChrome {
+            appearance: None,
+            ..chrome
+        }));
+        surface.frame(800, 600).expect("closed appearance frame");
+        let closed = surface
+            .accessibility_projection(None)
+            .expect("closed retained Frisket layout");
+        assert!(closed.tree.nodes.iter().all(|(_, node)| {
+            node.role() != Role::RadioButton || node.label() != Some("Light")
+        }));
     }
 
     #[test]

@@ -5,7 +5,8 @@
 use std::hash::Hash;
 
 use accesskit::{
-    Action, Live, Node as AccessNode, NodeId as AccessNodeId, Rect, Role, Tree, TreeId, TreeUpdate,
+    Action, HasPopup, Live, Node as AccessNode, NodeId as AccessNodeId, Orientation, Rect, Role,
+    Toggled, Tree, TreeId, TreeUpdate,
 };
 use genet_livery::LiveryLayout;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
@@ -20,9 +21,22 @@ fn role_for<D: LayoutDom>(dom: &D, node: D::NodeId) -> Role {
             "button" => return Role::Button,
             "checkbox" => return Role::CheckBox,
             "radio" => return Role::RadioButton,
+            "radiogroup" => return Role::RadioGroup,
             "switch" => return Role::Switch,
             "tab" => return Role::Tab,
             "tablist" => return Role::TabList,
+            "tabpanel" => return Role::TabPanel,
+            "menu" => return Role::Menu,
+            "menuitem" => return Role::MenuItem,
+            "menuitemcheckbox" => return Role::MenuItemCheckBox,
+            "menuitemradio" => return Role::MenuItemRadio,
+            "listbox" => return Role::ListBox,
+            "option" => return Role::ListBoxOption,
+            "combobox" => return Role::ComboBox,
+            "separator" => return Role::Splitter,
+            "toolbar" => return Role::Toolbar,
+            "tree" => return Role::Tree,
+            "treeitem" => return Role::TreeItem,
             "progressbar" => return Role::ProgressIndicator,
             "slider" => return Role::Slider,
             "textbox" => return Role::TextInput,
@@ -74,6 +88,57 @@ fn aria_number<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<f64
 fn aria_true<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> bool {
     dom.attribute(node, &Namespace::default(), &LocalName::from(name))
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+/// An ARIA boolean, including an explicit false. Invalid and absent values
+/// are left unset so the tree does not claim a state the DOM did not express.
+fn aria_bool<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<bool> {
+    dom.attribute(node, &Namespace::default(), &LocalName::from(name))
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        })
+}
+
+fn aria_toggled<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<Toggled> {
+    dom.attribute(node, &Namespace::default(), &LocalName::from(name))
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Some(Toggled::True),
+            "false" => Some(Toggled::False),
+            "mixed" => Some(Toggled::Mixed),
+            _ => None,
+        })
+}
+
+fn aria_orientation<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<Orientation> {
+    dom.attribute(
+        node,
+        &Namespace::default(),
+        &LocalName::from("aria-orientation"),
+    )
+    .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+        "horizontal" => Some(Orientation::Horizontal),
+        "vertical" => Some(Orientation::Vertical),
+        _ => None,
+    })
+}
+
+fn aria_has_popup<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<HasPopup> {
+    dom.attribute(
+        node,
+        &Namespace::default(),
+        &LocalName::from("aria-haspopup"),
+    )
+    .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "menu" => Some(HasPopup::Menu),
+        "listbox" => Some(HasPopup::Listbox),
+        "tree" => Some(HasPopup::Tree),
+        "grid" => Some(HasPopup::Grid),
+        "dialog" => Some(HasPopup::Dialog),
+        "false" | "none" | "" => None,
+        _ => None,
+    })
 }
 
 fn is_disabled<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
@@ -130,6 +195,9 @@ fn supports_semantic_action(role: Role) -> bool {
             | Role::RadioButton
             | Role::Switch
             | Role::Tab
+            | Role::MenuItem
+            | Role::MenuItemCheckBox
+            | Role::MenuItemRadio
             | Role::Slider
             | Role::TextInput
             | Role::Link
@@ -180,6 +248,23 @@ where
     let disabled = is_disabled(dom, node);
     if disabled {
         access.set_disabled();
+    }
+    if let Some(selected) = aria_bool(dom, node, "aria-selected") {
+        access.set_selected(selected);
+    }
+    if let Some(expanded) = aria_bool(dom, node, "aria-expanded") {
+        access.set_expanded(expanded);
+    }
+    if let Some(toggled) =
+        aria_toggled(dom, node, "aria-checked").or_else(|| aria_toggled(dom, node, "aria-pressed"))
+    {
+        access.set_toggled(toggled);
+    }
+    if let Some(orientation) = aria_orientation(dom, node) {
+        access.set_orientation(orientation);
+    }
+    if let Some(has_popup) = aria_has_popup(dom, node) {
+        access.set_has_popup(has_popup);
     }
     let semantic_control = is_native_control(dom, node) || supports_semantic_action(role);
     let focusable = semantic_control || has_tabindex(dom, node) || is_content_editable(dom, node);
@@ -242,7 +327,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use accesskit::{Action, Live, Node as AccessNode, Role};
+    use accesskit::{Action, HasPopup, Live, Node as AccessNode, Orientation, Role, Toggled};
     use genet_scripted_dom::ScriptedDom;
     use layout_dom_api::{LayoutDom, LayoutDomMut};
 
@@ -372,5 +457,73 @@ mod tests {
             assert!(!disabled.supports_action(Action::Focus));
         }
         assert_eq!(nodes.iter().filter(|node| node.is_disabled()).count(), 2);
+    }
+
+    #[test]
+    fn aria_widget_roles_and_states_reach_accesskit() {
+        let nodes = nodes_for(
+            "<div role=\"menu\" aria-label=\"Actions\">\
+                <div role=\"menuitemradio\" aria-label=\"Compact\" aria-checked=\"true\" aria-selected=\"true\">Compact</div>\
+                <div role=\"menuitemcheckbox\" aria-label=\"Details\" aria-checked=\"mixed\">Details</div>\
+            </div>\
+            <div role=\"separator\" aria-orientation=\"vertical\"></div>\
+            <button aria-expanded=\"false\" aria-haspopup=\"dialog\">Details</button>",
+        );
+
+        let menu = nodes
+            .iter()
+            .find(|node| node.role() == Role::Menu)
+            .expect("menu role");
+        assert_eq!(menu.label(), Some("Actions"));
+
+        let radio = nodes
+            .iter()
+            .find(|node| node.role() == Role::MenuItemRadio)
+            .expect("menuitemradio role");
+        assert_eq!(radio.toggled(), Some(Toggled::True));
+        assert_eq!(radio.is_selected(), Some(true));
+        assert!(radio.supports_action(Action::Click));
+
+        let mixed = nodes
+            .iter()
+            .find(|node| node.label() == Some("Details") && node.role() == Role::MenuItemCheckBox)
+            .expect("menuitemcheckbox role");
+        assert_eq!(mixed.toggled(), Some(Toggled::Mixed));
+
+        let separator = nodes
+            .iter()
+            .find(|node| node.role() == Role::Splitter)
+            .expect("separator role");
+        assert_eq!(separator.orientation(), Some(Orientation::Vertical));
+
+        let trigger = nodes
+            .iter()
+            .find(|node| node.role() == Role::Button && node.label() == Some("Details"))
+            .expect("popup trigger");
+        assert_eq!(trigger.is_expanded(), Some(false));
+        assert_eq!(trigger.has_popup(), Some(HasPopup::Dialog));
+    }
+
+    #[test]
+    fn aria_pressed_and_bounds_are_projected_without_inference() {
+        let nodes = nodes_for(
+            "<button style=\"display:block;width:80px;height:20px\" aria-pressed=\"mixed\">Filter</button>\
+             <div role=\"button\" aria-expanded=\"maybe\" aria-haspopup=\"unknown\">Invalid</div>",
+        );
+        let filter = nodes
+            .iter()
+            .find(|node| node.label() == Some("Filter"))
+            .expect("filter button");
+        assert_eq!(filter.toggled(), Some(Toggled::Mixed));
+        let bounds = filter.bounds().expect("laid out button bounds");
+        assert_eq!(bounds.x1 - bounds.x0, 80.0);
+        assert_eq!(bounds.y1 - bounds.y0, 20.0);
+
+        let invalid = nodes
+            .iter()
+            .find(|node| node.label() == Some("Invalid"))
+            .expect("invalid state button");
+        assert_eq!(invalid.is_expanded(), None);
+        assert_eq!(invalid.has_popup(), None);
     }
 }
