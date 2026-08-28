@@ -326,6 +326,12 @@ recorded under
 
 ## Row 18 closure and remaining work
 
+Container-level vertical flex row/column cross-axis and wrap projection is
+measured: the 2026-08-27 receipt passes writing-mode 002/003/005/006. Explicit
+child `align-self`, mixed-writing-mode baseline alignment, and the two
+auto-width intrinsic row-wrap cases remain open; this is not general
+vertical-flex completion.
+
 The `flex-basis: content` slice is complete: `content` bypasses the preferred
 main-size fallback while `auto` retains it; the row and column content queries
 measure Buckram-owned content at the required max-content or fit-content size;

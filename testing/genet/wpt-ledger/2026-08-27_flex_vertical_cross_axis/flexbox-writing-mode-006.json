@@ -1,0 +1,13 @@
+{
+  "command": "reftest",
+  "engine": "none",
+  "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
+  "policy": "exact",
+  "renderer": "livery",
+  "runner_sha256": "cd4e8ab840cc3a5f17a8719fa7f35b46a4745e5e74c3ee40d6db820f15b9c6f9",
+  "subset": "css/css-flexbox/flexbox-writing-mode-006.html",
+  "tests": {
+    "css/css-flexbox/flexbox-writing-mode-006.html": "pass"
+  },
+  "version": 1
+}
