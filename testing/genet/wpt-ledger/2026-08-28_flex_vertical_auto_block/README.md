@@ -1,9 +1,9 @@
 # Vertical flex automatic block-size receipt
 
 Implementation source: `c5cb56902fef30f6ebc50ac653dbc2777fa09036`.
-Integrated runner source: `91a87cbe340`.
+Integrated runner source: `4432b0b207a`.
 
-- Runner: `C:\t\genet-row18-vertical-auto-block-runner-91a87cbe340.exe`
+- Runner: `C:\t\genet-row18-vertical-auto-block-runner-4432b0b207a.exe`
 - Runner SHA-256: `E833A632E9F2CD590DE5B4D983A7EAC923E155814749BDBE662BE8C76A7F3D6D`
 - WPT manifest: `tests/wpt/meta/MANIFEST.json`
 - WPT manifest SHA-256: `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`
@@ -16,6 +16,10 @@ The release runner was built from the integrated source with an isolated
 `cargo build -p genet-wpt --release --locked --offline -j 1`. Each checked-in
 map is the raw output of a separate `genet-wpt reftest` invocation using the
 Livery renderer and exact expectation policy.
+
+After the final unrelated Pelt main merge, the same locked release build
+finished incrementally and reproduced the runner byte for byte at source
+`4432b0b207a`.
 
 ## Exact WPT receipt
 
