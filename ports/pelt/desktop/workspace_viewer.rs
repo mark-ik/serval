@@ -34,8 +34,9 @@ use winit::window::{Window, WindowId};
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{
-    ChromeAction, ChromeDocument, ChromeDocumentKind, ChromeEngineChoice, ChromeInspector,
-    ChromeInspectorSection, FrisketHit, FrisketSurface, WorkspaceChrome,
+    ChromeAction, ChromeAppearance, ChromeDocument, ChromeDocumentKind, ChromeEngineChoice,
+    ChromeInspector, ChromeInspectorSection, ChromeTheme, FrisketHit, FrisketSurface,
+    WorkspaceChrome,
 };
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
@@ -48,6 +49,8 @@ const MIXED_WORKSPACE_ASSERTION: &str =
 const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, applied a per-tile override, and exposed truthful structural inspection while the mixed workspace held";
 const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
     "host-owned loading and error documents preserved the focused tile's prior session and history";
+const APPEARANCE_WORKSPACE_ASSERTION: &str =
+    "session-only appearance changed the live Pelt chrome theme while the focused document held";
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -62,6 +65,9 @@ pub enum WorkspaceReceipt {
     /// P6's document-lane loading and failed-navigation projection, without a
     /// native surface dependency.
     LoadingError,
+    /// P6's session-only Pelt appearance drawer, without a document theme or
+    /// persistence claim.
+    Appearance,
 }
 
 impl WorkspaceReceipt {
@@ -71,6 +77,7 @@ impl WorkspaceReceipt {
             Self::Fallback => "fallback",
             Self::Chrome => "chrome",
             Self::LoadingError => "loading-error",
+            Self::Appearance => "appearance",
         }
     }
 
@@ -83,7 +90,7 @@ impl WorkspaceReceipt {
     }
 
     fn keeps_chrome(self) -> bool {
-        matches!(self, Self::Chrome | Self::LoadingError)
+        matches!(self, Self::Chrome | Self::LoadingError | Self::Appearance)
     }
 }
 
@@ -260,7 +267,11 @@ pub fn run_livery_workspace_viewer(
     #[cfg(target_os = "windows")]
     let omit_scrying = matches!(
         config.workspace_receipt,
-        Some(WorkspaceReceipt::Fallback | WorkspaceReceipt::LoadingError)
+        Some(
+            WorkspaceReceipt::Fallback
+                | WorkspaceReceipt::LoadingError
+                | WorkspaceReceipt::Appearance
+        )
     );
     #[cfg(target_os = "windows")]
     let scrying_host = (!omit_scrying).then(ScryingReceiptHost::new);
@@ -507,6 +518,16 @@ struct ChromeEngineMenu {
     tile: TileId,
 }
 
+/// The P6 appearance receipt snapshots the document-facing state before a
+/// host-only palette change, so it can prove the theme did not replace or
+/// rearrange the focused session.
+#[derive(Clone, Debug, PartialEq)]
+struct AppearanceReceiptBaseline {
+    content: WorkspaceRect,
+    address: String,
+    can_go_back: bool,
+}
+
 fn capability_label(capability: inker::A11yCapability) -> &'static str {
     match capability {
         inker::A11yCapability::Full => "Full",
@@ -655,6 +676,9 @@ struct WorkspaceApp {
     chrome_address: Option<ChromeAddressInput>,
     chrome_engine_menu: Option<ChromeEngineMenu>,
     chrome_inspector_open: bool,
+    chrome_theme: ChromeTheme,
+    chrome_appearance_open: bool,
+    appearance_receipt_baseline: Option<AppearanceReceiptBaseline>,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -710,6 +734,9 @@ impl WorkspaceApp {
             chrome_address: None,
             chrome_engine_menu: None,
             chrome_inspector_open: false,
+            chrome_theme: ChromeTheme::Dark,
+            chrome_appearance_open: false,
+            appearance_receipt_baseline: None,
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -818,6 +845,10 @@ impl WorkspaceApp {
         self.chrome_engine_menu = None;
     }
 
+    fn clear_chrome_appearance(&mut self) {
+        self.chrome_appearance_open = false;
+    }
+
     fn chrome_inspector(&self, tile: TileId) -> ChromeInspector {
         let route = self.workspace.route(tile);
         let active_engine = route
@@ -839,6 +870,7 @@ impl WorkspaceApp {
                 address: String::new(),
                 route: "No route".to_owned(),
                 status: self.chrome_status.label(),
+                theme: self.chrome_theme,
                 address_focused: self.chrome_address.is_some(),
                 can_go_back: false,
                 can_go_forward: false,
@@ -847,6 +879,9 @@ impl WorkspaceApp {
                 engine_selected: None,
                 engine_choices: Self::chrome_engine_choices(),
                 inspector: None,
+                appearance: self.chrome_appearance_open.then_some(ChromeAppearance {
+                    theme: self.chrome_theme,
+                }),
                 diagnostic: None,
             };
         };
@@ -937,6 +972,7 @@ impl WorkspaceApp {
             address,
             route,
             status,
+            theme: self.chrome_theme,
             address_focused: self.chrome_address.is_some(),
             can_go_back: controller.is_some_and(PeltController::can_go_back),
             can_go_forward: controller.is_some_and(PeltController::can_go_forward),
@@ -949,6 +985,9 @@ impl WorkspaceApp {
             inspector: self
                 .chrome_inspector_open
                 .then(|| self.chrome_inspector(tile)),
+            appearance: self.chrome_appearance_open.then_some(ChromeAppearance {
+                theme: self.chrome_theme,
+            }),
             diagnostic,
         }
     }
@@ -1109,6 +1148,29 @@ impl WorkspaceApp {
             return false;
         }
         self.chrome_inspector_open = !self.chrome_inspector_open;
+        if self.chrome_inspector_open {
+            self.clear_chrome_appearance();
+        }
+        true
+    }
+
+    fn toggle_chrome_appearance(&mut self) -> bool {
+        if self.workspace.focused_tile().is_none() {
+            return false;
+        }
+        self.chrome_appearance_open = !self.chrome_appearance_open;
+        if self.chrome_appearance_open {
+            self.chrome_inspector_open = false;
+        }
+        true
+    }
+
+    fn choose_chrome_theme(&mut self, theme: ChromeTheme) -> bool {
+        if !self.chrome_appearance_open {
+            return false;
+        }
+        self.chrome_theme = theme;
+        self.chrome_status = ChromeStatus::Message(format!("Chrome theme: {}", theme.label()));
         true
     }
 
@@ -1121,6 +1183,12 @@ impl WorkspaceApp {
             ChromeAction::ToggleEngineMenu | ChromeAction::ChooseEngine(_)
         ) {
             self.clear_chrome_engine_menu();
+        }
+        if !matches!(
+            action,
+            ChromeAction::ToggleAppearance | ChromeAction::ChooseTheme(_)
+        ) {
+            self.clear_chrome_appearance();
         }
         match action {
             ChromeAction::Back => {
@@ -1148,6 +1216,8 @@ impl WorkspaceApp {
             ChromeAction::ToggleEngineMenu => self.toggle_chrome_engine_menu(),
             ChromeAction::ChooseEngine(choice) => self.choose_chrome_engine(choice),
             ChromeAction::ToggleInspector => self.toggle_chrome_inspector(),
+            ChromeAction::ToggleAppearance => self.toggle_chrome_appearance(),
+            ChromeAction::ChooseTheme(theme) => self.choose_chrome_theme(theme),
         }
     }
 
@@ -1370,12 +1440,19 @@ impl WorkspaceApp {
         let diagnostic_overlay = pane_frame
             .diagnostic_rect
             .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
+        let appearance_overlay = pane_frame
+            .appearance_rect
+            .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
         let capture_now = self.config.workspace_receipt.is_some()
             && self.receipt_complete
             && self.workspace_receipt_outcome.is_none()
             && (matches!(
                 self.config.workspace_receipt,
-                Some(WorkspaceReceipt::Chrome | WorkspaceReceipt::LoadingError)
+                Some(
+                    WorkspaceReceipt::Chrome
+                        | WorkspaceReceipt::LoadingError
+                        | WorkspaceReceipt::Appearance
+                )
             ) || self
                 .config
                 .frames
@@ -1498,6 +1575,16 @@ impl WorkspaceApp {
                 diagnostic_overlay,
             );
         }
+        if let Some(appearance_overlay) = appearance_overlay {
+            host.renderer().compose_external_texture(
+                &frame_view,
+                &target,
+                host.format(),
+                self.width,
+                self.height,
+                appearance_overlay,
+            );
+        }
         let captured = if let Some(source) = receipt_view.as_ref() {
             let Some(path) = self.config.artifact.as_deref() else {
                 self.receipt_error = Some("workspace receipt needs an artifact path".to_owned());
@@ -1578,9 +1665,11 @@ impl WorkspaceApp {
         }
 
         let workspace_receipt_finished = match self.config.workspace_receipt {
-            Some(WorkspaceReceipt::Chrome | WorkspaceReceipt::LoadingError) => {
-                self.workspace_receipt_outcome.is_some()
-            },
+            Some(
+                WorkspaceReceipt::Chrome
+                | WorkspaceReceipt::LoadingError
+                | WorkspaceReceipt::Appearance,
+            ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
                     && self
@@ -1618,17 +1707,25 @@ impl WorkspaceApp {
             WorkspaceReceipt::Fallback => self.drive_fallback_workspace_receipt_step(),
             WorkspaceReceipt::Chrome => self.drive_chrome_workspace_receipt_step(),
             WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
+            WorkspaceReceipt::Appearance => self.drive_appearance_workspace_receipt_step(),
         }
     }
 
     fn workspace_receipt_timeout_error(&self) -> Option<String> {
-        if self.config.workspace_receipt == Some(WorkspaceReceipt::LoadingError)
-            && !self.receipt_complete
+        if matches!(
+            self.config.workspace_receipt,
+            Some(WorkspaceReceipt::LoadingError | WorkspaceReceipt::Appearance)
+        ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
                 >= self.config.workspace_receipt_stage_timeout
         {
+            let receipt = self
+                .config
+                .workspace_receipt
+                .expect("the matching receipt was present above");
             return Some(format!(
-                "loading/error workspace receipt timed out after {}s at {}x{}",
+                "{} workspace receipt timed out after {}s at {}x{}",
+                receipt.id(),
                 self.config.workspace_receipt_stage_timeout.as_secs_f32(),
                 self.width,
                 self.height
@@ -2382,6 +2479,103 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_appearance_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                let trigger = self
+                    .frisket
+                    .chrome_rect("appearance")
+                    .ok_or("appearance receipt has no retained Theme control")?;
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("appearance receipt has no Frisket content geometry")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("appearance receipt lost its focused controller")?;
+                if trigger.width <= 0.0
+                    || trigger.height <= 0.0
+                    || content.y <= trigger.y + trigger.height
+                    || self.chrome_theme != ChromeTheme::Dark
+                    || self.chrome_appearance_open
+                {
+                    return Err(
+                        "appearance receipt did not begin with a usable dark Chrome control and content hole"
+                            .to_owned(),
+                    );
+                }
+                self.appearance_receipt_baseline = Some(AppearanceReceiptBaseline {
+                    content,
+                    address: controller.address().to_owned(),
+                    can_go_back: controller.can_go_back(),
+                });
+                self.click_chrome("appearance")?;
+            },
+            1 => {
+                let chrome = self.chrome_model();
+                let light = self
+                    .frisket
+                    .chrome_rect("appearance-light")
+                    .ok_or("appearance receipt did not render a Light choice")?;
+                if chrome.theme != ChromeTheme::Dark
+                    || chrome.appearance
+                        != Some(ChromeAppearance {
+                            theme: ChromeTheme::Dark,
+                        })
+                    || light.width <= 0.0
+                    || light.height <= 0.0
+                    || !matches!(
+                        self.frisket
+                            .hit(light.x + light.width / 2.0, light.y + light.height / 2.0),
+                        Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
+                            ChromeTheme::Light
+                        )))
+                    )
+                {
+                    return Err(
+                        "appearance receipt did not expose an interactive dark/light drawer"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("appearance-light")?;
+            },
+            2 => {
+                let baseline = self
+                    .appearance_receipt_baseline
+                    .as_ref()
+                    .ok_or("appearance receipt lost its baseline document state")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("appearance receipt lost its focused controller")?;
+                let chrome = self.chrome_model();
+                if self.chrome_theme != ChromeTheme::Light
+                    || chrome.theme != ChromeTheme::Light
+                    || chrome.appearance
+                        != Some(ChromeAppearance {
+                            theme: ChromeTheme::Light,
+                        })
+                    || self.workspace.content_rect(tile) != Some(baseline.content)
+                    || controller.address() != baseline.address.as_str()
+                    || controller.can_go_back() != baseline.can_go_back
+                {
+                    return Err(
+                        "appearance receipt changed document state or did not apply the light Chrome palette"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(APPEARANCE_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(APPEARANCE_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
     #[cfg(target_os = "windows")]
     fn mixed_native_receipt_ready(&mut self) -> bool {
         if !self.capability_receipt_ready() {
@@ -2669,6 +2863,7 @@ impl WorkspaceApp {
         self.dismiss_chrome_engine_menu_if_focus_changed();
         if navigated {
             self.clear_chrome_engine_menu();
+            self.clear_chrome_appearance();
         }
         if let Some(error) = error {
             eprintln!("[pelt-workspace] {error}");
@@ -2702,6 +2897,7 @@ impl WorkspaceApp {
         if self.workspace.apply(&event) {
             if self.workspace.focused_tile() != focused_before {
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
             }
             self.frisket.set_tree(self.workspace.tree());
             if let Some(window) = &self.window {
@@ -2739,6 +2935,12 @@ impl WorkspaceApp {
             }
             return drag.moved;
         }
+        if matches!(
+            self.frisket.hit(x, y),
+            Some(FrisketHit::Appearance | FrisketHit::ChromeAction(_))
+        ) {
+            return false;
+        }
 
         let effect = self.workspace.input(SessionInput::PointerMoved {
             x,
@@ -2757,11 +2959,13 @@ impl WorkspaceApp {
             Some(FrisketHit::Close(tile)) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 self.apply_tile_event(TileEvent::Closed(tile))
             },
             Some(FrisketHit::Divider { target, split_rect }) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 let Some(fractions) = self.workspace.tree().fractions_at(&target.path) else {
                     return false;
                 };
@@ -2788,6 +2992,7 @@ impl WorkspaceApp {
             Some(FrisketHit::Tab(tile)) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 self.gesture = Some(PointerGesture::Tab(TabDrag {
                     tile,
                     start: self.cursor,
@@ -2798,6 +3003,7 @@ impl WorkspaceApp {
             Some(FrisketHit::Content(_)) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 self.gesture = Some(PointerGesture::Content);
                 let effect = self.workspace.input(SessionInput::PointerButton {
                     x,
@@ -2812,8 +3018,12 @@ impl WorkspaceApp {
             },
             Some(FrisketHit::Chrome) => {
                 self.clear_chrome_address();
-                self.chrome_engine_menu.take().is_some()
+                let changed =
+                    self.chrome_engine_menu.take().is_some() || self.chrome_appearance_open;
+                self.clear_chrome_appearance();
+                changed
             },
+            Some(FrisketHit::Appearance) => true,
             None => false,
         }
     }
@@ -3180,6 +3390,12 @@ impl ApplicationHandler for WorkspaceApp {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                if matches!(
+                    self.frisket.hit(self.cursor.0, self.cursor.1),
+                    Some(FrisketHit::Appearance | FrisketHit::ChromeAction(_))
+                ) {
+                    return;
+                }
                 let (dx, dy) = wheel_delta_from_winit(delta);
                 if self.workspace.scroll_at(
                     self.cursor.0,
@@ -3697,6 +3913,99 @@ mod tests {
                 .document_state(),
             &PeltDocumentState::Ready
         );
+    }
+
+    #[test]
+    fn appearance_receipt_changes_session_theme_without_replacing_the_document() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-appearance/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("appearance receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("appearance receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Appearance, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let pane = app
+                .frisket
+                .frame(960, 640)
+                .expect("appearance Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..6 {
+            assertion = app
+                .drive_appearance_workspace_receipt_step()
+                .expect("appearance semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(assertion.as_deref(), Some(APPEARANCE_WORKSPACE_ASSERTION));
+        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        assert!(app.chrome_appearance_open);
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("appearance receipt retains its controller");
+        assert_eq!(controller.address(), fixture.as_str());
+
+        assert!(app.apply_chrome_action(ChromeAction::ToggleAppearance));
+        compose(&mut app);
+        assert!(!app.chrome_appearance_open);
+        let content = app
+            .workspace
+            .content_rect(TileId(1))
+            .expect("appearance receipt keeps its content hole after dismissal");
+        assert_eq!(
+            app.frisket.hit(
+                content.x + content.width / 2.0,
+                content.y + content.height / 2.0
+            ),
+            Some(FrisketHit::Content(TileId(1)))
+        );
+    }
+
+    #[test]
+    fn appearance_overlay_reuses_the_matching_physical_frame_crop() {
+        let placement = fragment_placement(
+            WorkspaceRect::new(380.0, 70.0, 260.0, 300.0),
+            (960, 640),
+            1.5,
+        );
+        assert_eq!(placement.dest_rect, [570.0, 105.0, 960.0, 555.0]);
+        assert_eq!(placement.uv, [0.593_75, 0.164_062_5, 1.0, 0.867_187_5]);
     }
 
     #[cfg(all(feature = "scripted", feature = "smolweb"))]

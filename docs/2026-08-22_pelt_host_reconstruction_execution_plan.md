@@ -721,9 +721,10 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
-**Status:** active. The bounded focused-tile Chrome, engine-choice-menu, and
-structural-inspection receipt completed on Windows 2026-08-27; the broader
-presentability lane remains open.
+**Status:** active. The bounded focused-tile Chrome, engine-choice-menu,
+structural-inspection, loading/error-document, and session-only appearance
+receipts completed on Windows 2026-08-27; the broader presentability lane
+remains open.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -839,6 +840,34 @@ tile's prior session and history`; the captured compositor digest was
 `6d566041b3febf18`. The PNG shows live Chrome above the retained error document
 in the content hole, with the complete recovery instruction visible.
 
+The bounded P6 appearance receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt appearance \
+  --artifact target/pelt-receipts/workspace-appearance.png
+```
+
+It owns `examples/workspace/p6-appearance/index.html` at 960x640. The driver
+opens Pelt's retained Appearance drawer through its live Frisket hit path,
+selects Light, and captures the composed Chrome frame. Dark and Light are
+explicit Pelt-session choices. The palette reaches Pelt's Chrome, Frisket tabs,
+drawer, inspector, and diagnostic documents, while the document engine keeps
+its own theme authority. Persistence, platform-theme integration, and
+cross-session restoration remain outside this receipt.
+
+The GPU-free checks verify semantic radio controls, the Light action, the exact
+physical crop calculation used for post-native replay, unchanged tile-1
+address/history posture, unchanged content-hole geometry, and normal content
+hit routing after drawer dismissal. Recorded 2026-08-27: the Livery-only
+`pelt-desktop` suite passed 28 tests; Pelt's viewer parser/fixture suite passed
+4 tests; and the headed Livery run passed at 960x640 after 4 redraws. Its assertion was
+`session-only appearance changed the live Pelt chrome theme while the focused
+document held`; the captured compositor digest was `b1f8e383dea75045`. The PNG
+shows the Light Chrome shell, checked Light choice, retained document hole, and
+the session/document ownership notes together.
+
 ## Cross-gate rules
 
 - One host-owned wgpu device and compositor serve the full workspace.
@@ -855,12 +884,11 @@ in the content hole, with the complete recovery instruction visible.
 
 ## Immediate next lane
 
-Continue P6 with a Pelt-owned appearance settings surface and a live Chrome
-theme choice. Accessibility projection and narrow-width/high-DPI behavior stay
-separate receipts, rather than being implied by that settings drawer. The
-Reader-in-workspace lane must carry held source bytes rather than teaching
-Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
-than an unrecorded ninth P5 fixture.
+Continue P6 with accessibility projection and narrow-width/high-DPI Chrome
+receipts. The Appearance drawer stays session-only until Pelt owns a durable
+configuration policy. The Reader-in-workspace lane must carry held source bytes
+rather than teaching Fleece to fetch; it remains a distinct Fleece/Pelt
+integration receipt rather than an unrecorded ninth P5 fixture.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and

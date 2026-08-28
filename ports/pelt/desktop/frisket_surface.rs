@@ -33,6 +33,7 @@ fn frame_view(state: &FrameState) -> FrameView {
 const ATTR_CHROME_ACTION: &str = "data-pelt-chrome";
 const ATTR_INSPECTOR: &str = "data-pelt-inspector";
 const ATTR_DIAGNOSTIC: &str = "data-pelt-diagnostic";
+const ATTR_APPEARANCE: &str = "data-pelt-appearance";
 
 fn chrome_button(action: &str, label: &str, accessible_label: &str, disabled: bool) -> FrameView {
     let class = if disabled {
@@ -61,9 +62,9 @@ fn chrome_toggle_button(
             .attr(
                 "class",
                 if pressed {
-                    "pelt-chrome-button pelt-inspector-toggle pelt-inspector-toggle-open"
+                    "pelt-chrome-button pelt-chrome-toggle pelt-chrome-toggle-open"
                 } else {
-                    "pelt-chrome-button pelt-inspector-toggle"
+                    "pelt-chrome-button pelt-chrome-toggle"
                 },
             )
             .attr("role", "button")
@@ -131,6 +132,12 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
             "Toggle content inspector",
             chrome.inspector.is_some(),
         ),
+        chrome_toggle_button(
+            "appearance",
+            "Theme",
+            "Toggle session appearance settings",
+            chrome.appearance.is_some(),
+        ),
     ];
     let details: Vec<FrameView> = vec![
         Box::new(el::<_, FrameState, ()>("div", chrome.title.clone()).attr("class", "pelt-title")),
@@ -177,6 +184,9 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
     if let Some(inspector) = chrome.inspector.as_ref() {
         body.push(inspector_view(inspector));
     }
+    if let Some(appearance) = chrome.appearance.as_ref() {
+        body.push(appearance_view(appearance));
+    }
     let mut workspace: Vec<FrameView> = vec![
         header,
         Box::new(el::<_, FrameState, ()>("div", body).attr("class", "pelt-body")),
@@ -184,7 +194,10 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
     if let Some(diagnostic) = chrome.diagnostic.as_ref() {
         workspace.push(diagnostic_view(diagnostic));
     }
-    Box::new(el::<_, FrameState, ()>("div", workspace).attr("class", "pelt-workspace"))
+    Box::new(
+        el::<_, FrameState, ()>("div", workspace)
+            .attr("class", format!("pelt-workspace {}", chrome.theme.class())),
+    )
 }
 
 /// One laid-out Frisket frame and the active content holes it authorizes.
@@ -197,6 +210,9 @@ pub(crate) struct FrisketFrame {
     /// Bounds of the host-owned loading/error document. The desktop host
     /// restores this crop after document and native tile composition.
     pub diagnostic_rect: Option<WorkspaceRect>,
+    /// Bounds of the session-only appearance drawer. The desktop host restores
+    /// this crop after document and native tile composition.
+    pub appearance_rect: Option<WorkspaceRect>,
 }
 
 /// Semantic result of hit-testing the live Frisket DOM.
@@ -210,6 +226,7 @@ pub(crate) enum FrisketHit {
         target: DividerTarget,
         split_rect: WorkspaceRect,
     },
+    Appearance,
     Chrome,
 }
 
@@ -225,6 +242,40 @@ pub(crate) enum ChromeAction {
     ToggleEngineMenu,
     ChooseEngine(ChromeEngineChoice),
     ToggleInspector,
+    ToggleAppearance,
+    ChooseTheme(ChromeTheme),
+}
+
+/// The presentation palette of Pelt's retained host chrome. This is a
+/// session-only host choice: document engines retain their own appearance
+/// policy and are not recolored through the Pelt wrapper.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChromeTheme {
+    Dark,
+    Light,
+}
+
+impl ChromeTheme {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+        }
+    }
+
+    const fn class(self) -> &'static str {
+        match self {
+            Self::Dark => "pelt-theme-dark",
+            Self::Light => "pelt-theme-light",
+        }
+    }
+
+    const fn action(self) -> &'static str {
+        match self {
+            Self::Dark => "appearance-dark",
+            Self::Light => "appearance-light",
+        }
+    }
 }
 
 /// One explicitly available engine choice in the focused-tile Pelt menu.
@@ -286,6 +337,66 @@ fn engine_choice_view(choice: ChromeEngineChoice, selected: bool) -> FrameView {
             .attr("aria-checked", if selected { "true" } else { "false" })
             .attr("data-key", choice.id())
             .attr(ATTR_CHROME_ACTION, choice.action()),
+    )
+}
+
+/// Session-only, Pelt-owned appearance controls. The selection is intentionally
+/// kept separate from document engine themes and storage policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ChromeAppearance {
+    pub theme: ChromeTheme,
+}
+
+fn appearance_choice_view(theme: ChromeTheme, selected: bool) -> FrameView {
+    Box::new(
+        el::<_, FrameState, ()>("div", theme.label())
+            .attr(
+                "class",
+                if selected {
+                    "pelt-appearance-option pelt-appearance-option-selected"
+                } else {
+                    "pelt-appearance-option"
+                },
+            )
+            .attr("role", "radio")
+            .attr("aria-checked", if selected { "true" } else { "false" })
+            .attr(ATTR_CHROME_ACTION, theme.action()),
+    )
+}
+
+fn appearance_view(appearance: &ChromeAppearance) -> FrameView {
+    let options = [ChromeTheme::Dark, ChromeTheme::Light]
+        .into_iter()
+        .map(|theme| appearance_choice_view(theme, appearance.theme == theme))
+        .collect::<Vec<_>>();
+    let rows: Vec<FrameView> = vec![
+        Box::new(
+            el::<_, FrameState, ()>("div", "Appearance").attr("class", "pelt-appearance-heading"),
+        ),
+        Box::new(
+            el::<_, FrameState, ()>("div", "Chrome theme").attr("class", "pelt-appearance-label"),
+        ),
+        Box::new(
+            el::<_, FrameState, ()>("div", options)
+                .attr("class", "pelt-appearance-options")
+                .attr("role", "radiogroup")
+                .attr("aria-label", "Chrome theme"),
+        ),
+        Box::new(
+            el::<_, FrameState, ()>("div", "This Pelt session only.")
+                .attr("class", "pelt-appearance-scope"),
+        ),
+        Box::new(
+            el::<_, FrameState, ()>("div", "Document content keeps its engine-owned theme.")
+                .attr("class", "pelt-appearance-note"),
+        ),
+    ];
+    Box::new(
+        el::<_, FrameState, ()>("div", rows)
+            .attr("class", "pelt-appearance")
+            .attr(ATTR_APPEARANCE, "true")
+            .attr("role", "region")
+            .attr("aria-label", "Appearance"),
     )
 }
 
@@ -448,6 +559,7 @@ pub(crate) struct WorkspaceChrome {
     pub address: String,
     pub route: String,
     pub status: String,
+    pub theme: ChromeTheme,
     pub address_focused: bool,
     pub can_go_back: bool,
     pub can_go_forward: bool,
@@ -456,6 +568,7 @@ pub(crate) struct WorkspaceChrome {
     pub engine_selected: Option<ChromeEngineChoice>,
     pub engine_choices: Vec<ChromeEngineChoice>,
     pub inspector: Option<ChromeInspector>,
+    pub appearance: Option<ChromeAppearance>,
     pub diagnostic: Option<ChromeDocument>,
 }
 
@@ -524,11 +637,15 @@ impl FrisketSurface {
         let diagnostic_rect = nodes_with_attr(self.document.dom(), ATTR_DIAGNOSTIC)
             .into_iter()
             .find_map(|node| self.document.fragment_rect(node).map(workspace_rect));
+        let appearance_rect = nodes_with_attr(self.document.dom(), ATTR_APPEARANCE)
+            .into_iter()
+            .find_map(|node| self.document.fragment_rect(node).map(workspace_rect));
         Ok(FrisketFrame {
             scene: paint_list_render::translate_paint_list(&list),
             content_rects,
             inspector_rect,
             diagnostic_rect,
+            appearance_rect,
         })
     }
 
@@ -540,6 +657,9 @@ impl FrisketSurface {
         }
         if let Some(action) = chrome_action(dom, node) {
             return Some(FrisketHit::ChromeAction(action));
+        }
+        if appearance_target(dom, node) {
+            return Some(FrisketHit::Appearance);
         }
         if let Some(tile) = close_target(dom, node) {
             return Some(FrisketHit::Close(tile));
@@ -628,7 +748,12 @@ fn document_for(
     );
     LiveryDocument::new(
         dom,
-        StyleSet::cambium(&[&host_css, FRISKET_CSS, PELT_CHROME_CSS]),
+        StyleSet::cambium(&[
+            &host_css,
+            FRISKET_CSS,
+            PELT_CHROME_CSS,
+            PELT_LIGHT_THEME_CSS,
+        ]),
         Device::screen(width as f32, height as f32),
     )
 }
@@ -682,10 +807,26 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
                 "engine-livery" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Livery)),
                 "engine-scripted" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Scripted)),
                 "inspect" => Some(ChromeAction::ToggleInspector),
+                "appearance" => Some(ChromeAction::ToggleAppearance),
+                "appearance-dark" => Some(ChromeAction::ChooseTheme(ChromeTheme::Dark)),
+                "appearance-light" => Some(ChromeAction::ChooseTheme(ChromeTheme::Light)),
                 _ => None,
             };
         }
         node = dom.parent(node)?;
+    }
+}
+
+fn appearance_target(dom: &ScriptedDom, hit: NodeId) -> bool {
+    let mut node = hit;
+    loop {
+        if attr(dom, node, ATTR_APPEARANCE).is_some() {
+            return true;
+        }
+        let Some(parent) = dom.parent(node) else {
+            return false;
+        };
+        node = parent;
     }
 }
 
@@ -708,8 +849,8 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; } \
     .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 4px; padding: 4px 0; text-align: center; color: #e8e8ee; background: #3a3a46; border: 1px solid #555565; } \
     .pelt-chrome-button.disabled { color: #777783; background: #2c2c34; border-color: #363640; } \
-    .pelt-inspector-toggle { flex-basis: 62px; width: 62px; margin-left: 5px; font-size: 12px; } \
-    .pelt-inspector-toggle-open { color: #ffffff; background: #41506b; border-color: #83a3d5; } \
+    .pelt-chrome-toggle { flex-basis: 62px; width: 62px; margin-left: 5px; font-size: 12px; } \
+    .pelt-chrome-toggle-open { color: #ffffff; background: #41506b; border-color: #83a3d5; } \
     .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: #f0f0f4; background: #16161d; border: 1px solid #555565; } \
     .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 5px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: #bfe9ff; background: #30384a; border: 1px solid #566d91; } \
     .pelt-engine-open { color: #ffffff; background: #41506b; border-color: #83a3d5; } \
@@ -730,6 +871,14 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-inspector-section { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: #8bb9eb; font-size: 12px; } \
     .pelt-inspector-entry { flex-grow: 0; flex-shrink: 0; padding-left: 6px; overflow: hidden; white-space: nowrap; color: #e1e1ea; font-size: 12px; } \
     .pelt-inspector-more { flex-grow: 0; flex-shrink: 0; padding-left: 6px; color: #a0a0b0; font-size: 12px; } \
+    .pelt-appearance { position: absolute; top: 0px; right: 0px; bottom: 0px; z-index: 3; display: flex; flex-direction: column; width: 260px; min-width: 260px; min-height: 0; padding: 16px; overflow: hidden; color: #e8e8ee; background: #1b1b23; border-left: 1px solid #3c3c48; } \
+    .pelt-appearance-heading { flex-grow: 0; flex-shrink: 0; color: #ffffff; font-size: 16px; font-weight: bold; } \
+    .pelt-appearance-label { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: #9ccdf0; font-size: 13px; } \
+    .pelt-appearance-options { display: flex; flex-direction: row; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; margin-top: 6px; } \
+    .pelt-appearance-option { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; padding: 7px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: #c9d9ef; background: #30384a; border: 1px solid #566d91; } \
+    .pelt-appearance-option-selected { color: #ffffff; background: #46628a; border-color: #9cc8ff; } \
+    .pelt-appearance-scope { flex-grow: 0; flex-shrink: 0; margin-top: 18px; color: #e1e1ea; font-size: 13px; } \
+    .pelt-appearance-note { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: #a0a0b0; font-size: 12px; } \
     .pelt-diagnostic { position: absolute; z-index: 2; display: flex; flex-direction: column; box-sizing: border-box; min-width: 0; min-height: 0; padding: 24px; overflow: hidden; pointer-events: none; border: 1px solid #596071; } \
     .pelt-diagnostic-loading { color: #dbeeff; background: #1d2839; border-color: #527aa6; } \
     .pelt-diagnostic-error { color: #ffe7e5; background: #392025; border-color: #a35e63; } \
@@ -737,6 +886,39 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-diagnostic-address { flex-grow: 0; flex-shrink: 0; margin-top: 10px; overflow: hidden; white-space: nowrap; color: #bfe0ff; font-size: 13px; } \
     .pelt-diagnostic-message { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: inherit; font-size: 14px; } \
     .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: #d2d2df; font-size: 13px; }";
+
+const PELT_LIGHT_THEME_CSS: &str = "\
+    .pelt-workspace.pelt-theme-light { background: #f4f6f8; } \
+    .pelt-theme-light .pelt-chrome { background: #f7f8fa; border-color: #c7ccd4; } \
+    .pelt-theme-light .pelt-chrome-button { color: #202933; background: #ffffff; border-color: #aeb7c3; } \
+    .pelt-theme-light .pelt-chrome-button.disabled { color: #8d97a3; background: #edf0f3; border-color: #d7dce3; } \
+    .pelt-theme-light .pelt-chrome-toggle-open { color: #153e60; background: #e0f0ff; border-color: #79acd5; } \
+    .pelt-theme-light .pelt-address { color: #1d2730; background: #ffffff; border-color: #aeb7c3; } \
+    .pelt-theme-light .pelt-engine { color: #184b73; background: #eaf4ff; border-color: #86afd0; } \
+    .pelt-theme-light .pelt-engine-open { color: #164d74; background: #dcefff; border-color: #70a9d4; } \
+    .pelt-theme-light .pelt-engine-option { color: #234f75; background: #edf5fb; border-color: #9bbbd5; } \
+    .pelt-theme-light .pelt-engine-option-selected { color: #133e64; background: #d9edff; border-color: #75add8; } \
+    .pelt-theme-light .pelt-title { color: #202933; } \
+    .pelt-theme-light .pelt-route { color: #18618e; } \
+    .pelt-theme-light .pelt-status { color: #276638; } \
+    .pelt-theme-light .pelt-inspector, .pelt-theme-light .pelt-appearance { color: #27323d; background: #ffffff; border-color: #c7ccd4; } \
+    .pelt-theme-light .pelt-inspector-heading, .pelt-theme-light .pelt-inspector-title, .pelt-theme-light .pelt-appearance-heading { color: #202933; } \
+    .pelt-theme-light .pelt-inspector-capability, .pelt-theme-light .pelt-inspector-section, .pelt-theme-light .pelt-appearance-label { color: #18618e; } \
+    .pelt-theme-light .pelt-inspector-summary, .pelt-theme-light .pelt-inspector-entry, .pelt-theme-light .pelt-appearance-scope { color: #3d4752; } \
+    .pelt-theme-light .pelt-inspector-more, .pelt-theme-light .pelt-appearance-note { color: #67727e; } \
+    .pelt-theme-light .pelt-appearance-option { color: #234f75; background: #edf5fb; border-color: #9bbbd5; } \
+    .pelt-theme-light .pelt-appearance-option-selected { color: #133e64; background: #d9edff; border-color: #75add8; } \
+    .pelt-theme-light .pelt-diagnostic-loading { color: #183f63; background: #eaf4ff; border-color: #73a5d5; } \
+    .pelt-theme-light .pelt-diagnostic-error { color: #7a242a; background: #fff1f0; border-color: #d88488; } \
+    .pelt-theme-light .pelt-diagnostic-heading { color: #202933; } \
+    .pelt-theme-light .pelt-diagnostic-address { color: #18527d; } \
+    .pelt-theme-light .pelt-diagnostic-note { color: #4e5965; } \
+    .pelt-theme-light .frisket-tabbar { background: #e3e7ec; } \
+    .pelt-theme-light .frisket-tab { color: #4c5966; background: #f5f7f9; } \
+    .pelt-theme-light .frisket-tab.active { color: #202933; background: #d9e8f5; } \
+    .pelt-theme-light .frisket-close { color: #65717d; } \
+    .pelt-theme-light .frisket-content { background: #ffffff; } \
+    .pelt-theme-light .frisket-divider { background: #cbd2da; }";
 
 fn attr(dom: &ScriptedDom, node: NodeId, name: &str) -> Option<String> {
     dom.attribute(node, &Namespace::default(), &LocalName::from(name))
@@ -873,6 +1055,7 @@ mod tests {
             address: "C:/example/static.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
+            theme: ChromeTheme::Dark,
             address_focused: false,
             can_go_back: false,
             can_go_forward: false,
@@ -885,6 +1068,7 @@ mod tests {
                 ChromeEngineChoice::Scripted,
             ],
             inspector: None,
+            appearance: None,
             diagnostic: None,
         }));
         let frame = surface.frame(800, 600).expect("chrome Frisket frame");
@@ -988,6 +1172,7 @@ mod tests {
             address: "C:/example/index.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
+            theme: ChromeTheme::Dark,
             address_focused: false,
             can_go_back: true,
             can_go_forward: false,
@@ -996,6 +1181,7 @@ mod tests {
             engine_selected: Some(ChromeEngineChoice::Automatic),
             engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
             inspector: None,
+            appearance: None,
             diagnostic: None,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
@@ -1075,12 +1261,112 @@ mod tests {
     }
 
     #[test]
+    fn appearance_drawer_is_live_and_themed_without_moving_content() {
+        let chrome = WorkspaceChrome {
+            title: "Focused document".to_owned(),
+            address: "C:/example/index.html".to_owned(),
+            route: "Automatic: genet.livery · document".to_owned(),
+            status: "Ready".to_owned(),
+            theme: ChromeTheme::Dark,
+            address_focused: false,
+            can_go_back: true,
+            can_go_forward: false,
+            engine_label: "Auto".to_owned(),
+            engine_menu_open: false,
+            engine_selected: Some(ChromeEngineChoice::Automatic),
+            engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
+            inspector: None,
+            appearance: None,
+            diagnostic: None,
+        };
+        let mut surface = FrisketSurface::new(&nested_tree());
+        surface.set_chrome(Some(chrome.clone()));
+        let baseline = surface.frame(800, 600).expect("baseline chrome frame");
+
+        surface.set_chrome(Some(WorkspaceChrome {
+            theme: ChromeTheme::Light,
+            appearance: Some(ChromeAppearance {
+                theme: ChromeTheme::Light,
+            }),
+            ..chrome
+        }));
+        let light = surface.frame(800, 600).expect("light appearance frame");
+        assert_eq!(light.content_rects, baseline.content_rects);
+        let appearance_rect = light.appearance_rect.expect("appearance drawer geometry");
+        assert!(appearance_rect.width >= 260.0);
+        assert!(appearance_rect.height > 0.0);
+        let light_choice = surface
+            .chrome_rect("appearance-light")
+            .expect("Light choice geometry");
+        assert_eq!(
+            surface.hit(
+                light_choice.x + light_choice.width / 2.0,
+                light_choice.y + light_choice.height / 2.0
+            ),
+            Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
+                ChromeTheme::Light
+            )))
+        );
+        assert_eq!(
+            surface.hit(
+                appearance_rect.x + 5.0,
+                appearance_rect.y + appearance_rect.height - 5.0
+            ),
+            Some(FrisketHit::Appearance),
+            "the drawer captures its unused surface instead of forwarding it to content"
+        );
+
+        let region = nodes_with_attr(surface.document.dom(), ATTR_APPEARANCE)
+            .into_iter()
+            .next()
+            .expect("appearance region");
+        assert_eq!(
+            attr(surface.document.dom(), region, "role").as_deref(),
+            Some("region")
+        );
+        assert_eq!(
+            attr(surface.document.dom(), region, "aria-label").as_deref(),
+            Some("Appearance")
+        );
+        let selected = nodes_with_attr(surface.document.dom(), ATTR_CHROME_ACTION)
+            .into_iter()
+            .find(|node| {
+                attr(surface.document.dom(), *node, ATTR_CHROME_ACTION).as_deref()
+                    == Some("appearance-light")
+            })
+            .expect("selected Light radio");
+        assert_eq!(
+            attr(surface.document.dom(), selected, "role").as_deref(),
+            Some("radio")
+        );
+        assert_eq!(
+            attr(surface.document.dom(), selected, "aria-checked").as_deref(),
+            Some("true")
+        );
+        let root = nodes_with_attr(surface.document.dom(), "class")
+            .into_iter()
+            .find(|node| {
+                attr(surface.document.dom(), *node, "class")
+                    .is_some_and(|class| class.contains("pelt-workspace"))
+            })
+            .expect("workspace root");
+        assert!(
+            attr(surface.document.dom(), root, "class")
+                .is_some_and(|class| class.contains("pelt-theme-light"))
+        );
+        let text = document_text(surface.document.dom());
+        assert!(text.contains("This Pelt session only."));
+        assert!(text.contains("Document content keeps its engine-owned theme."));
+    }
+
+    #[test]
     fn inspector_is_a_retained_region_and_names_opaque_content_honestly() {
         let chrome = WorkspaceChrome {
             title: "Scrying native surface".to_owned(),
             address: "C:/example/surface.html".to_owned(),
             route: "Automatic: scrying.web · surface".to_owned(),
             status: "Ready".to_owned(),
+            theme: ChromeTheme::Dark,
             address_focused: false,
             can_go_back: false,
             can_go_forward: false,
@@ -1094,6 +1380,7 @@ mod tests {
                 summary: "Contents not inspectable on this surface.".to_owned(),
                 sections: Vec::new(),
             }),
+            appearance: None,
             diagnostic: None,
         };
         let mut surface = FrisketSurface::new(&nested_tree());

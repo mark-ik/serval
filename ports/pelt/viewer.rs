@@ -154,7 +154,7 @@ pub(crate) fn main() {
             "--workspace-receipt" => {
                 let Some(value) = args.next() else {
                     eprintln!(
-                        "--workspace-receipt requires mixed, fallback, chrome, or loading-error"
+                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, or appearance"
                     );
                     std::process::exit(2);
                 };
@@ -390,7 +390,8 @@ pub(crate) fn main() {
                             (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
                         ],
                         pelt_desktop::WorkspaceReceipt::Fallback
-                        | pelt_desktop::WorkspaceReceipt::LoadingError => unreachable!(
+                        | pelt_desktop::WorkspaceReceipt::LoadingError
+                        | pelt_desktop::WorkspaceReceipt::Appearance => unreachable!(
                             "fallback was handled by the separate workspace receipt branch"
                         ),
                     };
@@ -400,6 +401,9 @@ pub(crate) fn main() {
                 },
                 pelt_desktop::WorkspaceReceipt::LoadingError => {
                     tile_urls = vec![loading_error_fixture_url()];
+                },
+                pelt_desktop::WorkspaceReceipt::Appearance => {
+                    tile_urls = vec![appearance_fixture_url()];
                 },
             }
         }
@@ -1009,15 +1013,26 @@ fn loading_error_fixture_url() -> String {
         .into_owned()
 }
 
+fn appearance_fixture_url() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("workspace")
+        .join("p6-appearance")
+        .join("index.html")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
     match value {
         "mixed" => pelt_desktop::WorkspaceReceipt::Mixed,
         "fallback" => pelt_desktop::WorkspaceReceipt::Fallback,
         "chrome" => pelt_desktop::WorkspaceReceipt::Chrome,
         "loading-error" => pelt_desktop::WorkspaceReceipt::LoadingError,
+        "appearance" => pelt_desktop::WorkspaceReceipt::Appearance,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, or loading-error (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, or appearance (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1046,6 +1061,10 @@ mod workspace_receipt_tests {
             parse_workspace_receipt("loading-error"),
             pelt_desktop::WorkspaceReceipt::LoadingError
         );
+        assert_eq!(
+            parse_workspace_receipt("appearance"),
+            pelt_desktop::WorkspaceReceipt::Appearance
+        );
         assert!(
             fallback_fixture_url()
                 .replace('\\', "/")
@@ -1055,6 +1074,11 @@ mod workspace_receipt_tests {
             loading_error_fixture_url()
                 .replace('\\', "/")
                 .ends_with("/ports/pelt/examples/workspace/p6-load-error/index.html")
+        );
+        assert!(
+            appearance_fixture_url()
+                .replace('\\', "/")
+                .ends_with("/ports/pelt/examples/workspace/p6-appearance/index.html")
         );
     }
 
@@ -1369,7 +1393,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback|chrome|loading-error> (P5/P6 named workspace receipt; needs --artifact)
+    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance> (P5/P6 named workspace receipt; needs --artifact)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")
