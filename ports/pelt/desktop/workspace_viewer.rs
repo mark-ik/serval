@@ -3,25 +3,29 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use accesskit::{Action, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
 use genet_host_api::tile::{
     ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
     TileTree,
 };
-use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
+use genet_winit_host::{
+    A11yActionRequest, AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit,
+};
 use inker::{
-    EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey,
-    SessionModifiers, SessionNavigationCommand, SessionPointerButton, SessionRegistry,
-    SessionScrollKey, SurfaceEngineRegistry, SurfaceFrame,
+    A11yCapability, EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme,
+    SessionInput, SessionKey, SessionModifiers, SessionNavigationCommand, SessionPointerButton,
+    SessionRegistry, SessionScrollKey, SurfaceEngineRegistry, SurfaceFrame,
 };
 #[cfg(target_os = "windows")]
 use inker::{FrameHandleOwnership, NativeTextureHandle};
 use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
-    PeltController, PeltHostEffect, PeltRegistries, PeltRouteSource, PeltRouteState,
-    PeltTileInspection, PeltTileRequest, PeltWorkspace, WorkspaceRect,
+    PeltController, PeltDocumentState, PeltHostEffect, PeltRegistries, PeltRouteSource,
+    PeltRouteState, PeltTileInspection, PeltTileRequest, PeltWorkspace, WorkspaceRect,
 };
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -34,8 +38,9 @@ use winit::window::{Window, WindowId};
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{
-    ChromeAction, ChromeEngineChoice, ChromeInspector, ChromeInspectorSection, FrisketHit,
-    FrisketSurface, WorkspaceChrome,
+    ChromeAction, ChromeAppearance, ChromeDocument, ChromeDocumentKind, ChromeEngineChoice,
+    ChromeInspector, ChromeInspectorSection, ChromeTheme, FrisketA11yProjection, FrisketA11yTarget,
+    FrisketContentA11y, FrisketHit, FrisketSurface, WorkspaceChrome,
 };
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
@@ -46,6 +51,11 @@ const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
 const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, applied a per-tile override, and exposed truthful structural inspection while the mixed workspace held";
+const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
+    "host-owned loading and error documents preserved the focused tile's prior session and history";
+const APPEARANCE_WORKSPACE_ASSERTION: &str =
+    "session-only appearance changed the live Pelt chrome theme while the focused document held";
+const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the session appearance controls";
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -57,6 +67,14 @@ pub enum WorkspaceReceipt {
     Fallback,
     /// P6 host chrome controls a focused tile while the P5 mixed workspace remains live.
     Chrome,
+    /// P6's document-lane loading and failed-navigation projection, without a
+    /// native surface dependency.
+    LoadingError,
+    /// P6's session-only Pelt appearance drawer, without a document theme or
+    /// persistence claim.
+    Appearance,
+    /// P6's retained Chrome/Frisket AccessKit tree and typed action routing.
+    Accessibility,
 }
 
 impl WorkspaceReceipt {
@@ -65,6 +83,9 @@ impl WorkspaceReceipt {
             Self::Mixed => "mixed",
             Self::Fallback => "fallback",
             Self::Chrome => "chrome",
+            Self::LoadingError => "loading-error",
+            Self::Appearance => "appearance",
+            Self::Accessibility => "accessibility",
         }
     }
 
@@ -77,7 +98,10 @@ impl WorkspaceReceipt {
     }
 
     fn keeps_chrome(self) -> bool {
-        matches!(self, Self::Chrome)
+        matches!(
+            self,
+            Self::Chrome | Self::LoadingError | Self::Appearance | Self::Accessibility
+        )
     }
 }
 
@@ -252,7 +276,15 @@ pub fn run_livery_workspace_viewer(
 
     let initial_size = config.size.unwrap_or((1100, 750));
     #[cfg(target_os = "windows")]
-    let omit_scrying = config.workspace_receipt == Some(WorkspaceReceipt::Fallback);
+    let omit_scrying = matches!(
+        config.workspace_receipt,
+        Some(
+            WorkspaceReceipt::Fallback
+                | WorkspaceReceipt::LoadingError
+                | WorkspaceReceipt::Appearance
+                | WorkspaceReceipt::Accessibility
+        )
+    );
     #[cfg(target_os = "windows")]
     let scrying_host = (!omit_scrying).then(ScryingReceiptHost::new);
     #[cfg(target_os = "windows")]
@@ -498,6 +530,16 @@ struct ChromeEngineMenu {
     tile: TileId,
 }
 
+/// The P6 appearance receipt snapshots the document-facing state before a
+/// host-only palette change, so it can prove the theme did not replace or
+/// rearrange the focused session.
+#[derive(Clone, Debug, PartialEq)]
+struct AppearanceReceiptBaseline {
+    content: WorkspaceRect,
+    address: String,
+    can_go_back: bool,
+}
+
 fn capability_label(capability: inker::A11yCapability) -> &'static str {
     match capability {
         inker::A11yCapability::Full => "Full",
@@ -642,9 +684,14 @@ struct WorkspaceApp {
     workspace_receipt_outcome: Option<WorkspaceReceiptOutcome>,
     workspace_receipt_stage_started: Instant,
     chrome_status: ChromeStatus,
+    last_chrome_document: Option<ChromeDocument>,
     chrome_address: Option<ChromeAddressInput>,
     chrome_engine_menu: Option<ChromeEngineMenu>,
     chrome_inspector_open: bool,
+    chrome_theme: ChromeTheme,
+    chrome_appearance_open: bool,
+    appearance_receipt_baseline: Option<AppearanceReceiptBaseline>,
+    accessibility: WorkspaceAccessibility,
     #[cfg(target_os = "windows")]
     native_surfaces: Dx12SurfaceCache,
     #[cfg(target_os = "windows")]
@@ -655,6 +702,110 @@ struct WorkspaceApp {
     mixed_pending_resize: Option<MixedPendingResize>,
     #[cfg(target_os = "windows")]
     scrying_host: Option<ScryingReceiptHost>,
+}
+
+/// Per-window platform bridge and retained shell action map.
+///
+/// The map deliberately names only Frisket's one DOM. Child document and
+/// native-surface trees need stable per-tile namespaces before they can join
+/// this tree, so they remain labelled apertures in this P6 slice.
+struct WorkspaceAccessibility {
+    bridge: AccessKitBridge,
+    window_revealed: bool,
+    last_install_error: Option<String>,
+    action_map: HashMap<AccessNodeId, genet_scripted_dom::NodeId>,
+    focus: Option<FrisketA11yTarget>,
+    wake: Arc<AtomicBool>,
+}
+
+impl WorkspaceAccessibility {
+    fn new() -> Self {
+        let wake = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&wake);
+        Self {
+            bridge: AccessKitBridge::new(move || {
+                requested.store(true, Ordering::Release);
+            }),
+            window_revealed: false,
+            last_install_error: None,
+            action_map: HashMap::new(),
+            focus: None,
+            wake,
+        }
+    }
+
+    fn prepare(&mut self, projection: FrisketA11yProjection, scale_factor: f64) -> TreeUpdate {
+        self.action_map = projection.nodes;
+        let mut tree = projection.tree;
+        if let Some((_, root)) = tree.nodes.iter_mut().find(|(id, _)| *id == projection.root) {
+            // Livery lays the retained shell out in logical CSS pixels. The
+            // platform tree needs physical client coordinates, matching the
+            // raster and pointer conversion paths below.
+            root.set_transform(Affine::scale(scale_factor));
+        }
+        tree
+    }
+
+    fn sync(
+        &mut self,
+        window: &Window,
+        projection: FrisketA11yProjection,
+        scale_factor: f64,
+    ) -> Vec<A11yActionRequest> {
+        let node_count = projection.tree.nodes.len();
+        let tree = self.prepare(projection, scale_factor);
+        if self.bridge.status() != BridgeStatus::Installed {
+            match self.bridge.install(window, tree) {
+                Ok(()) => {
+                    self.last_install_error = None;
+                    eprintln!(
+                        "[pelt] accessibility {:?}, {node_count} retained shell nodes projected",
+                        self.bridge.status()
+                    );
+                },
+                Err(error) => {
+                    if self.last_install_error.as_deref() != Some(error.as_str()) {
+                        eprintln!("[pelt] accessibility install failed: {error}");
+                    }
+                    self.last_install_error = Some(error);
+                },
+            }
+            // The Windows adapter has to attach before the first visible frame.
+            // An initial failure still leaves ordinary Pelt usable and is tried
+            // again on a later redraw instead of permanently disabling a11y.
+            if !self.window_revealed {
+                window.set_visible(true);
+                self.window_revealed = true;
+            }
+            return self.bridge.drain_actions();
+        }
+        self.bridge.update(tree);
+        self.bridge.drain_actions()
+    }
+
+    fn node_for(&self, id: AccessNodeId) -> Option<genet_scripted_dom::NodeId> {
+        self.action_map.get(&id).copied()
+    }
+
+    fn set_focus(&mut self, target: FrisketA11yTarget) -> bool {
+        if self.focus.as_ref() == Some(&target) {
+            return false;
+        }
+        self.focus = Some(target);
+        true
+    }
+
+    fn status(&self) -> BridgeStatus {
+        self.bridge.status()
+    }
+
+    fn update_window_focus(&mut self, focused: bool) {
+        self.bridge.update_window_focus(focused);
+    }
+
+    fn take_wake(&self) -> bool {
+        self.wake.swap(false, Ordering::AcqRel)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -696,9 +847,14 @@ impl WorkspaceApp {
             workspace_receipt_outcome: None,
             workspace_receipt_stage_started: Instant::now(),
             chrome_status: ChromeStatus::Ready,
+            last_chrome_document: None,
             chrome_address: None,
             chrome_engine_menu: None,
             chrome_inspector_open: false,
+            chrome_theme: ChromeTheme::Dark,
+            chrome_appearance_open: false,
+            appearance_receipt_baseline: None,
+            accessibility: WorkspaceAccessibility::new(),
             #[cfg(target_os = "windows")]
             native_surfaces: Dx12SurfaceCache::new(),
             #[cfg(target_os = "windows")]
@@ -767,6 +923,134 @@ impl WorkspaceApp {
         self.frisket.set_chrome(chrome);
     }
 
+    fn refresh_accessibility_content_regions(&mut self) {
+        let regions = self
+            .workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .map(|tile| {
+                let description = match self
+                    .workspace
+                    .controller(tile.id)
+                    .map(PeltController::a11y_capability)
+                {
+                    Some(A11yCapability::Opaque) => {
+                        "The engine declares opaque accessibility. Pelt cannot inspect or compose this content's semantics."
+                    },
+                    Some(A11yCapability::Partial) => {
+                        "The engine declares partial accessibility. Pelt does not compose its document semantics into this workspace tree yet."
+                    },
+                    Some(A11yCapability::Full) => {
+                        "The engine declares a full semantic tree. Pelt does not compose that child tree into this workspace tree yet."
+                    },
+                    None => {
+                        "Pelt has not received an accessibility declaration for this content."
+                    },
+                };
+                FrisketContentA11y {
+                    tile: tile.id,
+                    label: format!("{} content", tile.title),
+                    description: description.to_owned(),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.frisket.set_content_accessibility(regions);
+    }
+
+    /// Build the currently retained shell tree without a window. This makes the
+    /// semantic projection and the same action map independently testable.
+    fn prepare_accessibility_tree(&mut self) -> Result<TreeUpdate, String> {
+        self.refresh_chrome();
+        self.refresh_accessibility_content_regions();
+        let (width, height) = self.logical_size();
+        self.frisket
+            .frame(width, height)
+            .map_err(|error| format!("could not lay out Frisket for accessibility: {error}"))?;
+        let projection = self
+            .frisket
+            .accessibility_projection(self.accessibility.focus.as_ref())
+            .ok_or_else(|| {
+                "Frisket has no completed retained layout for accessibility".to_owned()
+            })?;
+        Ok(self
+            .accessibility
+            .prepare(projection, self.scale_factor as f64))
+    }
+
+    fn install_accessibility_before_show(&mut self) -> Result<(), String> {
+        let _ = self.prepare_accessibility_tree()?;
+        let Some(window) = self.window.clone() else {
+            return Err("Pelt accessibility install needs its live window".to_owned());
+        };
+        let projection = self
+            .frisket
+            .accessibility_projection(self.accessibility.focus.as_ref())
+            .ok_or_else(|| {
+                "Frisket lost its retained layout before accessibility install".to_owned()
+            })?;
+        let _ = self
+            .accessibility
+            .sync(&window, projection, self.scale_factor as f64);
+        if self.config.workspace_receipt == Some(WorkspaceReceipt::Accessibility)
+            && self.accessibility.status() != BridgeStatus::Installed
+        {
+            return Err(
+                "Pelt accessibility receipt could not install the platform AccessKit bridge"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    fn sync_accessibility(&mut self) -> bool {
+        let Some(window) = self.window.clone() else {
+            return false;
+        };
+        self.refresh_accessibility_content_regions();
+        let Some(projection) = self
+            .frisket
+            .accessibility_projection(self.accessibility.focus.as_ref())
+        else {
+            return false;
+        };
+        self.accessibility
+            .sync(&window, projection, self.scale_factor as f64)
+            .into_iter()
+            .fold(false, |redraw, request| {
+                self.apply_accessibility_request(request) || redraw
+            })
+    }
+
+    fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
+        let Some(node) = self.accessibility.node_for(request.target_node) else {
+            return false;
+        };
+        match request.action {
+            Action::Focus => self
+                .frisket
+                .accessibility_target(node)
+                .is_some_and(|target| self.accessibility.set_focus(target)),
+            Action::Click => match self.frisket.accessibility_target(node) {
+                Some(FrisketA11yTarget::ChromeAction(action)) => self.apply_chrome_action(action),
+                Some(FrisketA11yTarget::Close(tile)) => {
+                    self.clear_chrome_address();
+                    self.clear_chrome_engine_menu();
+                    self.clear_chrome_appearance();
+                    self.apply_tile_event(TileEvent::Closed(tile))
+                },
+                Some(FrisketA11yTarget::Tab(tile)) => {
+                    self.clear_chrome_address();
+                    self.clear_chrome_engine_menu();
+                    self.clear_chrome_appearance();
+                    self.apply_tile_event(TileEvent::Activated(tile))
+                },
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
     fn chrome_engine_choices() -> Vec<ChromeEngineChoice> {
         #[cfg(feature = "scripted")]
         {
@@ -807,6 +1091,10 @@ impl WorkspaceApp {
         self.chrome_engine_menu = None;
     }
 
+    fn clear_chrome_appearance(&mut self) {
+        self.chrome_appearance_open = false;
+    }
+
     fn chrome_inspector(&self, tile: TileId) -> ChromeInspector {
         let route = self.workspace.route(tile);
         let active_engine = route
@@ -828,6 +1116,7 @@ impl WorkspaceApp {
                 address: String::new(),
                 route: "No route".to_owned(),
                 status: self.chrome_status.label(),
+                theme: self.chrome_theme,
                 address_focused: self.chrome_address.is_some(),
                 can_go_back: false,
                 can_go_forward: false,
@@ -836,6 +1125,10 @@ impl WorkspaceApp {
                 engine_selected: None,
                 engine_choices: Self::chrome_engine_choices(),
                 inspector: None,
+                appearance: self.chrome_appearance_open.then_some(ChromeAppearance {
+                    theme: self.chrome_theme,
+                }),
+                diagnostic: None,
             };
         };
         let controller = self.workspace.controller(tile);
@@ -895,11 +1188,37 @@ impl WorkspaceApp {
                     .map(|route| route.selected_engine().to_owned())
             })
             .unwrap_or_else(|| "Auto".to_owned());
+        let diagnostic = self.workspace.content_rect(tile).and_then(|rect| {
+            let controller = controller?;
+            match controller.document_state() {
+                PeltDocumentState::Ready => None,
+                PeltDocumentState::Loading { address } => Some(ChromeDocument {
+                    kind: ChromeDocumentKind::Loading,
+                    tile,
+                    rect,
+                    address: address.clone(),
+                    message: None,
+                }),
+                PeltDocumentState::Error { address, message } => Some(ChromeDocument {
+                    kind: ChromeDocumentKind::Error,
+                    tile,
+                    rect,
+                    address: address.clone(),
+                    message: Some(message.clone()),
+                }),
+            }
+        });
+        let status = match controller.map(PeltController::document_state) {
+            Some(PeltDocumentState::Loading { .. }) => "Loading".to_owned(),
+            Some(PeltDocumentState::Error { message, .. }) => message.clone(),
+            Some(PeltDocumentState::Ready) | None => self.chrome_status.label(),
+        };
         WorkspaceChrome {
             title,
             address,
             route,
-            status: self.chrome_status.label(),
+            status,
+            theme: self.chrome_theme,
             address_focused: self.chrome_address.is_some(),
             can_go_back: controller.is_some_and(PeltController::can_go_back),
             can_go_forward: controller.is_some_and(PeltController::can_go_forward),
@@ -912,6 +1231,10 @@ impl WorkspaceApp {
             inspector: self
                 .chrome_inspector_open
                 .then(|| self.chrome_inspector(tile)),
+            appearance: self.chrome_appearance_open.then_some(ChromeAppearance {
+                theme: self.chrome_theme,
+            }),
+            diagnostic,
         }
     }
 
@@ -1071,6 +1394,29 @@ impl WorkspaceApp {
             return false;
         }
         self.chrome_inspector_open = !self.chrome_inspector_open;
+        if self.chrome_inspector_open {
+            self.clear_chrome_appearance();
+        }
+        true
+    }
+
+    fn toggle_chrome_appearance(&mut self) -> bool {
+        if self.workspace.focused_tile().is_none() {
+            return false;
+        }
+        self.chrome_appearance_open = !self.chrome_appearance_open;
+        if self.chrome_appearance_open {
+            self.chrome_inspector_open = false;
+        }
+        true
+    }
+
+    fn choose_chrome_theme(&mut self, theme: ChromeTheme) -> bool {
+        if !self.chrome_appearance_open {
+            return false;
+        }
+        self.chrome_theme = theme;
+        self.chrome_status = ChromeStatus::Message(format!("Chrome theme: {}", theme.label()));
         true
     }
 
@@ -1083,6 +1429,12 @@ impl WorkspaceApp {
             ChromeAction::ToggleEngineMenu | ChromeAction::ChooseEngine(_)
         ) {
             self.clear_chrome_engine_menu();
+        }
+        if !matches!(
+            action,
+            ChromeAction::ToggleAppearance | ChromeAction::ChooseTheme(_)
+        ) {
+            self.clear_chrome_appearance();
         }
         match action {
             ChromeAction::Back => {
@@ -1110,6 +1462,8 @@ impl WorkspaceApp {
             ChromeAction::ToggleEngineMenu => self.toggle_chrome_engine_menu(),
             ChromeAction::ChooseEngine(choice) => self.choose_chrome_engine(choice),
             ChromeAction::ToggleInspector => self.toggle_chrome_inspector(),
+            ChromeAction::ToggleAppearance => self.toggle_chrome_appearance(),
+            ChromeAction::ChooseTheme(theme) => self.choose_chrome_theme(theme),
         }
     }
 
@@ -1192,7 +1546,7 @@ impl WorkspaceApp {
 
         self.refresh_chrome();
         let (logical_width, logical_height) = self.logical_size();
-        let pane_frame = match self.frisket.frame(logical_width, logical_height) {
+        let mut pane_frame = match self.frisket.frame(logical_width, logical_height) {
             Ok(frame) => frame,
             Err(error) => {
                 self.receipt_error = Some(error);
@@ -1202,6 +1556,28 @@ impl WorkspaceApp {
         };
         self.workspace
             .set_content_rects(pane_frame.content_rects.iter().copied());
+        // A diagnostic document is positioned from the actual Frisket content
+        // hole. The first layout obtains that geometry; the second carries the
+        // host-owned overlay without changing Frisket's own layout.
+        if self.config.chrome && self.chrome_model().diagnostic.is_some() {
+            self.refresh_chrome();
+            pane_frame = match self.frisket.frame(logical_width, logical_height) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.receipt_error = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            };
+            self.workspace
+                .set_content_rects(pane_frame.content_rects.iter().copied());
+        }
+        self.last_chrome_document = (self.config.chrome && pane_frame.diagnostic_rect.is_some())
+            .then(|| self.chrome_model().diagnostic)
+            .flatten();
+        if self.sync_accessibility() {
+            self.request_redraw();
+        }
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
         // Once the Chrome receipt has asserted its final state, keep composing
@@ -1310,13 +1686,27 @@ impl WorkspaceApp {
         let inspector_overlay = pane_frame
             .inspector_rect
             .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
+        let diagnostic_overlay = pane_frame
+            .diagnostic_rect
+            .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
+        let appearance_overlay = pane_frame
+            .appearance_rect
+            .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
         let capture_now = self.config.workspace_receipt.is_some()
             && self.receipt_complete
             && self.workspace_receipt_outcome.is_none()
-            && (self.config.workspace_receipt == Some(WorkspaceReceipt::Chrome)
-                || self.config.frames.is_some_and(|limit| {
-                    self.workspace_receipt_redraws.saturating_add(1) >= limit
-                }));
+            && (matches!(
+                self.config.workspace_receipt,
+                Some(
+                    WorkspaceReceipt::Chrome
+                        | WorkspaceReceipt::LoadingError
+                        | WorkspaceReceipt::Appearance
+                        | WorkspaceReceipt::Accessibility
+                )
+            ) || self
+                .config
+                .frames
+                .is_some_and(|limit| self.workspace_receipt_redraws.saturating_add(1) >= limit));
         let receipt_canvas = capture_now.then(|| {
             host.device().create_texture(&wgpu::TextureDescriptor {
                 label: Some("pelt workspace receipt composition"),
@@ -1425,6 +1815,26 @@ impl WorkspaceApp {
                 inspector_overlay,
             );
         }
+        if let Some(diagnostic_overlay) = diagnostic_overlay {
+            host.renderer().compose_external_texture(
+                &frame_view,
+                &target,
+                host.format(),
+                self.width,
+                self.height,
+                diagnostic_overlay,
+            );
+        }
+        if let Some(appearance_overlay) = appearance_overlay {
+            host.renderer().compose_external_texture(
+                &frame_view,
+                &target,
+                host.format(),
+                self.width,
+                self.height,
+                appearance_overlay,
+            );
+        }
         let captured = if let Some(source) = receipt_view.as_ref() {
             let Some(path) = self.config.artifact.as_deref() else {
                 self.receipt_error = Some("workspace receipt needs an artifact path".to_owned());
@@ -1487,6 +1897,7 @@ impl WorkspaceApp {
             );
         }
         host.queue().present(swap);
+        self.workspace.mark_visible_documents_presented();
         self.redraws += 1;
         if self.config.workspace_receipt.is_some() && self.receipt_complete {
             self.workspace_receipt_redraws += 1;
@@ -1504,7 +1915,12 @@ impl WorkspaceApp {
         }
 
         let workspace_receipt_finished = match self.config.workspace_receipt {
-            Some(WorkspaceReceipt::Chrome) => self.workspace_receipt_outcome.is_some(),
+            Some(
+                WorkspaceReceipt::Chrome
+                | WorkspaceReceipt::LoadingError
+                | WorkspaceReceipt::Appearance
+                | WorkspaceReceipt::Accessibility,
+            ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
                     && self
@@ -1541,10 +1957,36 @@ impl WorkspaceApp {
             WorkspaceReceipt::Mixed => self.drive_mixed_workspace_receipt_step(),
             WorkspaceReceipt::Fallback => self.drive_fallback_workspace_receipt_step(),
             WorkspaceReceipt::Chrome => self.drive_chrome_workspace_receipt_step(),
+            WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
+            WorkspaceReceipt::Appearance => self.drive_appearance_workspace_receipt_step(),
+            WorkspaceReceipt::Accessibility => self.drive_accessibility_workspace_receipt_step(),
         }
     }
 
     fn workspace_receipt_timeout_error(&self) -> Option<String> {
+        if matches!(
+            self.config.workspace_receipt,
+            Some(
+                WorkspaceReceipt::LoadingError
+                    | WorkspaceReceipt::Appearance
+                    | WorkspaceReceipt::Accessibility
+            )
+        ) && !self.receipt_complete
+            && self.workspace_receipt_stage_started.elapsed()
+                >= self.config.workspace_receipt_stage_timeout
+        {
+            let receipt = self
+                .config
+                .workspace_receipt
+                .expect("the matching receipt was present above");
+            return Some(format!(
+                "{} workspace receipt timed out after {}s at {}x{}",
+                receipt.id(),
+                self.config.workspace_receipt_stage_timeout.as_secs_f32(),
+                self.width,
+                self.height
+            ));
+        }
         if !matches!(
             self.config.workspace_receipt,
             Some(WorkspaceReceipt::Mixed | WorkspaceReceipt::Chrome)
@@ -2143,6 +2585,373 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_loading_error_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                let address = self
+                    .frisket
+                    .chrome_rect("address")
+                    .ok_or("loading/error receipt has no retained address field")?;
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("loading/error receipt has no Frisket content geometry")?;
+                if address.width <= 0.0 || content.y <= address.y + address.height {
+                    return Err(
+                        "loading/error receipt did not reserve Chrome above the content hole"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("address")?;
+            },
+            1 => {
+                if !self
+                    .handle_chrome_key(&Key::Character("next.html".into()), ElementState::Pressed)
+                    || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err(
+                        "loading/error receipt could not submit its initial document address"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("loading/error receipt lost its focused controller")?;
+                if !controller
+                    .address()
+                    .replace('\\', "/")
+                    .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                    || !matches!(
+                        controller.document_state(),
+                        PeltDocumentState::Loading { address }
+                            if address.replace('\\', "/").ends_with("/p6-load-error/next.html")
+                    )
+                {
+                    return Err(
+                        "loading/error receipt did not retain its successful loading transition"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("loading/error receipt did not compose its loading document")?;
+                if diagnostic.kind != ChromeDocumentKind::Loading
+                    || diagnostic.tile != tile
+                    || !diagnostic
+                        .address
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                {
+                    return Err(
+                        "loading/error receipt did not place the loading document in the focused content hole"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("address")?;
+            },
+            3 => {
+                if !self.handle_chrome_key(
+                    &Key::Character("missing.html".into()),
+                    ElementState::Pressed,
+                ) || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err(
+                        "loading/error receipt could not submit its missing document address"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("loading/error receipt lost its prior controller after failure")?;
+                let PeltDocumentState::Error { address, message } = controller.document_state()
+                else {
+                    return Err(
+                        "loading/error receipt did not expose its failed navigation state"
+                            .to_owned(),
+                    );
+                };
+                if !address
+                    .replace('\\', "/")
+                    .ends_with("/p6-load-error/missing.html")
+                    || !message.contains("could not load")
+                    || !controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                {
+                    return Err(
+                        "loading/error receipt replaced the prior document or hid its failed address"
+                            .to_owned(),
+                    );
+                }
+            },
+            4 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("loading/error receipt did not compose its error document")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("loading/error receipt lost its retained controller")?;
+                if diagnostic.kind != ChromeDocumentKind::Error
+                    || diagnostic.tile != tile
+                    || !diagnostic
+                        .address
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/missing.html")
+                    || !diagnostic
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("could not load"))
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                    || !controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                {
+                    return Err(
+                        "loading/error receipt did not preserve the prior document beneath its error projection"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(LOADING_ERROR_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(LOADING_ERROR_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_appearance_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                let trigger = self
+                    .frisket
+                    .chrome_rect("appearance")
+                    .ok_or("appearance receipt has no retained Theme control")?;
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("appearance receipt has no Frisket content geometry")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("appearance receipt lost its focused controller")?;
+                if trigger.width <= 0.0
+                    || trigger.height <= 0.0
+                    || content.y <= trigger.y + trigger.height
+                    || self.chrome_theme != ChromeTheme::Dark
+                    || self.chrome_appearance_open
+                {
+                    return Err(
+                        "appearance receipt did not begin with a usable dark Chrome control and content hole"
+                            .to_owned(),
+                    );
+                }
+                self.appearance_receipt_baseline = Some(AppearanceReceiptBaseline {
+                    content,
+                    address: controller.address().to_owned(),
+                    can_go_back: controller.can_go_back(),
+                });
+                self.click_chrome("appearance")?;
+            },
+            1 => {
+                let chrome = self.chrome_model();
+                let light = self
+                    .frisket
+                    .chrome_rect("appearance-light")
+                    .ok_or("appearance receipt did not render a Light choice")?;
+                if chrome.theme != ChromeTheme::Dark
+                    || chrome.appearance
+                        != Some(ChromeAppearance {
+                            theme: ChromeTheme::Dark,
+                        })
+                    || light.width <= 0.0
+                    || light.height <= 0.0
+                    || !matches!(
+                        self.frisket
+                            .hit(light.x + light.width / 2.0, light.y + light.height / 2.0),
+                        Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
+                            ChromeTheme::Light
+                        )))
+                    )
+                {
+                    return Err(
+                        "appearance receipt did not expose an interactive dark/light drawer"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("appearance-light")?;
+            },
+            2 => {
+                let baseline = self
+                    .appearance_receipt_baseline
+                    .as_ref()
+                    .ok_or("appearance receipt lost its baseline document state")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("appearance receipt lost its focused controller")?;
+                let chrome = self.chrome_model();
+                if self.chrome_theme != ChromeTheme::Light
+                    || chrome.theme != ChromeTheme::Light
+                    || chrome.appearance
+                        != Some(ChromeAppearance {
+                            theme: ChromeTheme::Light,
+                        })
+                    || self.workspace.content_rect(tile) != Some(baseline.content)
+                    || controller.address() != baseline.address.as_str()
+                    || controller.can_go_back() != baseline.can_go_back
+                {
+                    return Err(
+                        "appearance receipt changed document state or did not apply the light Chrome palette"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(APPEARANCE_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(APPEARANCE_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_accessibility_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "accessibility receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let content = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == Role::Region
+                            && node
+                                .label()
+                                .is_some_and(|label| label.ends_with(" content"))
+                    })
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility receipt did not expose a named content aperture")?;
+                if !content
+                    .description()
+                    .is_some_and(|description| description.contains("partial accessibility"))
+                {
+                    return Err(
+                        "accessibility receipt did not declare the document engine's partial child-tree boundary"
+                            .to_owned(),
+                    );
+                }
+                let theme = a11y_node(&tree, "Toggle session appearance settings", Role::Button)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Focus,
+                    target_node: theme,
+                }) || self.chrome_appearance_open
+                    || self.chrome_theme != ChromeTheme::Dark
+                {
+                    return Err(
+                        "accessibility Focus activated Pelt's appearance control instead of only moving virtual focus"
+                            .to_owned(),
+                    );
+                }
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let theme = a11y_node(&tree, "Toggle session appearance settings", Role::Button)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: theme,
+                }) || !self.chrome_appearance_open
+                {
+                    return Err(
+                        "accessibility Click did not open Pelt's retained appearance controls"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let light = a11y_node(&tree, "Light", Role::RadioButton)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Focus,
+                    target_node: light,
+                }) || self.chrome_theme != ChromeTheme::Dark
+                    || !self.chrome_appearance_open
+                {
+                    return Err(
+                        "accessibility Focus selected a Pelt theme instead of only moving virtual focus"
+                            .to_owned(),
+                    );
+                }
+            },
+            3 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let light = a11y_node(&tree, "Light", Role::RadioButton)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: light,
+                }) || self.chrome_theme != ChromeTheme::Light
+                    || !self.chrome_appearance_open
+                {
+                    return Err(
+                        "accessibility Click did not select Pelt's Light session theme".to_owned(),
+                    );
+                }
+            },
+            4 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let light = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == Role::RadioButton && node.label() == Some("Light")
+                    })
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility receipt lost its Light radio after selection")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility receipt lost its focused controller")?;
+                if light.toggled() != Some(accesskit::Toggled::True)
+                    || controller.address().is_empty()
+                    || self.accessibility.focus.is_none()
+                {
+                    return Err(
+                        "accessibility receipt lost the selected radio state, document, or virtual focus"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
     #[cfg(target_os = "windows")]
     fn mixed_native_receipt_ready(&mut self) -> bool {
         if !self.capability_receipt_ready() {
@@ -2430,6 +3239,7 @@ impl WorkspaceApp {
         self.dismiss_chrome_engine_menu_if_focus_changed();
         if navigated {
             self.clear_chrome_engine_menu();
+            self.clear_chrome_appearance();
         }
         if let Some(error) = error {
             eprintln!("[pelt-workspace] {error}");
@@ -2463,6 +3273,7 @@ impl WorkspaceApp {
         if self.workspace.apply(&event) {
             if self.workspace.focused_tile() != focused_before {
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
             }
             self.frisket.set_tree(self.workspace.tree());
             if let Some(window) = &self.window {
@@ -2500,6 +3311,12 @@ impl WorkspaceApp {
             }
             return drag.moved;
         }
+        if matches!(
+            self.frisket.hit(x, y),
+            Some(FrisketHit::Appearance | FrisketHit::ChromeAction(_))
+        ) {
+            return false;
+        }
 
         let effect = self.workspace.input(SessionInput::PointerMoved {
             x,
@@ -2518,11 +3335,13 @@ impl WorkspaceApp {
             Some(FrisketHit::Close(tile)) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 self.apply_tile_event(TileEvent::Closed(tile))
             },
             Some(FrisketHit::Divider { target, split_rect }) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 let Some(fractions) = self.workspace.tree().fractions_at(&target.path) else {
                     return false;
                 };
@@ -2549,6 +3368,7 @@ impl WorkspaceApp {
             Some(FrisketHit::Tab(tile)) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 self.gesture = Some(PointerGesture::Tab(TabDrag {
                     tile,
                     start: self.cursor,
@@ -2559,6 +3379,7 @@ impl WorkspaceApp {
             Some(FrisketHit::Content(_)) => {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
                 self.gesture = Some(PointerGesture::Content);
                 let effect = self.workspace.input(SessionInput::PointerButton {
                     x,
@@ -2573,8 +3394,12 @@ impl WorkspaceApp {
             },
             Some(FrisketHit::Chrome) => {
                 self.clear_chrome_address();
-                self.chrome_engine_menu.take().is_some()
+                let changed =
+                    self.chrome_engine_menu.take().is_some() || self.chrome_appearance_open;
+                self.clear_chrome_appearance();
+                changed
             },
+            Some(FrisketHit::Appearance) => true,
             None => false,
         }
     }
@@ -2783,6 +3608,14 @@ impl WorkspaceApp {
     }
 }
 
+fn a11y_node(tree: &TreeUpdate, label: &str, role: Role) -> Result<AccessNodeId, String> {
+    tree.nodes
+        .iter()
+        .find(|(_, node)| node.role() == role && node.label() == Some(label))
+        .map(|(id, _)| *id)
+        .ok_or_else(|| format!("accessibility tree has no {role:?} named {label:?}"))
+}
+
 fn discard_unimported_surface_frame(frame: SurfaceFrame) {
     #[cfg(target_os = "windows")]
     if let NativeTextureHandle::D3d12Shared {
@@ -2807,7 +3640,8 @@ impl ApplicationHandler for WorkspaceApp {
             return;
         }
         let attributes =
-            static_viewer::pelt_window_attributes(self.window_title(), self.width, self.height);
+            static_viewer::pelt_window_attributes(self.window_title(), self.width, self.height)
+                .with_visible(false);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -2821,6 +3655,7 @@ impl ApplicationHandler for WorkspaceApp {
         self.width = size.width.max(1);
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
+        self.window = Some(Arc::clone(&window));
         let mut options = NetrenderOptions {
             tile_cache_size: Some(64),
             enable_vello: true,
@@ -2873,9 +3708,19 @@ impl ApplicationHandler for WorkspaceApp {
                 return;
             },
         }
+        if let Err(error) = self.install_accessibility_before_show() {
+            self.receipt_error = Some(error);
+            event_loop.exit();
+            return;
+        }
         self.workspace_receipt_stage_started = Instant::now();
         window.request_redraw();
-        self.window = Some(window);
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.accessibility.take_wake() {
+            self.request_redraw();
+        }
     }
 
     fn window_event(
@@ -2941,6 +3786,12 @@ impl ApplicationHandler for WorkspaceApp {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                if matches!(
+                    self.frisket.hit(self.cursor.0, self.cursor.1),
+                    Some(FrisketHit::Appearance | FrisketHit::ChromeAction(_))
+                ) {
+                    return;
+                }
                 let (dx, dy) = wheel_delta_from_winit(delta);
                 if self.workspace.scroll_at(
                     self.cursor.0,
@@ -2990,6 +3841,7 @@ impl ApplicationHandler for WorkspaceApp {
                 self.apply_effect(effect);
             },
             WindowEvent::Focused(focused) => {
+                self.accessibility.update_window_focus(focused);
                 let effect = self.workspace.input(SessionInput::Focus(focused));
                 self.apply_effect(effect);
             },
@@ -3339,6 +4191,320 @@ mod tests {
                 .iter()
                 .any(|heading| heading == "Fallback navigation stayed local")
         );
+    }
+
+    #[test]
+    fn loading_error_receipt_projects_host_documents_and_recovers_to_ready() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-load-error/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("loading/error receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("loading/error receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::LoadingError, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let mut pane = app
+                .frisket
+                .frame(960, 640)
+                .expect("loading/error Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            if app.config.chrome && app.chrome_model().diagnostic.is_some() {
+                app.refresh_chrome();
+                pane = app
+                    .frisket
+                    .frame(960, 640)
+                    .expect("diagnostic Frisket frame");
+                app.workspace
+                    .set_content_rects(pane.content_rects.iter().copied());
+            }
+            app.last_chrome_document = (app.config.chrome && pane.diagnostic_rect.is_some())
+                .then(|| app.chrome_model().diagnostic)
+                .flatten();
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..8 {
+            assertion = app
+                .drive_loading_error_workspace_receipt_step()
+                .expect("loading/error semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            assertion.as_deref(),
+            Some(LOADING_ERROR_WORKSPACE_ASSERTION)
+        );
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("failed navigation retains its controller");
+        assert!(
+            controller
+                .address()
+                .replace('\\', "/")
+                .ends_with("/p6-load-error/next.html")
+        );
+        assert!(controller.can_go_back());
+        assert!(matches!(
+            controller.document_state(),
+            PeltDocumentState::Error { address, .. }
+                if address.replace('\\', "/").ends_with("/p6-load-error/missing.html")
+        ));
+
+        let recovered = app
+            .workspace
+            .command(SessionNavigationCommand::Address(fixture));
+        app.apply_effect(recovered);
+        assert!(matches!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("recovered controller")
+                .document_state(),
+            PeltDocumentState::Loading { .. }
+        ));
+        compose(&mut app);
+        assert!(matches!(
+            app.last_chrome_document
+                .as_ref()
+                .map(|document| document.kind),
+            Some(ChromeDocumentKind::Loading)
+        ));
+        compose(&mut app);
+        assert_eq!(app.last_chrome_document, None);
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("settled controller")
+                .document_state(),
+            &PeltDocumentState::Ready
+        );
+    }
+
+    #[test]
+    fn appearance_receipt_changes_session_theme_without_replacing_the_document() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-appearance/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("appearance receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("appearance receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Appearance, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let pane = app
+                .frisket
+                .frame(960, 640)
+                .expect("appearance Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..6 {
+            assertion = app
+                .drive_appearance_workspace_receipt_step()
+                .expect("appearance semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(assertion.as_deref(), Some(APPEARANCE_WORKSPACE_ASSERTION));
+        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        assert!(app.chrome_appearance_open);
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("appearance receipt retains its controller");
+        assert_eq!(controller.address(), fixture.as_str());
+
+        assert!(app.apply_chrome_action(ChromeAction::ToggleAppearance));
+        compose(&mut app);
+        assert!(!app.chrome_appearance_open);
+        let content = app
+            .workspace
+            .content_rect(TileId(1))
+            .expect("appearance receipt keeps its content hole after dismissal");
+        assert_eq!(
+            app.frisket.hit(
+                content.x + content.width / 2.0,
+                content.y + content.height / 2.0
+            ),
+            Some(FrisketHit::Content(TileId(1)))
+        );
+    }
+
+    #[test]
+    fn accessibility_focus_and_click_route_through_the_retained_shell_separately() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-accessibility/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("accessibility receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("accessibility receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Accessibility, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        app.scale_factor = 1.25;
+        let initial = app
+            .prepare_accessibility_tree()
+            .expect("initial retained accessibility tree");
+        let root = initial
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Window)
+            .map(|(_, node)| node)
+            .expect("window root");
+        assert_eq!(root.transform(), Some(&Affine::scale(1.25)));
+        let theme = a11y_node(&initial, "Toggle session appearance settings", Role::Button)
+            .expect("appearance toggle");
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Focus,
+            target_node: theme,
+        }));
+        assert_eq!(app.chrome_theme, ChromeTheme::Dark);
+        assert!(!app.chrome_appearance_open);
+        assert!(app.accessibility.focus.is_some());
+
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: theme,
+        }));
+        assert!(app.chrome_appearance_open);
+        let drawer = app
+            .prepare_accessibility_tree()
+            .expect("appearance accessibility tree");
+        let light = a11y_node(&drawer, "Light", Role::RadioButton).expect("Light radio");
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Focus,
+            target_node: light,
+        }));
+        assert_eq!(app.chrome_theme, ChromeTheme::Dark);
+
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: light,
+        }));
+        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        let selected = app
+            .prepare_accessibility_tree()
+            .expect("selected appearance accessibility tree");
+        let selected_light =
+            a11y_node(&selected, "Light", Role::RadioButton).expect("selected Light radio");
+        let light_node = selected
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == selected_light)
+            .map(|(_, node)| node)
+            .expect("selected Light radio node");
+        assert_eq!(light_node.toggled(), Some(accesskit::Toggled::True));
+        assert_eq!(selected.focus, selected_light);
+        assert_eq!(
+            app.accessibility.focus,
+            Some(FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(
+                ChromeTheme::Light
+            )))
+        );
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("focused document survives chrome action")
+                .address(),
+            fixture
+        );
+    }
+
+    #[test]
+    fn appearance_overlay_reuses_the_matching_physical_frame_crop() {
+        let placement = fragment_placement(
+            WorkspaceRect::new(380.0, 70.0, 260.0, 300.0),
+            (960, 640),
+            1.5,
+        );
+        assert_eq!(placement.dest_rect, [570.0, 105.0, 960.0, 555.0]);
+        assert_eq!(placement.uv, [0.593_75, 0.164_062_5, 1.0, 0.867_187_5]);
     }
 
     #[cfg(all(feature = "scripted", feature = "smolweb"))]

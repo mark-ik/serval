@@ -26,7 +26,7 @@ present = [
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
     "dep:cambium", "dep:genet-livery", "dep:genet-scripted-dom",
-    "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
+    "dep:genet-render", "dep:accesskit", "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
     "dep:windows", "dep:windows-sys", "dep:dpi", "dep:scrying-engine",
 ]
 # Shared fleece reader lane over the portable document canvas.
@@ -117,7 +117,9 @@ paint = { workspace = true, optional = true }
 genet-host-api = { workspace = true }
 genet-documents = { workspace = true, optional = true, default-features = false }
 genet-livery = { path = "../../../components/genet-livery", optional = true }
+genet-render = { path = "../../../components/genet-render", optional = true }
 inker = { workspace = true, optional = true }
+accesskit = { workspace = true, optional = true }
 pelt-core = { workspace = true }
 pollster = { version = "0.4", optional = true }
 raw-window-handle = { workspace = true, optional = true }

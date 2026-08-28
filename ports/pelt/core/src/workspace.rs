@@ -792,6 +792,18 @@ impl<F: 'static> PeltWorkspace<F> {
         more
     }
 
+    /// Mark every visible document session as composed by the embedding host.
+    ///
+    /// The host calls this after its presentation boundary. Hidden tabs retain
+    /// their loading state until their own first visible composition.
+    pub fn mark_visible_documents_presented(&mut self) {
+        for id in active_tiles(&self.tree) {
+            if let Some(controller) = self.controllers.get_mut(&id) {
+                controller.mark_document_presented();
+            }
+        }
+    }
+
     /// Route neutral input. Pointer coordinates are workspace coordinates and
     /// are translated into the selected Frisket content hole; keyboard, text,
     /// IME, and focus route to the focused tile.

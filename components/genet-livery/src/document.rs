@@ -1089,6 +1089,16 @@ where
         &self.nested_scroll
     }
 
+    /// The last completed retained layout in document coordinates.
+    ///
+    /// This only borrows geometry published by a successful [`Self::frame`]
+    /// call. It never computes a frame and does not apply viewport or nested
+    /// scroll offsets, so consumers which publish screen-space bounds retain
+    /// ownership of those transforms.
+    pub fn retained_layout(&self) -> Option<&LiveryLayout<D::NodeId>> {
+        self.layout.as_ref().map(|layout| &layout.fragments)
+    }
+
     pub fn hit_test(&self, x: f32, y: f32) -> Option<D::NodeId> {
         let layout = self.layout.as_ref()?;
         let active = self.sticky_layout(layout);
@@ -2010,6 +2020,34 @@ mod tests {
             [fragment] => *fragment,
             fragments => panic!("one table wrapper fragment, got {fragments:?}"),
         }
+    }
+
+    #[test]
+    fn retained_layout_borrows_the_completed_frame_without_relayout() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=target>retained geometry</div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; } #target { width: 120px; height: 24px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+
+        assert!(document.retained_layout().is_none());
+        document.frame(160, 120).expect("completed frame");
+        let target = by_id(document.dom(), "target");
+        let completed_generation = document.layout_generation();
+
+        assert!(
+            document
+                .retained_layout()
+                .is_some_and(|layout| layout.get(target).is_some())
+        );
+        assert_eq!(document.layout_generation(), completed_generation);
     }
 
     #[test]

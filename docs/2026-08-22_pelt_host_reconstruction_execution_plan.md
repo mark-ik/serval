@@ -7,9 +7,9 @@ current `main` 2026-08-24. P2 and P3 completed 2026-08-24. P4 completed on
 Windows 2026-08-25 with a registered Scrying producer, native shared-handle
 import, repeated fence waits, and visible same-window composition. P5 completed
 2026-08-27 with all eight deterministic product receipts. P6's focused-tile
-Chrome and structural-inspection slice completed 2026-08-27; its remaining
-presentability work is active. IOSurface and DMA-BUF imports remain separate
-platform lanes.
+Chrome, structural-inspection, and shell accessibility slices completed
+2026-08-27; its narrow-width and high-DPI Chrome evidence remains active.
+IOSurface and DMA-BUF imports remain separate platform lanes.
 
 ## Objective
 
@@ -721,9 +721,10 @@ supplement those deterministic receipts.
 
 ### P6: presentability and inspection
 
-**Status:** active. The bounded focused-tile Chrome, engine-choice-menu, and
-structural-inspection receipt completed on Windows 2026-08-27; the broader
-presentability lane remains open.
+**Status:** active. The bounded focused-tile Chrome, engine-choice-menu,
+structural-inspection, loading/error-document, session-only appearance, and
+shell AccessKit receipts completed on Windows 2026-08-27; narrow-width and
+high-DPI Chrome evidence remains open.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -796,6 +797,126 @@ the mixed workspace held`; the captured compositor digest was
 `cc5edea62df69340`. The PNG visibly shows the live Scrying tile below the
 topmost `Opaque surface` drawer and its honest disclosure.
 
+The bounded P6 loading/error receipt is deliberately smaller and does not
+depend on a native surface:
+
+```sh
+cargo run --offline -p pelt --no-default-features --features livery -j 1 -- \
+  --workspace-receipt loading-error \
+  --artifact target/pelt-receipts/workspace-loading-error.png
+```
+
+`PeltController` exposes `PeltDocumentState::{Ready, Loading, Error}` for its
+active session. `Loading` is not a claim about asynchronous transport: the
+current registry spawn is synchronous, so it means a successful replacement
+session awaits one host-composed frame. The host marks it ready only after that
+frame presents. A failed Address, Reload, Back, or Forward replacement records
+the attempted address and error while retaining the prior session and history.
+
+Chrome projects those states as a Pelt-owned retained document in the focused
+Frisket content hole. The overlay is not synthetic Livery HTML and does not
+change engine ownership. It names the attempted address, explains that the
+previous document and history remain available, and leaves underlying content
+input routed to its original tile. Its exact Frisket crop is replayed after
+document and native tile composition, so the diagnostic remains visible above
+the content it describes.
+
+The receipt starts at `examples/workspace/p6-load-error/index.html`, opens the
+checked-in `next.html` through the same address-entry path as the window, then
+submits the intentionally absent `missing.html`. It proves a composed loading
+document, a composed error document in the same content hole, the failed
+address and engine error, and the retained `next.html` controller with Back
+history. The GPU-free test additionally replaces that error with a successful
+address, proves one loading document, and then proves `Ready`. This keeps
+missing-resource behavior local and deterministic rather than manufacturing an
+engine-level error page or requiring Scrying.
+
+Recorded 2026-08-27: the focused core rollback test passed, including a failed
+Back that preserves the active session and history cursor; the Livery-only
+`pelt-desktop` suite passed 25 tests; and Pelt's viewer parser/fixture suite
+passed 4 tests. The headed Livery run passed at 960x640 after 6 redraws. Its
+assertion was `host-owned loading and error documents preserved the focused
+tile's prior session and history`; the captured compositor digest was
+`6d566041b3febf18`. The PNG shows live Chrome above the retained error document
+in the content hole, with the complete recovery instruction visible.
+
+The bounded P6 appearance receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt appearance \
+  --artifact target/pelt-receipts/workspace-appearance.png
+```
+
+It owns `examples/workspace/p6-appearance/index.html` at 960x640. The driver
+opens Pelt's retained Appearance drawer through its live Frisket hit path,
+selects Light, and captures the composed Chrome frame. Dark and Light are
+explicit Pelt-session choices. The palette reaches Pelt's Chrome, Frisket tabs,
+drawer, inspector, and diagnostic documents, while the document engine keeps
+its own theme authority. Persistence, platform-theme integration, and
+cross-session restoration remain outside this receipt.
+
+The GPU-free checks verify semantic radio controls, the Light action, the exact
+physical crop calculation used for post-native replay, unchanged tile-1
+address/history posture, unchanged content-hole geometry, and normal content
+hit routing after drawer dismissal. Recorded 2026-08-27: the Livery-only
+`pelt-desktop` suite passed 28 tests; Pelt's viewer parser/fixture suite passed
+4 tests; and the headed Livery run passed at 960x640 after 4 redraws. Its assertion was
+`session-only appearance changed the live Pelt chrome theme while the focused
+document held`; the captured compositor digest was `b1f8e383dea75045`. The PNG
+shows the Light Chrome shell, checked Light choice, retained document hole, and
+the session/document ownership notes together.
+
+The bounded P6 accessibility receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt accessibility \
+  --artifact target/pelt-receipts/workspace-accessibility.png
+```
+
+It owns `examples/workspace/p6-accessibility/index.html` at 960x640. Pelt
+projects the completed Frisket Livery/Buckram layout through AccessKit before
+revealing its Windows window. The root carries the physical DPI transform, and
+the adapter preserves typed `Focus` separately from `Click`: Focus changes
+virtual focus only; Click routes through the same Chrome, tab, and close paths
+as pointer activation. Because Frisket rebuilds its retained document when
+Chrome state changes, virtual focus is held as a semantic target and resolved
+again in the fresh tree instead of retaining a foreign DOM id.
+
+The shared Genet projection now carries the Frisket roles and state it already
+declares: menu and radio groups, tabs and tab panels, list and combo controls,
+separators, toolbars, trees, selected/expanded/checked/pressed state,
+orientation, and popup state. `LiveryDocument::retained_layout` is a borrow of
+completed geometry, never a layout request. P6 uses it only for Frisket's
+fixed, unscrolled shell; wheel and scroll keys remain routed to the active tile
+engine. A later scrollable shell needs visual scroll-adjusted bounds before it
+can reuse this tree.
+
+Each active Frisket content hole becomes a labelled AccessKit region whose
+a11y description states the active engine's declared `A11yCapability`. The
+region deliberately stops there: document and native-surface trees still have
+opaque ids, and Pelt has not yet defined per-tile namespaces plus action
+routing for a composite tree. Thus `Opaque`, `Partial`, and `Full` are each
+declared truthfully without claiming that Pelt can merge their child semantics.
+If an ordinary platform install fails, Pelt reveals its normal window and
+retries installation on a later redraw; the named receipt instead fails until
+the bridge reports `Installed`.
+
+The GPU-free Pelt desktop test lays out the shell at 125% DPI, names the
+content aperture, verifies its partial child-tree boundary, focuses Theme,
+clicks Theme, focuses Light, clicks Light, and proves Light stays checked and
+focused after the retained Chrome document rebuilds while the document route
+holds. The focused shared projection suite passed 11 tests, the retained-layout
+borrow test passed, the Livery-only Pelt desktop suite passed 30 tests, and the
+Pelt viewer parser/fixture suite passed 4 tests. Recorded 2026-08-27: two
+headed Windows runs both installed 26 shell nodes before show, completed in 6
+redraws at 960x640, and produced compositor digest `82555e330e8c7dfd`; their
+PNG SHA-256 was also identical,
+`930938AFB838DCD8C79C14DCE457CE809E49CD39F28CDE4EE3081D3F35C8D4DA`.
+
 ## Cross-gate rules
 
 - One host-owned wgpu device and compositor serve the full workspace.
@@ -812,12 +933,13 @@ topmost `Opaque surface` drawer and its honest disclosure.
 
 ## Immediate next lane
 
-Continue P6 from the Chrome and structural-inspection receipt with dedicated
-loading/error documents, then a settings surface, theme and accessibility state,
-and narrow-width/high-DPI evidence. The
-Reader-in-workspace lane must carry held source bytes rather than teaching
-Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
-than an unrecorded ninth P5 fixture.
+Continue P6 with narrow-width and high-DPI Chrome receipts. The AccessKit tree
+currently covers the retained Pelt shell and labelled content apertures; a
+namespaced child-tree and action-composition protocol remains a separate lane.
+The Appearance drawer stays session-only until Pelt owns a durable configuration
+policy. The Reader-in-workspace lane must carry held source bytes rather than
+teaching Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt
+rather than an unrecorded ninth P5 fixture.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and
