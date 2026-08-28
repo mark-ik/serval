@@ -1003,6 +1003,11 @@ its tile, session generation, content rect, and point before press, then
 checks the generation and rect again before release. The host keeps its Chrome
 and the other tiles throughout.
 
+Native HTML anchors with an `href` project as AccessKit links in Livery; anchors
+without an `href` remain generic containers. P7's fixture intentionally uses
+ordinary anchors, so its existing focus, click, and stale-action proof covers
+that engine semantic rather than an ARIA workaround.
+
 The named focused receipt is:
 
 ```sh
@@ -1020,15 +1025,16 @@ fresh destination subtree with the old focus absent. Its GPU-free checks add
 two identical Livery tiles, root scroll, 125% page zoom, sibling namespace
 separation, and an inert stale action after navigation.
 
-Recorded 2026-08-28: the focused core routing suite passed 3 tests, the
-Livery-only Pelt desktop suite passed 37 tests, and Pelt's viewer parser suite
-passed 4 tests. The headed Windows run installed the platform bridge, completed
-after 4 redraws at 960x640, and reported `Pelt composed the focused Livery child
-tree through its retained content hole; Focus stayed virtual and Click navigated
-only that session`; its compositor digest was `01c8f2b912a72ebe`. The final
-capture shows the destination document inside live Chrome. The focused
-Genet-render scroll projection and Livery zoom checks are part of this receipt's
-maintenance gate.
+Recorded 2026-08-28: the focused core routing suite passed 3 tests, the full
+Genet-render suite passed 19 tests including native-link and nested-scroll
+projection, the Livery-only Pelt desktop suite passed 37 tests, and Pelt's
+viewer parser suite passed 4 tests. The headed Windows run installed the
+platform bridge, completed after 4 redraws at 960x640, and reported `Pelt
+composed the focused Livery child tree through its retained content hole; Focus
+stayed virtual and Click navigated only that session`; its compositor digest was
+`01c8f2b912a72ebe`. The final capture shows the destination document inside
+live Chrome. The focused Livery zoom check is part of this receipt's maintenance
+gate.
 
 ### Reader in workspace
 
@@ -1107,11 +1113,11 @@ P6's retained-shell receipts, P7's Livery child-tree receipt, and the separate
 Reader-in-workspace receipt are complete. The AccessKit tree now composes the
 retained Livery child tree for its focused supported lane; Reader, Scripted,
 Smolweb, and native child trees still need their own namespace and action
-contracts. Livery still needs native-link semantic inference, nested-scroll
-ScrollIntoView/action routing, and text/value semantics before Pelt can widen
-that child lane. The Appearance drawer stays session-only until Pelt owns a
-durable configuration policy. The held-source handoff is now a reusable Pelt
-boundary, not a fetch API for Fleece.
+contracts. Livery still needs nested-scroll ScrollIntoView/action routing and
+text/value semantics before Pelt can widen that child lane. The Appearance
+drawer stays session-only until Pelt owns a durable configuration policy. The
+held-source handoff is now a reusable Pelt boundary, not a fetch API for
+Fleece.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and

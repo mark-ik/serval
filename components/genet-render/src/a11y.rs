@@ -56,6 +56,13 @@ fn role_for<D: LayoutDom>(dom: &D, node: D::NodeId) -> Role {
     match dom.kind(node) {
         NodeKind::Document => Role::Window,
         NodeKind::Element => match dom.element_name(node).map(|name| name.local.as_ref()) {
+            Some("a")
+                if dom
+                    .attribute(node, &Namespace::default(), &LocalName::from("href"))
+                    .is_some() =>
+            {
+                Role::Link
+            },
             Some("button") => Role::Button,
             Some("input" | "textarea") => Role::TextInput,
             Some("p") => Role::Paragraph,
@@ -505,6 +512,29 @@ mod tests {
             .expect("focusable div");
         assert!(focusable.supports_action(Action::Focus));
         assert!(!focusable.supports_action(Action::Click));
+    }
+
+    #[test]
+    fn native_links_project_link_semantics_only_when_navigable() {
+        let nodes = nodes_for(
+            "<a href=\"next.html\" style=\"display:block\">Navigate</a>\
+             <a style=\"display:block\">Named anchor</a>",
+        );
+        let link = nodes
+            .iter()
+            .find(|node| node.label() == Some("Navigate"))
+            .expect("native link");
+        assert_eq!(link.role(), Role::Link);
+        assert!(link.supports_action(Action::Click));
+        assert!(link.supports_action(Action::Focus));
+
+        let anchor = nodes
+            .iter()
+            .find(|node| node.label() == Some("Named anchor"))
+            .expect("anchor without href");
+        assert_eq!(anchor.role(), Role::GenericContainer);
+        assert!(!anchor.supports_action(Action::Click));
+        assert!(!anchor.supports_action(Action::Focus));
     }
 
     #[test]
