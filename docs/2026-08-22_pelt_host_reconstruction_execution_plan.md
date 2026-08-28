@@ -972,6 +972,50 @@ redraws at 960x640, and produced compositor digest `82555e330e8c7dfd`; their
 PNG SHA-256 was also identical,
 `930938AFB838DCD8C79C14DCE457CE809E49CD39F28CDE4EE3081D3F35C8D4DA`.
 
+#### P6 follow-up: accessible Chrome address replacement
+
+The host accessibility bridge now retains optional `ActionData` on each queued
+`A11yActionRequest`, including AccessKit's string payload for `SetValue`. Pelt
+accepts that payload only when it targets the current Frisket Chrome Address
+node. It updates Pelt's address buffer and takes its existing address-submit
+path. Generic Genet DOM editing remains outside this slice.
+
+The GPU-free Pelt desktop check verifies the Address node's projected value and
+`SetValue` action, accepts a checked-in `next.html` destination, observes
+`Loading` and settled `Ready`, then submits a checked-in missing destination.
+It proves that the focused tile reaches `Error` while retaining the successful
+controller address and Back history, that the diagnostic occupies the same
+content hole, and that the sibling tile holds. Wrong targets, stale nodes,
+missing data, and numeric data are inert. The host bridge unit test separately
+proves that string action data survives queue capture.
+
+The named headed receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt accessibility-address \
+  --artifact target/pelt-receipts/workspace-accessibility-address.png
+```
+
+It uses `examples/workspace/p6-load-error/index.html` in two tiles and requires
+the platform bridge to report `Installed` before the window becomes visible.
+Its bounded driver supplies a typed request through Pelt's current action map,
+then captures `Loading`, `Ready`, and retained `Error`. That is evidence for
+Pelt's installed-bridge routing and payload handling, not a claim that an
+operating-system screen reader emitted `SetValue`. OS-specific injection is a
+separate platform receipt.
+
+Recorded 2026-08-28: `genet-winit-host` passed 3/3 tests, the Livery-only Pelt
+desktop suite passed 43/43, and Pelt's viewer suite passed 4/4. The headed
+Windows run installed 36 retained workspace nodes, completed after five redraws
+at 960x640, and reported `installed AccessKit address SetValue routing
+navigated only the focused Pelt tile through loading and retained error content
+while preserving the successful address and history`; its compositor digest was
+`e2ce0126d99cf2c7`. The capture visibly shows the left tile's retained error
+document, live Chrome with readable tab labels and close controls, and the
+independent right-hand Ready document.
+
 The compact Chrome receipt is:
 
 ```sh

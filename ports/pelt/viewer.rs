@@ -167,7 +167,7 @@ pub(crate) fn main() {
             "--workspace-receipt" => {
                 let Some(value) = args.next() else {
                     eprintln!(
-                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview"
+                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-address, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview"
                     );
                     std::process::exit(2);
                 };
@@ -406,6 +406,7 @@ pub(crate) fn main() {
                         | pelt_desktop::WorkspaceReceipt::LoadingError
                         | pelt_desktop::WorkspaceReceipt::Appearance
                         | pelt_desktop::WorkspaceReceipt::Accessibility
+                        | pelt_desktop::WorkspaceReceipt::AccessibilityAddress
                         | pelt_desktop::WorkspaceReceipt::AccessibilityChildren
                         | pelt_desktop::WorkspaceReceipt::NarrowChrome
                         | pelt_desktop::WorkspaceReceipt::ChromeDpi
@@ -427,6 +428,10 @@ pub(crate) fn main() {
                 },
                 pelt_desktop::WorkspaceReceipt::Accessibility => {
                     tile_urls = vec![accessibility_fixture_url()];
+                },
+                pelt_desktop::WorkspaceReceipt::AccessibilityAddress => {
+                    let fixture = loading_error_fixture_url();
+                    tile_urls = vec![fixture.clone(), fixture];
                 },
                 pelt_desktop::WorkspaceReceipt::AccessibilityChildren => {
                     if !cfg!(feature = "livery") {
@@ -1140,6 +1145,7 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "loading-error" => pelt_desktop::WorkspaceReceipt::LoadingError,
         "appearance" => pelt_desktop::WorkspaceReceipt::Appearance,
         "accessibility" => pelt_desktop::WorkspaceReceipt::Accessibility,
+        "accessibility-address" => pelt_desktop::WorkspaceReceipt::AccessibilityAddress,
         "accessibility-children" => pelt_desktop::WorkspaceReceipt::AccessibilityChildren,
         "narrow-chrome" => pelt_desktop::WorkspaceReceipt::NarrowChrome,
         "chrome-dpi" => pelt_desktop::WorkspaceReceipt::ChromeDpi,
@@ -1148,7 +1154,7 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "tabard-reader-preview" => pelt_desktop::WorkspaceReceipt::TabardReaderPreview,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-children, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-address, accessibility-children, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1184,6 +1190,10 @@ mod workspace_receipt_tests {
         assert_eq!(
             parse_workspace_receipt("accessibility"),
             pelt_desktop::WorkspaceReceipt::Accessibility
+        );
+        assert_eq!(
+            parse_workspace_receipt("accessibility-address"),
+            pelt_desktop::WorkspaceReceipt::AccessibilityAddress
         );
         assert_eq!(
             parse_workspace_receipt("accessibility-children"),
@@ -1560,7 +1570,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|accessibility-children|narrow-chrome|chrome-dpi|reader|tabard-preview|tabard-reader-preview> (named workspace receipt; needs --artifact; Tabard receipts need their matching feature)
+    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|accessibility-address|accessibility-children|narrow-chrome|chrome-dpi|reader|tabard-preview|tabard-reader-preview> (named workspace receipt; needs --artifact; Tabard receipts need their matching feature)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

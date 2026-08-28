@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use accesskit::{Action, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
+use accesskit::{Action, ActionData, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
 use genet_host_api::ResourceFetcher;
 use genet_host_api::settings::{SettingValue, SettingsProvider};
 use genet_host_api::tile::{
@@ -62,6 +62,7 @@ const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
 const APPEARANCE_WORKSPACE_ASSERTION: &str =
     "Pelt-owned appearance changed the live chrome theme while the focused document held";
 const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the Pelt appearance controls";
+const ACCESSIBILITY_ADDRESS_WORKSPACE_ASSERTION: &str = "installed AccessKit address SetValue routing navigated only the focused Pelt tile through loading and retained error content while preserving the successful address and history";
 const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focused Livery child tree through its retained content hole; Focus stayed virtual and Click navigated only that session";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
@@ -93,6 +94,9 @@ pub enum WorkspaceReceipt {
     Appearance,
     /// P6's retained Chrome/Frisket AccessKit tree and typed action routing.
     Accessibility,
+    /// P6's address TextInput SetValue route through the installed platform
+    /// bridge, including retained loading and error documents.
+    AccessibilityAddress,
     /// P7's one-tree Livery child semantics, namespaced and routed through the
     /// same Pelt input path as its content aperture.
     AccessibilityChildren,
@@ -120,6 +124,7 @@ impl WorkspaceReceipt {
             Self::LoadingError => "loading-error",
             Self::Appearance => "appearance",
             Self::Accessibility => "accessibility",
+            Self::AccessibilityAddress => "accessibility-address",
             Self::AccessibilityChildren => "accessibility-children",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
@@ -144,6 +149,7 @@ impl WorkspaceReceipt {
                 | Self::LoadingError
                 | Self::Appearance
                 | Self::Accessibility
+                | Self::AccessibilityAddress
                 | Self::AccessibilityChildren
                 | Self::NarrowChrome
                 | Self::ChromeDpi
@@ -353,6 +359,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
                 | WorkspaceReceipt::Accessibility
+                | WorkspaceReceipt::AccessibilityAddress
                 | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
@@ -1621,7 +1628,11 @@ impl WorkspaceApp {
             .sync(&window, projection, self.scale_factor as f64);
         if matches!(
             self.config.workspace_receipt,
-            Some(WorkspaceReceipt::Accessibility | WorkspaceReceipt::AccessibilityChildren)
+            Some(
+                WorkspaceReceipt::Accessibility
+                    | WorkspaceReceipt::AccessibilityAddress
+                    | WorkspaceReceipt::AccessibilityChildren,
+            )
         ) && self.accessibility.status() != BridgeStatus::Installed
         {
             return Err(
@@ -1679,6 +1690,25 @@ impl WorkspaceApp {
                     },
                     None => false,
                 }
+            },
+            (Action::SetValue, WorkspaceA11yActionTarget::Frisket(node)) => {
+                if self.frisket.accessibility_target(node)
+                    != Some(FrisketA11yTarget::ChromeAction(ChromeAction::Address))
+                {
+                    return false;
+                }
+                let Some(ActionData::Value(value)) = request.data else {
+                    return false;
+                };
+                if !self.apply_chrome_action(ChromeAction::Address) {
+                    return false;
+                }
+                let Some(input) = self.chrome_address.as_mut() else {
+                    return false;
+                };
+                input.value = value.into();
+                input.replace_on_insert = false;
+                self.submit_chrome_address()
             },
             (Action::Focus, WorkspaceA11yActionTarget::Livery(target)) => {
                 (self.workspace.document_session_generation(target.tile)
@@ -2423,6 +2453,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::LoadingError
                         | WorkspaceReceipt::Appearance
                         | WorkspaceReceipt::Accessibility
+                        | WorkspaceReceipt::AccessibilityAddress
                         | WorkspaceReceipt::AccessibilityChildren
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
@@ -2647,6 +2678,7 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
                 | WorkspaceReceipt::Accessibility
+                | WorkspaceReceipt::AccessibilityAddress
                 | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
@@ -2693,6 +2725,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
             WorkspaceReceipt::Appearance => self.drive_appearance_workspace_receipt_step(),
             WorkspaceReceipt::Accessibility => self.drive_accessibility_workspace_receipt_step(),
+            WorkspaceReceipt::AccessibilityAddress => {
+                self.drive_accessibility_address_workspace_receipt_step()
+            },
             WorkspaceReceipt::AccessibilityChildren => {
                 self.drive_accessibility_children_workspace_receipt_step()
             },
@@ -2713,6 +2748,7 @@ impl WorkspaceApp {
                 WorkspaceReceipt::LoadingError
                     | WorkspaceReceipt::Appearance
                     | WorkspaceReceipt::Accessibility
+                    | WorkspaceReceipt::AccessibilityAddress
                     | WorkspaceReceipt::AccessibilityChildren
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
@@ -4282,6 +4318,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Focus,
                     target_node: theme,
+                    data: None,
                 }) || self.chrome_appearance_open
                     || self.chrome_theme() != AppearanceTheme::Dark
                 {
@@ -4297,6 +4334,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Click,
                     target_node: theme,
+                    data: None,
                 }) || !self.chrome_appearance_open
                 {
                     return Err(
@@ -4311,6 +4349,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Focus,
                     target_node: light,
+                    data: None,
                 }) || self.chrome_theme() != AppearanceTheme::Dark
                     || !self.chrome_appearance_open
                 {
@@ -4326,6 +4365,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Click,
                     target_node: light,
+                    data: None,
                 }) || self.chrome_theme() != AppearanceTheme::Light
                     || !self.chrome_appearance_open
                 {
@@ -4359,6 +4399,207 @@ impl WorkspaceApp {
                 return Ok(Some(ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned()));
             },
             _ => return Ok(Some(ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_accessibility_address_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "accessibility address receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let address = a11y_node(&tree, "Address", Role::TextInput)?;
+                let node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == address)
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility address receipt lost the address node")?;
+                if !node.supports_action(Action::SetValue)
+                    || node.value().is_none()
+                    || !self.apply_accessibility_request(A11yActionRequest {
+                        action: Action::SetValue,
+                        target_node: address,
+                        data: Some(ActionData::Value(
+                            Path::new(node.value().unwrap())
+                                .parent()
+                                .ok_or("accessibility address fixture has no parent")?
+                                .join("next.html")
+                                .to_string_lossy()
+                                .into_owned()
+                                .into(),
+                        )),
+                    })
+                {
+                    return Err(
+                        "accessibility address receipt could not submit SetValue through the bridge"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility address receipt lost its focused controller")?;
+                if !matches!(
+                    controller.document_state(),
+                    PeltDocumentState::Loading { .. }
+                ) || !controller.can_go_back()
+                    || !self.workspace.controller(TileId(2)).is_some_and(|other| {
+                        other.address().replace('\\', "/").ends_with("/index.html")
+                    })
+                {
+                    return Err(
+                        "accessibility address SetValue did not retain the focused tile's loading transition"
+                            .to_owned(),
+                    );
+                }
+            },
+            1 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("accessibility address receipt did not compose its loading document")?;
+                if diagnostic.kind != ChromeDocumentKind::Loading
+                    || diagnostic.tile != tile
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                {
+                    return Err(
+                        "accessibility address receipt did not keep loading content in the focused tile hole"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(None);
+            },
+            2 => {
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility address receipt lost its successful controller")?;
+                if !matches!(controller.document_state(), PeltDocumentState::Ready)
+                    || !controller.can_go_back()
+                {
+                    return Err(
+                        "accessibility address receipt did not settle the successful destination to Ready"
+                            .to_owned(),
+                    );
+                }
+                let next = controller.address().to_owned();
+                if !self.workspace.controller(TileId(2)).is_some_and(|other| {
+                    other.address().replace('\\', "/").ends_with("/index.html")
+                }) {
+                    return Err(
+                        "accessibility address navigation changed the sibling tile".to_owned()
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let address = a11y_node(&tree, "Address", Role::TextInput)?;
+                if tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == address)
+                    .and_then(|(_, node)| node.value())
+                    != Some(next.as_str())
+                {
+                    return Err(
+                        "accessibility address receipt did not project the settled successful address value"
+                            .to_owned(),
+                    );
+                }
+                let missing = Path::new(&next)
+                    .parent()
+                    .ok_or("accessibility address destination has no parent")?
+                    .join("missing.html")
+                    .to_string_lossy()
+                    .into_owned();
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::SetValue,
+                    target_node: address,
+                    data: Some(ActionData::Value(missing.into())),
+                }) {
+                    return Err(
+                        "accessibility address receipt could not submit its deterministic missing path"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility address receipt lost its failed controller")?;
+                if !matches!(controller.document_state(), PeltDocumentState::Error { .. })
+                    || !controller.can_go_back()
+                    || controller.address() != next
+                    || !self.workspace.controller(TileId(2)).is_some_and(|other| {
+                        other.address().replace('\\', "/").ends_with("/index.html")
+                    })
+                {
+                    return Err(
+                        "accessibility address failure replaced the retained successful controller"
+                            .to_owned(),
+                    );
+                }
+            },
+            3 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("accessibility address receipt did not compose its error document")?;
+                let retained_address = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility address receipt lost its retained controller")?
+                    .address()
+                    .to_owned();
+                let retained_can_go_back = self
+                    .workspace
+                    .controller(tile)
+                    .is_some_and(PeltController::can_go_back);
+                if diagnostic.kind != ChromeDocumentKind::Error
+                    || diagnostic.tile != tile
+                    || !diagnostic
+                        .address
+                        .replace('\\', "/")
+                        .ends_with("/missing.html")
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                    || !retained_address.replace('\\', "/").ends_with("/next.html")
+                    || !retained_can_go_back
+                    || !self.workspace.controller(TileId(2)).is_some_and(|other| {
+                        other.address().replace('\\', "/").ends_with("/index.html")
+                    })
+                {
+                    return Err(
+                        "accessibility address receipt did not retain the error document in the focused content hole"
+                            .to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let address = a11y_node(&tree, "Address", Role::TextInput)?;
+                let projected = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == address)
+                    .and_then(|(_, node)| node.value())
+                    .ok_or("accessibility address receipt lost the projected address value")?;
+                if projected != retained_address {
+                    return Err(
+                        "accessibility address receipt did not project the retained successful address after failure"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(ACCESSIBILITY_ADDRESS_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_ADDRESS_WORKSPACE_ASSERTION.to_owned())),
         }
         self.receipt_step = self.receipt_step.saturating_add(1);
         Ok(None)
@@ -4409,6 +4650,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Focus,
                     target_node: link,
+                    data: None,
                 }) || self.accessibility.focus != Some(WorkspaceA11yFocus::Livery(link))
                     || address != self.config.urls[0]
                 {
@@ -4424,6 +4666,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Click,
                     target_node: link,
+                    data: None,
                 }) {
                     return Err(
                         "child accessibility Click did not enter Pelt's content input path"
@@ -5853,6 +6096,18 @@ mod tests {
         assert_eq!(accessibility_children.size, Some((960, 640)));
         assert_eq!(accessibility_children.frames, Some(3));
         assert!(WorkspaceReceipt::AccessibilityChildren.keeps_chrome());
+        assert!(WorkspaceReceipt::AccessibilityAddress.keeps_chrome());
+        assert_eq!(
+            WorkspaceReceipt::AccessibilityAddress.id(),
+            "accessibility-address"
+        );
+        let accessibility_address = WorkspaceViewerConfig::new(
+            vec!["address.html".to_owned(), "sibling.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(WorkspaceReceipt::AccessibilityAddress, "address.png");
+        assert_eq!(accessibility_address.size, Some((960, 640)));
+        assert_eq!(accessibility_address.frames, Some(3));
         assert_eq!(
             WorkspaceReceipt::AccessibilityChildren.id(),
             "accessibility-children"
@@ -6604,11 +6859,21 @@ mod tests {
             .map(|(_, node)| node)
             .expect("window root");
         assert_eq!(root.transform(), Some(&Affine::scale(1.25)));
+        let address = a11y_node(&initial, "Address", Role::TextInput).expect("address input");
+        let initial_address_node = initial
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == address)
+            .map(|(_, node)| node)
+            .expect("initial address node");
+        assert!(initial_address_node.supports_action(Action::SetValue));
+        assert_eq!(initial_address_node.value(), Some(fixture.as_str()));
         let theme = a11y_node(&initial, "Toggle Pelt appearance settings", Role::Button)
             .expect("appearance toggle");
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Focus,
             target_node: theme,
+            data: None,
         }));
         assert_eq!(app.chrome_theme(), AppearanceTheme::Dark);
         assert!(!app.chrome_appearance_open);
@@ -6617,6 +6882,7 @@ mod tests {
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Click,
             target_node: theme,
+            data: None,
         }));
         assert!(app.chrome_appearance_open);
         let drawer = app
@@ -6626,17 +6892,21 @@ mod tests {
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Focus,
             target_node: light,
+            data: None,
         }));
         assert_eq!(app.chrome_theme(), AppearanceTheme::Dark);
 
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Click,
             target_node: light,
+            data: None,
         }));
         assert_eq!(app.chrome_theme(), AppearanceTheme::Light);
         let selected = app
             .prepare_accessibility_tree()
             .expect("selected appearance accessibility tree");
+        let current_address =
+            a11y_node(&selected, "Address", Role::TextInput).expect("current address input");
         let selected_light =
             a11y_node(&selected, "Light", Role::RadioButton).expect("selected Light radio");
         let light_node = selected
@@ -6660,6 +6930,113 @@ mod tests {
                 .address(),
             fixture
         );
+
+        let next_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-load-error/next.html")
+            .to_string_lossy()
+            .into_owned();
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: current_address,
+            data: Some(ActionData::Value(next_fixture.clone().into())),
+        }));
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("address destination")
+                .address(),
+            next_fixture
+        );
+        let replaced = app
+            .prepare_accessibility_tree()
+            .expect("replaced accessibility tree");
+        let replaced_address =
+            a11y_node(&replaced, "Address", Role::TextInput).expect("replaced address input");
+        let current_tab = replaced
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Tab && node.is_selected() == Some(true))
+            .map(|(id, _)| *id)
+            .expect("current tab");
+        let current_address_node = replaced
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == replaced_address)
+            .map(|(_, node)| node)
+            .expect("replaced address node");
+        assert!(current_address_node.supports_action(Action::SetValue));
+        assert_eq!(current_address_node.value(), Some(next_fixture.as_str()));
+        assert_eq!(
+            replaced
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == replaced_address)
+                .map(|(_, node)| node.value()),
+            Some(Some(next_fixture.as_str()))
+        );
+        assert!(replaced_address != address);
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: address,
+            data: Some(ActionData::Value(fixture.clone().into())),
+        }));
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: replaced_address,
+            data: Some(ActionData::NumericValue(4.0)),
+        }));
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: replaced_address,
+            data: None,
+        }));
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: current_tab,
+            data: Some(ActionData::Value(next_fixture.clone().into())),
+        }));
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("destination remains")
+                .address(),
+            next_fixture
+        );
+        let missing_fixture = next_fixture.clone() + ".missing";
+        let history_before_missing = app
+            .workspace
+            .controller(TileId(1))
+            .expect("controller before missing navigation")
+            .can_go_back();
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: replaced_address,
+            data: Some(ActionData::Value(missing_fixture.clone().into())),
+        }));
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("failed navigation preserves controller")
+                .address(),
+            next_fixture
+        );
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("failed navigation controller")
+                .can_go_back(),
+            history_before_missing
+        );
+        assert!(matches!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("failed navigation state")
+                .document_state(),
+            PeltDocumentState::Error { address, message }
+                if address == &missing_fixture && !message.is_empty()
+        ));
     }
 
     #[test]
@@ -6863,6 +7240,7 @@ mod tests {
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Focus,
             target_node: link,
+            data: None,
         }));
         assert_eq!(
             app.accessibility.focus,
@@ -6872,6 +7250,7 @@ mod tests {
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Click,
             target_node: link,
+            data: None,
         }));
         let controller = app
             .workspace
@@ -6889,9 +7268,11 @@ mod tests {
             !app.apply_accessibility_request(A11yActionRequest {
                 action: Action::Focus,
                 target_node: link,
+                data: None,
             }) && !app.apply_accessibility_request(A11yActionRequest {
                 action: Action::Click,
                 target_node: link,
+                data: None,
             }),
             "the old child ID is inert after its session replacement"
         );

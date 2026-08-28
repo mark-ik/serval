@@ -30,7 +30,8 @@ use std::sync::{Arc, Mutex};
 #[cfg(all(unix, not(target_os = "macos")))]
 use accesskit::DeactivationHandler;
 use accesskit::{
-    Action, ActionHandler, ActionRequest, ActivationHandler, NodeId as AccessNodeId, TreeUpdate,
+    Action, ActionData, ActionHandler, ActionRequest, ActivationHandler, NodeId as AccessNodeId,
+    TreeUpdate,
 };
 
 /// Whether the OS-level AccessKit adapter is live for this window.
@@ -40,13 +41,14 @@ pub enum BridgeStatus {
     Installed,
 }
 
-/// A screen reader's request to act on a node: the [`Action`] and the target
-/// node's id. The host maps the id back to its own element and routes the action
-/// through its activation path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A screen reader's request to act on a node: the [`Action`], target node id,
+/// and optional action data. The host maps the id back to its own element and
+/// routes the action through its activation path.
+#[derive(Clone, Debug, PartialEq)]
 pub struct A11yActionRequest {
     pub action: Action,
     pub target_node: AccessNodeId,
+    pub data: Option<ActionData>,
 }
 
 struct Activation {
@@ -78,6 +80,7 @@ impl ActionHandler for QueuedActions {
             actions.push_back(A11yActionRequest {
                 action: request.action,
                 target_node: request.target_node,
+                data: request.data,
             });
         }
         (self.wake)();
@@ -403,3 +406,34 @@ mod imp {
 }
 
 pub use imp::AccessKitBridge;
+
+#[cfg(test)]
+mod tests {
+    use super::{A11yActionRequest, QueuedActions};
+    use accesskit::{Action, ActionData, ActionHandler, ActionRequest, NodeId, TreeId};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn queued_actions_retain_value_data() {
+        let actions = Arc::new(Mutex::new(VecDeque::<A11yActionRequest>::new()));
+        let mut queued = QueuedActions {
+            actions: Arc::clone(&actions),
+            wake: Arc::new(|| {}),
+        };
+        queued.do_action(ActionRequest {
+            action: Action::SetValue,
+            target_tree: TreeId::ROOT,
+            target_node: NodeId(11),
+            data: Some(ActionData::Value("C:/next.html".into())),
+        });
+        let request = actions
+            .lock()
+            .expect("queued action lock")
+            .pop_front()
+            .unwrap();
+        assert_eq!(request.action, Action::SetValue);
+        assert_eq!(request.target_node, NodeId(11));
+        assert_eq!(request.data, Some(ActionData::Value("C:/next.html".into())));
+    }
+}

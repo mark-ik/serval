@@ -773,6 +773,12 @@ impl FrisketSurface {
             let Some(node) = nodes.get(id).copied() else {
                 continue;
             };
+            if chrome_action(dom, node) == Some(ChromeAction::Address) {
+                if let Some(chrome) = &self.chrome {
+                    access.set_value(chrome.address.clone());
+                    access.add_action(Action::SetValue);
+                }
+            }
             let Some(tile) = attr(dom, node, FRISKET_TILE_ATTR)
                 .and_then(|value| value.parse::<u64>().ok())
                 .map(TileId)
@@ -1913,6 +1919,8 @@ mod tests {
             .find(|(_, node)| node.role() == Role::TextInput && node.label() == Some("Address"))
             .map(|(_, node)| node)
             .expect("address accessibility node");
+        assert_eq!(address.value(), Some("C:/example/index.html"));
+        assert!(address.supports_action(accesskit::Action::SetValue));
         let address_rect = surface.chrome_rect("address").expect("address geometry");
         let bounds = address.bounds().expect("address bounds");
         assert_eq!(bounds.x0, f64::from(address_rect.x));
