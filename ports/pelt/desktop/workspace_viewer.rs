@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use accesskit::{Action, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
+use genet_host_api::ResourceFetcher;
 use genet_host_api::tile::{
     ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
     TileTree,
@@ -17,7 +18,7 @@ use genet_winit_host::{
 use inker::{
     A11yCapability, EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme,
     SessionInput, SessionKey, SessionModifiers, SessionNavigationCommand, SessionPointerButton,
-    SessionRegistry, SessionScrollKey, SurfaceEngineRegistry, SurfaceFrame,
+    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
 };
 #[cfg(target_os = "windows")]
 use inker::{FrameHandleOwnership, NativeTextureHandle};
@@ -59,6 +60,8 @@ const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the 
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
+const READER_WORKSPACE_ASSERTION: &str = "Reader reused the focused tile's held Livery response, exposed Fleece lineage, and restored the original Livery document without a second fetch";
+const READER_FIXTURE_SOURCE: &str = include_str!("../examples/workspace/reader/index.html");
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -82,6 +85,9 @@ pub enum WorkspaceReceipt {
     NarrowChrome,
     /// P6's actual high-DPI Chrome input and capture alignment.
     ChromeDpi,
+    /// Reader extracts a focused tile's already-held source response in the
+    /// shared workspace, then releases it back to its original Livery route.
+    Reader,
 }
 
 impl WorkspaceReceipt {
@@ -95,6 +101,7 @@ impl WorkspaceReceipt {
             Self::Accessibility => "accessibility",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
+            Self::Reader => "reader",
         }
     }
 
@@ -115,6 +122,7 @@ impl WorkspaceReceipt {
                 | Self::Accessibility
                 | Self::NarrowChrome
                 | Self::ChromeDpi
+                | Self::Reader
         )
     }
 
@@ -310,14 +318,18 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::Accessibility
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
+                | WorkspaceReceipt::Reader
         )
     );
     #[cfg(target_os = "windows")]
     let scrying_host = (!omit_scrying).then(ScryingReceiptHost::new);
+    let fetcher = genet_documents::LocalFetcher::with_resource_policy(
+        genet_documents::ResourceFetchPolicy::default(),
+    );
     #[cfg(target_os = "windows")]
-    let registries = workspace_registries(scrying_host.clone());
+    let registries = workspace_registries_with_fetcher(fetcher.clone(), scrying_host.clone());
     #[cfg(not(target_os = "windows"))]
-    let registries = workspace_registries();
+    let registries = workspace_registries_with_fetcher(fetcher.clone());
     let overrides = config.route_overrides.clone();
     let workspace = PeltWorkspace::try_routed(
         tree,
@@ -326,8 +338,21 @@ pub fn run_livery_workspace_viewer(
             let ContentSource::Document(DocumentRef(address)) = &tile.content else {
                 return Err("standalone Pelt only routes document tile sources".to_owned());
             };
-            let mut request = PeltTileRequest::new(address, initial_size);
-            if let Some(engine) = overrides.get(&tile.id.0) {
+            let engine = overrides.get(&tile.id.0);
+            let mut request = if cfg!(feature = "reader")
+                && engine.is_some_and(|engine| engine == inker::routing::ENGINE_GENET_READER)
+            {
+                let resource_address = address
+                    .split_once('#')
+                    .map_or(address.as_str(), |(resource, _)| resource);
+                let response = fetcher.fetch_response(resource_address).ok_or_else(|| {
+                    format!("could not acquire the held source response for Reader at {address}")
+                })?;
+                held_response_request(response, address, initial_size)
+            } else {
+                PeltTileRequest::new(address, initial_size)
+            };
+            if let Some(engine) = engine {
                 request = request.with_engine_override(engine);
             }
             Ok(request)
@@ -377,13 +402,50 @@ impl pelt_core::PeltClock for WorkspaceClock {
     }
 }
 
+fn held_response_request(
+    response: genet_host_api::ResourceResponse,
+    requested_address: &str,
+    viewport: (u32, u32),
+) -> PeltTileRequest {
+    let genet_host_api::ResourceResponse {
+        final_url,
+        content_type,
+        bytes,
+    } = response;
+    let address = if final_url.contains('#') {
+        final_url
+    } else if let Some((_, fragment)) = requested_address.split_once('#') {
+        format!("{final_url}#{fragment}")
+    } else {
+        final_url
+    };
+    let mut request = SessionSpawnRequest::new(address)
+        .with_body(String::from_utf8_lossy(&bytes).into_owned())
+        .with_viewport(viewport.0, viewport.1);
+    if let Some(content_type) = content_type {
+        request = request.with_content_type(content_type);
+    }
+    PeltTileRequest::from_request(request)
+}
+
+#[cfg(test)]
 fn workspace_registries(
     #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
 ) -> PeltRegistries<Scene> {
+    workspace_registries_with_fetcher(
+        genet_documents::LocalFetcher::with_resource_policy(
+            genet_documents::ResourceFetchPolicy::default(),
+        ),
+        #[cfg(target_os = "windows")]
+        scrying_host,
+    )
+}
+
+fn workspace_registries_with_fetcher(
+    fetcher: genet_documents::ConfiguredLocalFetcher,
+    #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
+) -> PeltRegistries<Scene> {
     let mut sessions: SessionRegistry<Scene> = SessionRegistry::new();
-    let fetcher = genet_documents::LocalFetcher::with_resource_policy(
-        genet_documents::ResourceFetchPolicy::default(),
-    );
     sessions.register(Box::new(genet_documents::LiverySessionEngine::new(
         fetcher.clone(),
     )));
@@ -1079,18 +1141,12 @@ impl WorkspaceApp {
     }
 
     fn chrome_engine_choices() -> Vec<ChromeEngineChoice> {
+        let mut choices = vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery];
+        #[cfg(feature = "reader")]
+        choices.push(ChromeEngineChoice::Reader);
         #[cfg(feature = "scripted")]
-        {
-            vec![
-                ChromeEngineChoice::Automatic,
-                ChromeEngineChoice::Livery,
-                ChromeEngineChoice::Scripted,
-            ]
-        }
-        #[cfg(not(feature = "scripted"))]
-        {
-            vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery]
-        }
+        choices.push(ChromeEngineChoice::Scripted);
+        choices
     }
 
     fn selected_chrome_engine(&self, tile: TileId) -> Option<ChromeEngineChoice> {
@@ -1100,6 +1156,7 @@ impl WorkspaceApp {
         }
         match route.selected_engine() {
             inker::routing::ENGINE_GENET_LIVERY => Some(ChromeEngineChoice::Livery),
+            inker::routing::ENGINE_GENET_READER => Some(ChromeEngineChoice::Reader),
             inker::routing::ENGINE_GENET_SCRIPTED => Some(ChromeEngineChoice::Scripted),
             _ => None,
         }
@@ -1376,6 +1433,18 @@ impl WorkspaceApp {
         let next = match choice {
             ChromeEngineChoice::Automatic => None,
             ChromeEngineChoice::Livery => Some(inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+            ChromeEngineChoice::Reader => {
+                #[cfg(feature = "reader")]
+                {
+                    Some(inker::routing::ENGINE_GENET_READER.to_owned())
+                }
+                #[cfg(not(feature = "reader"))]
+                {
+                    self.chrome_status =
+                        ChromeStatus::Error("Reader is unavailable in this Pelt build".to_owned());
+                    return true;
+                }
+            },
             ChromeEngineChoice::Scripted => {
                 #[cfg(feature = "scripted")]
                 {
@@ -1740,6 +1809,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::Accessibility
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
+                        | WorkspaceReceipt::Reader
                 )
             ) || self
                 .config
@@ -1959,7 +2029,8 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::Appearance
                 | WorkspaceReceipt::Accessibility
                 | WorkspaceReceipt::NarrowChrome
-                | WorkspaceReceipt::ChromeDpi,
+                | WorkspaceReceipt::ChromeDpi
+                | WorkspaceReceipt::Reader,
             ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
@@ -2002,6 +2073,7 @@ impl WorkspaceApp {
             WorkspaceReceipt::Accessibility => self.drive_accessibility_workspace_receipt_step(),
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
+            WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
         }
     }
 
@@ -2014,6 +2086,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::Accessibility
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
+                    | WorkspaceReceipt::Reader
             )
         ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
@@ -3119,6 +3192,234 @@ impl WorkspaceApp {
         }
         self.receipt_step = self.receipt_step.saturating_add(1);
         Ok(None)
+    }
+
+    fn drive_reader_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        #[cfg(not(feature = "reader"))]
+        {
+            return Err("Reader workspace receipt needs the reader feature".to_owned());
+        }
+        #[cfg(feature = "reader")]
+        {
+            let reader = TileId(1);
+            let neighbor = TileId(2);
+            match self.receipt_step {
+                0 => {
+                    require_tile(self.workspace.tree(), 2)?;
+                    let route = self
+                        .workspace
+                        .route(reader)
+                        .ok_or("Reader receipt has no initial article route")?;
+                    let source = self
+                        .workspace
+                        .controller(reader)
+                        .and_then(PeltController::clip)
+                        .and_then(|clip| {
+                            clip.artifacts.into_iter().find(|artifact| {
+                                artifact.role == inker::DocumentClipArtifactRole::SourceResponse
+                            })
+                        })
+                        .ok_or("Reader receipt could not find Livery's retained source response")?;
+                    let neighbor_route = self
+                        .workspace
+                        .route(neighbor)
+                        .ok_or("Reader receipt has no neighboring document route")?;
+                    if route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                        || route.source != PeltRouteSource::Automatic
+                        || !matches!(route.state, PeltRouteState::Document)
+                        || source.bytes != READER_FIXTURE_SOURCE.as_bytes()
+                        || neighbor_route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+                        || neighbor_route.source != PeltRouteSource::Automatic
+                    {
+                        return Err(
+                            "Reader receipt did not begin with one retained Livery source and one ordinary neighbor"
+                                .to_owned(),
+                        );
+                    }
+                    self.click_chrome("engine-menu")?;
+                },
+                1 => {
+                    let reader_choice = self
+                        .frisket
+                        .chrome_rect("engine-reader")
+                        .ok_or("Reader receipt did not expose Reader in the engine menu")?;
+                    if !self
+                        .chrome_model()
+                        .engine_choices
+                        .contains(&ChromeEngineChoice::Reader)
+                        || !matches!(
+                            self.frisket.hit(
+                                reader_choice.x + reader_choice.width / 2.0,
+                                reader_choice.y + reader_choice.height / 2.0
+                            ),
+                            Some(FrisketHit::ChromeAction(ChromeAction::ChooseEngine(
+                                ChromeEngineChoice::Reader
+                            )))
+                        )
+                    {
+                        return Err(
+                            "Reader receipt did not retain an interactive Reader route choice"
+                                .to_owned(),
+                        );
+                    }
+                    self.click_chrome("engine-reader")?;
+                },
+                2 => {
+                    self.validate_reader_workspace(true)?;
+                    self.click_chrome("inspect")?;
+                },
+                3 => {
+                    self.validate_reader_inspector()?;
+                    self.click_chrome("engine-menu")?;
+                },
+                4 => {
+                    let automatic = self
+                        .frisket
+                        .chrome_rect("engine-automatic")
+                        .ok_or("Reader receipt did not expose Automatic after Reader selection")?;
+                    if !matches!(
+                        self.frisket.hit(
+                            automatic.x + automatic.width / 2.0,
+                            automatic.y + automatic.height / 2.0
+                        ),
+                        Some(FrisketHit::ChromeAction(ChromeAction::ChooseEngine(
+                            ChromeEngineChoice::Automatic
+                        )))
+                    ) {
+                        return Err(
+                            "Reader receipt lost Automatic's retained route action".to_owned()
+                        );
+                    }
+                    self.click_chrome("engine-automatic")?;
+                },
+                5 => {
+                    self.validate_reader_workspace(false)?;
+                    self.click_chrome("engine-menu")?;
+                },
+                6 => {
+                    if self.frisket.chrome_rect("engine-reader").is_none() {
+                        return Err(
+                            "Reader receipt could not select Reader again after restoring Livery"
+                                .to_owned(),
+                        );
+                    }
+                    self.click_chrome("engine-reader")?;
+                },
+                7 => {
+                    self.validate_reader_workspace(true)?;
+                    self.validate_reader_inspector()?;
+                    self.receipt_step = self.receipt_step.saturating_add(1);
+                    return Ok(Some(READER_WORKSPACE_ASSERTION.to_owned()));
+                },
+                _ => return Ok(Some(READER_WORKSPACE_ASSERTION.to_owned())),
+            }
+            self.receipt_step = self.receipt_step.saturating_add(1);
+            Ok(None)
+        }
+    }
+
+    fn validate_reader_workspace(&self, reader_selected: bool) -> Result<(), String> {
+        let reader = TileId(1);
+        let neighbor = TileId(2);
+        let route = self
+            .workspace
+            .route(reader)
+            .ok_or("Reader receipt has no article route")?;
+        let expected_engine = if reader_selected {
+            inker::routing::ENGINE_GENET_READER
+        } else {
+            inker::routing::ENGINE_GENET_LIVERY
+        };
+        let expected_title = if reader_selected {
+            "Source stays with the tile"
+        } else {
+            "Pelt reader held source"
+        };
+        let report = self
+            .workspace
+            .controller(reader)
+            .and_then(PeltController::inspect)
+            .ok_or("Reader receipt article has no structural report")?;
+        let neighbor_route = self
+            .workspace
+            .route(neighbor)
+            .ok_or("Reader receipt lost its neighboring route")?;
+        let neighbor_report = self
+            .workspace
+            .controller(neighbor)
+            .and_then(PeltController::inspect)
+            .ok_or("Reader receipt neighbor has no structural report")?;
+        let held_source = self
+            .workspace
+            .controller(reader)
+            .map(PeltController::request)
+            .and_then(|request| request.body.as_deref());
+        let link_is_retained = if reader_selected {
+            report
+                .links
+                .iter()
+                .any(|link| link.replace('\\', "/").ends_with("/reader/next.html"))
+        } else {
+            report.links.iter().any(|link| link == "next.html")
+        };
+        let lineage_is_reader = report
+            .lineage
+            .as_ref()
+            .is_some_and(|lineage| lineage.tool == "fleece");
+        if route.selected_engine() != expected_engine
+            || !matches!(route.state, PeltRouteState::Document)
+            || report.title.as_deref() != Some(expected_title)
+            || report.headings != ["Source stays with the tile"]
+            || !link_is_retained
+            || held_source != Some(READER_FIXTURE_SOURCE)
+            || lineage_is_reader != reader_selected
+            || neighbor_route.selected_engine() != inker::routing::ENGINE_GENET_LIVERY
+            || neighbor_route.source != PeltRouteSource::Automatic
+            || !matches!(neighbor_route.state, PeltRouteState::Document)
+            || neighbor_report.title.as_deref() != Some("Reader neighbor stays Livery")
+            || neighbor_report.headings != ["Neighbor stays in Livery"]
+        {
+            let expectation = if reader_selected {
+                "preserve its held source, Fleece report, or neighboring Livery tile"
+            } else {
+                "restore the original Livery document from its held source"
+            };
+            return Err(format!(
+                "Reader receipt did not {expectation}: article engine={}, source={:?}, state={:?}, title={:?}, headings={:?}, links={:?}, retained-link={link_is_retained}, held-source={}, fleece-lineage={lineage_is_reader}; neighbor engine={}, source={:?}, state={:?}, title={:?}, headings={:?}",
+                route.selected_engine(),
+                route.source,
+                route.state,
+                report.title,
+                report.headings,
+                report.links,
+                held_source == Some(READER_FIXTURE_SOURCE),
+                neighbor_route.selected_engine(),
+                neighbor_route.source,
+                neighbor_route.state,
+                neighbor_report.title,
+                neighbor_report.headings,
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_reader_inspector(&self) -> Result<(), String> {
+        let inspector = self
+            .chrome_model()
+            .inspector
+            .ok_or("Reader receipt did not retain its structural inspector")?;
+        let lineage = inspector
+            .sections
+            .iter()
+            .find(|section| section.label == "Lineage")
+            .and_then(|section| section.entries.first())
+            .ok_or("Reader receipt inspector omitted Fleece lineage")?;
+        if !lineage.contains("fleece") || !inspector.summary.contains("heading") {
+            return Err(
+                "Reader receipt inspector did not expose the Fleece derivation posture".to_owned(),
+            );
+        }
+        Ok(())
     }
 
     fn drive_appearance_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
@@ -4419,6 +4720,54 @@ fn session_ime(ime: winit::event::Ime) -> SessionIme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "reader")]
+    use std::sync::Mutex;
+
+    #[cfg(feature = "reader")]
+    #[derive(Clone)]
+    struct CountingResourceFetcher {
+        responses: Arc<HashMap<String, genet_host_api::ResourceResponse>>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[cfg(feature = "reader")]
+    impl ResourceFetcher for CountingResourceFetcher {
+        fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+            self.fetch_response(url).map(|response| response.bytes)
+        }
+
+        fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+            self.calls
+                .lock()
+                .expect("counting resource fetcher call lock")
+                .push(url.to_owned());
+            self.responses.get(url).cloned()
+        }
+    }
+
+    #[cfg(feature = "reader")]
+    fn reader_test_registries(fetcher: CountingResourceFetcher) -> PeltRegistries<Scene> {
+        let mut sessions = SessionRegistry::new();
+        sessions.register(Box::new(genet_documents::LiverySessionEngine::new(fetcher)));
+        sessions.register(Box::new(genet_documents::ReaderSessionEngine::default()));
+        let mut policy = inker::routing::EngineRoutePolicy::default();
+        for rule in &mut policy.rules {
+            if rule.engine_id == inker::routing::ENGINE_GENET_WEB {
+                rule.engine_id = inker::routing::ENGINE_GENET_LIVERY.to_owned();
+            }
+        }
+        policy.fallback.engine_id = inker::routing::ENGINE_GENET_LIVERY.to_owned();
+        PeltRegistries::new(
+            sessions,
+            SurfaceEngineRegistry::new(),
+            policy,
+            "pelt-reader-test",
+            inker::routing::ENGINE_GENET_LIVERY,
+            EngineProfileBinding {
+                user_data_dir: "pelt-reader-test-profile".to_owned(),
+            },
+        )
+    }
 
     #[test]
     fn opaque_capability_blocks_even_an_accidental_structural_report() {
@@ -4536,6 +4885,14 @@ mod tests {
             WorkspaceReceipt::ChromeDpi.logical_viewport(),
             Some((960, 640))
         );
+        let reader = WorkspaceViewerConfig::new(
+            vec!["reader.html".to_owned(), "neighbor.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(WorkspaceReceipt::Reader, "reader.png");
+        assert_eq!(reader.size, Some((960, 640)));
+        assert_eq!(reader.frames, Some(3));
+        assert!(WorkspaceReceipt::Reader.keeps_chrome());
     }
 
     #[test]
@@ -4550,6 +4907,93 @@ mod tests {
         let p4 = run_livery_workspace_viewer(fallback().with_capability_receipt())
             .expect_err("P4 and P5 receipt drivers are mutually exclusive");
         assert!(p4.contains("P3 or P4"));
+    }
+
+    #[cfg(feature = "reader")]
+    #[test]
+    fn reader_workspace_reuses_the_held_livery_response_without_refetching() {
+        let article_url = "https://reader.test/reader/index.html".to_owned();
+        let neighbor_url = "https://reader.test/reader/neighbor.html".to_owned();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fetcher = CountingResourceFetcher {
+            responses: Arc::new(HashMap::from([
+                (
+                    article_url.clone(),
+                    genet_host_api::ResourceResponse::new(
+                        article_url.clone(),
+                        READER_FIXTURE_SOURCE.as_bytes().to_vec(),
+                    )
+                    .with_content_type("text/html; charset=utf-8"),
+                ),
+                (
+                    neighbor_url.clone(),
+                    genet_host_api::ResourceResponse::new(
+                        neighbor_url.clone(),
+                        include_str!("../examples/workspace/reader/neighbor.html")
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .with_content_type("text/html; charset=utf-8"),
+                ),
+            ])),
+            calls: calls.clone(),
+        };
+        let urls = vec![article_url.clone(), neighbor_url.clone()];
+        let tree = tree_from_urls(&urls);
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            reader_test_registries(fetcher),
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("Reader receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("Reader workspace opens its two Livery tiles");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Reader, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let pane = app.frisket.frame(960, 640).expect("Reader Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..8 {
+            assertion = app
+                .drive_reader_workspace_receipt_step()
+                .expect("Reader semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(assertion.as_deref(), Some(READER_WORKSPACE_ASSERTION));
+        let calls = calls.lock().expect("Reader fetch count lock");
+        assert_eq!(calls.len(), 2, "Reader did not fetch a second document");
+        assert_eq!(
+            calls.iter().filter(|url| *url == &article_url).count(),
+            1,
+            "the article response was acquired exactly once"
+        );
+        assert_eq!(
+            calls.iter().filter(|url| *url == &neighbor_url).count(),
+            1,
+            "the neighbor response was acquired exactly once"
+        );
     }
 
     #[test]

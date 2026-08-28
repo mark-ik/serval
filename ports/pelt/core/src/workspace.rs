@@ -7,8 +7,8 @@ use inker::routing::{
     WorkspaceRouteId, is_surface_engine,
 };
 use inker::{
-    A11yCapability, ContentReport, EngineProfileBinding, FocusReason, KeyboardEvent,
-    KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, PhysicalPosition,
+    A11yCapability, ContentReport, DocumentClipArtifactRole, EngineProfileBinding, FocusReason,
+    KeyboardEvent, KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, PhysicalPosition,
     SessionButtonState, SessionInput, SessionKey, SessionNavigationCommand, SessionPointerButton,
     SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
     SurfaceProducer, SurfaceSpawnRequest,
@@ -98,9 +98,9 @@ impl<F> PeltRegistries<F> {
     }
 }
 
-/// Inputs that select one tile's lane. The body remains held inside the
-/// session spawn request, so routing never needs to refetch merely to switch
-/// engines.
+/// Inputs that select one tile's lane. A source-capable document session can
+/// refresh the held body after navigation, so routing never needs to refetch
+/// merely to switch engines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeltTileRequest {
     pub request: SessionSpawnRequest,
@@ -1014,20 +1014,34 @@ impl<F: 'static> PeltWorkspace<F> {
     }
 
     fn sync_one_tile_metadata(&mut self, id: TileId) {
-        let controller_metadata = self
-            .controllers
-            .get(&id)
-            .map(|controller| (controller.request().clone(), controller.title()));
-        if let Some((request, _)) = &controller_metadata
+        let controller_metadata = self.controllers.get(&id).map(|controller| {
+            let request = controller.request().clone();
+            let source = request.body.is_none().then(|| {
+                controller.clip().and_then(|clip| {
+                    clip.artifacts
+                        .into_iter()
+                        .find(|artifact| artifact.role == DocumentClipArtifactRole::SourceResponse)
+                })
+            });
+            (request, controller.title(), source.flatten())
+        });
+        if let Some((request, _, source)) = &controller_metadata
             && let Some(routed) = &mut self.routed
             && let Some(tile_request) = routed.requests.get_mut(&id)
         {
             tile_request.request = request.clone();
+            if let Some(source) = source {
+                tile_request.request.address =
+                    retained_source_address(&source.canonical_uri, &tile_request.request.address);
+                tile_request.request.body =
+                    Some(String::from_utf8_lossy(&source.bytes).into_owned());
+                tile_request.request.content_type = Some(source.media_type.clone());
+            }
         }
         let route = self.routes.get(&id);
         let base_title = controller_metadata
             .as_ref()
-            .and_then(|(_, title)| title.clone())
+            .and_then(|(_, title, _)| title.clone())
             .filter(|title| !title.trim().is_empty())
             .or_else(|| {
                 self.routed
@@ -1035,7 +1049,7 @@ impl<F: 'static> PeltWorkspace<F> {
                     .and_then(|routed| routed.base_titles.get(&id).cloned())
             });
         if let Some(tile) = self.tree.tile_mut(id) {
-            if let Some((request, _)) = controller_metadata {
+            if let Some((request, _, _)) = controller_metadata {
                 tile.content =
                     ContentSource::Document(genet_host_api::tile::DocumentRef(request.address));
             }
@@ -1055,6 +1069,16 @@ impl<F: 'static> PeltWorkspace<F> {
             }
         }
     }
+}
+
+fn retained_source_address(canonical_uri: &str, requested_address: &str) -> String {
+    if canonical_uri.contains('#') {
+        return canonical_uri.to_owned();
+    }
+    requested_address.split_once('#').map_or_else(
+        || canonical_uri.to_owned(),
+        |(_, fragment)| format!("{canonical_uri}#{fragment}"),
+    )
 }
 
 fn surface_input(
