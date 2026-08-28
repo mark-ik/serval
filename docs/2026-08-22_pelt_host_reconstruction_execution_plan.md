@@ -973,6 +973,63 @@ The GPU-free desktop test separately fixes a 2.00x conversion to guard the
 coordinate path on machines where the headed environmental receipt correctly
 declines to run.
 
+### P7: Livery child accessibility composition
+
+**Status:** complete 2026-08-28 for the retained Livery document lane. This
+supersedes P6's deliberately empty Livery content aperture only. Reader,
+Scripted, Smolweb, and native surface trees remain declared apertures until
+their own engine contracts and action routes exist.
+
+The current Windows AccessKit bridge receives one root update and does not
+retain a child `target_tree` identity when an action returns. Pelt therefore
+flattens a completed Livery retained tree beneath its Frisket content aperture
+with host-owned IDs. Each ID is scoped by tile, installed session generation,
+and Livery's local node ID; retired IDs are never reused. A replacement session
+gets a fresh namespace, and an old platform action cannot become a new session
+or a newly rebuilt Frisket action.
+
+The child root carries the content-hole origin, applied page zoom, and root
+document scroll transform. Livery adjusts its child bounds for active nested
+element scrolls before Pelt composes them. Pelt withholds Click for a child
+whose transformed centre is outside its own content hole, and Livery withholds
+Click below an active nested scroller. That leaves inner-scroll
+ScrollIntoView, nested-scroller action routing, text/value editing, and native
+accessibility grafts as explicit later work rather than publishing a wrong
+pointer target.
+
+Focus stays virtual and does not activate or replace the document. A clickable
+Livery node re-enters Pelt through the ordinary content pointer path, checks
+its tile, session generation, content rect, and point before press, then
+checks the generation and rect again before release. The host keeps its Chrome
+and the other tiles throughout.
+
+The named focused receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt accessibility-children \
+  --artifact target/pelt-receipts/workspace-accessibility-children.png
+```
+
+It owns `examples/workspace/p7-accessibility-children/index.html` and
+`next.html`. The driver requires the platform bridge, one composed Livery child
+root under the labelled partial-accessibility aperture, a virtual Focus on
+`Open child destination`, a Click through Pelt that replaces only tile 1, and a
+fresh destination subtree with the old focus absent. Its GPU-free checks add
+two identical Livery tiles, root scroll, 125% page zoom, sibling namespace
+separation, and an inert stale action after navigation.
+
+Recorded 2026-08-28: the focused core routing suite passed 3 tests, the
+Livery-only Pelt desktop suite passed 37 tests, and Pelt's viewer parser suite
+passed 4 tests. The headed Windows run installed the platform bridge, completed
+after 4 redraws at 960x640, and reported `Pelt composed the focused Livery child
+tree through its retained content hole; Focus stayed virtual and Click navigated
+only that session`; its compositor digest was `01c8f2b912a72ebe`. The final
+capture shows the destination document inside live Chrome. The focused
+Genet-render scroll projection and Livery zoom checks are part of this receipt's
+maintenance gate.
+
 ### Reader in workspace
 
 **Status:** complete 2026-08-27 as a distinct Fleece/Pelt integration receipt,
@@ -1046,12 +1103,15 @@ Fleece lineage in the retained inspector.
 
 ## Immediate next lane
 
-P6's retained-shell receipts and the separate Reader-in-workspace receipt are
-complete. The AccessKit tree currently covers the retained Pelt shell and
-labelled content apertures; a namespaced child-tree and action-composition
-protocol remains a separate lane. The Appearance drawer stays session-only until
-Pelt owns a durable configuration policy. The held-source handoff is now a
-reusable Pelt boundary, not a fetch API for Fleece.
+P6's retained-shell receipts, P7's Livery child-tree receipt, and the separate
+Reader-in-workspace receipt are complete. The AccessKit tree now composes the
+retained Livery child tree for its focused supported lane; Reader, Scripted,
+Smolweb, and native child trees still need their own namespace and action
+contracts. Livery still needs native-link semantic inference, nested-scroll
+ScrollIntoView/action routing, and text/value semantics before Pelt can widen
+that child lane. The Appearance drawer stays session-only until Pelt owns a
+durable configuration policy. The held-source handoff is now a reusable Pelt
+boundary, not a fetch API for Fleece.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and

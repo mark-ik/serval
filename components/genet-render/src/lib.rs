@@ -14,7 +14,7 @@ pub mod inspect;
 #[path = "livery_render.rs"]
 pub mod render;
 
-pub use a11y::accesskit_tree;
+pub use a11y::{accesskit_tree, accesskit_tree_with_scroll};
 pub use inspect::{ContentReport, OutlineEntry, content_report};
 pub use render::{
     ExternalTextureDraw, LaidOutDocument, RenderedFrame, TextCursor, caret_byte_at,

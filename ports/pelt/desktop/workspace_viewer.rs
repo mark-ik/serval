@@ -1,6 +1,6 @@
 //! Headed recursive Pelt workspace over TileTree and Frisket.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +57,7 @@ const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
 const APPEARANCE_WORKSPACE_ASSERTION: &str =
     "session-only appearance changed the live Pelt chrome theme while the focused document held";
 const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the session appearance controls";
+const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focused Livery child tree through its retained content hole; Focus stayed virtual and Click navigated only that session";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
@@ -87,6 +88,9 @@ pub enum WorkspaceReceipt {
     Appearance,
     /// P6's retained Chrome/Frisket AccessKit tree and typed action routing.
     Accessibility,
+    /// P7's one-tree Livery child semantics, namespaced and routed through the
+    /// same Pelt input path as its content aperture.
+    AccessibilityChildren,
     /// P6's compact Chrome layout at a small logical viewport.
     NarrowChrome,
     /// P6's actual high-DPI Chrome input and capture alignment.
@@ -111,6 +115,7 @@ impl WorkspaceReceipt {
             Self::LoadingError => "loading-error",
             Self::Appearance => "appearance",
             Self::Accessibility => "accessibility",
+            Self::AccessibilityChildren => "accessibility-children",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
@@ -134,6 +139,7 @@ impl WorkspaceReceipt {
                 | Self::LoadingError
                 | Self::Appearance
                 | Self::Accessibility
+                | Self::AccessibilityChildren
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
@@ -332,6 +338,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
                 | WorkspaceReceipt::Accessibility
+                | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -928,17 +935,72 @@ struct WorkspaceApp {
     scrying_host: Option<ScryingReceiptHost>,
 }
 
-/// Per-window platform bridge and retained shell action map.
+/// One stable virtual focus target in the composite workspace tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum WorkspaceA11yFocus {
+    Frisket(FrisketA11yTarget),
+    Livery(AccessNodeId),
+}
+
+/// A Pelt-owned action target for one node in the composite tree.
+#[derive(Clone, Debug)]
+enum WorkspaceA11yActionTarget {
+    Frisket(genet_scripted_dom::NodeId),
+    Livery(LiveryA11yAction),
+}
+
+/// The session identity and workspace point needed to route a retained Livery
+/// semantic action through the ordinary Pelt input path.
+#[derive(Clone, Copy, Debug)]
+struct LiveryA11yAction {
+    tile: TileId,
+    session_generation: u64,
+    content_rect: WorkspaceRect,
+    click_point: Option<(f32, f32)>,
+}
+
+/// One tile-local namespace inside Pelt's root AccessKit tree.
 ///
-/// The map deliberately names only Frisket's one DOM. Child document and
-/// native-surface trees need stable per-tile namespaces before they can join
-/// this tree, so they remain labelled apertures in this P6 slice.
+/// AccessKit node IDs are only local-tree unique. Pelt owns these assignments
+/// so independently constructed `ScriptedDom`s cannot collide when their
+/// retained trees become siblings below Frisket's content apertures.
+#[derive(Default)]
+struct LiveryA11yNamespace {
+    session_generation: u64,
+    global_ids: HashMap<AccessNodeId, AccessNodeId>,
+}
+
+/// The tree and action map delivered together to the one-tree platform bridge.
+struct WorkspaceA11yProjection {
+    tree: TreeUpdate,
+    root: AccessNodeId,
+    actions: HashMap<AccessNodeId, WorkspaceA11yActionTarget>,
+}
+
+/// A completed retained Livery tree ready to attach below one Frisket hole.
+struct LiveryA11yChild {
+    tile: TileId,
+    session_generation: u64,
+    aperture: AccessNodeId,
+    root: AccessNodeId,
+    tree: TreeUpdate,
+    transform: Affine,
+    content_rect: WorkspaceRect,
+    content_origin: (f32, f32),
+    scroll: (f32, f32),
+    page_zoom: f32,
+}
+
+/// Per-window platform bridge and retained composite action map.
 struct WorkspaceAccessibility {
     bridge: AccessKitBridge,
     window_revealed: bool,
     last_install_error: Option<String>,
-    action_map: HashMap<AccessNodeId, genet_scripted_dom::NodeId>,
-    focus: Option<FrisketA11yTarget>,
+    action_map: HashMap<AccessNodeId, WorkspaceA11yActionTarget>,
+    focus: Option<WorkspaceA11yFocus>,
+    child_namespaces: HashMap<TileId, LiveryA11yNamespace>,
+    assigned_child_ids: HashSet<AccessNodeId>,
+    next_child_node_id: u64,
     wake: Arc<AtomicBool>,
 }
 
@@ -954,13 +1016,27 @@ impl WorkspaceAccessibility {
             last_install_error: None,
             action_map: HashMap::new(),
             focus: None,
+            child_namespaces: HashMap::new(),
+            assigned_child_ids: HashSet::new(),
+            // Keep Pelt-owned IDs in a distinct range while still checking
+            // every shell ID. The allocator never recycles an issued child ID,
+            // which makes a stale platform action inert rather than aliased.
+            next_child_node_id: 1_u64 << 63,
             wake,
         }
     }
 
-    fn prepare(&mut self, projection: FrisketA11yProjection, scale_factor: f64) -> TreeUpdate {
-        self.action_map = projection.nodes;
+    fn prepare(&mut self, projection: WorkspaceA11yProjection, scale_factor: f64) -> TreeUpdate {
+        self.action_map = projection.actions;
         let mut tree = projection.tree;
+        if let Some(WorkspaceA11yFocus::Livery(id)) = self.focus.as_ref()
+            && matches!(
+                self.action_map.get(id),
+                Some(WorkspaceA11yActionTarget::Livery(_))
+            )
+        {
+            tree.focus = *id;
+        }
         if let Some((_, root)) = tree.nodes.iter_mut().find(|(id, _)| *id == projection.root) {
             // Livery lays the retained shell out in logical CSS pixels. The
             // platform tree needs physical client coordinates, matching the
@@ -973,7 +1049,7 @@ impl WorkspaceAccessibility {
     fn sync(
         &mut self,
         window: &Window,
-        projection: FrisketA11yProjection,
+        projection: WorkspaceA11yProjection,
         scale_factor: f64,
     ) -> Vec<A11yActionRequest> {
         let node_count = projection.tree.nodes.len();
@@ -983,7 +1059,7 @@ impl WorkspaceAccessibility {
                 Ok(()) => {
                     self.last_install_error = None;
                     eprintln!(
-                        "[pelt] accessibility {:?}, {node_count} retained shell nodes projected",
+                        "[pelt] accessibility {:?}, {node_count} retained workspace nodes projected",
                         self.bridge.status()
                     );
                 },
@@ -1007,16 +1083,96 @@ impl WorkspaceAccessibility {
         self.bridge.drain_actions()
     }
 
-    fn node_for(&self, id: AccessNodeId) -> Option<genet_scripted_dom::NodeId> {
-        self.action_map.get(&id).copied()
+    fn action_for(&self, id: AccessNodeId) -> Option<WorkspaceA11yActionTarget> {
+        self.action_map.get(&id).cloned()
     }
 
-    fn set_focus(&mut self, target: FrisketA11yTarget) -> bool {
+    fn set_focus(&mut self, target: WorkspaceA11yFocus) -> bool {
         if self.focus.as_ref() == Some(&target) {
             return false;
         }
         self.focus = Some(target);
         true
+    }
+
+    fn frisket_focus(&self) -> Option<&FrisketA11yTarget> {
+        match self.focus.as_ref() {
+            Some(WorkspaceA11yFocus::Frisket(target)) => Some(target),
+            Some(WorkspaceA11yFocus::Livery(_)) | None => None,
+        }
+    }
+
+    fn retain_livery_namespaces(&mut self, live_sessions: &HashMap<TileId, u64>) {
+        self.child_namespaces.retain(|tile, namespace| {
+            live_sessions.get(tile) == Some(&namespace.session_generation)
+        });
+    }
+
+    fn child_global_id(
+        &mut self,
+        tile: TileId,
+        session_generation: u64,
+        local_id: AccessNodeId,
+        shell_ids: &HashSet<AccessNodeId>,
+    ) -> AccessNodeId {
+        let reset_namespace = self.child_namespaces.get(&tile).is_some_and(|namespace| {
+            namespace.session_generation != session_generation
+                || namespace
+                    .global_ids
+                    .values()
+                    .any(|id| shell_ids.contains(id))
+        });
+        if reset_namespace {
+            self.child_namespaces.remove(&tile);
+        }
+        if let Some(id) = self
+            .child_namespaces
+            .get(&tile)
+            .and_then(|namespace| namespace.global_ids.get(&local_id))
+        {
+            return *id;
+        }
+
+        let global_id = self.allocate_child_id(shell_ids);
+        let namespace = self
+            .child_namespaces
+            .entry(tile)
+            .or_insert_with(|| LiveryA11yNamespace {
+                session_generation,
+                global_ids: HashMap::new(),
+            });
+        debug_assert_eq!(namespace.session_generation, session_generation);
+        namespace.global_ids.insert(local_id, global_id);
+        global_id
+    }
+
+    fn allocate_child_id(&mut self, shell_ids: &HashSet<AccessNodeId>) -> AccessNodeId {
+        loop {
+            let candidate = AccessNodeId(self.next_child_node_id);
+            self.next_child_node_id = self
+                .next_child_node_id
+                .checked_add(1)
+                .expect("Pelt accessibility child node IDs exhausted");
+            if !shell_ids.contains(&candidate) && self.assigned_child_ids.insert(candidate) {
+                return candidate;
+            }
+        }
+    }
+
+    fn clear_stale_livery_focus(
+        &mut self,
+        actions: &HashMap<AccessNodeId, WorkspaceA11yActionTarget>,
+    ) {
+        let Some(WorkspaceA11yFocus::Livery(id)) = self.focus.as_ref() else {
+            return;
+        };
+        if !matches!(actions.get(id), Some(WorkspaceA11yActionTarget::Livery(_))) {
+            self.focus = None;
+        }
+    }
+
+    fn child_id_is_reserved(&self, id: AccessNodeId) -> bool {
+        self.assigned_child_ids.contains(&id)
     }
 
     fn status(&self) -> BridgeStatus {
@@ -1156,13 +1312,18 @@ impl WorkspaceApp {
             .tiles()
             .into_iter()
             .map(|tile| {
-                let description = match self
-                    .workspace
-                    .controller(tile.id)
-                    .map(PeltController::a11y_capability)
-                {
+                let controller = self.workspace.controller(tile.id);
+                let is_livery = controller.is_some_and(|controller| {
+                    controller
+                        .session_as_any_ref()
+                        .is::<genet_documents::LiveryDocumentSession>()
+                });
+                let description = match controller.map(PeltController::a11y_capability) {
                     Some(A11yCapability::Opaque) => {
                         "The engine declares opaque accessibility. Pelt cannot inspect or compose this content's semantics."
+                    },
+                    Some(A11yCapability::Partial) if is_livery => {
+                        "The engine declares partial accessibility. Pelt composes this Livery document's available retained semantics into the workspace tree."
                     },
                     Some(A11yCapability::Partial) => {
                         "The engine declares partial accessibility. Pelt does not compose its document semantics into this workspace tree yet."
@@ -1184,42 +1345,252 @@ impl WorkspaceApp {
         self.frisket.set_content_accessibility(regions);
     }
 
-    /// Build the currently retained shell tree without a window. This makes the
-    /// semantic projection and the same action map independently testable.
-    fn prepare_accessibility_tree(&mut self) -> Result<TreeUpdate, String> {
+    /// Refresh Frisket's retained geometry before projecting its shell and
+    /// attached document subtrees. The visual renderer does this same first
+    /// phase before it asks each document session for a frame.
+    fn layout_accessibility_shell(&mut self) -> Result<(), String> {
         self.refresh_chrome();
         self.refresh_accessibility_content_regions();
         let (width, height) = self.logical_size();
-        self.frisket
+        let mut pane = self
+            .frisket
             .frame(width, height)
             .map_err(|error| format!("could not lay out Frisket for accessibility: {error}"))?;
+        self.workspace
+            .set_content_rects(pane.content_rects.iter().copied());
+        if self.config.chrome && self.chrome_model().diagnostic.is_some() {
+            self.refresh_chrome();
+            pane = self.frisket.frame(width, height).map_err(|error| {
+                format!("could not lay out diagnostic Frisket for accessibility: {error}")
+            })?;
+            self.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+        }
+        Ok(())
+    }
+
+    /// Gather every live Livery session and every visible one with completed
+    /// retained geometry. A session without a finished frame remains an honest
+    /// labelled aperture until its engine supplies its own tree.
+    fn livery_accessibility_children(
+        &self,
+        projection: &FrisketA11yProjection,
+    ) -> (HashMap<TileId, u64>, Vec<LiveryA11yChild>) {
+        let live_sessions = self
+            .workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .filter_map(|tile| {
+                let controller = self.workspace.controller(tile.id)?;
+                controller
+                    .session_as_any_ref()
+                    .is::<genet_documents::LiveryDocumentSession>()
+                    .then_some((tile.id, controller.session_generation()))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut children = Vec::new();
+        for (&tile, &aperture) in &projection.content_nodes {
+            let Some(controller) = self.workspace.controller(tile) else {
+                continue;
+            };
+            let Some(session) = controller
+                .session_as_any_ref()
+                .downcast_ref::<genet_documents::LiveryDocumentSession>()
+            else {
+                continue;
+            };
+            let document = session.document();
+            let Some(layout) = document.retained_layout() else {
+                continue;
+            };
+            let Some(content) = self.workspace.content_rect(tile) else {
+                continue;
+            };
+            let page_zoom = session.page_zoom();
+            if !page_zoom.is_finite() || page_zoom <= 0.0 {
+                continue;
+            }
+            let tree = genet_render::accesskit_tree_with_scroll(
+                document.dom(),
+                layout,
+                None,
+                document.element_scroll(),
+            );
+            let Some(root) = tree.tree.as_ref().map(|tree| tree.root) else {
+                continue;
+            };
+            let scroll = document.scroll();
+            let transform = Affine::translate((f64::from(content.x), f64::from(content.y)))
+                * Affine::scale(f64::from(page_zoom))
+                * Affine::translate((-f64::from(scroll.0), -f64::from(scroll.1)));
+            children.push(LiveryA11yChild {
+                tile,
+                session_generation: controller.session_generation(),
+                aperture,
+                root,
+                tree,
+                transform,
+                content_rect: content,
+                content_origin: (content.x, content.y),
+                scroll,
+                page_zoom,
+            });
+        }
+        (live_sessions, children)
+    }
+
+    /// Merge Livery's local retained trees into Pelt's one-tree platform
+    /// bridge. The current bridge cannot preserve AccessKit graft tree IDs on
+    /// actions, so Pelt flattens only this supported lane with fresh IDs.
+    fn workspace_accessibility_projection(&mut self) -> Result<WorkspaceA11yProjection, String> {
+        let frisket_focus = self.accessibility.frisket_focus().cloned();
         let projection = self
             .frisket
-            .accessibility_projection(self.accessibility.focus.as_ref())
+            .accessibility_projection(frisket_focus.as_ref())
             .ok_or_else(|| {
                 "Frisket has no completed retained layout for accessibility".to_owned()
             })?;
+        let (live_sessions, children) = self.livery_accessibility_children(&projection);
+        self.accessibility.retain_livery_namespaces(&live_sessions);
+
+        let shell_ids = projection
+            .tree
+            .nodes
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<HashSet<_>>();
+        let FrisketA11yProjection {
+            mut tree,
+            root,
+            nodes,
+            ..
+        } = projection;
+        let mut actions = nodes
+            .into_iter()
+            // If a later Frisket rebuild happens to reuse a retired child ID,
+            // retaining that shell node is safe, but routing an old platform
+            // action to it is not. Leave that rare shell action inert until a
+            // future host-wide shell remapper owns both namespaces.
+            .filter(|(id, _)| !self.accessibility.child_id_is_reserved(*id))
+            .map(|(id, node)| (id, WorkspaceA11yActionTarget::Frisket(node)))
+            .collect::<HashMap<_, _>>();
+
+        for child in children {
+            let LiveryA11yChild {
+                tile,
+                session_generation,
+                aperture,
+                root: local_root,
+                tree: child_tree,
+                transform,
+                content_rect,
+                content_origin,
+                scroll,
+                page_zoom,
+            } = child;
+            let mut child_ids = HashMap::new();
+            for (local_id, _) in &child_tree.nodes {
+                let global_id = self.accessibility.child_global_id(
+                    tile,
+                    session_generation,
+                    *local_id,
+                    &shell_ids,
+                );
+                child_ids.insert(*local_id, global_id);
+            }
+            let Some(&child_root) = child_ids.get(&local_root) else {
+                continue;
+            };
+            let Some((_, aperture)) = tree.nodes.iter_mut().find(|(id, _)| *id == aperture) else {
+                continue;
+            };
+            aperture.set_children([child_root]);
+
+            for (local_id, mut node) in child_tree.nodes {
+                let global_id = child_ids
+                    .get(&local_id)
+                    .copied()
+                    .expect("all Livery nodes receive a Pelt accessibility ID");
+                let descendants = node
+                    .children()
+                    .iter()
+                    .map(|local_id| {
+                        child_ids
+                            .get(local_id)
+                            .copied()
+                            .expect("Livery child tree references only its own nodes")
+                    })
+                    .collect::<Vec<_>>();
+                node.set_children(descendants);
+                if local_id == local_root {
+                    node.set_transform(transform);
+                }
+                let click_point = node
+                    .supports_action(Action::Click)
+                    .then(|| {
+                        let bounds = node.bounds()?;
+                        let center_x = ((bounds.x0 + bounds.x1) / 2.0) as f32;
+                        let center_y = ((bounds.y0 + bounds.y1) / 2.0) as f32;
+                        Some((
+                            content_origin.0 + (center_x - scroll.0) * page_zoom,
+                            content_origin.1 + (center_y - scroll.1) * page_zoom,
+                        ))
+                    })
+                    .flatten()
+                    .filter(|&(x, y)| content_rect.contains(x, y));
+                if node.supports_action(Action::Click) && click_point.is_none() {
+                    // This slice has root-scroll geometry but does not yet own
+                    // ScrollIntoView. Do not advertise a click that would
+                    // target another tile. Livery separately withholds Click
+                    // below active nested scrollers.
+                    node.remove_action(Action::Click);
+                }
+                if node.supports_action(Action::Focus) || click_point.is_some() {
+                    actions.insert(
+                        global_id,
+                        WorkspaceA11yActionTarget::Livery(LiveryA11yAction {
+                            tile,
+                            session_generation,
+                            content_rect,
+                            click_point,
+                        }),
+                    );
+                }
+                tree.nodes.push((global_id, node));
+            }
+        }
+        self.accessibility.clear_stale_livery_focus(&actions);
+        Ok(WorkspaceA11yProjection {
+            tree,
+            root,
+            actions,
+        })
+    }
+
+    /// Build the currently retained composite tree without a window. This
+    /// keeps semantic projection and its action map GPU-free and testable.
+    fn prepare_accessibility_tree(&mut self) -> Result<TreeUpdate, String> {
+        self.layout_accessibility_shell()?;
+        let projection = self.workspace_accessibility_projection()?;
         Ok(self
             .accessibility
             .prepare(projection, self.scale_factor as f64))
     }
 
     fn install_accessibility_before_show(&mut self) -> Result<(), String> {
-        let _ = self.prepare_accessibility_tree()?;
+        self.layout_accessibility_shell()?;
         let Some(window) = self.window.clone() else {
             return Err("Pelt accessibility install needs its live window".to_owned());
         };
-        let projection = self
-            .frisket
-            .accessibility_projection(self.accessibility.focus.as_ref())
-            .ok_or_else(|| {
-                "Frisket lost its retained layout before accessibility install".to_owned()
-            })?;
+        let projection = self.workspace_accessibility_projection()?;
         let _ = self
             .accessibility
             .sync(&window, projection, self.scale_factor as f64);
-        if self.config.workspace_receipt == Some(WorkspaceReceipt::Accessibility)
-            && self.accessibility.status() != BridgeStatus::Installed
+        if matches!(
+            self.config.workspace_receipt,
+            Some(WorkspaceReceipt::Accessibility | WorkspaceReceipt::AccessibilityChildren)
+        ) && self.accessibility.status() != BridgeStatus::Installed
         {
             return Err(
                 "Pelt accessibility receipt could not install the platform AccessKit bridge"
@@ -1234,10 +1605,7 @@ impl WorkspaceApp {
             return false;
         };
         self.refresh_accessibility_content_regions();
-        let Some(projection) = self
-            .frisket
-            .accessibility_projection(self.accessibility.focus.as_ref())
-        else {
+        let Ok(projection) = self.workspace_accessibility_projection() else {
             return false;
         };
         self.accessibility
@@ -1249,29 +1617,88 @@ impl WorkspaceApp {
     }
 
     fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
-        let Some(node) = self.accessibility.node_for(request.target_node) else {
+        let Some(target) = self.accessibility.action_for(request.target_node) else {
             return false;
         };
-        match request.action {
-            Action::Focus => self
+        match (request.action, target) {
+            (Action::Focus, WorkspaceA11yActionTarget::Frisket(node)) => self
                 .frisket
                 .accessibility_target(node)
-                .is_some_and(|target| self.accessibility.set_focus(target)),
-            Action::Click => match self.frisket.accessibility_target(node) {
-                Some(FrisketA11yTarget::ChromeAction(action)) => self.apply_chrome_action(action),
-                Some(FrisketA11yTarget::Close(tile)) => {
-                    self.clear_chrome_address();
-                    self.clear_chrome_engine_menu();
-                    self.clear_chrome_appearance();
-                    self.apply_tile_event(TileEvent::Closed(tile))
-                },
-                Some(FrisketA11yTarget::Tab(tile)) => {
-                    self.clear_chrome_address();
-                    self.clear_chrome_engine_menu();
-                    self.clear_chrome_appearance();
-                    self.apply_tile_event(TileEvent::Activated(tile))
-                },
-                None => false,
+                .is_some_and(|target| {
+                    self.accessibility
+                        .set_focus(WorkspaceA11yFocus::Frisket(target))
+                }),
+            (Action::Click, WorkspaceA11yActionTarget::Frisket(node)) => {
+                match self.frisket.accessibility_target(node) {
+                    Some(FrisketA11yTarget::ChromeAction(action)) => {
+                        self.apply_chrome_action(action)
+                    },
+                    Some(FrisketA11yTarget::Close(tile)) => {
+                        self.clear_chrome_address();
+                        self.clear_chrome_engine_menu();
+                        self.clear_chrome_appearance();
+                        self.apply_tile_event(TileEvent::Closed(tile))
+                    },
+                    Some(FrisketA11yTarget::Tab(tile)) => {
+                        self.clear_chrome_address();
+                        self.clear_chrome_engine_menu();
+                        self.clear_chrome_appearance();
+                        self.apply_tile_event(TileEvent::Activated(tile))
+                    },
+                    None => false,
+                }
+            },
+            (Action::Focus, WorkspaceA11yActionTarget::Livery(target)) => {
+                (self.workspace.document_session_generation(target.tile)
+                    == Some(target.session_generation))
+                .then(|| {
+                    self.accessibility
+                        .set_focus(WorkspaceA11yFocus::Livery(request.target_node))
+                })
+                .unwrap_or(false)
+            },
+            (Action::Click, WorkspaceA11yActionTarget::Livery(target)) => {
+                if self.workspace.document_session_generation(target.tile)
+                    != Some(target.session_generation)
+                {
+                    return false;
+                }
+                let Some((x, y)) = target.click_point else {
+                    return false;
+                };
+                if self.workspace.content_rect(target.tile) != Some(target.content_rect)
+                    || !target.content_rect.contains(x, y)
+                {
+                    return false;
+                }
+                self.clear_chrome_address();
+                self.clear_chrome_engine_menu();
+                self.clear_chrome_appearance();
+                let pressed = self.workspace.input(SessionInput::PointerButton {
+                    x,
+                    y,
+                    button: SessionPointerButton::Primary,
+                    state: SessionButtonState::Pressed,
+                    modifiers: self.modifiers,
+                });
+                let mut redraw = pressed.redraw;
+                self.apply_effect(pressed);
+                if self.workspace.document_session_generation(target.tile)
+                    != Some(target.session_generation)
+                    || self.workspace.content_rect(target.tile) != Some(target.content_rect)
+                {
+                    return redraw;
+                }
+                let released = self.workspace.input(SessionInput::PointerButton {
+                    x,
+                    y,
+                    button: SessionPointerButton::Primary,
+                    state: SessionButtonState::Released,
+                    modifiers: self.modifiers,
+                });
+                redraw |= released.redraw;
+                self.apply_effect(released);
+                redraw
             },
             _ => false,
         }
@@ -1817,9 +2244,6 @@ impl WorkspaceApp {
         self.last_chrome_document = (self.config.chrome && pane_frame.diagnostic_rect.is_some())
             .then(|| self.chrome_model().diagnostic)
             .flatten();
-        if self.sync_accessibility() {
-            self.request_redraw();
-        }
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
         // Once the Chrome receipt has asserted its final state, keep composing
@@ -1834,6 +2258,13 @@ impl WorkspaceApp {
         } else {
             self.workspace.frame()
         };
+        // The document engines own retained layout production. Update the
+        // composite tree only after this frame has made their completed
+        // geometry observable, so a static document gains its child semantics
+        // even when it does not ask the window for a second visual redraw.
+        if self.sync_accessibility() {
+            self.request_redraw();
+        }
         #[cfg(target_os = "windows")]
         {
             let live_surfaces = self
@@ -1944,6 +2375,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::LoadingError
                         | WorkspaceReceipt::Appearance
                         | WorkspaceReceipt::Accessibility
+                        | WorkspaceReceipt::AccessibilityChildren
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
@@ -2167,6 +2599,7 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::LoadingError
                 | WorkspaceReceipt::Appearance
                 | WorkspaceReceipt::Accessibility
+                | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -2212,6 +2645,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
             WorkspaceReceipt::Appearance => self.drive_appearance_workspace_receipt_step(),
             WorkspaceReceipt::Accessibility => self.drive_accessibility_workspace_receipt_step(),
+            WorkspaceReceipt::AccessibilityChildren => {
+                self.drive_accessibility_children_workspace_receipt_step()
+            },
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
@@ -2229,6 +2665,7 @@ impl WorkspaceApp {
                 WorkspaceReceipt::LoadingError
                     | WorkspaceReceipt::Appearance
                     | WorkspaceReceipt::Accessibility
+                    | WorkspaceReceipt::AccessibilityChildren
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
@@ -3887,6 +4324,119 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_accessibility_children_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "child accessibility receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let content = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == Role::Region
+                            && node
+                                .label()
+                                .is_some_and(|label| label.ends_with(" content"))
+                    })
+                    .map(|(_, node)| node)
+                    .ok_or("child accessibility receipt did not expose a content aperture")?;
+                if !content.description().is_some_and(|description| {
+                    description.contains("partial accessibility")
+                        && description.contains("composes")
+                }) || content.children().len() != 1
+                {
+                    return Err(
+                        "child accessibility receipt did not attach Livery semantics beneath its declared aperture"
+                            .to_owned(),
+                    );
+                }
+                let link = a11y_node(&tree, "Open child destination", Role::Link)?;
+                let address = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("child accessibility receipt lost its document")?
+                    .address()
+                    .to_owned();
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Focus,
+                    target_node: link,
+                }) || self.accessibility.focus != Some(WorkspaceA11yFocus::Livery(link))
+                    || address != self.config.urls[0]
+                {
+                    return Err(
+                        "child accessibility Focus activated or replaced the Livery document"
+                            .to_owned(),
+                    );
+                }
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let link = a11y_node(&tree, "Open child destination", Role::Link)?;
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: link,
+                }) {
+                    return Err(
+                        "child accessibility Click did not enter Pelt's content input path"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("child accessibility receipt lost its document after Click")?;
+                if !controller
+                    .address()
+                    .replace('\\', "/")
+                    .ends_with("/next.html")
+                    || controller.session_generation() != 2
+                {
+                    return Err(
+                        "child accessibility Click did not replace only the focused Livery session"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let return_link = a11y_node(&tree, "Return to child source", Role::Link)?;
+                let action = self
+                    .accessibility
+                    .action_for(return_link)
+                    .ok_or("replacement Livery link has no Pelt action target")?;
+                let WorkspaceA11yActionTarget::Livery(action) = action else {
+                    return Err(
+                        "replacement Livery link was incorrectly routed through Frisket".to_owned(),
+                    );
+                };
+                if action.tile != tile
+                    || action.session_generation != 2
+                    || action.click_point.is_none()
+                    || self.accessibility.focus.is_some()
+                {
+                    return Err(
+                        "child accessibility receipt did not publish a fresh replacement subtree"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
     #[cfg(target_os = "windows")]
     fn mixed_native_receipt_ready(&mut self) -> bool {
         if !self.capability_receipt_ready() {
@@ -5253,6 +5803,20 @@ mod tests {
         assert_eq!(reader.frames, Some(3));
         assert!(WorkspaceReceipt::Reader.keeps_chrome());
 
+        let accessibility_children =
+            WorkspaceViewerConfig::new(vec!["children.html".to_owned()], WindowingMode::Headed)
+                .with_workspace_receipt(
+                    WorkspaceReceipt::AccessibilityChildren,
+                    "accessibility-children.png",
+                );
+        assert_eq!(accessibility_children.size, Some((960, 640)));
+        assert_eq!(accessibility_children.frames, Some(3));
+        assert!(WorkspaceReceipt::AccessibilityChildren.keeps_chrome());
+        assert_eq!(
+            WorkspaceReceipt::AccessibilityChildren.id(),
+            "accessibility-children"
+        );
+
         let tabard =
             WorkspaceViewerConfig::new(vec!["tabard.html".to_owned()], WindowingMode::Headed)
                 .with_workspace_receipt(WorkspaceReceipt::TabardPreview, "tabard.png");
@@ -5916,9 +6480,9 @@ mod tests {
         assert_eq!(selected.focus, selected_light);
         assert_eq!(
             app.accessibility.focus,
-            Some(FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(
-                ChromeTheme::Light
-            )))
+            Some(WorkspaceA11yFocus::Frisket(
+                FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(ChromeTheme::Light))
+            ))
         );
         assert_eq!(
             app.workspace
@@ -5927,6 +6491,268 @@ mod tests {
                 .address(),
             fixture
         );
+    }
+
+    #[test]
+    fn livery_child_accessibility_allocator_never_aliases_local_ids() {
+        let mut accessibility = WorkspaceAccessibility::new();
+        let shell_ids = HashSet::from([AccessNodeId(1_u64 << 63)]);
+        let local = AccessNodeId(41);
+        let first = accessibility.child_global_id(TileId(1), 1, local, &shell_ids);
+        let same_session = accessibility.child_global_id(TileId(1), 1, local, &shell_ids);
+        let sibling = accessibility.child_global_id(TileId(2), 1, local, &shell_ids);
+        let replacement = accessibility.child_global_id(TileId(1), 2, local, &shell_ids);
+
+        assert_eq!(first, same_session);
+        assert_ne!(first, sibling);
+        assert_ne!(first, replacement);
+        assert!(!shell_ids.contains(&first));
+        assert!(accessibility.child_id_is_reserved(first));
+    }
+
+    #[test]
+    fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p7-accessibility-children/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let urls = vec![fixture.clone(), fixture.clone()];
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("child accessibility tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("child accessibility fixtures open");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Accessibility, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let (width, height) = app.logical_size();
+            let pane = app
+                .frisket
+                .frame(width, height)
+                .expect("child accessibility Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+        let subtree = |tree: &TreeUpdate, root: AccessNodeId| {
+            let mut found = HashSet::new();
+            let mut pending = vec![root];
+            while let Some(id) = pending.pop() {
+                if !found.insert(id) {
+                    continue;
+                }
+                if let Some((_, node)) = tree.nodes.iter().find(|(candidate, _)| *candidate == id) {
+                    pending.extend(node.children().iter().copied());
+                }
+            }
+            found
+        };
+        let child_root = |tree: &TreeUpdate, aperture: AccessNodeId| {
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == aperture)
+                .and_then(|(_, node)| node.children().first().copied())
+                .expect("Livery content aperture owns its one child root")
+        };
+
+        compose(&mut app);
+        let initial = app
+            .prepare_accessibility_tree()
+            .expect("initial composite accessibility tree");
+        let shell = app
+            .frisket
+            .accessibility_projection(None)
+            .expect("Frisket shell projection");
+        let aperture_one = *shell
+            .content_nodes
+            .get(&TileId(1))
+            .expect("first content aperture");
+        let aperture_two = *shell
+            .content_nodes
+            .get(&TileId(2))
+            .expect("second content aperture");
+        let root_one = child_root(&initial, aperture_one);
+        let root_two = child_root(&initial, aperture_two);
+        assert_ne!(
+            root_one, root_two,
+            "Pelt remaps colliding local roots into distinct workspace IDs"
+        );
+        assert!(
+            root_one.0 >= 1_u64 << 63 && root_two.0 >= 1_u64 << 63,
+            "the host owns a distinct allocation range for child IDs"
+        );
+
+        {
+            let controller = app
+                .workspace
+                .controller_mut(TileId(1))
+                .expect("first child controller");
+            let state = controller
+                .set_page_zoom(1.25)
+                .expect("Livery accepts the child-tree zoom test");
+            assert_eq!(state.applied, 1.25);
+        }
+        compose(&mut app);
+        let content = app
+            .workspace
+            .content_rect(TileId(1))
+            .expect("first child content hole");
+        assert!(
+            app.workspace.scroll_at(
+                content.x + content.width / 2.0,
+                content.y + content.height / 2.0,
+                0.0,
+                600.0,
+            ),
+            "the long child document accepts root scrolling"
+        );
+        compose(&mut app);
+        let tree = app
+            .prepare_accessibility_tree()
+            .expect("zoomed and scrolled composite tree");
+        let root_one = child_root(&tree, aperture_one);
+        let (scroll, page_zoom) = {
+            let controller = app
+                .workspace
+                .controller(TileId(1))
+                .expect("first child controller after scroll");
+            let session = controller
+                .session_as_any_ref()
+                .downcast_ref::<genet_documents::LiveryDocumentSession>()
+                .expect("first child remains a Livery session");
+            (session.document().scroll(), session.page_zoom())
+        };
+        assert!(
+            scroll.1 > 0.0,
+            "root scroll becomes part of the child transform"
+        );
+        let expected_transform = Affine::translate((f64::from(content.x), f64::from(content.y)))
+            * Affine::scale(f64::from(page_zoom))
+            * Affine::translate((-f64::from(scroll.0), -f64::from(scroll.1)));
+        let child_root_node = tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == root_one)
+            .map(|(_, node)| node)
+            .expect("first remapped child root is present");
+        assert_eq!(child_root_node.transform(), Some(&expected_transform));
+
+        let first_subtree = subtree(&tree, root_one);
+        let link = tree
+            .nodes
+            .iter()
+            .find(|(id, node)| {
+                first_subtree.contains(id)
+                    && node.role() == Role::Link
+                    && node.label() == Some("Open scrolled child destination")
+            })
+            .map(|(id, _)| *id)
+            .expect("visible scrolled Livery link is in tile one's child tree");
+        let action = match app
+            .accessibility
+            .action_for(link)
+            .expect("child link has a Pelt action target")
+        {
+            WorkspaceA11yActionTarget::Livery(action) => action,
+            WorkspaceA11yActionTarget::Frisket(_) => {
+                panic!("child link must not use Frisket action routing")
+            },
+        };
+        assert_eq!(action.tile, TileId(1));
+        assert_eq!(action.session_generation, 1);
+        let click_point = action
+            .click_point
+            .expect("visible child link advertises a tile-local click");
+        assert!(
+            action.content_rect.contains(click_point.0, click_point.1),
+            "the transformed child click remains inside its own content hole"
+        );
+
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Focus,
+            target_node: link,
+        }));
+        assert_eq!(
+            app.accessibility.focus,
+            Some(WorkspaceA11yFocus::Livery(link)),
+            "Focus changes only Pelt's virtual child focus"
+        );
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: link,
+        }));
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("child link leaves its tile live");
+        assert!(
+            controller
+                .address()
+                .replace('\\', "/")
+                .ends_with("/next.html"),
+            "Click follows Pelt's normal document navigation path"
+        );
+        assert_eq!(controller.session_generation(), 2);
+        assert!(
+            !app.apply_accessibility_request(A11yActionRequest {
+                action: Action::Focus,
+                target_node: link,
+            }) && !app.apply_accessibility_request(A11yActionRequest {
+                action: Action::Click,
+                target_node: link,
+            }),
+            "the old child ID is inert after its session replacement"
+        );
+
+        compose(&mut app);
+        let replacement = app
+            .prepare_accessibility_tree()
+            .expect("replacement child tree");
+        let replacement_shell = app
+            .frisket
+            .accessibility_projection(None)
+            .expect("replacement Frisket shell projection");
+        let replacement_aperture = *replacement_shell
+            .content_nodes
+            .get(&TileId(1))
+            .expect("replacement first content aperture");
+        let replacement_root = child_root(&replacement, replacement_aperture);
+        let replacement_subtree = subtree(&replacement, replacement_root);
+        let replacement_link = replacement
+            .nodes
+            .iter()
+            .find(|(id, node)| {
+                replacement_subtree.contains(id)
+                    && node.role() == Role::Link
+                    && node.label() == Some("Return to child source")
+            })
+            .map(|(id, _)| *id)
+            .expect("replacement session has its own child link");
+        assert_ne!(link, replacement_link);
+        assert_eq!(app.accessibility.focus, None);
     }
 
     #[test]

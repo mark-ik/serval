@@ -11,6 +11,8 @@ use accesskit::{
 use genet_livery::LiveryLayout;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 
+use crate::render::ScrollOffsets;
+
 fn access_id<D: LayoutDom>(dom: &D, node: D::NodeId) -> AccessNodeId {
     AccessNodeId(dom.opaque_id(node))
 }
@@ -177,6 +179,54 @@ fn has_tabindex<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
         .is_some_and(|value| value.trim().parse::<i32>().is_ok())
 }
 
+/// The accumulated scroll owned by element ancestors. A node's own scroll
+/// offset moves its descendants, not its own retained border box.
+fn ancestor_scroll<D>(
+    dom: &D,
+    node: D::NodeId,
+    scroll_offsets: &ScrollOffsets<D::NodeId>,
+) -> (f32, f32)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let mut total = (0.0, 0.0);
+    let mut current = dom.parent(node);
+    while let Some(parent) = current {
+        if let Some((x, y)) = scroll_offsets.get(&parent) {
+            total.0 += x;
+            total.1 += y;
+        }
+        current = dom.parent(parent);
+    }
+    total
+}
+
+/// An active nested scrollport has visual bounds but Pelt does not yet own a
+/// corresponding ScrollIntoView/action route. Keep its descendants semantic
+/// and focusable while withholding Click rather than exposing a stale target.
+fn has_active_scrolled_ancestor<D>(
+    dom: &D,
+    node: D::NodeId,
+    scroll_offsets: &ScrollOffsets<D::NodeId>,
+) -> bool
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let mut current = dom.parent(node);
+    while let Some(parent) = current {
+        if scroll_offsets
+            .get(&parent)
+            .is_some_and(|&(x, y)| x != 0.0 || y != 0.0)
+        {
+            return true;
+        }
+        current = dom.parent(parent);
+    }
+    false
+}
+
 fn is_native_control<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
     matches!(
         dom.element_name(node).map(|name| name.local.as_ref()),
@@ -207,6 +257,7 @@ fn supports_semantic_action(role: Role) -> bool {
 fn walk<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
+    scroll_offsets: Option<&ScrollOffsets<D::NodeId>>,
     node: D::NodeId,
     out: &mut Vec<(AccessNodeId, AccessNode)>,
 ) -> Vec<AccessNodeId>
@@ -220,7 +271,7 @@ where
     let children: Vec<_> = dom
         .dom_children(node)
         .filter(|child| dom.kind(*child) == NodeKind::Element)
-        .flat_map(|child| walk(dom, fragments, child, out))
+        .flat_map(|child| walk(dom, fragments, scroll_offsets, child, out))
         .collect();
     // The synthetic document root anchors the platform tree even though it
     // has no layout fragment. Other fragment-less elements are not painted;
@@ -268,7 +319,12 @@ where
     }
     let semantic_control = is_native_control(dom, node) || supports_semantic_action(role);
     let focusable = semantic_control || has_tabindex(dom, node) || is_content_editable(dom, node);
-    if !disabled && (semantic_control || is_content_editable(dom, node)) {
+    let action_blocked_by_nested_scroll = scroll_offsets
+        .is_some_and(|scroll_offsets| has_active_scrolled_ancestor(dom, node, scroll_offsets));
+    if !disabled
+        && !action_blocked_by_nested_scroll
+        && (semantic_control || is_content_editable(dom, node))
+    {
         access.add_action(Action::Click);
     }
     if !disabled && focusable {
@@ -286,11 +342,14 @@ where
         access.set_max_numeric_value(value);
     }
     if let Some(fragment) = fragments.get(node) {
+        let (scroll_x, scroll_y) = scroll_offsets
+            .map(|scroll_offsets| ancestor_scroll(dom, node, scroll_offsets))
+            .unwrap_or_default();
         access.set_bounds(Rect::new(
-            fragment.x as f64,
-            fragment.y as f64,
-            (fragment.x + fragment.width) as f64,
-            (fragment.y + fragment.height) as f64,
+            (fragment.x - scroll_x) as f64,
+            (fragment.y - scroll_y) as f64,
+            (fragment.x + fragment.width - scroll_x) as f64,
+            (fragment.y + fragment.height - scroll_y) as f64,
         ));
     }
     access.set_children(children);
@@ -308,9 +367,40 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    accesskit_tree_with_optional_scroll(dom, fragments, focus, None)
+}
+
+/// Project a retained document after Livery has applied nested element scroll.
+///
+/// Bounds move with each scrolled ancestor. Click is intentionally withheld
+/// from descendants of an active nested scrollport until the host owns the
+/// matching ScrollIntoView and pointer-routing semantics.
+pub fn accesskit_tree_with_scroll<D>(
+    dom: &D,
+    fragments: &LiveryLayout<D::NodeId>,
+    focus: Option<D::NodeId>,
+    scroll_offsets: &ScrollOffsets<D::NodeId>,
+) -> TreeUpdate
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    accesskit_tree_with_optional_scroll(dom, fragments, focus, Some(scroll_offsets))
+}
+
+fn accesskit_tree_with_optional_scroll<D>(
+    dom: &D,
+    fragments: &LiveryLayout<D::NodeId>,
+    focus: Option<D::NodeId>,
+    scroll_offsets: Option<&ScrollOffsets<D::NodeId>>,
+) -> TreeUpdate
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
     let root = dom.document();
     let mut nodes = Vec::new();
-    walk(dom, fragments, root, &mut nodes);
+    walk(dom, fragments, scroll_offsets, root, &mut nodes);
     let requested_focus = access_id(dom, focus.unwrap_or(root));
     let focus = nodes
         .iter()
@@ -329,10 +419,10 @@ where
 mod tests {
     use accesskit::{Action, HasPopup, Live, Node as AccessNode, Orientation, Role, Toggled};
     use genet_scripted_dom::ScriptedDom;
-    use layout_dom_api::{LayoutDom, LayoutDomMut};
+    use layout_dom_api::{LayoutDom, LayoutDomMut, NodeKind};
 
-    use super::accesskit_tree;
-    use crate::fragments_from_scripted_dom;
+    use super::{accesskit_tree, accesskit_tree_with_scroll};
+    use crate::{ScrollOffsets, fragments_from_scripted_dom};
 
     const SHEET: &[&str] = &["div { display: block; }"];
 
@@ -525,5 +615,47 @@ mod tests {
             .expect("invalid state button");
         assert_eq!(invalid.is_expanded(), None);
         assert_eq!(invalid.has_popup(), None);
+    }
+
+    #[test]
+    fn nested_scroll_offsets_bounds_and_withholds_descendant_click() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        dom.set_inner_html(
+            root,
+            "<div><div role=\"link\" tabindex=\"0\" style=\"display:block;width:80px;height:20px\">Scrolled action</div></div>",
+        );
+        let container = dom
+            .dom_children(root)
+            .find(|node| dom.kind(*node) == NodeKind::Element)
+            .expect("scroll container");
+        let fragments = fragments_from_scripted_dom(&dom, SHEET, 400, 300).expect("layout");
+        let before = accesskit_tree(&dom, &fragments, None);
+        let before_link = before
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Scrolled action"))
+            .map(|(_, node)| node)
+            .expect("unscrolled link");
+        let before_bounds = before_link.bounds().expect("unscrolled bounds");
+
+        let mut offsets = ScrollOffsets::new();
+        offsets.insert(container, (0.0, 24.0));
+        let after = accesskit_tree_with_scroll(&dom, &fragments, None, &offsets);
+        let after_link = after
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Scrolled action"))
+            .map(|(_, node)| node)
+            .expect("scrolled link");
+        let after_bounds = after_link.bounds().expect("scrolled bounds");
+
+        assert_eq!(after_bounds.x0, before_bounds.x0);
+        assert_eq!(after_bounds.y0, before_bounds.y0 - 24.0);
+        assert!(after_link.supports_action(Action::Focus));
+        assert!(
+            !after_link.supports_action(Action::Click),
+            "an active nested scrollport cannot advertise a stale Click target"
+        );
     }
 }

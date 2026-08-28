@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use genet_host_api::resolve_href;
 use inker::{
-    A11yCapability, ContentReport, DocumentSession, SessionEffect, SessionFormMethod, SessionInput,
-    SessionInputResult, SessionNavigationCommand, SessionRegistry, SessionScrollKey,
-    SessionSpawnRequest, SurfaceEngineRegistry,
+    A11yCapability, ContentReport, DocumentSession, DocumentZoomState, SessionEffect,
+    SessionError, SessionFormMethod, SessionInput, SessionInputResult, SessionNavigationCommand,
+    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry,
 };
 
 pub use workspace::{
@@ -102,6 +102,7 @@ pub struct PeltController<F> {
     viewport: (u32, u32),
     clock: Box<dyn PeltClock>,
     document_state: PeltDocumentState,
+    session_generation: u64,
 }
 
 impl<F: 'static> PeltController<F> {
@@ -151,6 +152,9 @@ impl<F: 'static> PeltController<F> {
             viewport,
             clock,
             document_state: PeltDocumentState::Ready,
+            // Generation zero is reserved as "no successfully opened
+            // session" for hosts that retain child trees across tiles.
+            session_generation: 1,
         })
     }
 
@@ -177,6 +181,35 @@ impl<F: 'static> PeltController<F> {
     /// The current host-neutral document presentation state.
     pub fn document_state(&self) -> &PeltDocumentState {
         &self.document_state
+    }
+
+    /// Identity generation of the current successfully opened session.
+    ///
+    /// This starts at one for the initial session and increases only after a
+    /// replacement session has been successfully spawned and installed. Hosts
+    /// that retain concrete session observations, such as accessibility child
+    /// trees, pair this value with their tile identity and discard cached
+    /// observations when it changes.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation
+    }
+
+    /// The active document session's concrete observation surface.
+    ///
+    /// Engine-specific behavior stays behind [`DocumentSession`]. This is for
+    /// host-owned observation of a public concrete session type, paired with
+    /// [`Self::session_generation`] so retained host state never outlives a
+    /// successful replacement session.
+    pub fn session_as_any_ref(&self) -> &dyn std::any::Any {
+        self.session.as_any_ref()
+    }
+
+    /// Request an engine-owned page zoom through Pelt's neutral session seam.
+    ///
+    /// The active engine reports its supported bounds and applied factor. Pelt
+    /// neither chooses a zoom policy nor reaches into an engine concrete type.
+    pub fn set_page_zoom(&mut self, factor: f32) -> Result<DocumentZoomState, SessionError> {
+        self.session.set_page_zoom(factor)
     }
 
     /// Mark a successfully replaced document as visibly composed by its host.
@@ -334,7 +367,7 @@ impl<F: 'static> PeltController<F> {
                 let request = self.history[self.history_index].clone();
                 match self.spawn(&request) {
                     Ok(session) => {
-                        self.session = session;
+                        self.install_session(session);
                         self.document_state = PeltDocumentState::Loading {
                             address: request.address.clone(),
                         };
@@ -371,7 +404,7 @@ impl<F: 'static> PeltController<F> {
         match self.spawn(&request) {
             Ok(session) => {
                 let address = request.address.clone();
-                self.session = session;
+                self.install_session(session);
                 self.history.truncate(self.history_index + 1);
                 self.history.push(request);
                 self.history_index += 1;
@@ -389,7 +422,7 @@ impl<F: 'static> PeltController<F> {
         let request = self.history[index].clone();
         match self.spawn(&request) {
             Ok(session) => {
-                self.session = session;
+                self.install_session(session);
                 self.history_index = index;
                 self.document_state = PeltDocumentState::Loading {
                     address: request.address.clone(),
@@ -409,6 +442,16 @@ impl<F: 'static> PeltController<F> {
         self.session_engines
             .spawn(&self.engine_id, &request)
             .map_err(|error| format!("could not load {}: {error}", request.address))
+    }
+
+    /// Install a session only after its factory has completed successfully.
+    /// Failed replacement attempts retain both this session and its generation.
+    fn install_session(&mut self, session: Box<dyn DocumentSession<F>>) {
+        self.session = session;
+        self.session_generation = self
+            .session_generation
+            .checked_add(1)
+            .expect("Pelt session generation exhausted");
     }
 
     fn document_error(

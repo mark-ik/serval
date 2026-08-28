@@ -235,6 +235,12 @@ pub(crate) struct FrisketA11yProjection {
     pub tree: TreeUpdate,
     pub root: AccessNodeId,
     pub nodes: HashMap<AccessNodeId, NodeId>,
+    /// The AccessKit node that represents each visible tile content aperture.
+    ///
+    /// These are shell nodes only. Pelt can use this map as the stable
+    /// attachment point for a future namespaced child tree without changing
+    /// the existing Frisket shell projection.
+    pub content_nodes: HashMap<TileId, AccessNodeId>,
 }
 
 /// The shell actions a screen reader may request through the Frisket tree.
@@ -743,12 +749,13 @@ impl FrisketSurface {
         Some(FrisketHit::Chrome)
     }
 
-    /// Project the completed Frisket layout into one shell-only AccessKit tree.
+    /// Project the completed Frisket layout into its shell portion of the
+    /// workspace AccessKit tree.
     ///
-    /// Document and native-surface subtrees remain outside this tree until Pelt
-    /// owns a namespaced composite-tree protocol. The corresponding Frisket
-    /// holes stay visible as labelled regions so that absence is declared rather
-    /// than mistaken for an empty document.
+    /// This layer names only Frisket's DOM. Pelt may attach a namespaced Livery
+    /// child tree below the labelled content apertures; other document and
+    /// native-surface lanes remain declared apertures until they supply a
+    /// compatible host-owned composition protocol.
     pub fn accessibility_projection(
         &self,
         focus: Option<&FrisketA11yTarget>,
@@ -783,6 +790,7 @@ impl FrisketSurface {
             tree.focus = focused;
         }
 
+        let mut content_nodes = HashMap::new();
         for (id, access) in &mut tree.nodes {
             let Some(node) = nodes.get(id).copied() else {
                 continue;
@@ -806,9 +814,15 @@ impl FrisketSurface {
             access.set_role(Role::Region);
             access.set_label(label);
             access.set_description(description);
+            content_nodes.insert(tile, *id);
         }
 
-        Some(FrisketA11yProjection { tree, root, nodes })
+        Some(FrisketA11yProjection {
+            tree,
+            root,
+            nodes,
+            content_nodes,
+        })
     }
 
     /// Resolve a screen-reader Click against the same retained shell actions
@@ -1798,6 +1812,32 @@ mod tests {
                 .description()
                 .is_some_and(|description| description.contains("partial accessibility"))
         );
+        let visible_tiles = [TileId(1), TileId(3), TileId(4)];
+        assert_eq!(projection.content_nodes.len(), visible_tiles.len());
+        for tile in visible_tiles {
+            let content_id = projection
+                .content_nodes
+                .get(&tile)
+                .copied()
+                .expect("every visible tile has a content aperture node");
+            let content_node = projection
+                .tree
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == content_id)
+                .map(|(_, node)| node)
+                .expect("content aperture node is in the shell tree");
+            assert_eq!(content_node.role(), Role::Region);
+            let tile_attr = tile.0.to_string();
+            let dom_content = nodes_with_attr(surface.document.dom(), FRISKET_TILE_ATTR)
+                .into_iter()
+                .find(|node| {
+                    attr(surface.document.dom(), *node, FRISKET_TILE_ATTR).as_deref()
+                        == Some(tile_attr.as_str())
+                })
+                .expect("content aperture has a Frisket DOM node");
+            assert_eq!(projection.nodes.get(&content_id), Some(&dom_content));
+        }
 
         let active_tab = projection
             .tree

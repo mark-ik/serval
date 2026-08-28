@@ -273,6 +273,15 @@ impl LiveryDocumentSession {
         &self.doc
     }
 
+    /// The applied page-zoom factor in presentation pixels per CSS pixel.
+    ///
+    /// A host composing Livery's retained semantics into a larger tree uses
+    /// this with its own content-hole transform. The session continues to own
+    /// zoom bounds and all document-local coordinate conversion.
+    pub fn page_zoom(&self) -> f32 {
+        self.zoom()
+    }
+
     /// The effective page zoom: presentation pixels per CSS pixel.
     ///
     /// The retained [`genet_livery::LiveryDocument`] works only in CSS pixels.
@@ -2368,6 +2377,14 @@ mod tests {
         assert_eq!(state.requested, 1.25);
         assert_eq!(state.applied, 1.25);
         assert_eq!((state.min, state.max), (0.25, 5.0));
+        assert_eq!(
+            session
+                .as_any_ref()
+                .downcast_ref::<LiveryDocumentSession>()
+                .expect("livery session remains observable")
+                .page_zoom(),
+            1.25
+        );
 
         let state = session
             .set_page_zoom(12.0)

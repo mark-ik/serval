@@ -578,6 +578,16 @@ fn failed_document_navigation_keeps_the_prior_session_and_records_a_recoverable_
         .controller(TileId(1))
         .expect("seed controller remains");
     assert_eq!(controller.address(), "tile-1.html");
+    assert_eq!(controller.session_generation(), 1);
+    assert_eq!(workspace.document_session_generation(TileId(1)), Some(1));
+    assert_eq!(
+        controller
+            .session_as_any_ref()
+            .downcast_ref::<FakeDocument>()
+            .expect("fake document stays observable through Pelt")
+            .address,
+        "tile-1.html"
+    );
     assert!(!controller.can_go_back());
     assert_eq!(
         controller.document_state(),
@@ -596,6 +606,16 @@ fn failed_document_navigation_keeps_the_prior_session_and_records_a_recoverable_
         .controller(TileId(1))
         .expect("replacement controller");
     assert_eq!(controller.address(), "recovered.html");
+    assert_eq!(controller.session_generation(), 2);
+    assert_eq!(workspace.document_session_generation(TileId(1)), Some(2));
+    assert_eq!(
+        controller
+            .session_as_any_ref()
+            .downcast_ref::<FakeDocument>()
+            .expect("successful navigation replaces the observable session")
+            .address,
+        "recovered.html"
+    );
     assert!(controller.can_go_back());
     assert_eq!(
         controller.document_state(),
@@ -628,6 +648,12 @@ fn failed_document_navigation_keeps_the_prior_session_and_records_a_recoverable_
         .controller(TileId(1))
         .expect("failed Back retains its active controller");
     assert_eq!(controller.address(), "recovered.html");
+    assert_eq!(
+        controller.session_generation(),
+        2,
+        "failed traversal does not replace the active session"
+    );
+    assert_eq!(workspace.document_session_generation(TileId(1)), Some(2));
     assert!(
         controller.can_go_back(),
         "the failed target remains reachable"

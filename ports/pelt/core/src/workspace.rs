@@ -468,6 +468,18 @@ impl<F: 'static> PeltWorkspace<F> {
         self.controllers.get_mut(&tile)
     }
 
+    /// Identity generation of a tile's current successfully opened document
+    /// session. Surface-only tiles return `None`.
+    ///
+    /// Hosts retaining engine-specific observations can pair this with the
+    /// tile id and clear that state when a successful navigation, reload, or
+    /// history traversal replaces the session.
+    pub fn document_session_generation(&self, tile: TileId) -> Option<u64> {
+        self.controllers
+            .get(&tile)
+            .map(PeltController::session_generation)
+    }
+
     pub fn route(&self, tile: TileId) -> Option<&PeltTileRoute> {
         self.routes.get(&tile)
     }
