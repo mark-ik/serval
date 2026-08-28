@@ -1131,6 +1131,59 @@ fn is_opaque_formatting_root(style: BlockStyle) -> bool {
     style.establishes_bfc && style.float == FloatSide::None
 }
 
+/// The narrow orthogonal flex shape whose automatic block size can be left to
+/// Taffy while its horizontal block parent keeps Buckram's normal-flow walk.
+///
+/// The child's definite logical inline size gives Taffy a complete flex main
+/// axis. Its logical block axis is the physical width here, so it must remain
+/// unknown rather than inheriting the horizontal parent's definite inline
+/// size. Livery lowers only CSS `row` and `row-reverse` in this vertical flow
+/// to Taffy's physical `Column` directions.
+fn admits_orthogonal_auto_block_flex_child(
+    parent_style: BlockStyle,
+    child_kind: AlgorithmKind,
+    child_style: BlockStyle,
+    child_flex_direction: taffy::FlexDirection,
+) -> bool {
+    let child_block_size = if child_style.flow.is_horizontal() {
+        child_style.size.height
+    } else {
+        child_style.size.width
+    };
+    parent_style.flow.is_horizontal()
+        && child_kind == AlgorithmKind::Flex
+        && matches!(
+            child_style.position,
+            crate::BlockPosition::Static | crate::BlockPosition::Relative
+        )
+        && child_style.float == FloatSide::None
+        && child_style.clear == ClearSide::None
+        && !child_style.shrink_to_fit
+        && !child_style.replaced
+        && child_style.aspect_ratio.is_none()
+        && !child_style.size_containment.width
+        && !child_style.size_containment.height
+        && !child_style.has_nonlinear_lengths
+        && child_style.containing_flow == parent_style.flow
+        && child_style.flow.is_horizontal() != parent_style.flow.is_horizontal()
+        && child_style.min_size
+            == crate::BlockDimensions::new(BlockSizeValue::Auto, BlockSizeValue::Auto)
+        && child_style.max_size
+            == crate::BlockDimensions::new(BlockSizeValue::None, BlockSizeValue::None)
+        && matches!(
+            intrinsic_absolute_size(intrinsic_inline_dimension(
+                child_style.size,
+                child_style.flow
+            )),
+            Some(_)
+        )
+        && matches!(child_block_size, BlockSizeValue::Auto)
+        && matches!(
+            child_flex_direction,
+            taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse
+        )
+}
+
 /// Whether an intrinsic query ignores authored preferred sizes.
 fn is_content_sizing_mode(sizing_mode: SizingMode) -> bool {
     matches!(
@@ -1258,6 +1311,12 @@ where
                     return Some(deferral);
                 }
             }
+            let admitted_orthogonal_flex_auto_block = admits_orthogonal_auto_block_flex_child(
+                self.tree.nodes[node.index()].block_style,
+                child_node.kind,
+                child_style,
+                self.style(child.into_taffy()).flex_direction,
+            );
             // Float exclusions live in their owning BFC's logical axes. Do
             // not copy physical left/right state into an orthogonal child;
             // only same-flow continuation is admitted until that transform
@@ -1267,7 +1326,10 @@ where
                     || child_style.clear != ClearSide::None
                     || *active_left_float
                     || *active_right_float
-                    || self.exports_float_state(child))
+                    // A flex item's float is ignored by flex layout. The
+                    // admitted vertical row shape therefore cannot export
+                    // that descendant float into its horizontal BFC.
+                    || (!admitted_orthogonal_flex_auto_block && self.exports_float_state(child)))
             {
                 return Some(BlockDeferral::NestedFloatState);
             }
@@ -1322,8 +1384,14 @@ where
                 // Flex and grid keep their established dispatch until their
                 // own lane measures the change: without a float that needs
                 // the K3g lane, an ordinary parent still defers for them.
+                // The one admitted exception is a horizontal BFC's
+                // orthogonal, vertical flex child with a definite logical
+                // inline size and an automatic logical block size. Its width
+                // is Taffy's flex cross size, so do not leak the parent's
+                // solved horizontal inline size into that axis.
                 if !floats_are_active
                     && matches!(child_node.kind, AlgorithmKind::Flex | AlgorithmKind::Grid)
+                    && !admitted_orthogonal_flex_auto_block
                 {
                     return Some(BlockDeferral::IndependentFormattingContext);
                 }
@@ -5880,6 +5948,171 @@ mod tests {
                 "the backend overwrote a rectangle the table algorithm owns"
             );
         }
+    }
+
+    #[test]
+    fn horizontal_buckram_block_admits_vertical_flex_auto_block_size() {
+        use crate::{Direction, WritingMode};
+
+        let horizontal = FlowAxes::HORIZONTAL_LTR;
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        for (css_direction, direction, expected) in [
+            (
+                "row",
+                taffy::FlexDirection::Column,
+                [(2.0, 2.0), (2.0, 47.0), (17.0, 2.0), (17.0, 47.0)],
+            ),
+            (
+                "row-reverse",
+                taffy::FlexDirection::ColumnReverse,
+                [(2.0, 47.0), (2.0, 2.0), (17.0, 47.0), (17.0, 2.0)],
+            ),
+        ] {
+            let mut tree = AlgorithmTree::<Style, (), u8>::new();
+            let children = (1..=4)
+                .map(|source| {
+                    tree.new_with_children_and_block_style(
+                        AlgorithmKind::Leaf,
+                        BlockStyle::anonymous(vertical, vertical),
+                        Style {
+                            size: taffy::Size {
+                                width: Dimension::length(15.0),
+                                height: Dimension::length(45.0),
+                            },
+                            flex_basis: Dimension::length(45.0).into(),
+                            ..Style::default()
+                        },
+                        &[],
+                        source,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let flex = tree.new_with_children_and_block_style(
+                AlgorithmKind::Flex,
+                BlockStyle {
+                    flow: vertical,
+                    containing_flow: horizontal,
+                    size: crate::BlockDimensions::new(
+                        BlockSizeValue::Auto,
+                        BlockSizeValue::Length(FlowLength::px(90.0)),
+                    ),
+                    border: PhysicalSides::splat(2.0),
+                    establishes_bfc: true,
+                    ..BlockStyle::default()
+                },
+                Style {
+                    display: Display::Flex,
+                    box_sizing: taffy::BoxSizing::ContentBox,
+                    size: taffy::Size {
+                        width: Dimension::auto(),
+                        height: Dimension::length(90.0),
+                    },
+                    border: Rect::length(2.0),
+                    flex_direction: direction,
+                    direction: taffy::Direction::Rtl,
+                    flex_wrap: taffy::FlexWrap::WrapReverse,
+                    align_items: Some(AlignItems::START),
+                    ..Style::default()
+                },
+                &children,
+                5,
+            );
+            let root = tree.new_with_children_and_block_style(
+                AlgorithmKind::Block,
+                BlockStyle {
+                    flow: horizontal,
+                    containing_flow: horizontal,
+                    size: crate::BlockDimensions::new(
+                        BlockSizeValue::Length(FlowLength::px(320.0)),
+                        BlockSizeValue::Auto,
+                    ),
+                    establishes_bfc: true,
+                    ..BlockStyle::default()
+                },
+                Style {
+                    display: Display::Block,
+                    size: taffy::Size {
+                        width: Dimension::length(320.0),
+                        height: Dimension::auto(),
+                    },
+                    ..Style::default()
+                },
+                &[flex],
+                0,
+            );
+
+            tree.compute_layout_with_measure(root, available(320.0, 240.0), zero_measure);
+
+            assert_eq!(tree.block_algorithm(root), Some(BlockAlgorithm::Buckram));
+            assert_eq!(tree.kind(flex), AlgorithmKind::Flex);
+            assert_eq!(
+                tree.layout(flex),
+                AlgorithmLayout {
+                    width: 34.0,
+                    height: 94.0,
+                    ..AlgorithmLayout::default()
+                },
+                "{css_direction} flex border box"
+            );
+            for (child, (x, y)) in children.into_iter().zip(expected) {
+                assert_eq!(
+                    tree.layout(child),
+                    AlgorithmLayout {
+                        x,
+                        y,
+                        width: 15.0,
+                        height: 45.0,
+                    },
+                    "{css_direction} child"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vertical_flex_auto_block_admission_rejects_physical_row_directions() {
+        use crate::{Direction, WritingMode};
+
+        let horizontal = FlowAxes::HORIZONTAL_LTR;
+        let vertical = FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr);
+        let parent = BlockStyle {
+            flow: horizontal,
+            containing_flow: horizontal,
+            establishes_bfc: true,
+            ..BlockStyle::default()
+        };
+        let child = BlockStyle {
+            flow: vertical,
+            containing_flow: horizontal,
+            size: crate::BlockDimensions::new(
+                BlockSizeValue::Auto,
+                BlockSizeValue::Length(FlowLength::px(90.0)),
+            ),
+            establishes_bfc: true,
+            ..BlockStyle::default()
+        };
+
+        assert!(admits_orthogonal_auto_block_flex_child(
+            parent,
+            AlgorithmKind::Flex,
+            child,
+            taffy::FlexDirection::Column,
+        ));
+        assert!(!admits_orthogonal_auto_block_flex_child(
+            parent,
+            AlgorithmKind::Flex,
+            child,
+            taffy::FlexDirection::Row,
+        ));
+        assert!(!admits_orthogonal_auto_block_flex_child(
+            parent,
+            AlgorithmKind::Flex,
+            BlockStyle {
+                containing_flow: vertical,
+                ..child
+            },
+            taffy::FlexDirection::Column,
+        ));
     }
 
     #[test]

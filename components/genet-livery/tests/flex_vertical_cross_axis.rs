@@ -65,6 +65,61 @@ fn vertical_rl_row_wrap_reverse_keeps_logical_start_and_reverses_flex_lines() {
 }
 
 #[test]
+fn horizontal_block_flow_sizes_vertical_rl_row_wrap_reverse_by_its_flex_cross_size() {
+    for (direction, items, expected) in [
+        (
+            "row",
+            r#"<div id="one" class="item" style="background: grey"></div>
+              <div id="two" class="item" style="background: yellow"></div>
+              <div id="three" class="item" style="background: orange"></div>
+              <div id="four" class="item" style="background: blue"></div>"#,
+            [(2.0, 2.0), (2.0, 47.0), (17.0, 2.0), (17.0, 47.0)],
+        ),
+        (
+            "row-reverse",
+            r#"<div id="one" class="item" style="background: yellow"></div>
+              <div id="two" class="item" style="background: grey"></div>
+              <div id="three" class="item" style="background: blue"></div>
+              <div id="four" class="item" style="background: orange"></div>"#,
+            [(2.0, 47.0), (2.0, 2.0), (17.0, 47.0), (17.0, 2.0)],
+        ),
+    ] {
+        let document = StaticDocument::parse(&format!(
+            r#"<html><body>
+              <p>Pass condition: 4 rectangles, with colors in clockwise order starting from top-left: grey, orange, blue, yellow.
+              <div id="flex" class="container">{items}</div>
+            </body></html>"#
+        ));
+        let css = format!(
+            ".container {{ display: flex; flex-flow: {direction} wrap-reverse; writing-mode: vertical-rl; border: 2px solid black; height: 90px; }} .item {{ width: 15px; height: 45px; float: right; }}"
+        );
+        let styles = resolve_styles(
+            &document,
+            &StyleSet::cambium(&[css.as_str()]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let fragments = layout(&document, &styles, 320.0, 240.0).expect("layout");
+        let rect = |id: &str| {
+            let node = find(&document, document.document(), id).expect(id);
+            let rect = fragments.get(node).expect("fragment").physical_rect();
+            (rect.x, rect.y, rect.width, rect.height)
+        };
+
+        let flex = rect("flex");
+        assert_eq!((flex.2, flex.3), (34.0, 94.0), "{direction} border box");
+        for (id, (x, y)) in ["one", "two", "three", "four"].into_iter().zip(expected) {
+            let child = rect(id);
+            assert_eq!(
+                (child.0 - flex.0, child.1 - flex.1, child.2, child.3),
+                (x, y, 15.0, 45.0),
+                "{direction} {id}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rtl_vertical_rl_column_wrap_uses_the_bottom_cross_start() {
     let document = StaticDocument::parse(
         r#"<html><body><div id="flex"><div id="one"></div><div id="two"></div><div id="three"></div><div id="four"></div></div></body></html>"#,
