@@ -84,6 +84,42 @@ fn direct_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
         .collect()
 }
 
+fn text_control_value<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<String> {
+    let tag = dom.element_name(node).map(|name| name.local.as_ref())?;
+    match tag {
+        "textarea" => Some(descendant_text(dom, node)),
+        "input" => {
+            let input_type = dom
+                .attribute(node, &Namespace::default(), &LocalName::from("type"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("text");
+            matches!(
+                input_type.to_ascii_lowercase().as_str(),
+                "text" | "search" | "email" | "url" | "tel"
+            )
+            .then(|| {
+                dom.attribute(node, &Namespace::default(), &LocalName::from("value"))
+                    .unwrap_or("")
+                    .to_owned()
+            })
+        },
+        _ => None,
+    }
+}
+
+fn descendant_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
+    dom.dom_children(node)
+        .map(|child| {
+            if dom.kind(child) == NodeKind::Text {
+                dom.text(child).unwrap_or("").to_owned()
+            } else {
+                descendant_text(dom, child)
+            }
+        })
+        .collect()
+}
+
 /// One ARIA numeric attribute, when it parses. A malformed value is left unset
 /// rather than projected as zero: a reader is better told nothing than told a
 /// wrong position.
@@ -297,7 +333,11 @@ where
     if !label.is_empty() {
         access.set_label(label);
     }
-    if aria_true(dom, node, "aria-readonly") {
+    let read_only = aria_true(dom, node, "aria-readonly")
+        || dom
+            .attribute(node, &Namespace::default(), &LocalName::from("readonly"))
+            .is_some();
+    if read_only {
         access.set_read_only();
     }
     if let Some(live) = aria_live(dom, node) {
@@ -336,6 +376,12 @@ where
     }
     if !disabled && focusable {
         access.add_action(Action::Focus);
+    }
+    if let Some(value) = text_control_value(dom, node) {
+        access.set_value(value);
+        if !disabled && !read_only && !action_blocked_by_nested_scroll {
+            access.add_action(Action::SetValue);
+        }
     }
     // A progress bar or slider whose value never reaches the tree is
     // decoration: the reader is told it exists but not how far along it is.
@@ -545,6 +591,72 @@ mod tests {
         );
         assert!(editor.supports_action(Action::Click));
         assert!(editor.supports_action(Action::Focus));
+    }
+
+    #[test]
+    fn writable_text_controls_project_values_and_set_value() {
+        let nodes = nodes_for(
+            "<input value=\"find me\"><input type=\"search\" value=\"search me\">
+             <textarea>write me</textarea>",
+        );
+        let values: Vec<_> = nodes.iter().filter_map(AccessNode::value).collect();
+        assert!(values.contains(&"find me"));
+        assert!(values.contains(&"search me"));
+        assert!(values.contains(&"write me"));
+        assert_eq!(values.len(), 3);
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|node| node.supports_action(Action::SetValue))
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn readonly_disabled_and_non_text_inputs_do_not_advertise_set_value() {
+        let nodes = nodes_for(
+            "<input readonly value=\"read only\"><input disabled value=\"disabled\">
+             <input type=\"number\" value=\"42\"><input type=\"checkbox\" value=\"yes\">
+             <textarea aria-readonly=\"true\">locked</textarea>",
+        );
+        assert!(
+            nodes
+                .iter()
+                .all(|node| !node.supports_action(Action::SetValue))
+        );
+        assert_eq!(
+            nodes.iter().filter(|node| node.value().is_some()).count(),
+            3
+        );
+        assert_eq!(nodes.iter().filter(|node| node.is_read_only()).count(), 2);
+    }
+
+    #[test]
+    fn nested_scroll_withholds_text_control_set_value() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        dom.set_inner_html(root, "<div><input value=\"nested\"></div>");
+        let container = dom
+            .dom_children(root)
+            .find(|node| dom.kind(*node) == NodeKind::Element)
+            .expect("scroll container");
+        let input = dom
+            .dom_children(container)
+            .find(|node| dom.kind(*node) == NodeKind::Element)
+            .expect("input");
+        let fragments = fragments_from_scripted_dom(&dom, SHEET, 400, 300).expect("layout");
+        let mut offsets = ScrollOffsets::new();
+        offsets.insert(container, (0.0, 24.0));
+        let tree = accesskit_tree_with_scroll(&dom, &fragments, Some(input), &offsets);
+        let node = tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == super::access_id(&dom, input))
+            .map(|(_, node)| node)
+            .expect("scrolled input");
+        assert_eq!(node.value(), Some("nested"));
+        assert!(!node.supports_action(Action::SetValue));
     }
 
     #[test]

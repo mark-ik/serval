@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use genet_host_api::resolve_href;
 use inker::{
-    A11yCapability, ContentReport, DocumentSession, DocumentZoomState, SessionEffect,
-    SessionError, SessionFormMethod, SessionInput, SessionInputResult, SessionNavigationCommand,
-    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry,
+    A11yCapability, ContentReport, DocumentSession, DocumentZoomState, SessionEffect, SessionError,
+    SessionFormMethod, SessionInput, SessionInputResult, SessionNavigationCommand, SessionRegistry,
+    SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry,
 };
 
 pub use workspace::{
@@ -202,6 +202,16 @@ impl<F: 'static> PeltController<F> {
     /// successful replacement session.
     pub fn session_as_any_ref(&self) -> &dyn std::any::Any {
         self.session.as_any_ref()
+    }
+
+    /// The active document session's narrowly scoped concrete mutation surface.
+    ///
+    /// Engine-specific behavior stays behind [`DocumentSession`]. A host that
+    /// owns a typed action route pairs a downcast here with tile identity and
+    /// [`Self::session_generation`] so a stale retained node cannot mutate a
+    /// replacement session.
+    pub fn session_as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self.session.as_any()
     }
 
     /// Request an engine-owned page zoom through Pelt's neutral session seam.

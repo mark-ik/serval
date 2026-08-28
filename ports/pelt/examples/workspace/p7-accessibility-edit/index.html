@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Livery accessibility edit source</title>
+<style>
+  main { margin: .2rem; font: .65rem/1.05 system-ui, sans-serif; }
+  h1 { margin-block: .1rem; font-size: 1rem; }
+  p { margin-block: .1rem; }
+  label, textarea, input, button { display: block; margin-block: .1rem; }
+  textarea { min-height: 1.5rem; width: 100%; }
+</style>
+<main>
+  <h1>Livery accessibility edit source</h1>
+  <p>Pelt owns this tile's namespace while the retained Livery session owns the form value.</p>
+  <form action="result.html" method="get">
+    <label for="note">Accessible note</label>
+    <textarea id="note" name="note" aria-label="Accessible note">cedar</textarea>
+    <label for="locked">Read-only note</label>
+    <input id="locked" name="locked" aria-label="Read-only note" value="fixed" readonly>
+    <label for="count">Count</label>
+    <input id="count" name="count" aria-label="Count" type="number" value="7">
+    <label>Password
+      <input aria-label="Password" type="password" value="unexposed">
+    </label>
+    <button type="submit">Save accessible note</button>
+  </form>
+</main>

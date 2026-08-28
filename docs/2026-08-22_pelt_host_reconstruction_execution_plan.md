@@ -1103,9 +1103,8 @@ document scroll transform. Livery adjusts its child bounds for active nested
 element scrolls before Pelt composes them. Pelt withholds Click for a child
 whose transformed centre is outside its own content hole, and Livery withholds
 Click below an active nested scroller. That leaves inner-scroll
-ScrollIntoView, nested-scroller action routing, text/value editing, and native
-accessibility grafts as explicit later work rather than publishing a wrong
-pointer target.
+ScrollIntoView, nested-scroller action routing, and native accessibility grafts
+as explicit later work rather than publishing a wrong pointer target.
 
 Focus stays virtual and does not activate or replace the document. A clickable
 Livery node re-enters Pelt through the ordinary content pointer path, checks
@@ -1145,6 +1144,53 @@ stayed virtual and Click navigated only that session`; its compositor digest was
 `01c8f2b912a72ebe`. The final capture shows the destination document inside
 live Chrome. The focused Livery zoom check is part of this receipt's maintenance
 gate.
+
+#### P7 follow-up: native Livery text-control value replacement
+
+**Status:** complete 2026-08-28 for retained native Livery text controls. It
+does not widen the child contract for Reader, Scripted, Smolweb, or native
+surface trees.
+
+`genet-render` projects current values for `textarea` and inputs whose type is
+absent, `text`, `search`, `email`, `url`, or `tel`. Read-only and disabled
+controls remain readable, while `SetValue` is advertised only for enabled,
+writable controls outside an active nested-scroll boundary. Password and other
+typed inputs have neither this value projection nor the action.
+
+The retained Livery session owns mutation policy. It validates its local node
+identity, accepts only the writable native text controls above, updates the
+retained editor, and applies that editor through the existing DOM and form
+model. Pelt owns the outer namespace and checks the tile session generation
+before reaching that typed session method, so a local node ID cannot address a
+sibling or a replaced document.
+
+The named receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
+  --no-default-features --features livery -- \
+  --workspace-receipt accessibility-edit \
+  --artifact target/pelt-receipts/workspace-accessibility-edit.png
+```
+
+It opens two copies of `examples/workspace/p7-accessibility-edit/index.html`.
+With the platform bridge installed, its driver sends a typed `SetValue` through
+the current Pelt action map to the focused tile, confirms `cedar` becomes
+`birch` while the sibling remains `cedar`, and submits the ordinary Livery
+form. It also rejects read-only, numeric, and password targets, malformed value
+data, and a stale node after navigation. This is evidence for installed
+action-map routing and its payload model; it does not claim that an OS screen
+reader emitted that request.
+
+Recorded 2026-08-28: focused `genet-render` accessibility tests passed 16,
+focused `genet-documents` Livery value tests passed 2, the GPU-free Pelt
+desktop receipt passed 1 at the headed receipt's 2x logical geometry, and the
+Pelt viewer parser suite passed 4. The headed Windows run installed the bridge,
+completed after four redraws at 960x640, and reported `Pelt routed a Livery
+text SetValue through its live child namespace, reprojected the value, and
+submitted only the focused tile`; its compositor digest was
+`f3ca804897eebe30`. The capture shows the focused submitted result and its
+unchanged editable sibling in retained Chrome.
 
 ### Reader in workspace
 
@@ -1267,10 +1313,11 @@ P6's retained-shell receipts, P7's Livery child-tree receipt, the separate
 Reader-in-workspace receipt, and the two Tabard consumers are complete. The
 AccessKit tree now composes the retained Livery child tree for its focused
 supported lane; Reader, Scripted, Smolweb, and native child trees still need
-their own namespace and action contracts. Livery still needs nested-scroll
-ScrollIntoView/action routing and text/value semantics before Pelt can widen
-that child lane. Pelt now owns an optional caller-injected local appearance
-store; system-theme integration, multi-window synchronization, and a canonical
+their own namespace and action contracts. Livery's native text-control
+projection and mutation are complete; nested-scroll ScrollIntoView/action
+routing remains before Pelt can widen that child lane. Pelt now owns an
+optional caller-injected local appearance store; system-theme integration,
+multi-window synchronization, and a canonical
 configuration-directory policy remain distinct work. The held-source handoff
 is now a reusable Pelt boundary, not a fetch API for Fleece. Tabard remains a
 portable artifact producer; its recorded Pelt consumers do not make it a

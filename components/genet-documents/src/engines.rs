@@ -273,6 +273,43 @@ impl LiveryDocumentSession {
         &self.doc
     }
 
+    /// Replace one native text control from its document-local accessibility
+    /// identity.
+    ///
+    /// `local_node_id` is the un-namespaced AccessKit node id emitted by
+    /// this session's retained Livery tree. It is deliberately not a general
+    /// DOM mutation surface: only live, enabled, writable text-like inputs and
+    /// textareas accept a replacement. Pelt owns namespacing that local id into
+    /// its composite tree and must reject stale session identities before
+    /// calling here.
+    pub fn replace_accessible_text_value(&mut self, local_node_id: u64, value: &str) -> bool {
+        let Ok(raw_node_id) = usize::try_from(local_node_id) else {
+            return false;
+        };
+        let node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        if !self.doc.dom().is_live(node) {
+            return false;
+        }
+        let Some(kind) = self.accessible_text_kind(node) else {
+            return false;
+        };
+
+        // Reuse the one retained editing plane so a following IME or key event
+        // starts from the accessibility replacement, while `apply_editor`
+        // makes the DOM and form submission plane observe the same value.
+        self.activate_editable(node, kind);
+        let editor = self
+            .editor
+            .as_mut()
+            .expect("an accepted native text control activates its retained editor");
+        editor.value.clear();
+        editor.value.push_str(value);
+        editor.caret = editor.value.len();
+        editor.composition = None;
+        self.apply_editor();
+        true
+    }
+
     /// The applied page-zoom factor in presentation pixels per CSS pixel.
     ///
     /// A host composing Livery's retained semantics into a larger tree uses
@@ -333,6 +370,11 @@ impl LiveryDocumentSession {
             .map(|name| name.local.as_ref())
     }
 
+    fn aria_true(&self, node: genet_scripted_dom::NodeId, name: &str) -> bool {
+        self.attribute(node, name)
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+    }
+
     fn ancestor_matching(
         &self,
         mut node: genet_scripted_dom::NodeId,
@@ -371,6 +413,36 @@ impl LiveryDocumentSession {
                         | "reset"
                         | "submit"
                 ))
+                .then_some(EditableKind::Input)
+            },
+            _ => None,
+        }
+    }
+
+    /// The small native-control set on which an accessibility `SetValue` is
+    /// meaningful in this script-free lane. Other input kinds either have a
+    /// different value model or need type-specific validation that this
+    /// session does not own yet.
+    fn accessible_text_kind(&self, node: genet_scripted_dom::NodeId) -> Option<EditableKind> {
+        if self.attribute(node, "disabled").is_some()
+            || self.attribute(node, "readonly").is_some()
+            || self.aria_true(node, "aria-disabled")
+            || self.aria_true(node, "aria-readonly")
+        {
+            return None;
+        }
+        match self.tag(node)? {
+            tag if tag.eq_ignore_ascii_case("textarea") => Some(EditableKind::Textarea),
+            tag if tag.eq_ignore_ascii_case("input") => {
+                let input_type = self
+                    .attribute(node, "type")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("text");
+                matches!(
+                    input_type.to_ascii_lowercase().as_str(),
+                    "text" | "search" | "email" | "tel" | "url"
+                )
                 .then_some(EditableKind::Input)
             },
             _ => None,
@@ -1895,6 +1967,8 @@ mod tests {
     use super::*;
     use inker::session_engine::SessionRegistry;
     #[cfg(feature = "livery")]
+    use layout_dom_api::LayoutDom;
+    #[cfg(feature = "livery")]
     use std::sync::{Arc, Mutex};
 
     /// Byte source for spawn-with-body tests; never fetches.
@@ -1917,6 +1991,29 @@ mod tests {
             self.requests.lock().unwrap().push(url.to_owned());
             Some(self.bytes.clone())
         }
+    }
+
+    #[cfg(feature = "livery")]
+    fn livery_node_with_id(
+        session: &LiveryDocumentSession,
+        wanted_id: &str,
+    ) -> genet_scripted_dom::NodeId {
+        fn find(
+            dom: &genet_scripted_dom::ScriptedDom,
+            node: genet_scripted_dom::NodeId,
+            wanted_id: &str,
+        ) -> Option<genet_scripted_dom::NodeId> {
+            if dom.attribute(node, &Namespace::default(), &LocalName::from("id")) == Some(wanted_id)
+            {
+                return Some(node);
+            }
+            dom.dom_children(node)
+                .find_map(|child| find(dom, child, wanted_id))
+        }
+
+        let dom = session.document().dom();
+        find(dom, dom.document(), wanted_id)
+            .unwrap_or_else(|| panic!("expected retained node #{wanted_id}"))
     }
 
     #[cfg(feature = "smolweb")]
@@ -2777,6 +2874,133 @@ mod tests {
         assert!(session.scroll_by(0.0, 100.0));
         assert!(session.scroll_for_key(SessionScrollKey::Home));
         assert!(session.scroll_at(10.0, 10.0, 0.0, 100.0));
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_replaces_accessible_native_text_values() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("fixtures/form/index.html")
+            .with_body(
+                r#"<html><body><form action="result.html" method="get">
+                    <input id="query" name="query" type=" EMAIL " value="cedar">
+                    <textarea id="note" name="note">old note</textarea>
+                </form></body></html>"#,
+            )
+            .with_viewport(400, 240);
+        let mut boxed = engine.spawn(&request).expect("form session spawns");
+        let session = boxed
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("Livery engine retains its concrete session");
+        let query = livery_node_with_id(session, "query");
+        let note = livery_node_with_id(session, "note");
+        let query_id = session.document().dom().opaque_id(query);
+        let note_id = session.document().dom().opaque_id(note);
+
+        assert!(session.replace_accessible_text_value(query_id, "birch"));
+        assert_eq!(session.attribute(query, "value"), Some("birch"));
+        assert_eq!(
+            session.editor.as_ref().map(|editor| {
+                (
+                    editor.node,
+                    editor.kind,
+                    editor.value.as_str(),
+                    editor.caret,
+                )
+            }),
+            Some((query, EditableKind::Input, "birch", "birch".len()))
+        );
+        assert_eq!(
+            session.form_submission("fallback.html").fields,
+            [
+                ("query".to_owned(), "birch".to_owned()),
+                ("note".to_owned(), "old note".to_owned()),
+            ]
+        );
+
+        assert!(session.replace_accessible_text_value(note_id, "new note"));
+        assert_eq!(session.text_content(note), "new note");
+        assert_eq!(
+            session.editor.as_ref().map(|editor| {
+                (
+                    editor.node,
+                    editor.kind,
+                    editor.value.as_str(),
+                    editor.caret,
+                )
+            }),
+            Some((note, EditableKind::Textarea, "new note", "new note".len()))
+        );
+        let submission = session.form_submission("fallback.html");
+        assert_eq!(submission.action, "result.html");
+        assert_eq!(submission.method, SessionFormMethod::Get);
+        assert_eq!(
+            submission.fields,
+            [
+                ("query".to_owned(), "birch".to_owned()),
+                ("note".to_owned(), "new note".to_owned()),
+            ]
+        );
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_rejects_inaccessible_native_text_value_replacements() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("fixtures/form/index.html")
+            .with_body(
+                r#"<html><body>
+                    <input id="disabled" disabled value="locked">
+                    <textarea id="readonly" readonly>fixed</textarea>
+                    <input id="aria-disabled" aria-disabled=" TRUE " value="aria locked">
+                    <textarea id="aria-readonly" aria-readonly="true">aria fixed</textarea>
+                    <input id="checkbox" type="checkbox" value="on">
+                    <input id="password" type="password" value="secret">
+                </body></html>"#,
+            )
+            .with_viewport(400, 240);
+        let mut boxed = engine.spawn(&request).expect("control session spawns");
+        let session = boxed
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("Livery engine retains its concrete session");
+        let disabled = livery_node_with_id(session, "disabled");
+        let readonly = livery_node_with_id(session, "readonly");
+        let aria_disabled = livery_node_with_id(session, "aria-disabled");
+        let aria_readonly = livery_node_with_id(session, "aria-readonly");
+        let checkbox = livery_node_with_id(session, "checkbox");
+        let password = livery_node_with_id(session, "password");
+        let disabled_id = session.document().dom().opaque_id(disabled);
+        let readonly_id = session.document().dom().opaque_id(readonly);
+        let aria_disabled_id = session.document().dom().opaque_id(aria_disabled);
+        let aria_readonly_id = session.document().dom().opaque_id(aria_readonly);
+        let checkbox_id = session.document().dom().opaque_id(checkbox);
+        let password_id = session.document().dom().opaque_id(password);
+
+        assert!(!session.replace_accessible_text_value(disabled_id, "changed"));
+        assert!(!session.replace_accessible_text_value(readonly_id, "changed"));
+        assert!(!session.replace_accessible_text_value(aria_disabled_id, "changed"));
+        assert!(!session.replace_accessible_text_value(aria_readonly_id, "changed"));
+        assert!(!session.replace_accessible_text_value(checkbox_id, "changed"));
+        assert!(!session.replace_accessible_text_value(password_id, "changed"));
+        assert!(
+            !session.replace_accessible_text_value(u64::MAX, "changed"),
+            "malformed or foreign local IDs are inert"
+        );
+        assert_eq!(session.attribute(disabled, "value"), Some("locked"));
+        assert_eq!(session.text_content(readonly), "fixed");
+        assert_eq!(
+            session.attribute(aria_disabled, "value"),
+            Some("aria locked")
+        );
+        assert_eq!(session.text_content(aria_readonly), "aria fixed");
+        assert_eq!(session.attribute(checkbox, "value"), Some("on"));
+        assert_eq!(session.attribute(password, "value"), Some("secret"));
+        assert!(
+            session.editor.is_none(),
+            "rejected controls do not take edit focus"
+        );
     }
 
     #[cfg(feature = "livery")]

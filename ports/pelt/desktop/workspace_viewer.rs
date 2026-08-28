@@ -64,6 +64,7 @@ const APPEARANCE_WORKSPACE_ASSERTION: &str =
 const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the Pelt appearance controls";
 const ACCESSIBILITY_ADDRESS_WORKSPACE_ASSERTION: &str = "installed AccessKit address SetValue routing navigated only the focused Pelt tile through loading and retained error content while preserving the successful address and history";
 const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focused Livery child tree through its retained content hole; Focus stayed virtual and Click navigated only that session";
+const ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION: &str = "Pelt routed a Livery text SetValue through its live child namespace, reprojected the value, and submitted only the focused tile";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
@@ -100,6 +101,9 @@ pub enum WorkspaceReceipt {
     /// P7's one-tree Livery child semantics, namespaced and routed through the
     /// same Pelt input path as its content aperture.
     AccessibilityChildren,
+    /// P7's native Livery text-control SetValue route, including retained
+    /// value projection and ordinary form submission.
+    AccessibilityEdit,
     /// P6's compact Chrome layout at a small logical viewport.
     NarrowChrome,
     /// P6's actual high-DPI Chrome input and capture alignment.
@@ -126,6 +130,7 @@ impl WorkspaceReceipt {
             Self::Accessibility => "accessibility",
             Self::AccessibilityAddress => "accessibility-address",
             Self::AccessibilityChildren => "accessibility-children",
+            Self::AccessibilityEdit => "accessibility-edit",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
@@ -151,6 +156,7 @@ impl WorkspaceReceipt {
                 | Self::Accessibility
                 | Self::AccessibilityAddress
                 | Self::AccessibilityChildren
+                | Self::AccessibilityEdit
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
@@ -361,6 +367,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::Accessibility
                 | WorkspaceReceipt::AccessibilityAddress
                 | WorkspaceReceipt::AccessibilityChildren
+                | WorkspaceReceipt::AccessibilityEdit
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -977,6 +984,7 @@ enum WorkspaceA11yActionTarget {
 struct LiveryA11yAction {
     tile: TileId,
     session_generation: u64,
+    local_node: AccessNodeId,
     content_rect: WorkspaceRect,
     click_point: Option<(f32, f32)>,
 }
@@ -1585,12 +1593,16 @@ impl WorkspaceApp {
                     // below active nested scrollers.
                     node.remove_action(Action::Click);
                 }
-                if node.supports_action(Action::Focus) || click_point.is_some() {
+                if node.supports_action(Action::Focus)
+                    || click_point.is_some()
+                    || node.supports_action(Action::SetValue)
+                {
                     actions.insert(
                         global_id,
                         WorkspaceA11yActionTarget::Livery(LiveryA11yAction {
                             tile,
                             session_generation,
+                            local_node: local_id,
                             content_rect,
                             click_point,
                         }),
@@ -1631,7 +1643,8 @@ impl WorkspaceApp {
             Some(
                 WorkspaceReceipt::Accessibility
                     | WorkspaceReceipt::AccessibilityAddress
-                    | WorkspaceReceipt::AccessibilityChildren,
+                    | WorkspaceReceipt::AccessibilityChildren
+                    | WorkspaceReceipt::AccessibilityEdit,
             )
         ) && self.accessibility.status() != BridgeStatus::Installed
         {
@@ -1761,6 +1774,28 @@ impl WorkspaceApp {
                 redraw |= released.redraw;
                 self.apply_effect(released);
                 redraw
+            },
+            (Action::SetValue, WorkspaceA11yActionTarget::Livery(target)) => {
+                if self.workspace.document_session_generation(target.tile)
+                    != Some(target.session_generation)
+                {
+                    return false;
+                }
+                let Some(ActionData::Value(value)) = request.data else {
+                    return false;
+                };
+                let Some(controller) = self.workspace.controller_mut(target.tile) else {
+                    return false;
+                };
+                if controller.session_generation() != target.session_generation {
+                    return false;
+                }
+                controller
+                    .session_as_any_mut()
+                    .downcast_mut::<genet_documents::LiveryDocumentSession>()
+                    .is_some_and(|session| {
+                        session.replace_accessible_text_value(target.local_node.0, value.as_ref())
+                    })
             },
             _ => false,
         }
@@ -2455,6 +2490,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::Accessibility
                         | WorkspaceReceipt::AccessibilityAddress
                         | WorkspaceReceipt::AccessibilityChildren
+                        | WorkspaceReceipt::AccessibilityEdit
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
@@ -2680,6 +2716,7 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::Accessibility
                 | WorkspaceReceipt::AccessibilityAddress
                 | WorkspaceReceipt::AccessibilityChildren
+                | WorkspaceReceipt::AccessibilityEdit
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -2731,6 +2768,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::AccessibilityChildren => {
                 self.drive_accessibility_children_workspace_receipt_step()
             },
+            WorkspaceReceipt::AccessibilityEdit => {
+                self.drive_accessibility_edit_workspace_receipt_step()
+            },
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
@@ -2750,6 +2790,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::Accessibility
                     | WorkspaceReceipt::AccessibilityAddress
                     | WorkspaceReceipt::AccessibilityChildren
+                    | WorkspaceReceipt::AccessibilityEdit
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
@@ -4720,6 +4761,231 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_accessibility_edit_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        let sibling = TileId(2);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 2)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "accessibility edit receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Accessible note",
+                    Role::TextInput,
+                )?;
+                let note_node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == note)
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility edit receipt lost its note input")?;
+                if note_node.value() != Some("cedar")
+                    || !note_node.supports_action(Action::SetValue)
+                {
+                    return Err(
+                        "accessibility edit receipt did not expose a writable Livery textarea"
+                            .to_owned(),
+                    );
+                }
+                let sibling_note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    sibling,
+                    "Accessible note",
+                    Role::TextInput,
+                )?;
+                if tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == sibling_note)
+                    .and_then(|(_, node)| node.value())
+                    != Some("cedar")
+                {
+                    return Err(
+                        "accessibility edit receipt did not retain the sibling textarea value"
+                            .to_owned(),
+                    );
+                }
+                for label in ["Read-only note", "Count", "Password"] {
+                    let protected = livery_a11y_node_for_tile(
+                        &tree,
+                        &self.accessibility,
+                        tile,
+                        label,
+                        Role::TextInput,
+                    )?;
+                    if tree
+                        .nodes
+                        .iter()
+                        .find(|(id, _)| *id == protected)
+                        .is_some_and(|(_, node)| node.supports_action(Action::SetValue))
+                        || self.apply_accessibility_request(A11yActionRequest {
+                            action: Action::SetValue,
+                            target_node: protected,
+                            data: Some(ActionData::Value("not writable".into())),
+                        })
+                    {
+                        return Err(format!(
+                            "accessibility edit receipt exposed or changed protected Livery control {label:?}"
+                        ));
+                    }
+                }
+                if self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::SetValue,
+                    target_node: note,
+                    data: Some(ActionData::NumericValue(4.0)),
+                }) || self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::SetValue,
+                    target_node: note,
+                    data: None,
+                }) || !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::SetValue,
+                    target_node: note,
+                    data: Some(ActionData::Value("birch".into())),
+                }) {
+                    return Err(
+                        "accessibility edit receipt did not reject malformed data or apply its value"
+                            .to_owned(),
+                    );
+                }
+                if self.workspace.document_session_generation(tile) != Some(1)
+                    || !self
+                        .workspace
+                        .controller(sibling)
+                        .is_some_and(|controller| {
+                            controller
+                                .address()
+                                .replace('\\', "/")
+                                .ends_with("/index.html")
+                        })
+                {
+                    return Err(
+                        "accessibility edit SetValue replaced a session or changed the sibling tile"
+                            .to_owned(),
+                    );
+                }
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Accessible note",
+                    Role::TextInput,
+                )?;
+                let reprojected = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == note)
+                    .map(|(_, node)| node);
+                let Some(note_node) = reprojected else {
+                    return Err("accessibility edit receipt lost its changed textarea".to_owned());
+                };
+                if note_node.value() != Some("birch") {
+                    return Ok(None);
+                }
+                if !note_node.supports_action(Action::SetValue) {
+                    return Err(
+                        "accessibility edit receipt stopped advertising SetValue after its mutation"
+                            .to_owned(),
+                    );
+                }
+                let sibling_note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    sibling,
+                    "Accessible note",
+                    Role::TextInput,
+                )?;
+                if tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == sibling_note)
+                    .and_then(|(_, node)| node.value())
+                    != Some("cedar")
+                {
+                    return Err(
+                        "accessibility edit receipt reprojected its value into the sibling tile"
+                            .to_owned(),
+                    );
+                }
+                let submit = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Save accessible note",
+                    Role::Button,
+                )?;
+                let submit_action = self.accessibility.action_for(submit);
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: submit,
+                    data: None,
+                }) {
+                    return Err(format!(
+                        "accessibility edit receipt could not submit the mutated Livery form (action target {submit_action:?})"
+                    ));
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility edit receipt lost its focused controller")?;
+                if !controller
+                    .address()
+                    .replace('\\', "/")
+                    .contains("/result.html?note=birch")
+                    || controller.session_generation() != 2
+                    || !self.workspace.controller(sibling).is_some_and(|other| {
+                        other.address().replace('\\', "/").ends_with("/index.html")
+                    })
+                {
+                    return Err(
+                        "accessibility edit receipt did not submit the focused Livery value through its ordinary route"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("accessibility edit receipt lost its submitted controller")?;
+                if !matches!(controller.document_state(), PeltDocumentState::Ready) {
+                    return Ok(None);
+                }
+                if !controller
+                    .address()
+                    .replace('\\', "/")
+                    .contains("/result.html?note=birch")
+                    || !self.workspace.controller(sibling).is_some_and(|other| {
+                        other.address().replace('\\', "/").ends_with("/index.html")
+                    })
+                {
+                    return Err(
+                        "accessibility edit receipt did not preserve its submitted route and sibling"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
     #[cfg(target_os = "windows")]
     fn mixed_native_receipt_ready(&mut self) -> bool {
         if !self.capability_receipt_ready() {
@@ -5410,6 +5676,32 @@ fn a11y_node(tree: &TreeUpdate, label: &str, role: Role) -> Result<AccessNodeId,
         .ok_or_else(|| format!("accessibility tree has no {role:?} named {label:?}"))
 }
 
+fn livery_a11y_node_for_tile(
+    tree: &TreeUpdate,
+    accessibility: &WorkspaceAccessibility,
+    tile: TileId,
+    label: &str,
+    role: Role,
+) -> Result<AccessNodeId, String> {
+    tree.nodes
+        .iter()
+        .find(|(id, node)| {
+            node.role() == role
+                && node.label() == Some(label)
+                && matches!(
+                    accessibility.action_for(*id),
+                    Some(WorkspaceA11yActionTarget::Livery(target)) if target.tile == tile
+                )
+        })
+        .map(|(id, _)| *id)
+        .ok_or_else(|| {
+            format!(
+                "accessibility tree has no Livery {role:?} named {label:?} in tile {}",
+                tile.0
+            )
+        })
+}
+
 fn discard_unimported_surface_frame(frame: SurfaceFrame) {
     #[cfg(target_os = "windows")]
     if let NativeTextureHandle::D3d12Shared {
@@ -5911,7 +6203,6 @@ mod tests {
         let mut app = WorkspaceApp::new(config, workspace, frisket, None);
         #[cfg(not(target_os = "windows"))]
         let mut app = WorkspaceApp::new(config, workspace, frisket);
-
         let compose = |app: &mut WorkspaceApp| {
             app.refresh_chrome();
             let pane = app.frisket.frame(960, 640).expect("Reader Frisket frame");
@@ -6111,6 +6402,21 @@ mod tests {
         assert_eq!(
             WorkspaceReceipt::AccessibilityChildren.id(),
             "accessibility-children"
+        );
+        let accessibility_edit = WorkspaceViewerConfig::new(
+            vec!["edit.html".to_owned(), "sibling.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(
+            WorkspaceReceipt::AccessibilityEdit,
+            "accessibility-edit.png",
+        );
+        assert_eq!(accessibility_edit.size, Some((960, 640)));
+        assert_eq!(accessibility_edit.frames, Some(3));
+        assert!(WorkspaceReceipt::AccessibilityEdit.keeps_chrome());
+        assert_eq!(
+            WorkspaceReceipt::AccessibilityEdit.id(),
+            "accessibility-edit"
         );
 
         let tabard =
@@ -7303,6 +7609,204 @@ mod tests {
             .expect("replacement session has its own child link");
         assert_ne!(link, replacement_link);
         assert_eq!(app.accessibility.focus, None);
+    }
+
+    #[test]
+    fn livery_child_accessibility_text_values_are_namespaced_stale_safe_and_submit_forms() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p7-accessibility-edit/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let urls = vec![fixture.clone(), fixture.clone()];
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("accessibility edit tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("accessibility edit fixtures open");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::AccessibilityEdit, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+        // The headed Windows receipt runs at a 2x physical scale, leaving a
+        // 235x206 logical content hole in each side-by-side tile. Keep the
+        // GPU-free form route proof inside that same visibility constraint.
+        app.scale_factor = 2.0;
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let (width, height) = app.logical_size();
+            let pane = app
+                .frisket
+                .frame(width, height)
+                .expect("accessibility edit Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+        let node = |app: &WorkspaceApp, tree: &TreeUpdate, tile, label: &str, role| {
+            livery_a11y_node_for_tile(tree, &app.accessibility, tile, label, role)
+                .unwrap_or_else(|error| panic!("{error}"))
+        };
+        fn value(tree: &TreeUpdate, id: AccessNodeId) -> Option<&str> {
+            tree.nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .and_then(|(_, node)| node.value())
+        }
+        let supports = |tree: &TreeUpdate, id, action| {
+            tree.nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .is_some_and(|(_, node)| node.supports_action(action))
+        };
+
+        compose(&mut app);
+        let initial = app
+            .prepare_accessibility_tree()
+            .expect("initial accessibility edit tree");
+        let note = node(
+            &app,
+            &initial,
+            TileId(1),
+            "Accessible note",
+            Role::TextInput,
+        );
+        let sibling_note = node(
+            &app,
+            &initial,
+            TileId(2),
+            "Accessible note",
+            Role::TextInput,
+        );
+        assert_eq!(value(&initial, note), Some("cedar"));
+        assert_eq!(value(&initial, sibling_note), Some("cedar"));
+        assert!(supports(&initial, note, Action::SetValue));
+        for label in ["Read-only note", "Count", "Password"] {
+            let protected = node(&app, &initial, TileId(1), label, Role::TextInput);
+            assert!(
+                !supports(&initial, protected, Action::SetValue),
+                "{label} must not advertise SetValue"
+            );
+            assert!(!app.apply_accessibility_request(A11yActionRequest {
+                action: Action::SetValue,
+                target_node: protected,
+                data: Some(ActionData::Value("not writable".into())),
+            }));
+        }
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: note,
+            data: Some(ActionData::NumericValue(4.0)),
+        }));
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: note,
+            data: None,
+        }));
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: note,
+            data: Some(ActionData::Value("birch".into())),
+        }));
+        assert_eq!(
+            app.workspace.document_session_generation(TileId(1)),
+            Some(1)
+        );
+        assert!(
+            app.workspace
+                .controller(TileId(2))
+                .is_some_and(|controller| {
+                    controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/index.html")
+                })
+        );
+
+        compose(&mut app);
+        let changed = app
+            .prepare_accessibility_tree()
+            .expect("changed accessibility edit tree");
+        let changed_note = node(
+            &app,
+            &changed,
+            TileId(1),
+            "Accessible note",
+            Role::TextInput,
+        );
+        let unchanged_sibling = node(
+            &app,
+            &changed,
+            TileId(2),
+            "Accessible note",
+            Role::TextInput,
+        );
+        assert_eq!(value(&changed, changed_note), Some("birch"));
+        assert_eq!(value(&changed, unchanged_sibling), Some("cedar"));
+        assert!(supports(&changed, changed_note, Action::SetValue));
+        let action = app
+            .accessibility
+            .action_for(changed_note)
+            .expect("changed note has a Pelt action target");
+        let WorkspaceA11yActionTarget::Livery(action) = action else {
+            panic!("changed note must route through Pelt's Livery namespace");
+        };
+        assert_eq!(action.tile, TileId(1));
+        assert_eq!(action.session_generation, 1);
+
+        let submit = node(
+            &app,
+            &changed,
+            TileId(1),
+            "Save accessible note",
+            Role::Button,
+        );
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: submit,
+            data: None,
+        }));
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("submitted Livery tile remains live");
+        assert!(
+            controller
+                .address()
+                .replace('\\', "/")
+                .contains("/result.html?note=birch"),
+            "form submission must carry the changed Livery value"
+        );
+        assert_eq!(controller.session_generation(), 2);
+        assert!(!app.apply_accessibility_request(A11yActionRequest {
+            action: Action::SetValue,
+            target_node: changed_note,
+            data: Some(ActionData::Value("stale".into())),
+        }));
+        assert!(
+            app.workspace.controller(TileId(2)).is_some_and(|other| {
+                other.address().replace('\\', "/").ends_with("/index.html")
+            })
+        );
     }
 
     #[test]
