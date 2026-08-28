@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use genet_host_api::tile::{
@@ -13,8 +13,8 @@ use inker::{
     SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest,
 };
 use pelt_core::{
-    PeltClock, PeltRegistries, PeltRouteSource, PeltRouteState, PeltTileRequest, PeltWorkspace,
-    WorkspaceRect,
+    PeltClock, PeltDocumentState, PeltRegistries, PeltRouteSource, PeltRouteState, PeltTileRequest,
+    PeltWorkspace, WorkspaceRect,
 };
 
 #[derive(Default)]
@@ -26,6 +26,7 @@ struct FakeDocumentEngine {
     id: &'static str,
     probe: Arc<Mutex<DocumentProbe>>,
     fail: bool,
+    fail_addresses: Arc<Mutex<HashSet<String>>>,
     capability: A11yCapability,
 }
 
@@ -40,6 +41,14 @@ impl SessionEngine<String> for FakeDocumentEngine {
     ) -> Result<Box<dyn DocumentSession<String>>, SessionError> {
         if self.fail {
             return Err(SessionError::SpawnFailed("forced route failure".to_owned()));
+        }
+        if self
+            .fail_addresses
+            .lock()
+            .expect("fake failed-addresses lock")
+            .contains(&request.address)
+        {
+            return Err(SessionError::SpawnFailed("forced load failure".to_owned()));
         }
         self.probe
             .lock()
@@ -189,18 +198,21 @@ fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() 
         id: "fake.static",
         probe: documents.clone(),
         fail: false,
+        fail_addresses: Arc::new(Mutex::new(HashSet::new())),
         capability: A11yCapability::Full,
     }));
     sessions.register(Box::new(FakeDocumentEngine {
         id: "fake.scripted",
         probe: documents.clone(),
         fail: false,
+        fail_addresses: Arc::new(Mutex::new(HashSet::new())),
         capability: A11yCapability::Partial,
     }));
     sessions.register(Box::new(FakeDocumentEngine {
         id: "fake.fail",
         probe: documents.clone(),
         fail: true,
+        fail_addresses: Arc::new(Mutex::new(HashSet::new())),
         capability: A11yCapability::Partial,
     }));
     let mut surface_engines = SurfaceEngineRegistry::new();
@@ -406,4 +418,131 @@ fn shared_registries_route_documents_surfaces_overrides_and_visible_fallbacks() 
         workspace.controller(TileId(2)).unwrap().engine_id(),
         "fake.scripted"
     );
+}
+
+#[test]
+fn failed_document_navigation_keeps_the_prior_session_and_records_a_recoverable_error() {
+    let documents = Arc::new(Mutex::new(DocumentProbe::default()));
+    let failed_addresses = Arc::new(Mutex::new(HashSet::from(["missing.html".to_owned()])));
+    let mut sessions = SessionRegistry::new();
+    sessions.register(Box::new(FakeDocumentEngine {
+        id: "fake.static",
+        probe: documents,
+        fail: false,
+        fail_addresses: failed_addresses.clone(),
+        capability: A11yCapability::Full,
+    }));
+    let registries = PeltRegistries::new(
+        sessions,
+        SurfaceEngineRegistry::new(),
+        EngineRoutePolicy {
+            rules: Vec::new(),
+            fallback: EngineRouteRule::new(
+                std::iter::empty::<&str>(),
+                "fake.static",
+                SurfaceContractMode::CompositedTexture,
+            ),
+            per_host_overrides: HashMap::new(),
+        },
+        "pelt-load-state-test",
+        "fake.static",
+        EngineProfileBinding {
+            user_data_dir: "pelt-load-state-test-profile".to_owned(),
+        },
+    );
+    let mut workspace = PeltWorkspace::try_routed(
+        TileTree::single(tile(1)),
+        registries,
+        |tile| {
+            let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                unreachable!()
+            };
+            Ok(PeltTileRequest::new(address, (800, 600)))
+        },
+        || Box::new(TestClock),
+    )
+    .expect("seed document opens");
+
+    let failed = workspace.command_for(
+        TileId(1),
+        inker::SessionNavigationCommand::Address("missing.html".to_owned()),
+    );
+    assert!(
+        failed.handled,
+        "a visible error document consumes the action"
+    );
+    assert!(
+        failed.redraw,
+        "a visible error document requests composition"
+    );
+    assert!(!failed.navigated);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("could not load missing.html"))
+    );
+    let controller = workspace
+        .controller(TileId(1))
+        .expect("seed controller remains");
+    assert_eq!(controller.address(), "tile-1.html");
+    assert!(!controller.can_go_back());
+    assert_eq!(
+        controller.document_state(),
+        &PeltDocumentState::Error {
+            address: "missing.html".to_owned(),
+            message: failed.error.clone().expect("load error"),
+        }
+    );
+
+    let recovered = workspace.command_for(
+        TileId(1),
+        inker::SessionNavigationCommand::Address("recovered.html".to_owned()),
+    );
+    assert!(recovered.navigated);
+    let controller = workspace
+        .controller(TileId(1))
+        .expect("replacement controller");
+    assert_eq!(controller.address(), "recovered.html");
+    assert!(controller.can_go_back());
+    assert_eq!(
+        controller.document_state(),
+        &PeltDocumentState::Loading {
+            address: "recovered.html".to_owned(),
+        }
+    );
+
+    workspace.mark_visible_documents_presented();
+    assert_eq!(
+        workspace
+            .controller(TileId(1))
+            .expect("visible controller")
+            .document_state(),
+        &PeltDocumentState::Ready
+    );
+
+    failed_addresses
+        .lock()
+        .expect("fake failed-addresses lock")
+        .insert("tile-1.html".to_owned());
+    let failed_back = workspace.command_for(TileId(1), inker::SessionNavigationCommand::Back);
+    assert!(failed_back.handled, "a failed history traversal is visible");
+    assert!(failed_back.redraw, "a failed history traversal is composed");
+    assert!(
+        !failed_back.navigated,
+        "the history cursor stays on its prior entry"
+    );
+    let controller = workspace
+        .controller(TileId(1))
+        .expect("failed Back retains its active controller");
+    assert_eq!(controller.address(), "recovered.html");
+    assert!(
+        controller.can_go_back(),
+        "the failed target remains reachable"
+    );
+    assert!(!controller.can_go_forward());
+    assert!(matches!(
+        controller.document_state(),
+        PeltDocumentState::Error { address, .. } if address == "tile-1.html"
+    ));
 }

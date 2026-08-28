@@ -32,6 +32,7 @@ fn frame_view(state: &FrameState) -> FrameView {
 
 const ATTR_CHROME_ACTION: &str = "data-pelt-chrome";
 const ATTR_INSPECTOR: &str = "data-pelt-inspector";
+const ATTR_DIAGNOSTIC: &str = "data-pelt-diagnostic";
 
 fn chrome_button(action: &str, label: &str, accessible_label: &str, disabled: bool) -> FrameView {
     let class = if disabled {
@@ -176,16 +177,14 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
     if let Some(inspector) = chrome.inspector.as_ref() {
         body.push(inspector_view(inspector));
     }
-    Box::new(
-        el::<_, FrameState, ()>(
-            "div",
-            vec![
-                header,
-                Box::new(el::<_, FrameState, ()>("div", body).attr("class", "pelt-body")),
-            ],
-        )
-        .attr("class", "pelt-workspace"),
-    )
+    let mut workspace: Vec<FrameView> = vec![
+        header,
+        Box::new(el::<_, FrameState, ()>("div", body).attr("class", "pelt-body")),
+    ];
+    if let Some(diagnostic) = chrome.diagnostic.as_ref() {
+        workspace.push(diagnostic_view(diagnostic));
+    }
+    Box::new(el::<_, FrameState, ()>("div", workspace).attr("class", "pelt-workspace"))
 }
 
 /// One laid-out Frisket frame and the active content holes it authorizes.
@@ -195,6 +194,9 @@ pub(crate) struct FrisketFrame {
     /// Bounds of the retained inspector when it is open. The desktop host
     /// restores this crop after native texture composition.
     pub inspector_rect: Option<WorkspaceRect>,
+    /// Bounds of the host-owned loading/error document. The desktop host
+    /// restores this crop after document and native tile composition.
+    pub diagnostic_rect: Option<WorkspaceRect>,
 }
 
 /// Semantic result of hit-testing the live Frisket DOM.
@@ -350,8 +352,97 @@ fn inspector_view(inspector: &ChromeInspector) -> FrameView {
     )
 }
 
+/// The bounded, host-owned content projection shown for a document session
+/// that has just been replaced or could not be replaced. It is deliberately
+/// not synthetic engine HTML: Pelt keeps the live controller and history
+/// beneath this retained Frisket overlay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChromeDocumentKind {
+    Loading,
+    Error,
+}
+
+impl ChromeDocumentKind {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Loading => "loading",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ChromeDocument {
+    pub kind: ChromeDocumentKind,
+    pub tile: TileId,
+    pub rect: WorkspaceRect,
+    pub address: String,
+    pub message: Option<String>,
+}
+
+fn diagnostic_view(diagnostic: &ChromeDocument) -> FrameView {
+    let (heading, summary, note, role) = match diagnostic.kind {
+        ChromeDocumentKind::Loading => (
+            "Loading",
+            "Pelt has installed the replacement document.".to_owned(),
+            "The document will replace this notice after its first composed frame.",
+            "status",
+        ),
+        ChromeDocumentKind::Error => (
+            "Could not load",
+            diagnostic_error_summary(diagnostic),
+            "The previous document and its history remain available. Use Back, Reload, or the address field to continue.",
+            "alert",
+        ),
+    };
+    let rows: Vec<FrameView> = vec![
+        Box::new(el::<_, FrameState, ()>("div", heading).attr("class", "pelt-diagnostic-heading")),
+        Box::new(
+            el::<_, FrameState, ()>("div", diagnostic.address.clone())
+                .attr("class", "pelt-diagnostic-address"),
+        ),
+        Box::new(el::<_, FrameState, ()>("div", summary).attr("class", "pelt-diagnostic-message")),
+        Box::new(el::<_, FrameState, ()>("div", note).attr("class", "pelt-diagnostic-note")),
+    ];
+    Box::new(
+        el::<_, FrameState, ()>("div", rows)
+            .attr(
+                "class",
+                match diagnostic.kind {
+                    ChromeDocumentKind::Loading => "pelt-diagnostic pelt-diagnostic-loading",
+                    ChromeDocumentKind::Error => "pelt-diagnostic pelt-diagnostic-error",
+                },
+            )
+            .attr(
+                "style",
+                format!(
+                    "left: {}px; top: {}px; width: {}px; height: {}px;",
+                    diagnostic.rect.x,
+                    diagnostic.rect.y,
+                    diagnostic.rect.width,
+                    diagnostic.rect.height,
+                ),
+            )
+            .attr(ATTR_DIAGNOSTIC, diagnostic.kind.id())
+            .attr("data-pelt-tile", diagnostic.tile.0.to_string())
+            .attr("role", role)
+            .attr("aria-label", heading),
+    )
+}
+
+fn diagnostic_error_summary(diagnostic: &ChromeDocument) -> String {
+    let Some(message) = diagnostic.message.as_deref() else {
+        return "The document engine did not provide an error message.".to_owned();
+    };
+    let repeated_address = format!("could not load {}: ", diagnostic.address);
+    message
+        .strip_prefix(&repeated_address)
+        .unwrap_or(message)
+        .to_owned()
+}
+
 /// Snapshot rendered by the retained Pelt chrome above Frisket.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WorkspaceChrome {
     pub title: String,
     pub address: String,
@@ -365,6 +456,7 @@ pub(crate) struct WorkspaceChrome {
     pub engine_selected: Option<ChromeEngineChoice>,
     pub engine_choices: Vec<ChromeEngineChoice>,
     pub inspector: Option<ChromeInspector>,
+    pub diagnostic: Option<ChromeDocument>,
 }
 
 /// A retained, GPU-free pane frame. Its DOM is produced by Cambium Frisket;
@@ -429,16 +521,23 @@ impl FrisketSurface {
         let inspector_rect = nodes_with_attr(self.document.dom(), ATTR_INSPECTOR)
             .into_iter()
             .find_map(|node| self.document.fragment_rect(node).map(workspace_rect));
+        let diagnostic_rect = nodes_with_attr(self.document.dom(), ATTR_DIAGNOSTIC)
+            .into_iter()
+            .find_map(|node| self.document.fragment_rect(node).map(workspace_rect));
         Ok(FrisketFrame {
             scene: paint_list_render::translate_paint_list(&list),
             content_rects,
             inspector_rect,
+            diagnostic_rect,
         })
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<FrisketHit> {
         let node = self.document.hit_test(x, y)?;
         let dom = self.document.dom();
+        if let Some(tile) = diagnostic_target(dom, node) {
+            return Some(FrisketHit::Content(tile));
+        }
         if let Some(action) = chrome_action(dom, node) {
             return Some(FrisketHit::ChromeAction(action));
         }
@@ -590,8 +689,20 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
     }
 }
 
+fn diagnostic_target(dom: &ScriptedDom, hit: NodeId) -> Option<TileId> {
+    let mut node = hit;
+    loop {
+        if attr(dom, node, ATTR_DIAGNOSTIC).is_some() {
+            return attr(dom, node, "data-pelt-tile")
+                .and_then(|tile| tile.parse::<u64>().ok())
+                .map(TileId);
+        }
+        node = dom.parent(node)?;
+    }
+}
+
 const PELT_CHROME_CSS: &str = "\
-    .pelt-workspace { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #202027; } \
+    .pelt-workspace { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #202027; } \
     .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 70px; min-height: 70px; padding: 4px 6px; background: #24242d; border-bottom: 1px solid #3c3c48; } \
     .pelt-chrome-menu-open { flex-basis: 108px; min-height: 108px; } \
     .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; } \
@@ -618,7 +729,14 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-inspector-summary { flex-grow: 0; flex-shrink: 0; margin-top: 4px; color: #c8c8d4; font-size: 12px; } \
     .pelt-inspector-section { flex-grow: 0; flex-shrink: 0; margin-top: 8px; color: #8bb9eb; font-size: 12px; } \
     .pelt-inspector-entry { flex-grow: 0; flex-shrink: 0; padding-left: 6px; overflow: hidden; white-space: nowrap; color: #e1e1ea; font-size: 12px; } \
-    .pelt-inspector-more { flex-grow: 0; flex-shrink: 0; padding-left: 6px; color: #a0a0b0; font-size: 12px; }";
+    .pelt-inspector-more { flex-grow: 0; flex-shrink: 0; padding-left: 6px; color: #a0a0b0; font-size: 12px; } \
+    .pelt-diagnostic { position: absolute; z-index: 2; display: flex; flex-direction: column; box-sizing: border-box; min-width: 0; min-height: 0; padding: 24px; overflow: hidden; pointer-events: none; border: 1px solid #596071; } \
+    .pelt-diagnostic-loading { color: #dbeeff; background: #1d2839; border-color: #527aa6; } \
+    .pelt-diagnostic-error { color: #ffe7e5; background: #392025; border-color: #a35e63; } \
+    .pelt-diagnostic-heading { flex-grow: 0; flex-shrink: 0; color: #ffffff; font-size: 20px; font-weight: bold; } \
+    .pelt-diagnostic-address { flex-grow: 0; flex-shrink: 0; margin-top: 10px; overflow: hidden; white-space: nowrap; color: #bfe0ff; font-size: 13px; } \
+    .pelt-diagnostic-message { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: inherit; font-size: 14px; } \
+    .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: #d2d2df; font-size: 13px; }";
 
 fn attr(dom: &ScriptedDom, node: NodeId, name: &str) -> Option<String> {
     dom.attribute(node, &Namespace::default(), &LocalName::from(name))
@@ -767,6 +885,7 @@ mod tests {
                 ChromeEngineChoice::Scripted,
             ],
             inspector: None,
+            diagnostic: None,
         }));
         let frame = surface.frame(800, 600).expect("chrome Frisket frame");
         let address = surface.chrome_rect("address").expect("address geometry");
@@ -863,6 +982,99 @@ mod tests {
     }
 
     #[test]
+    fn loading_and_error_documents_overlay_one_content_hole_without_blocking_it() {
+        let chrome = WorkspaceChrome {
+            title: "Focused document".to_owned(),
+            address: "C:/example/index.html".to_owned(),
+            route: "Automatic: genet.livery · document".to_owned(),
+            status: "Ready".to_owned(),
+            address_focused: false,
+            can_go_back: true,
+            can_go_forward: false,
+            engine_label: "Auto".to_owned(),
+            engine_menu_open: false,
+            engine_selected: Some(ChromeEngineChoice::Automatic),
+            engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
+            inspector: None,
+            diagnostic: None,
+        };
+        let mut surface = FrisketSurface::new(&nested_tree());
+        surface.set_chrome(Some(chrome.clone()));
+        let baseline = surface.frame(800, 600).expect("baseline chrome frame");
+        let first = baseline
+            .content_rects
+            .iter()
+            .find_map(|(tile, rect)| (*tile == TileId(1)).then_some(*rect))
+            .expect("first content hole");
+
+        surface.set_chrome(Some(WorkspaceChrome {
+            diagnostic: Some(ChromeDocument {
+                kind: ChromeDocumentKind::Loading,
+                tile: TileId(1),
+                rect: first,
+                address: "C:/example/next.html".to_owned(),
+                message: None,
+            }),
+            ..chrome.clone()
+        }));
+        let loading = surface.frame(800, 600).expect("loading document frame");
+        assert_eq!(loading.content_rects, baseline.content_rects);
+        assert_eq!(loading.diagnostic_rect, Some(first));
+        let loading_node = nodes_with_attr(surface.document.dom(), ATTR_DIAGNOSTIC)
+            .into_iter()
+            .next()
+            .expect("loading document node");
+        assert_eq!(
+            attr(surface.document.dom(), loading_node, "role").as_deref(),
+            Some("status")
+        );
+        assert_eq!(
+            surface.hit(first.x + first.width / 2.0, first.y + first.height / 2.0),
+            Some(FrisketHit::Content(TileId(1))),
+            "the read-only diagnostic leaves the underlying content route live"
+        );
+        assert!(document_text(surface.document.dom()).contains("Loading"));
+
+        assert_eq!(
+            diagnostic_error_summary(&ChromeDocument {
+                kind: ChromeDocumentKind::Error,
+                tile: TileId(1),
+                rect: first,
+                address: "C:/example/missing.html".to_owned(),
+                message: Some(
+                    "could not load C:/example/missing.html: session spawn failed: could not load C:/example/missing.html"
+                        .to_owned(),
+                ),
+            }),
+            "session spawn failed: could not load C:/example/missing.html"
+        );
+
+        surface.set_chrome(Some(WorkspaceChrome {
+            diagnostic: Some(ChromeDocument {
+                kind: ChromeDocumentKind::Error,
+                tile: TileId(1),
+                rect: first,
+                address: "C:/example/missing.html".to_owned(),
+                message: Some("could not load C:/example/missing.html".to_owned()),
+            }),
+            ..chrome
+        }));
+        let error = surface.frame(800, 600).expect("error document frame");
+        assert_eq!(error.diagnostic_rect, Some(first));
+        let error_node = nodes_with_attr(surface.document.dom(), ATTR_DIAGNOSTIC)
+            .into_iter()
+            .next()
+            .expect("error document node");
+        assert_eq!(
+            attr(surface.document.dom(), error_node, "role").as_deref(),
+            Some("alert")
+        );
+        let text = document_text(surface.document.dom());
+        assert!(text.contains("Could not load"));
+        assert!(text.contains("previous document and its history remain available"));
+    }
+
+    #[test]
     fn inspector_is_a_retained_region_and_names_opaque_content_honestly() {
         let chrome = WorkspaceChrome {
             title: "Scrying native surface".to_owned(),
@@ -882,6 +1094,7 @@ mod tests {
                 summary: "Contents not inspectable on this surface.".to_owned(),
                 sections: Vec::new(),
             }),
+            diagnostic: None,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
         surface.set_chrome(Some(chrome.clone()));

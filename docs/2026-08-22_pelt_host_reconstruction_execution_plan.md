@@ -796,6 +796,49 @@ the mixed workspace held`; the captured compositor digest was
 `cc5edea62df69340`. The PNG visibly shows the live Scrying tile below the
 topmost `Opaque surface` drawer and its honest disclosure.
 
+The bounded P6 loading/error receipt is deliberately smaller and does not
+depend on a native surface:
+
+```sh
+cargo run --offline -p pelt --no-default-features --features livery -j 1 -- \
+  --workspace-receipt loading-error \
+  --artifact target/pelt-receipts/workspace-loading-error.png
+```
+
+`PeltController` exposes `PeltDocumentState::{Ready, Loading, Error}` for its
+active session. `Loading` is not a claim about asynchronous transport: the
+current registry spawn is synchronous, so it means a successful replacement
+session awaits one host-composed frame. The host marks it ready only after that
+frame presents. A failed Address, Reload, Back, or Forward replacement records
+the attempted address and error while retaining the prior session and history.
+
+Chrome projects those states as a Pelt-owned retained document in the focused
+Frisket content hole. The overlay is not synthetic Livery HTML and does not
+change engine ownership. It names the attempted address, explains that the
+previous document and history remain available, and leaves underlying content
+input routed to its original tile. Its exact Frisket crop is replayed after
+document and native tile composition, so the diagnostic remains visible above
+the content it describes.
+
+The receipt starts at `examples/workspace/p6-load-error/index.html`, opens the
+checked-in `next.html` through the same address-entry path as the window, then
+submits the intentionally absent `missing.html`. It proves a composed loading
+document, a composed error document in the same content hole, the failed
+address and engine error, and the retained `next.html` controller with Back
+history. The GPU-free test additionally replaces that error with a successful
+address, proves one loading document, and then proves `Ready`. This keeps
+missing-resource behavior local and deterministic rather than manufacturing an
+engine-level error page or requiring Scrying.
+
+Recorded 2026-08-27: the focused core rollback test passed, including a failed
+Back that preserves the active session and history cursor; the Livery-only
+`pelt-desktop` suite passed 25 tests; and Pelt's viewer parser/fixture suite
+passed 4 tests. The headed Livery run passed at 960x640 after 6 redraws. Its
+assertion was `host-owned loading and error documents preserved the focused
+tile's prior session and history`; the captured compositor digest was
+`6d566041b3febf18`. The PNG shows live Chrome above the retained error document
+in the content hole, with the complete recovery instruction visible.
+
 ## Cross-gate rules
 
 - One host-owned wgpu device and compositor serve the full workspace.
@@ -812,9 +855,9 @@ topmost `Opaque surface` drawer and its honest disclosure.
 
 ## Immediate next lane
 
-Continue P6 from the Chrome and structural-inspection receipt with dedicated
-loading/error documents, then a settings surface, theme and accessibility state,
-and narrow-width/high-DPI evidence. The
+Continue P6 with a Pelt-owned appearance settings surface and a live Chrome
+theme choice. Accessibility projection and narrow-width/high-DPI behavior stay
+separate receipts, rather than being implied by that settings drawer. The
 Reader-in-workspace lane must carry held source bytes rather than teaching
 Fleece to fetch; it remains a distinct Fleece/Pelt integration receipt rather
 than an unrecorded ninth P5 fixture.

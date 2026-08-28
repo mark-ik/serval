@@ -82,7 +82,9 @@ mod smoke_windows;
 
 #[cfg(any(feature = "scripted", feature = "smolweb"))]
 pub use href::resolve_href;
-pub use pelt_core::{PeltClock, PeltController, PeltControllerConfig, PeltHostEffect};
+pub use pelt_core::{
+    PeltClock, PeltController, PeltControllerConfig, PeltDocumentState, PeltHostEffect,
+};
 pub use profile::{DesktopHostProfile, WindowingMode};
 #[cfg(feature = "macos-present")]
 pub use smoke_macos::{

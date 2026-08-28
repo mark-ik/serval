@@ -21,6 +21,21 @@ pub use workspace::{
     WorkspaceRect,
 };
 
+/// Host-neutral state for a controller's document presentation.
+///
+/// A controller spawn is synchronous today, so [`Self::Loading`] does not
+/// describe transport progress. It records that a replacement session needs
+/// one host-composed frame before the host can call
+/// [`PeltController::mark_document_presented`]. A failed replacement leaves
+/// the current session and history intact while exposing the attempted address
+/// and error to the host's own diagnostic document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PeltDocumentState {
+    Ready,
+    Loading { address: String },
+    Error { address: String, message: String },
+}
+
 /// A caller-owned monotonic clock. Pelt asks for the current time only while
 /// pumping a retained session; it neither selects a system clock nor owns an
 /// event loop.
@@ -86,6 +101,7 @@ pub struct PeltController<F> {
     history_index: usize,
     viewport: (u32, u32),
     clock: Box<dyn PeltClock>,
+    document_state: PeltDocumentState,
 }
 
 impl<F: 'static> PeltController<F> {
@@ -134,6 +150,7 @@ impl<F: 'static> PeltController<F> {
             history_index: 0,
             viewport,
             clock,
+            document_state: PeltDocumentState::Ready,
         })
     }
 
@@ -155,6 +172,23 @@ impl<F: 'static> PeltController<F> {
 
     pub fn inspect(&self) -> Option<ContentReport> {
         self.session.inspect()
+    }
+
+    /// The current host-neutral document presentation state.
+    pub fn document_state(&self) -> &PeltDocumentState {
+        &self.document_state
+    }
+
+    /// Mark a successfully replaced document as visibly composed by its host.
+    ///
+    /// Pelt deliberately does not choose a presentation loop. An embedding host
+    /// calls this only after it has composed the replacement session, preserving
+    /// one deterministic loading-document frame without pretending the current
+    /// synchronous registry spawn is asynchronous transport.
+    pub fn mark_document_presented(&mut self) {
+        if matches!(self.document_state, PeltDocumentState::Loading { .. }) {
+            self.document_state = PeltDocumentState::Ready;
+        }
     }
 
     /// The semantic capability declared by this controller's active document
@@ -277,8 +311,11 @@ impl<F: 'static> PeltController<F> {
                     self.navigate_effect(target, &mut host_effect);
                 },
                 SessionFormMethod::Post => {
-                    host_effect.error = Some(
+                    let address = self.address().to_owned();
+                    self.document_error(
+                        address,
                         "POST form submission needs an injected request-body transport".to_owned(),
+                        &mut host_effect,
                     );
                 },
             },
@@ -298,11 +335,14 @@ impl<F: 'static> PeltController<F> {
                 match self.spawn(&request) {
                     Ok(session) => {
                         self.session = session;
+                        self.document_state = PeltDocumentState::Loading {
+                            address: request.address.clone(),
+                        };
                         host_effect.handled = true;
                         host_effect.redraw = true;
                         host_effect.navigated = true;
                     },
-                    Err(error) => host_effect.error = Some(error),
+                    Err(error) => self.document_error(request.address, error, &mut host_effect),
                 }
             },
             SessionNavigationCommand::Back => {
@@ -330,16 +370,18 @@ impl<F: 'static> PeltController<F> {
             SessionSpawnRequest::new(target).with_viewport(self.viewport.0, self.viewport.1);
         match self.spawn(&request) {
             Ok(session) => {
+                let address = request.address.clone();
                 self.session = session;
                 self.history.truncate(self.history_index + 1);
                 self.history.push(request);
                 self.history_index += 1;
+                self.document_state = PeltDocumentState::Loading { address };
                 host_effect.handled = true;
                 host_effect.redraw = true;
                 host_effect.navigated = true;
                 host_effect.editable = false;
             },
-            Err(error) => host_effect.error = Some(error),
+            Err(error) => self.document_error(request.address, error, host_effect),
         }
     }
 
@@ -349,12 +391,15 @@ impl<F: 'static> PeltController<F> {
             Ok(session) => {
                 self.session = session;
                 self.history_index = index;
+                self.document_state = PeltDocumentState::Loading {
+                    address: request.address.clone(),
+                };
                 host_effect.handled = true;
                 host_effect.redraw = true;
                 host_effect.navigated = true;
                 host_effect.editable = false;
             },
-            Err(error) => host_effect.error = Some(error),
+            Err(error) => self.document_error(request.address, error, host_effect),
         }
     }
 
@@ -364,6 +409,23 @@ impl<F: 'static> PeltController<F> {
         self.session_engines
             .spawn(&self.engine_id, &request)
             .map_err(|error| format!("could not load {}: {error}", request.address))
+    }
+
+    fn document_error(
+        &mut self,
+        address: String,
+        message: String,
+        host_effect: &mut PeltHostEffect,
+    ) {
+        self.document_state = PeltDocumentState::Error {
+            address,
+            message: message.clone(),
+        };
+        host_effect.error = Some(message);
+        // The host-owned diagnostic document is a visible transition even
+        // though the active session and history stay unchanged.
+        host_effect.handled = true;
+        host_effect.redraw = true;
     }
 }
 

@@ -20,8 +20,8 @@ use inker::{FrameHandleOwnership, NativeTextureHandle};
 use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
-    PeltController, PeltHostEffect, PeltRegistries, PeltRouteSource, PeltRouteState,
-    PeltTileInspection, PeltTileRequest, PeltWorkspace, WorkspaceRect,
+    PeltController, PeltDocumentState, PeltHostEffect, PeltRegistries, PeltRouteSource,
+    PeltRouteState, PeltTileInspection, PeltTileRequest, PeltWorkspace, WorkspaceRect,
 };
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -34,8 +34,8 @@ use winit::window::{Window, WindowId};
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{
-    ChromeAction, ChromeEngineChoice, ChromeInspector, ChromeInspectorSection, FrisketHit,
-    FrisketSurface, WorkspaceChrome,
+    ChromeAction, ChromeDocument, ChromeDocumentKind, ChromeEngineChoice, ChromeInspector,
+    ChromeInspectorSection, FrisketHit, FrisketSurface, WorkspaceChrome,
 };
 #[cfg(target_os = "windows")]
 use crate::scrying_receipt::{ScryingReceiptEngine, ScryingReceiptHost};
@@ -46,6 +46,8 @@ const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
 const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, applied a per-tile override, and exposed truthful structural inspection while the mixed workspace held";
+const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
+    "host-owned loading and error documents preserved the focused tile's prior session and history";
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -57,6 +59,9 @@ pub enum WorkspaceReceipt {
     Fallback,
     /// P6 host chrome controls a focused tile while the P5 mixed workspace remains live.
     Chrome,
+    /// P6's document-lane loading and failed-navigation projection, without a
+    /// native surface dependency.
+    LoadingError,
 }
 
 impl WorkspaceReceipt {
@@ -65,6 +70,7 @@ impl WorkspaceReceipt {
             Self::Mixed => "mixed",
             Self::Fallback => "fallback",
             Self::Chrome => "chrome",
+            Self::LoadingError => "loading-error",
         }
     }
 
@@ -77,7 +83,7 @@ impl WorkspaceReceipt {
     }
 
     fn keeps_chrome(self) -> bool {
-        matches!(self, Self::Chrome)
+        matches!(self, Self::Chrome | Self::LoadingError)
     }
 }
 
@@ -252,7 +258,10 @@ pub fn run_livery_workspace_viewer(
 
     let initial_size = config.size.unwrap_or((1100, 750));
     #[cfg(target_os = "windows")]
-    let omit_scrying = config.workspace_receipt == Some(WorkspaceReceipt::Fallback);
+    let omit_scrying = matches!(
+        config.workspace_receipt,
+        Some(WorkspaceReceipt::Fallback | WorkspaceReceipt::LoadingError)
+    );
     #[cfg(target_os = "windows")]
     let scrying_host = (!omit_scrying).then(ScryingReceiptHost::new);
     #[cfg(target_os = "windows")]
@@ -642,6 +651,7 @@ struct WorkspaceApp {
     workspace_receipt_outcome: Option<WorkspaceReceiptOutcome>,
     workspace_receipt_stage_started: Instant,
     chrome_status: ChromeStatus,
+    last_chrome_document: Option<ChromeDocument>,
     chrome_address: Option<ChromeAddressInput>,
     chrome_engine_menu: Option<ChromeEngineMenu>,
     chrome_inspector_open: bool,
@@ -696,6 +706,7 @@ impl WorkspaceApp {
             workspace_receipt_outcome: None,
             workspace_receipt_stage_started: Instant::now(),
             chrome_status: ChromeStatus::Ready,
+            last_chrome_document: None,
             chrome_address: None,
             chrome_engine_menu: None,
             chrome_inspector_open: false,
@@ -836,6 +847,7 @@ impl WorkspaceApp {
                 engine_selected: None,
                 engine_choices: Self::chrome_engine_choices(),
                 inspector: None,
+                diagnostic: None,
             };
         };
         let controller = self.workspace.controller(tile);
@@ -895,11 +907,36 @@ impl WorkspaceApp {
                     .map(|route| route.selected_engine().to_owned())
             })
             .unwrap_or_else(|| "Auto".to_owned());
+        let diagnostic = self.workspace.content_rect(tile).and_then(|rect| {
+            let controller = controller?;
+            match controller.document_state() {
+                PeltDocumentState::Ready => None,
+                PeltDocumentState::Loading { address } => Some(ChromeDocument {
+                    kind: ChromeDocumentKind::Loading,
+                    tile,
+                    rect,
+                    address: address.clone(),
+                    message: None,
+                }),
+                PeltDocumentState::Error { address, message } => Some(ChromeDocument {
+                    kind: ChromeDocumentKind::Error,
+                    tile,
+                    rect,
+                    address: address.clone(),
+                    message: Some(message.clone()),
+                }),
+            }
+        });
+        let status = match controller.map(PeltController::document_state) {
+            Some(PeltDocumentState::Loading { .. }) => "Loading".to_owned(),
+            Some(PeltDocumentState::Error { message, .. }) => message.clone(),
+            Some(PeltDocumentState::Ready) | None => self.chrome_status.label(),
+        };
         WorkspaceChrome {
             title,
             address,
             route,
-            status: self.chrome_status.label(),
+            status,
             address_focused: self.chrome_address.is_some(),
             can_go_back: controller.is_some_and(PeltController::can_go_back),
             can_go_forward: controller.is_some_and(PeltController::can_go_forward),
@@ -912,6 +949,7 @@ impl WorkspaceApp {
             inspector: self
                 .chrome_inspector_open
                 .then(|| self.chrome_inspector(tile)),
+            diagnostic,
         }
     }
 
@@ -1192,7 +1230,7 @@ impl WorkspaceApp {
 
         self.refresh_chrome();
         let (logical_width, logical_height) = self.logical_size();
-        let pane_frame = match self.frisket.frame(logical_width, logical_height) {
+        let mut pane_frame = match self.frisket.frame(logical_width, logical_height) {
             Ok(frame) => frame,
             Err(error) => {
                 self.receipt_error = Some(error);
@@ -1202,6 +1240,25 @@ impl WorkspaceApp {
         };
         self.workspace
             .set_content_rects(pane_frame.content_rects.iter().copied());
+        // A diagnostic document is positioned from the actual Frisket content
+        // hole. The first layout obtains that geometry; the second carries the
+        // host-owned overlay without changing Frisket's own layout.
+        if self.config.chrome && self.chrome_model().diagnostic.is_some() {
+            self.refresh_chrome();
+            pane_frame = match self.frisket.frame(logical_width, logical_height) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.receipt_error = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            };
+            self.workspace
+                .set_content_rects(pane_frame.content_rects.iter().copied());
+        }
+        self.last_chrome_document = (self.config.chrome && pane_frame.diagnostic_rect.is_some())
+            .then(|| self.chrome_model().diagnostic)
+            .flatten();
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
         // Once the Chrome receipt has asserted its final state, keep composing
@@ -1310,13 +1367,19 @@ impl WorkspaceApp {
         let inspector_overlay = pane_frame
             .inspector_rect
             .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
+        let diagnostic_overlay = pane_frame
+            .diagnostic_rect
+            .map(|rect| fragment_placement(rect, (self.width, self.height), self.scale_factor));
         let capture_now = self.config.workspace_receipt.is_some()
             && self.receipt_complete
             && self.workspace_receipt_outcome.is_none()
-            && (self.config.workspace_receipt == Some(WorkspaceReceipt::Chrome)
-                || self.config.frames.is_some_and(|limit| {
-                    self.workspace_receipt_redraws.saturating_add(1) >= limit
-                }));
+            && (matches!(
+                self.config.workspace_receipt,
+                Some(WorkspaceReceipt::Chrome | WorkspaceReceipt::LoadingError)
+            ) || self
+                .config
+                .frames
+                .is_some_and(|limit| self.workspace_receipt_redraws.saturating_add(1) >= limit));
         let receipt_canvas = capture_now.then(|| {
             host.device().create_texture(&wgpu::TextureDescriptor {
                 label: Some("pelt workspace receipt composition"),
@@ -1425,6 +1488,16 @@ impl WorkspaceApp {
                 inspector_overlay,
             );
         }
+        if let Some(diagnostic_overlay) = diagnostic_overlay {
+            host.renderer().compose_external_texture(
+                &frame_view,
+                &target,
+                host.format(),
+                self.width,
+                self.height,
+                diagnostic_overlay,
+            );
+        }
         let captured = if let Some(source) = receipt_view.as_ref() {
             let Some(path) = self.config.artifact.as_deref() else {
                 self.receipt_error = Some("workspace receipt needs an artifact path".to_owned());
@@ -1487,6 +1560,7 @@ impl WorkspaceApp {
             );
         }
         host.queue().present(swap);
+        self.workspace.mark_visible_documents_presented();
         self.redraws += 1;
         if self.config.workspace_receipt.is_some() && self.receipt_complete {
             self.workspace_receipt_redraws += 1;
@@ -1504,7 +1578,9 @@ impl WorkspaceApp {
         }
 
         let workspace_receipt_finished = match self.config.workspace_receipt {
-            Some(WorkspaceReceipt::Chrome) => self.workspace_receipt_outcome.is_some(),
+            Some(WorkspaceReceipt::Chrome | WorkspaceReceipt::LoadingError) => {
+                self.workspace_receipt_outcome.is_some()
+            },
             Some(_) => {
                 self.receipt_complete
                     && self
@@ -1541,10 +1617,23 @@ impl WorkspaceApp {
             WorkspaceReceipt::Mixed => self.drive_mixed_workspace_receipt_step(),
             WorkspaceReceipt::Fallback => self.drive_fallback_workspace_receipt_step(),
             WorkspaceReceipt::Chrome => self.drive_chrome_workspace_receipt_step(),
+            WorkspaceReceipt::LoadingError => self.drive_loading_error_workspace_receipt_step(),
         }
     }
 
     fn workspace_receipt_timeout_error(&self) -> Option<String> {
+        if self.config.workspace_receipt == Some(WorkspaceReceipt::LoadingError)
+            && !self.receipt_complete
+            && self.workspace_receipt_stage_started.elapsed()
+                >= self.config.workspace_receipt_stage_timeout
+        {
+            return Some(format!(
+                "loading/error workspace receipt timed out after {}s at {}x{}",
+                self.config.workspace_receipt_stage_timeout.as_secs_f32(),
+                self.width,
+                self.height
+            ));
+        }
         if !matches!(
             self.config.workspace_receipt,
             Some(WorkspaceReceipt::Mixed | WorkspaceReceipt::Chrome)
@@ -2138,6 +2227,156 @@ impl WorkspaceApp {
                 return Ok(Some(CHROME_WORKSPACE_ASSERTION.to_owned()));
             },
             _ => return Ok(Some(CHROME_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_loading_error_workspace_receipt_step(&mut self) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 1)?;
+                let address = self
+                    .frisket
+                    .chrome_rect("address")
+                    .ok_or("loading/error receipt has no retained address field")?;
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("loading/error receipt has no Frisket content geometry")?;
+                if address.width <= 0.0 || content.y <= address.y + address.height {
+                    return Err(
+                        "loading/error receipt did not reserve Chrome above the content hole"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("address")?;
+            },
+            1 => {
+                if !self
+                    .handle_chrome_key(&Key::Character("next.html".into()), ElementState::Pressed)
+                    || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err(
+                        "loading/error receipt could not submit its initial document address"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("loading/error receipt lost its focused controller")?;
+                if !controller
+                    .address()
+                    .replace('\\', "/")
+                    .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                    || !matches!(
+                        controller.document_state(),
+                        PeltDocumentState::Loading { address }
+                            if address.replace('\\', "/").ends_with("/p6-load-error/next.html")
+                    )
+                {
+                    return Err(
+                        "loading/error receipt did not retain its successful loading transition"
+                            .to_owned(),
+                    );
+                }
+            },
+            2 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("loading/error receipt did not compose its loading document")?;
+                if diagnostic.kind != ChromeDocumentKind::Loading
+                    || diagnostic.tile != tile
+                    || !diagnostic
+                        .address
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                {
+                    return Err(
+                        "loading/error receipt did not place the loading document in the focused content hole"
+                            .to_owned(),
+                    );
+                }
+                self.click_chrome("address")?;
+            },
+            3 => {
+                if !self.handle_chrome_key(
+                    &Key::Character("missing.html".into()),
+                    ElementState::Pressed,
+                ) || !self.handle_chrome_key(&Key::Named(NamedKey::Enter), ElementState::Pressed)
+                {
+                    return Err(
+                        "loading/error receipt could not submit its missing document address"
+                            .to_owned(),
+                    );
+                }
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("loading/error receipt lost its prior controller after failure")?;
+                let PeltDocumentState::Error { address, message } = controller.document_state()
+                else {
+                    return Err(
+                        "loading/error receipt did not expose its failed navigation state"
+                            .to_owned(),
+                    );
+                };
+                if !address
+                    .replace('\\', "/")
+                    .ends_with("/p6-load-error/missing.html")
+                    || !message.contains("could not load")
+                    || !controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                {
+                    return Err(
+                        "loading/error receipt replaced the prior document or hid its failed address"
+                            .to_owned(),
+                    );
+                }
+            },
+            4 => {
+                let diagnostic = self
+                    .last_chrome_document
+                    .clone()
+                    .ok_or("loading/error receipt did not compose its error document")?;
+                let controller = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("loading/error receipt lost its retained controller")?;
+                if diagnostic.kind != ChromeDocumentKind::Error
+                    || diagnostic.tile != tile
+                    || !diagnostic
+                        .address
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/missing.html")
+                    || !diagnostic
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("could not load"))
+                    || self.workspace.content_rect(tile) != Some(diagnostic.rect)
+                    || !controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/p6-load-error/next.html")
+                    || !controller.can_go_back()
+                {
+                    return Err(
+                        "loading/error receipt did not preserve the prior document beneath its error projection"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(LOADING_ERROR_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(LOADING_ERROR_WORKSPACE_ASSERTION.to_owned())),
         }
         self.receipt_step = self.receipt_step.saturating_add(1);
         Ok(None)
@@ -3338,6 +3577,125 @@ mod tests {
                 .headings
                 .iter()
                 .any(|heading| heading == "Fallback navigation stayed local")
+        );
+    }
+
+    #[test]
+    fn loading_error_receipt_projects_host_documents_and_recovers_to_ready() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-load-error/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let tree = tree_from_urls(&[fixture.clone()]);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("loading/error receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("loading/error receipt opens its seed document");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::LoadingError, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let mut pane = app
+                .frisket
+                .frame(960, 640)
+                .expect("loading/error Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            if app.config.chrome && app.chrome_model().diagnostic.is_some() {
+                app.refresh_chrome();
+                pane = app
+                    .frisket
+                    .frame(960, 640)
+                    .expect("diagnostic Frisket frame");
+                app.workspace
+                    .set_content_rects(pane.content_rects.iter().copied());
+            }
+            app.last_chrome_document = (app.config.chrome && pane.diagnostic_rect.is_some())
+                .then(|| app.chrome_model().diagnostic)
+                .flatten();
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..8 {
+            assertion = app
+                .drive_loading_error_workspace_receipt_step()
+                .expect("loading/error semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            assertion.as_deref(),
+            Some(LOADING_ERROR_WORKSPACE_ASSERTION)
+        );
+        let controller = app
+            .workspace
+            .controller(TileId(1))
+            .expect("failed navigation retains its controller");
+        assert!(
+            controller
+                .address()
+                .replace('\\', "/")
+                .ends_with("/p6-load-error/next.html")
+        );
+        assert!(controller.can_go_back());
+        assert!(matches!(
+            controller.document_state(),
+            PeltDocumentState::Error { address, .. }
+                if address.replace('\\', "/").ends_with("/p6-load-error/missing.html")
+        ));
+
+        let recovered = app
+            .workspace
+            .command(SessionNavigationCommand::Address(fixture));
+        app.apply_effect(recovered);
+        assert!(matches!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("recovered controller")
+                .document_state(),
+            PeltDocumentState::Loading { .. }
+        ));
+        compose(&mut app);
+        assert!(matches!(
+            app.last_chrome_document
+                .as_ref()
+                .map(|document| document.kind),
+            Some(ChromeDocumentKind::Loading)
+        ));
+        compose(&mut app);
+        assert_eq!(app.last_chrome_document, None);
+        assert_eq!(
+            app.workspace
+                .controller(TileId(1))
+                .expect("settled controller")
+                .document_state(),
+            &PeltDocumentState::Ready
         );
     }
 
