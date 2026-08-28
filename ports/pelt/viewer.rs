@@ -154,7 +154,7 @@ pub(crate) fn main() {
             "--workspace-receipt" => {
                 let Some(value) = args.next() else {
                     eprintln!(
-                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, chrome-dpi, reader, or tabard-preview"
+                        "--workspace-receipt requires mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview"
                     );
                     std::process::exit(2);
                 };
@@ -396,7 +396,8 @@ pub(crate) fn main() {
                         | pelt_desktop::WorkspaceReceipt::NarrowChrome
                         | pelt_desktop::WorkspaceReceipt::ChromeDpi
                         | pelt_desktop::WorkspaceReceipt::Reader
-                        | pelt_desktop::WorkspaceReceipt::TabardPreview => unreachable!(
+                        | pelt_desktop::WorkspaceReceipt::TabardPreview
+                        | pelt_desktop::WorkspaceReceipt::TabardReaderPreview => unreachable!(
                             "fallback was handled by the separate workspace receipt branch"
                         ),
                     };
@@ -434,6 +435,15 @@ pub(crate) fn main() {
                         std::process::exit(2);
                     }
                     tile_urls = vec![appearance_fixture_url()];
+                },
+                pelt_desktop::WorkspaceReceipt::TabardReaderPreview => {
+                    if !cfg!(feature = "tabard-reader-preview") {
+                        eprintln!(
+                            "--workspace-receipt tabard-reader-preview needs `--features tabard-reader-preview`"
+                        );
+                        std::process::exit(2);
+                    }
+                    tile_urls = reader_fixture_urls();
                 },
             }
         }
@@ -1086,9 +1096,10 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "chrome-dpi" => pelt_desktop::WorkspaceReceipt::ChromeDpi,
         "reader" => pelt_desktop::WorkspaceReceipt::Reader,
         "tabard-preview" => pelt_desktop::WorkspaceReceipt::TabardPreview,
+        "tabard-reader-preview" => pelt_desktop::WorkspaceReceipt::TabardReaderPreview,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, chrome-dpi, reader, or tabard-preview (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1140,6 +1151,10 @@ mod workspace_receipt_tests {
         assert_eq!(
             parse_workspace_receipt("tabard-preview"),
             pelt_desktop::WorkspaceReceipt::TabardPreview
+        );
+        assert_eq!(
+            parse_workspace_receipt("tabard-reader-preview"),
+            pelt_desktop::WorkspaceReceipt::TabardReaderPreview
         );
         assert!(
             fallback_fixture_url()
@@ -1486,7 +1501,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|narrow-chrome|chrome-dpi|reader|tabard-preview> (named workspace receipt; needs --artifact; tabard-preview needs --features tabard-preview)
+    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|narrow-chrome|chrome-dpi|reader|tabard-preview|tabard-reader-preview> (named workspace receipt; needs --artifact; Tabard receipts need their matching feature)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

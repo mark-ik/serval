@@ -35,6 +35,9 @@ livery = ["viewer-engine", "pelt-desktop/livery"]
 # Developer-only Tabard-to-Pelt Chrome receipt. It layers authored Tabard
 # tokens through Pelt's shell mapping and does not make a durable UI choice.
 tabard-preview = ["livery", "pelt-desktop/tabard-preview"]
+# Developer-only Tabard-to-Reader receipt. It uses the same portable palette
+# through Pelt's existing Reader host-theme seam without making it durable.
+tabard-reader-preview = ["livery", "reader", "pelt-desktop/tabard-reader-preview"]
 # Render held HTML through fleece and the shared document engine.
 reader = ["viewer-engine", "pelt-desktop/reader"]
 # The scripted profile (V4): `pelt --engine scripted <file>` runs a page's inline

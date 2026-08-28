@@ -60,8 +60,13 @@ const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the 
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
+#[cfg(feature = "reader")]
 const READER_WORKSPACE_ASSERTION: &str = "Reader reused the focused tile's held Livery response, exposed Fleece lineage, and restored the original Livery document without a second fetch";
+#[cfg(feature = "tabard-preview")]
 const TABARD_PREVIEW_WORKSPACE_ASSERTION: &str = "Tabard changed the computed Pelt Chrome color while the focused document, session history, tabs, and content aperture held";
+#[cfg(feature = "tabard-reader-preview")]
+const TABARD_READER_PREVIEW_WORKSPACE_ASSERTION: &str = "Tabard recolored Reader's Fleece article through Pelt's host palette while the held response, neighboring Livery tile, and route restoration stayed intact";
+#[cfg(feature = "reader")]
 const READER_FIXTURE_SOURCE: &str = include_str!("../examples/workspace/reader/index.html");
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
@@ -92,6 +97,9 @@ pub enum WorkspaceReceipt {
     /// A developer-only Tabard palette preview over the retained Pelt Chrome.
     /// This does not persist a Pelt appearance preference or recolor documents.
     TabardPreview,
+    /// A developer-only Tabard palette preview over Reader's existing
+    /// host-theme seam. This does not alter Fleece or persist a Pelt theme.
+    TabardReaderPreview,
 }
 
 impl WorkspaceReceipt {
@@ -107,6 +115,7 @@ impl WorkspaceReceipt {
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
             Self::TabardPreview => "tabard-preview",
+            Self::TabardReaderPreview => "tabard-reader-preview",
         }
     }
 
@@ -129,6 +138,7 @@ impl WorkspaceReceipt {
                 | Self::ChromeDpi
                 | Self::Reader
                 | Self::TabardPreview
+                | Self::TabardReaderPreview
         )
     }
 
@@ -326,6 +336,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
                 | WorkspaceReceipt::TabardPreview
+                | WorkspaceReceipt::TabardReaderPreview
         )
     );
     #[cfg(target_os = "windows")]
@@ -333,10 +344,12 @@ pub fn run_livery_workspace_viewer(
     let fetcher = genet_documents::LocalFetcher::with_resource_policy(
         genet_documents::ResourceFetchPolicy::default(),
     );
+    let engine_options = WorkspaceEngineOptions::for_receipt(config.workspace_receipt);
     #[cfg(target_os = "windows")]
-    let registries = workspace_registries_with_fetcher(fetcher.clone(), scrying_host.clone());
+    let registries =
+        workspace_registries_with_fetcher(fetcher.clone(), engine_options, scrying_host.clone());
     #[cfg(not(target_os = "windows"))]
-    let registries = workspace_registries_with_fetcher(fetcher.clone());
+    let registries = workspace_registries_with_fetcher(fetcher.clone(), engine_options);
     let overrides = config.route_overrides.clone();
     let workspace = PeltWorkspace::try_routed(
         tree,
@@ -409,6 +422,32 @@ impl pelt_core::PeltClock for WorkspaceClock {
     }
 }
 
+/// Per-run document-engine choices. This remains Pelt-local: Tabard supplies
+/// a portable palette, while each document engine continues to own how it
+/// applies its host colors.
+#[derive(Default)]
+struct WorkspaceEngineOptions {
+    #[cfg(feature = "reader")]
+    reader_theme: Option<genet_documents::SmolwebTheme>,
+}
+
+impl WorkspaceEngineOptions {
+    fn for_receipt(receipt: Option<WorkspaceReceipt>) -> Self {
+        #[cfg(feature = "tabard-reader-preview")]
+        {
+            return Self {
+                reader_theme: (receipt == Some(WorkspaceReceipt::TabardReaderPreview))
+                    .then(tabard_reader_preview_theme),
+            };
+        }
+        #[cfg(not(feature = "tabard-reader-preview"))]
+        {
+            let _ = receipt;
+            Self::default()
+        }
+    }
+}
+
 fn held_response_request(
     response: genet_host_api::ResourceResponse,
     requested_address: &str,
@@ -443,6 +482,7 @@ fn workspace_registries(
         genet_documents::LocalFetcher::with_resource_policy(
             genet_documents::ResourceFetchPolicy::default(),
         ),
+        WorkspaceEngineOptions::default(),
         #[cfg(target_os = "windows")]
         scrying_host,
     )
@@ -450,6 +490,7 @@ fn workspace_registries(
 
 fn workspace_registries_with_fetcher(
     fetcher: genet_documents::ConfiguredLocalFetcher,
+    engine_options: WorkspaceEngineOptions,
     #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
 ) -> PeltRegistries<Scene> {
     let mut sessions: SessionRegistry<Scene> = SessionRegistry::new();
@@ -457,7 +498,12 @@ fn workspace_registries_with_fetcher(
         fetcher.clone(),
     )));
     #[cfg(feature = "reader")]
-    sessions.register(Box::new(genet_documents::ReaderSessionEngine::default()));
+    sessions.register(Box::new(match engine_options.reader_theme {
+        Some(theme) => genet_documents::ReaderSessionEngine::new(theme),
+        None => genet_documents::ReaderSessionEngine::default(),
+    }));
+    #[cfg(not(feature = "reader"))]
+    let _ = engine_options;
     #[cfg(feature = "scripted")]
     sessions.register(Box::new(genet_documents::ScriptedSessionEngine::<
         script_engine_boa::BoaEngine,
@@ -639,6 +685,7 @@ struct AppearanceReceiptBaseline {
 /// The Tabard receipt changes only the retained Chrome stylesheet. Keep the
 /// document-facing state and Frisket geometry explicit so the preview cannot
 /// accidentally become a navigation or layout path.
+#[cfg(feature = "tabard-preview")]
 #[derive(Clone, Debug, PartialEq)]
 struct TabardPreviewBaseline {
     focused_tile: TileId,
@@ -651,9 +698,9 @@ struct TabardPreviewBaseline {
     chrome_background: String,
 }
 
-#[cfg(feature = "tabard-preview")]
-fn tabard_preview_stylesheet() -> String {
-    let theme = tabard::Theme::new(
+#[cfg(any(feature = "tabard-preview", feature = "tabard-reader-preview"))]
+fn tabard_preview_theme() -> tabard::Theme {
+    tabard::Theme::new(
         "Pelt Tabard preview",
         tinct::Seeds {
             primary: tinct::Srgb::rgb(0x33, 0x66, 0xc8),
@@ -666,7 +713,24 @@ fn tabard_preview_stylesheet() -> String {
             danger: tinct::Srgb::rgb(0xd5, 0x4e, 0x4e),
             dark: true,
         },
-    );
+    )
+}
+
+#[cfg(feature = "tabard-reader-preview")]
+fn tabard_reader_preview_theme() -> genet_documents::SmolwebTheme {
+    let palette = tabard_preview_theme().palette();
+    genet_documents::SmolwebTheme::App(genet_documents::SmolwebPalette {
+        bg: tinct::color_to_hex(palette.bg),
+        fg: tinct::color_to_hex(palette.text),
+        link: tinct::color_to_hex(palette.primary),
+        quote: tinct::color_to_hex(palette.text_dim),
+        pre_bg: tinct::color_to_hex(palette.surface_2),
+    })
+}
+
+#[cfg(feature = "tabard-preview")]
+fn tabard_preview_stylesheet() -> String {
+    let theme = tabard_preview_theme();
     let mut stylesheet = theme.css_custom_properties().replacen(
         ":root",
         ".pelt-workspace, .pelt-workspace.pelt-theme-light",
@@ -849,6 +913,7 @@ struct WorkspaceApp {
     chrome_theme: ChromeTheme,
     chrome_appearance_open: bool,
     appearance_receipt_baseline: Option<AppearanceReceiptBaseline>,
+    #[cfg(feature = "tabard-preview")]
     tabard_preview_baseline: Option<TabardPreviewBaseline>,
     accessibility: WorkspaceAccessibility,
     #[cfg(target_os = "windows")]
@@ -1013,6 +1078,7 @@ impl WorkspaceApp {
             chrome_theme: ChromeTheme::Dark,
             chrome_appearance_open: false,
             appearance_receipt_baseline: None,
+            #[cfg(feature = "tabard-preview")]
             tabard_preview_baseline: None,
             accessibility: WorkspaceAccessibility::new(),
             #[cfg(target_os = "windows")]
@@ -1882,6 +1948,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
                         | WorkspaceReceipt::TabardPreview
+                        | WorkspaceReceipt::TabardReaderPreview
                 )
             ) || self
                 .config
@@ -2103,7 +2170,8 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
-                | WorkspaceReceipt::TabardPreview,
+                | WorkspaceReceipt::TabardPreview
+                | WorkspaceReceipt::TabardReaderPreview,
             ) => self.workspace_receipt_outcome.is_some(),
             Some(_) => {
                 self.receipt_complete
@@ -2148,6 +2216,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
             WorkspaceReceipt::TabardPreview => self.drive_tabard_preview_workspace_receipt_step(),
+            WorkspaceReceipt::TabardReaderPreview => {
+                self.drive_tabard_reader_preview_workspace_receipt_step()
+            },
         }
     }
 
@@ -2162,6 +2233,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
                     | WorkspaceReceipt::TabardPreview
+                    | WorkspaceReceipt::TabardReaderPreview
             )
         ) && !self.receipt_complete
             && self.workspace_receipt_stage_started.elapsed()
@@ -3393,6 +3465,22 @@ impl WorkspaceApp {
         }
     }
 
+    fn drive_tabard_reader_preview_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        #[cfg(not(feature = "tabard-reader-preview"))]
+        return Err(
+            "tabard-reader-preview workspace receipt needs `--features tabard-reader-preview`"
+                .to_owned(),
+        );
+
+        #[cfg(feature = "tabard-reader-preview")]
+        self.drive_reader_workspace_receipt_step().map(|assertion| {
+            assertion.map(|_| TABARD_READER_PREVIEW_WORKSPACE_ASSERTION.to_owned())
+        })
+    }
+
+    #[cfg(feature = "reader")]
     fn validate_reader_workspace(&self, reader_selected: bool) -> Result<(), String> {
         let reader = TileId(1);
         let neighbor = TileId(2);
@@ -3478,6 +3566,7 @@ impl WorkspaceApp {
         Ok(())
     }
 
+    #[cfg(feature = "reader")]
     fn validate_reader_inspector(&self) -> Result<(), String> {
         let inspector = self
             .chrome_model()
@@ -4905,10 +4994,13 @@ mod tests {
     }
 
     #[cfg(feature = "reader")]
-    fn reader_test_registries(fetcher: CountingResourceFetcher) -> PeltRegistries<Scene> {
+    fn reader_test_registries(
+        fetcher: CountingResourceFetcher,
+        theme: genet_documents::SmolwebTheme,
+    ) -> PeltRegistries<Scene> {
         let mut sessions = SessionRegistry::new();
         sessions.register(Box::new(genet_documents::LiverySessionEngine::new(fetcher)));
-        sessions.register(Box::new(genet_documents::ReaderSessionEngine::default()));
+        sessions.register(Box::new(genet_documents::ReaderSessionEngine::new(theme)));
         let mut policy = inker::routing::EngineRoutePolicy::default();
         for rule in &mut policy.rules {
             if rule.engine_id == inker::routing::ENGINE_GENET_WEB {
@@ -4926,6 +5018,114 @@ mod tests {
                 user_data_dir: "pelt-reader-test-profile".to_owned(),
             },
         )
+    }
+
+    #[cfg(feature = "reader")]
+    fn assert_reader_workspace_receipt(
+        receipt: WorkspaceReceipt,
+        theme: genet_documents::SmolwebTheme,
+        expected_assertion: &str,
+    ) -> Scene {
+        assert!(matches!(
+            receipt,
+            WorkspaceReceipt::Reader | WorkspaceReceipt::TabardReaderPreview
+        ));
+        let article_url = "https://reader.test/reader/index.html".to_owned();
+        let neighbor_url = "https://reader.test/reader/neighbor.html".to_owned();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let fetcher = CountingResourceFetcher {
+            responses: Arc::new(HashMap::from([
+                (
+                    article_url.clone(),
+                    genet_host_api::ResourceResponse::new(
+                        article_url.clone(),
+                        READER_FIXTURE_SOURCE.as_bytes().to_vec(),
+                    )
+                    .with_content_type("text/html; charset=utf-8"),
+                ),
+                (
+                    neighbor_url.clone(),
+                    genet_host_api::ResourceResponse::new(
+                        neighbor_url.clone(),
+                        include_str!("../examples/workspace/reader/neighbor.html")
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .with_content_type("text/html; charset=utf-8"),
+                ),
+            ])),
+            calls: calls.clone(),
+        };
+        let urls = vec![article_url.clone(), neighbor_url.clone()];
+        let tree = tree_from_urls(&urls);
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            reader_test_registries(fetcher, theme),
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("Reader receipt tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("Reader workspace opens its two Livery tiles");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(receipt, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let pane = app.frisket.frame(960, 640).expect("Reader Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..8 {
+            assertion = match receipt {
+                WorkspaceReceipt::Reader => app.drive_reader_workspace_receipt_step(),
+                WorkspaceReceipt::TabardReaderPreview => {
+                    app.drive_tabard_reader_preview_workspace_receipt_step()
+                },
+                _ => unreachable!("the assertion above limits the receipt"),
+            }
+            .expect("Reader semantic receipt");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(assertion.as_deref(), Some(expected_assertion));
+        {
+            let calls = calls.lock().expect("Reader fetch count lock");
+            assert_eq!(calls.len(), 2, "Reader did not fetch a second document");
+            assert_eq!(
+                calls.iter().filter(|url| *url == &article_url).count(),
+                1,
+                "the article response was acquired exactly once"
+            );
+            assert_eq!(
+                calls.iter().filter(|url| *url == &neighbor_url).count(),
+                1,
+                "the neighbor response was acquired exactly once"
+            );
+        }
+        app.workspace
+            .frame()
+            .tiles
+            .into_iter()
+            .find(|frame| frame.tile == TileId(1))
+            .expect("Reader route retains its visible tile frame")
+            .frame
     }
 
     #[test]
@@ -5060,6 +5260,19 @@ mod tests {
         assert_eq!(tabard.frames, Some(3));
         assert!(WorkspaceReceipt::TabardPreview.keeps_chrome());
         assert_eq!(WorkspaceReceipt::TabardPreview.id(), "tabard-preview");
+
+        let tabard_reader = WorkspaceViewerConfig::new(
+            vec!["reader.html".to_owned(), "neighbor.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(WorkspaceReceipt::TabardReaderPreview, "tabard-reader.png");
+        assert_eq!(tabard_reader.size, Some((960, 640)));
+        assert_eq!(tabard_reader.frames, Some(3));
+        assert!(WorkspaceReceipt::TabardReaderPreview.keeps_chrome());
+        assert_eq!(
+            WorkspaceReceipt::TabardReaderPreview.id(),
+            "tabard-reader-preview"
+        );
     }
 
     #[cfg(feature = "tabard-preview")]
@@ -5068,6 +5281,36 @@ mod tests {
         let stylesheet = tabard_preview_stylesheet();
         assert!(stylesheet.contains(".pelt-workspace, .pelt-workspace.pelt-theme-light"));
         assert!(stylesheet.contains("--pelt-chrome-surface: var(--tabard-color-surface)"));
+    }
+
+    #[cfg(feature = "tabard-reader-preview")]
+    #[test]
+    fn tabard_reader_preview_maps_portable_roles_to_reader_host_colors() {
+        let palette = tabard_preview_theme().palette();
+        let genet_documents::SmolwebTheme::App(reader) = tabard_reader_preview_theme() else {
+            panic!("Tabard Reader preview must use Reader's host palette seam");
+        };
+        assert_eq!(reader.bg, tinct::color_to_hex(palette.bg));
+        assert_eq!(reader.fg, tinct::color_to_hex(palette.text));
+        assert_eq!(reader.link, tinct::color_to_hex(palette.primary));
+        assert_eq!(reader.quote, tinct::color_to_hex(palette.text_dim));
+        assert_eq!(reader.pre_bg, tinct::color_to_hex(palette.surface_2));
+        assert_ne!(
+            reader.bg, "#fbfaf7",
+            "the preview is not Reader's system fallback"
+        );
+    }
+
+    #[cfg(feature = "tabard-reader-preview")]
+    #[test]
+    fn tabard_reader_preview_only_selects_the_reader_theme_for_its_receipt() {
+        let preview =
+            WorkspaceEngineOptions::for_receipt(Some(WorkspaceReceipt::TabardReaderPreview));
+        assert_eq!(preview.reader_theme, Some(tabard_reader_preview_theme()));
+        assert_eq!(
+            WorkspaceEngineOptions::for_receipt(Some(WorkspaceReceipt::Reader)).reader_theme,
+            None
+        );
     }
 
     #[test]
@@ -5087,87 +5330,48 @@ mod tests {
     #[cfg(feature = "reader")]
     #[test]
     fn reader_workspace_reuses_the_held_livery_response_without_refetching() {
-        let article_url = "https://reader.test/reader/index.html".to_owned();
-        let neighbor_url = "https://reader.test/reader/neighbor.html".to_owned();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let fetcher = CountingResourceFetcher {
-            responses: Arc::new(HashMap::from([
-                (
-                    article_url.clone(),
-                    genet_host_api::ResourceResponse::new(
-                        article_url.clone(),
-                        READER_FIXTURE_SOURCE.as_bytes().to_vec(),
-                    )
-                    .with_content_type("text/html; charset=utf-8"),
-                ),
-                (
-                    neighbor_url.clone(),
-                    genet_host_api::ResourceResponse::new(
-                        neighbor_url.clone(),
-                        include_str!("../examples/workspace/reader/neighbor.html")
-                            .as_bytes()
-                            .to_vec(),
-                    )
-                    .with_content_type("text/html; charset=utf-8"),
-                ),
-            ])),
-            calls: calls.clone(),
-        };
-        let urls = vec![article_url.clone(), neighbor_url.clone()];
-        let tree = tree_from_urls(&urls);
-        let workspace = PeltWorkspace::try_routed(
-            tree,
-            reader_test_registries(fetcher),
-            |tile| {
-                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
-                    unreachable!("Reader receipt tree contains only documents");
-                };
-                Ok(PeltTileRequest::new(address, (960, 640)))
-            },
-            || Box::new(WorkspaceClock(Instant::now())),
-        )
-        .expect("Reader workspace opens its two Livery tiles");
-        let frisket = FrisketSurface::new(workspace.tree());
-        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
-            .with_workspace_receipt(WorkspaceReceipt::Reader, "unused.png");
-        #[cfg(target_os = "windows")]
-        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
-        #[cfg(not(target_os = "windows"))]
-        let mut app = WorkspaceApp::new(config, workspace, frisket);
-
-        let compose = |app: &mut WorkspaceApp| {
-            app.refresh_chrome();
-            let pane = app.frisket.frame(960, 640).expect("Reader Frisket frame");
-            app.workspace
-                .set_content_rects(pane.content_rects.iter().copied());
-            let _ = app.workspace.pump();
-            let _ = app.workspace.frame();
-            app.workspace.mark_visible_documents_presented();
-        };
-
-        compose(&mut app);
-        let mut assertion = None;
-        for _ in 0..8 {
-            assertion = app
-                .drive_reader_workspace_receipt_step()
-                .expect("Reader semantic receipt");
-            compose(&mut app);
-            if assertion.is_some() {
-                break;
-            }
-        }
-        assert_eq!(assertion.as_deref(), Some(READER_WORKSPACE_ASSERTION));
-        let calls = calls.lock().expect("Reader fetch count lock");
-        assert_eq!(calls.len(), 2, "Reader did not fetch a second document");
-        assert_eq!(
-            calls.iter().filter(|url| *url == &article_url).count(),
-            1,
-            "the article response was acquired exactly once"
+        assert_reader_workspace_receipt(
+            WorkspaceReceipt::Reader,
+            genet_documents::SmolwebTheme::default(),
+            READER_WORKSPACE_ASSERTION,
         );
-        assert_eq!(
-            calls.iter().filter(|url| *url == &neighbor_url).count(),
-            1,
-            "the neighbor response was acquired exactly once"
+    }
+
+    #[cfg(feature = "tabard-reader-preview")]
+    #[test]
+    fn tabard_reader_preview_reuses_the_held_response_and_renders_its_palette() {
+        let scene = assert_reader_workspace_receipt(
+            WorkspaceReceipt::TabardReaderPreview,
+            tabard_reader_preview_theme(),
+            TABARD_READER_PREVIEW_WORKSPACE_ASSERTION,
+        );
+        let palette = tabard_preview_theme().palette();
+        let color = |color: tinct::Srgb| {
+            [
+                f32::from(color.r) / f32::from(u8::MAX),
+                f32::from(color.g) / f32::from(u8::MAX),
+                f32::from(color.b) / f32::from(u8::MAX),
+                f32::from(color.a) / f32::from(u8::MAX),
+            ]
+        };
+        let background = color(palette.bg);
+        let text = color(palette.text);
+        let link = color(palette.primary);
+        assert!(matches!(
+            scene.ops.first(),
+            Some(netrender::SceneOp::Rect(rect)) if rect.color == background
+        ));
+        assert!(
+            scene.ops.iter().any(|operation| {
+                matches!(operation, netrender::SceneOp::GlyphRun(run) if run.color == text)
+            }),
+            "Reader did not render Tabard's body text color"
+        );
+        assert!(
+            scene.ops.iter().any(|operation| {
+                matches!(operation, netrender::SceneOp::GlyphRun(run) if run.color == link)
+            }),
+            "Reader did not render Tabard's link color"
         );
     }
 
