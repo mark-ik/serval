@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::LinkAdornment;
 use crate::types::InteractionKind;
 use inker::{Block, DocumentProvenance, DocumentTrustState, EngineDocument, InlineSpan};
 
@@ -102,8 +103,110 @@ fn paragraph_with_link_emits_interaction_region() {
         InteractionKind::Link { url } => assert_eq!(url, "https://x.test/"),
         InteractionKind::Submit { .. } => panic!("expected navigation link"),
     }
+    assert_eq!(
+        region
+            .link_semantics
+            .as_ref()
+            .expect("link carries retained semantics")
+            .accessible_label,
+        "docs",
+        "the visible arrow remains in the hit range but is not part of the semantic label"
+    );
     assert!(region.bounds.size.width > 0.0);
     assert!(region.bounds.size.height > 0.0);
+}
+
+#[test]
+fn duplicate_link_targets_keep_distinct_identities_and_lowered_labels() {
+    let mut style = DocumentStyleSheet::default();
+    style.link_adornment = LinkAdornment::None;
+    let packet = layout_document(
+        &doc(vec![Block::Paragraph {
+            spans: vec![
+                InlineSpan::Link {
+                    url: "gemini://example.test/same".into(),
+                    title: None,
+                    spans: vec![InlineSpan::Text("First visit".into())],
+                    predicate: None,
+                },
+                InlineSpan::Text(" and ".into()),
+                InlineSpan::Link {
+                    url: "gemini://example.test/same".into(),
+                    title: None,
+                    spans: vec![InlineSpan::Text("Second visit".into())],
+                    predicate: None,
+                },
+            ],
+        }]),
+        viewport(),
+        &style,
+    )
+    .packet;
+    let links: Vec<_> = packet
+        .interactions
+        .iter()
+        .filter(|region| matches!(region.kind, InteractionKind::Link { .. }))
+        .collect();
+    assert_eq!(links.len(), 2, "one region for each unwrapped link");
+    let first = links[0]
+        .link_semantics
+        .as_ref()
+        .expect("link carries retained semantics");
+    let second = links[1]
+        .link_semantics
+        .as_ref()
+        .expect("link carries retained semantics");
+    assert_ne!(first.identity, second.identity, "same URL is not identity");
+    assert_eq!(first.accessible_label, "First visit");
+    assert_eq!(second.accessible_label, "Second visit");
+}
+
+#[test]
+fn wrapped_link_rectangles_share_one_identity_and_label() {
+    let mut style = DocumentStyleSheet::default();
+    style.link_adornment = LinkAdornment::None;
+    let label = "one two three four five six seven eight nine ten";
+    let document = doc(vec![Block::Paragraph {
+        spans: vec![InlineSpan::Link {
+            url: "gemini://example.test/wrapped".into(),
+            title: None,
+            spans: vec![InlineSpan::Text(label.into())],
+            predicate: None,
+        }],
+    }]);
+    let packet = layout_document(&document, Viewport::new(130.0, 480.0), &style).packet;
+    let links: Vec<_> = packet
+        .interactions
+        .iter()
+        .filter(|region| matches!(region.kind, InteractionKind::Link { .. }))
+        .collect();
+    assert!(
+        links.len() >= 2,
+        "the narrow viewport should split the link into line rectangles"
+    );
+    let first = links[0]
+        .link_semantics
+        .as_ref()
+        .expect("link carries retained semantics");
+    let reflowed = layout_document(&document, viewport(), &style).packet;
+    let reflowed_identity = reflowed
+        .interactions
+        .iter()
+        .find_map(|region| region.link_semantics.as_ref())
+        .expect("reflowed link carries retained semantics")
+        .identity;
+    assert_eq!(
+        first.identity, reflowed_identity,
+        "the logical link keeps its identity across a geometry-only reflow"
+    );
+    for region in &links[1..] {
+        let semantics = region
+            .link_semantics
+            .as_ref()
+            .expect("every wrapped rectangle carries semantics");
+        assert_eq!(semantics.identity, first.identity);
+        assert_eq!(semantics.accessible_label, label);
+    }
 }
 
 #[test]

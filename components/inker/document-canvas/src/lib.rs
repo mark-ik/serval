@@ -59,7 +59,8 @@ pub use style_sheet::{
 };
 pub use types::{
     DecodedImage, DocumentRenderPacket, FontFaceId, GlyphRun, InteractionKind, InteractionRegion,
-    Point, PositionedGlyph, Rect, RenderedBlock, RenderedBlockKind, Size, TextStyle, Viewport,
+    LinkSemantics, Point, PositionedGlyph, Rect, RenderedBlock, RenderedBlockKind,
+    SemanticInteractionId, Size, TextStyle, Viewport,
 };
 
 /// Crate version.

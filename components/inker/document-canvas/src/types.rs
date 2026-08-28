@@ -194,6 +194,46 @@ pub enum RenderedBlockKind {
 pub struct InteractionRegion {
     pub bounds: Rect,
     pub kind: InteractionKind,
+    /// Link-only retained semantics, if this region belongs to a logical
+    /// link. Every rectangle emitted for one wrapped link carries the same
+    /// value, so consumers aggregate by [`LinkSemantics::identity`] rather
+    /// than URL, geometry, or emitted-region order.
+    pub link_semantics: Option<LinkSemantics>,
+}
+
+/// An opaque identity for one logical link in one lowered document.
+///
+/// Identities are allocated in document lowering order, but the ordinal is
+/// intentionally not exposed. Consumers retain and compare this token rather
+/// than inferring identity from a URL, label, rectangle, or output order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SemanticInteractionId(u64);
+
+impl SemanticInteractionId {
+    pub(crate) const fn from_lowered_ordinal(ordinal: u64) -> Self {
+        Self(ordinal)
+    }
+
+    pub(crate) fn offset(self, count: usize) -> Self {
+        let count = u64::try_from(count).expect("link count fits in a semantic interaction id");
+        Self(
+            self.0
+                .checked_add(count)
+                .expect("document contains too many link interactions"),
+        )
+    }
+}
+
+/// Retained semantic metadata for a logical link.
+///
+/// `accessible_label` is the author-lowered text for inline links, not a URL
+/// fallback or decorative visual prefix. A future Reader semantic snapshot
+/// can therefore distinguish repeated targets and merge a multi-line link
+/// without matching geometry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkSemantics {
+    pub identity: SemanticInteractionId,
+    pub accessible_label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -241,6 +281,7 @@ impl DocumentRenderPacket {
             .map(|r| InteractionRegion {
                 bounds: translate_rect_y(r.bounds, -band_y),
                 kind: r.kind.clone(),
+                link_semantics: r.link_semantics.clone(),
             })
             .collect();
         DocumentRenderPacket {
@@ -469,10 +510,12 @@ mod window_tests {
             InteractionRegion {
                 bounds: Rect::from_xywh(0.0, 1010.0, 80.0, 20.0),
                 kind: InteractionKind::Link { url: "in".into() },
+                link_semantics: None,
             },
             InteractionRegion {
                 bounds: Rect::from_xywh(0.0, 50.0, 80.0, 20.0),
                 kind: InteractionKind::Link { url: "out".into() },
+                link_semantics: None,
             },
         ];
         let w = p.window(950.0, 200.0);
@@ -493,12 +536,14 @@ mod window_tests {
                 kind: InteractionKind::Link {
                     url: "outer".into(),
                 },
+                link_semantics: None,
             },
             InteractionRegion {
                 bounds: Rect::from_xywh(10.0, 12.0, 40.0, 16.0),
                 kind: InteractionKind::Link {
                     url: "inner".into(),
                 },
+                link_semantics: None,
             },
         ];
         assert_eq!(

@@ -24,7 +24,8 @@ use crate::font_table::FontInterner;
 use crate::style::InlineStyle;
 use crate::style_sheet::{LinkAdornment, WrapPolicy};
 use crate::types::{
-    GlyphRun, InteractionKind, InteractionRegion, Point, PositionedGlyph, Rect, Size, TextStyle,
+    GlyphRun, InteractionKind, InteractionRegion, LinkSemantics, Point, PositionedGlyph, Rect,
+    SemanticInteractionId, Size, TextStyle,
 };
 
 /// Block-level base style for a text block (heading vs body vs code etc.).
@@ -84,10 +85,22 @@ pub struct Flattened {
     /// emphasis-in-strong; later ranges win in the parley range stack
     /// (parley merges them additively per-property).
     pub styles: Vec<(Range<usize>, InlineStyle)>,
-    /// Link annotations. Byte range of the link's display text + the URL.
-    pub links: Vec<(Range<usize>, String)>,
+    /// Link annotations. The range covers the rendered hit text, including a
+    /// visual scheme-arrow prefix; `accessible_label` keeps only the
+    /// author-lowered link text.
+    pub links: Vec<LinkAnnotation>,
     /// Submission annotations. Byte range of the label + mutation target.
     pub submissions: Vec<(Range<usize>, String)>,
+}
+
+/// One flattened link's visual range and retained semantic text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkAnnotation {
+    /// Byte range of the rendered link hit region, including decoration.
+    pub range: Range<usize>,
+    pub url: String,
+    /// The author-lowered link text, excluding decorative adornment.
+    pub accessible_label: String,
 }
 
 fn flatten_into(
@@ -132,10 +145,15 @@ fn flatten_into(
                     out.styles
                         .push((p_start..out.text.len(), inherited.with_link()));
                 }
+                let label_start = out.text.len();
                 flatten_into(inner, inherited.with_link(), adornment, base_scheme, out);
                 let link_end = out.text.len();
                 if link_start < link_end {
-                    out.links.push((link_start..link_end, url.clone()));
+                    out.links.push(LinkAnnotation {
+                        range: link_start..link_end,
+                        url: url.clone(),
+                        accessible_label: out.text[label_start..link_end].to_string(),
+                    });
                 }
             },
             InlineSpan::Submit {
@@ -213,6 +231,33 @@ pub fn layout_text_block(
     available_width: f32,
     origin: Point,
     fonts: &mut FontInterner,
+) -> LaidOutText {
+    layout_text_block_with_link_identity_base(
+        env,
+        flattened,
+        base,
+        link_color,
+        code_color,
+        available_width,
+        origin,
+        fonts,
+        SemanticInteractionId::from_lowered_ordinal(1),
+    )
+}
+
+/// The document layouter supplies a distinct `link_identity_base` for each
+/// lowered text block. The public one-block helper above starts at one for
+/// callers that do not have document-level allocation.
+pub(crate) fn layout_text_block_with_link_identity_base(
+    env: &mut LayoutEnvironment,
+    flattened: &Flattened,
+    base: &TextBaseStyle,
+    link_color: [f32; 4],
+    code_color: [f32; 4],
+    available_width: f32,
+    origin: Point,
+    fonts: &mut FontInterner,
+    link_identity_base: SemanticInteractionId,
 ) -> LaidOutText {
     let display_scale = 1.0_f32;
     let quantize = true;
@@ -353,16 +398,29 @@ pub fn layout_text_block(
         let typed = flattened
             .links
             .iter()
-            .map(|(range, url)| (range, InteractionKind::Link { url: url.clone() }))
+            .enumerate()
+            .map(|(link_index, link)| {
+                (
+                    &link.range,
+                    InteractionKind::Link {
+                        url: link.url.clone(),
+                    },
+                    Some(LinkSemantics {
+                        identity: link_identity_base.offset(link_index),
+                        accessible_label: link.accessible_label.clone(),
+                    }),
+                )
+            })
             .chain(flattened.submissions.iter().map(|(range, target)| {
                 (
                     range,
                     InteractionKind::Submit {
                         target: target.clone(),
                     },
+                    None,
                 )
             }));
-        for (interaction_range, kind) in typed {
+        for (interaction_range, kind, link_semantics) in typed {
             let intersect_start = interaction_range.start.max(line_text_range.start);
             let intersect_end = interaction_range.end.min(line_text_range.end);
             if intersect_start >= intersect_end {
@@ -397,6 +455,7 @@ pub fn layout_text_block(
                         line_height,
                     ),
                     kind,
+                    link_semantics: link_semantics.clone(),
                 });
             }
         }
@@ -444,7 +503,7 @@ mod tests {
         let f = flatten_inline(&[link("gemini://x/")], LinkAdornment::None, Some("gemini"));
         assert_eq!(f.text, "label");
         assert_eq!(f.links.len(), 1);
-        assert_eq!(f.links[0].0, 0..5);
+        assert_eq!(f.links[0].range, 0..5);
     }
 
     #[test]
@@ -458,7 +517,8 @@ mod tests {
         // The arrow is part of the link: the link byte range covers the whole
         // "⇒ label" string.
         assert_eq!(f.links.len(), 1);
-        assert_eq!(&f.text[f.links[0].0.clone()], f.text.as_str());
+        assert_eq!(&f.text[f.links[0].range.clone()], f.text.as_str());
+        assert_eq!(f.links[0].accessible_label, "label");
     }
 
     #[test]

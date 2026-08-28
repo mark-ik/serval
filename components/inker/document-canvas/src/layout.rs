@@ -13,11 +13,12 @@ use inker::{Block, EngineDocument, InlineSpan};
 use crate::font_table::{FontInterner, FontTable};
 use crate::style_sheet::{BlockRole, ColorToken, DocumentStyleSheet, ResolvedBlockStyle};
 use crate::text::{
-    Flattened, LaidOutText, LayoutEnvironment, TextBaseStyle, flatten_inline, layout_text_block,
+    Flattened, LaidOutText, LayoutEnvironment, TextBaseStyle, flatten_inline,
+    layout_text_block_with_link_identity_base,
 };
 use crate::types::{
-    DocumentRenderPacket, InteractionRegion, Point, Rect, RenderedBlock, RenderedBlockKind, Size,
-    Viewport,
+    DocumentRenderPacket, InteractionRegion, LinkSemantics, Point, Rect, RenderedBlock,
+    RenderedBlockKind, SemanticInteractionId, Size, Viewport,
 };
 
 /// A laid-out document: the serializable [`DocumentRenderPacket`] plus the
@@ -84,6 +85,9 @@ struct DocumentLayouter<'a> {
     /// The document's own URL scheme, for classifying links (in-protocol vs
     /// external) when adorning them. `None` for schemeless addresses.
     base_scheme: Option<String>,
+    /// Next opaque identity for a logical link in this lowered document.
+    /// Wrapped rectangles reserve only one identity and share it.
+    next_link_identity: SemanticInteractionId,
 }
 
 impl<'a> DocumentLayouter<'a> {
@@ -103,6 +107,7 @@ impl<'a> DocumentLayouter<'a> {
             max_x: 0.0,
             fonts: FontInterner::new(),
             base_scheme,
+            next_link_identity: SemanticInteractionId::from_lowered_ordinal(1),
         }
     }
 
@@ -297,11 +302,12 @@ impl<'a> DocumentLayouter<'a> {
         // them); the block's base color rides on `base`.
         let link_color = self.style.token_color(ColorToken::LinkText);
         let code_color = self.style.token_color(ColorToken::CodeText);
+        let link_identity_base = self.reserve_link_identities(flattened.links.len());
         let LaidOutText {
             glyph_runs,
             total_size,
             mut interactions,
-        } = layout_text_block(
+        } = layout_text_block_with_link_identity_base(
             self.env,
             flattened,
             &base,
@@ -310,6 +316,7 @@ impl<'a> DocumentLayouter<'a> {
             available,
             origin,
             &mut self.fonts,
+            link_identity_base,
         );
 
         self.interactions.append(&mut interactions);
@@ -324,6 +331,12 @@ impl<'a> DocumentLayouter<'a> {
             bounds,
             kind: RenderedBlockKind::Text { glyph_runs },
         }
+    }
+
+    fn reserve_link_identities(&mut self, count: usize) -> SemanticInteractionId {
+        let first = self.next_link_identity;
+        self.next_link_identity = self.next_link_identity.offset(count);
+        first
     }
 
     fn render_code_block(
@@ -437,9 +450,14 @@ impl<'a> DocumentLayouter<'a> {
                 height + self.style.block_spacing(),
             ),
         );
+        let identity = self.reserve_link_identities(1);
         self.interactions.push(InteractionRegion {
             bounds,
             kind: crate::types::InteractionKind::Link { url: url.clone() },
+            link_semantics: Some(LinkSemantics {
+                identity,
+                accessible_label: alt.clone(),
+            }),
         });
         RenderedBlock {
             source_block_index: source_index,
