@@ -31,7 +31,10 @@ pub use smolweb::{SmolwebDocument, SmolwebInlineMediaPolicy, SmolwebPalette, Smo
 #[cfg(feature = "reader")]
 pub mod reader;
 #[cfg(feature = "reader")]
-pub use reader::{ReaderDocumentSession, ReaderSessionEngine, lower_article};
+pub use reader::{
+    ReaderAccessibilityLink, ReaderAccessibilitySnapshot, ReaderDocumentSession,
+    ReaderSessionEngine, lower_article,
+};
 
 #[cfg(feature = "scripted")]
 pub use genet_scripted::{

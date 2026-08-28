@@ -13,8 +13,9 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use document_canvas::{
-    ColorVocabulary, DecodedImage, DocumentStyleSheet, InteractionKind, LaidOutDocument, Viewport,
-    layout_document, netrender_backend::scene_from_packet_with_images,
+    ColorVocabulary, DecodedImage, DocumentStyleSheet, InteractionKind, LaidOutDocument, Rect,
+    SemanticInteractionId, Viewport, layout_document,
+    netrender_backend::scene_from_packet_with_images,
 };
 #[cfg(feature = "smolweb")]
 use genet_host_api::ResourceFetcher;
@@ -99,6 +100,20 @@ pub struct SmolwebDocument {
     layout: Option<LaidOutDocument>,
     size: (u32, u32),
     scroll_y: f32,
+    /// A semantic snapshot is only meaningful after the layout has crossed a
+    /// completed presentation boundary. Layout may exist earlier for sizing or
+    /// hit-testing, but that is not an a11y publication event.
+    presented: bool,
+}
+
+/// One visible logical link recovered from the retained document-canvas
+/// packet. This stays crate-local: Reader owns the public snapshot shape.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RetainedAccessibleLink {
+    pub identity: SemanticInteractionId,
+    pub label: String,
+    pub url: String,
+    pub rects: Vec<[f32; 4]>,
 }
 
 impl SmolwebDocument {
@@ -194,6 +209,7 @@ impl SmolwebDocument {
             layout: None,
             size: (0, 0),
             scroll_y: 0.0,
+            presented: false,
         }
     }
 
@@ -219,6 +235,7 @@ impl SmolwebDocument {
         });
         self.document = document;
         self.layout = None;
+        self.presented = false;
     }
 
     /// Unresolved inline-image URLs for the host fetch actor.
@@ -254,6 +271,10 @@ impl SmolwebDocument {
         if self.layout.is_some() && self.size == size {
             return;
         }
+        // A new viewport produces new geometry. Do not let a sizing, click,
+        // or content-height query publish that geometry under the preceding
+        // frame; `frame` marks it present only after painting completes.
+        self.presented = false;
         self.layout = Some(layout_document(
             &self.document,
             Viewport::new(size.0 as f32, size.1 as f32),
@@ -286,6 +307,7 @@ impl SmolwebDocument {
         );
         let background = scene.ops.pop().expect("push_rect appended an op");
         scene.ops.insert(0, background);
+        self.presented = true;
         scene
     }
 
@@ -373,6 +395,92 @@ impl SmolwebDocument {
             .collect()
     }
 
+    /// Return the current visible logical links without changing retained
+    /// layout. `None` means no completed frame has made this document's
+    /// geometry publishable yet.
+    pub(crate) fn retained_accessible_links(&self) -> Option<Vec<RetainedAccessibleLink>> {
+        if !self.presented {
+            return None;
+        }
+        let layout = self.layout.as_ref()?;
+        let mut links: Vec<RetainedAccessibleLink> = Vec::new();
+        for region in &layout.packet.interactions {
+            let InteractionKind::Link { url } = &region.kind else {
+                continue;
+            };
+            let Some(semantics) = &region.link_semantics else {
+                continue;
+            };
+            let Some(rect) = self.viewport_rect(region.bounds) else {
+                continue;
+            };
+            if let Some(link) = links
+                .iter_mut()
+                .find(|link| link.identity == semantics.identity)
+            {
+                link.rects.push(rect);
+            } else {
+                links.push(RetainedAccessibleLink {
+                    identity: semantics.identity,
+                    label: semantics.accessible_label.clone(),
+                    url: url.clone(),
+                    rects: vec![rect],
+                });
+            }
+        }
+        Some(links)
+    }
+
+    /// Resolve a current, visible pointer point for one semantic link token.
+    /// This recomputes from the retained packet and current scroll rather than
+    /// accepting a snapshot rectangle, and never asks layout to rebuild.
+    pub(crate) fn retained_accessible_pointer_target(
+        &self,
+        identity: SemanticInteractionId,
+    ) -> Option<(f32, f32)> {
+        if !self.presented {
+            return None;
+        }
+        let layout = self.layout.as_ref()?;
+        for region in layout.packet.interactions.iter().rev() {
+            let Some(semantics) = &region.link_semantics else {
+                continue;
+            };
+            if semantics.identity != identity {
+                continue;
+            }
+            let Some([x, y, width, height]) = self.viewport_rect(region.bounds) else {
+                continue;
+            };
+            let point = (x + width * 0.5, y + height * 0.5);
+            let document_y = point.1 + self.scroll_y;
+            let current_topmost = layout
+                .packet
+                .interactions
+                .iter()
+                .rev()
+                .find(|candidate| rect_contains(candidate.bounds, point.0, document_y));
+            if current_topmost
+                .and_then(|candidate| candidate.link_semantics.as_ref())
+                .is_some_and(|current| current.identity == identity)
+            {
+                return Some(point);
+            }
+        }
+        None
+    }
+
+    /// Clip a retained full-document rect into this document's current
+    /// viewport. The returned rectangle and all pointer targets derived from
+    /// it remain inside the content hole.
+    fn viewport_rect(&self, bounds: Rect) -> Option<[f32; 4]> {
+        let left = bounds.origin.x.max(0.0);
+        let right = bounds.max_x().min(self.size.0 as f32);
+        let top = (bounds.origin.y - self.scroll_y).max(0.0);
+        let bottom = (bounds.max_y() - self.scroll_y).min(self.size.1 as f32);
+        (left < right && top < bottom).then_some([left, top, right - left, bottom - top])
+    }
+
     /// Resolve a viewport-local click through the retained full-document packet.
     pub fn click_at(&mut self, x: f32, y: f32, width: u32, height: u32) -> Option<InteractionKind> {
         self.ensure_layout(width, height);
@@ -382,6 +490,10 @@ impl SmolwebDocument {
             .interaction_at(x, y + self.scroll_y)
             .cloned()
     }
+}
+
+fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
+    x >= rect.origin.x && x <= rect.max_x() && y >= rect.origin.y && y <= rect.max_y()
 }
 
 #[cfg(feature = "smolweb")]

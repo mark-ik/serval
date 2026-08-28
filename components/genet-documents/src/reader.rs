@@ -17,6 +17,29 @@ use netrender::Scene;
 
 use crate::{SmolwebDocument, SmolwebTheme, resolve_href};
 
+/// Renderer-neutral Reader semantics recovered from the current retained
+/// document-canvas packet. It is absent until Reader has presented one frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReaderAccessibilitySnapshot {
+    /// Reader's root name, if Fleece lowered a document title.
+    pub root_title: Option<String>,
+    /// Logical, currently-visible links. A wrapped link appears once with all
+    /// of its clipped viewport-space rectangles.
+    pub links: Vec<ReaderAccessibilityLink>,
+}
+
+/// One logical Reader link in a [`ReaderAccessibilitySnapshot`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReaderAccessibilityLink {
+    /// Opaque identity retained by document-canvas across reflow.
+    pub identity: document_canvas::SemanticInteractionId,
+    /// Author-lowered link text. Decorative visual arrows are excluded.
+    pub label: String,
+    pub url: String,
+    /// Visible `[x, y, width, height]` rectangles in Reader viewport space.
+    pub rects: Vec<[f32; 4]>,
+}
+
 /// The only three outcomes of the cheap static reader pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticArticleOutcome {
@@ -248,6 +271,35 @@ impl ReaderDocumentSession {
     pub fn lineage(&self) -> &ExtractionLineage {
         &self.lineage
     }
+
+    /// Return the current renderer-neutral Reader semantic snapshot without
+    /// forcing layout. It is absent before Reader has completed its first
+    /// frame, then reflects the retained layout and current scroll position.
+    pub fn accessibility_snapshot(&self) -> Option<ReaderAccessibilitySnapshot> {
+        let links = self.doc.retained_accessible_links()?;
+        Some(ReaderAccessibilitySnapshot {
+            root_title: self.doc.document().title.clone(),
+            links: links
+                .into_iter()
+                .map(|link| ReaderAccessibilityLink {
+                    identity: link.identity,
+                    label: link.label,
+                    url: link.url,
+                    rects: link.rects,
+                })
+                .collect(),
+        })
+    }
+
+    /// Re-resolve a current visible point for a Reader semantic link token.
+    /// The query reads retained geometry only, validates against current scroll,
+    /// and returns no point after that link has left the content hole.
+    pub fn accessibility_pointer_target(
+        &self,
+        identity: document_canvas::SemanticInteractionId,
+    ) -> Option<(f32, f32)> {
+        self.doc.retained_accessible_pointer_target(identity)
+    }
 }
 
 impl DocumentSession<Scene> for ReaderDocumentSession {
@@ -380,6 +432,23 @@ mod tests {
     use super::*;
     use inker::{SessionRegistry, SessionSpawnRequest};
 
+    fn reader_session(html: &str, width: u32, height: u32) -> Box<dyn DocumentSession<Scene>> {
+        ReaderSessionEngine::new(SmolwebTheme::Plain)
+            .spawn(
+                &SessionSpawnRequest::new("https://example.test/story/index.html")
+                    .with_body(html)
+                    .with_viewport(width, height),
+            )
+            .expect("reader session")
+    }
+
+    fn reader(session: &dyn DocumentSession<Scene>) -> &ReaderDocumentSession {
+        session
+            .as_any_ref()
+            .downcast_ref::<ReaderDocumentSession>()
+            .expect("reader session type")
+    }
+
     #[test]
     fn reader_route_lowers_renders_links_and_reports_lineage() {
         let mut registry = SessionRegistry::<Scene>::new();
@@ -431,6 +500,110 @@ mod tests {
             ),
             Err(SessionError::Unsupported(message)) if message.contains("post-JS DOM")
         ));
+    }
+
+    #[test]
+    fn reader_snapshot_waits_for_frame_and_groups_wrapped_links_across_reflow() {
+        let label = "one two three four five six seven eight nine ten";
+        let html = format!(
+            "<html><head><title>Snapshot article</title></head><body><main>\
+             <h1>Snapshot article</h1><p>This substantial reader paragraph introduces a \
+             <a href='/go'>{label}</a> and keeps enough prose for Fleece to retain the article.\
+             </p></main></body></html>"
+        );
+        let mut session = reader_session(&html, 130, 300);
+        assert!(
+            reader(session.as_ref()).accessibility_snapshot().is_none(),
+            "sizing and construction do not publish a semantic snapshot"
+        );
+
+        let _ = session.frame(130, 300);
+        let narrow = reader(session.as_ref())
+            .accessibility_snapshot()
+            .expect("completed frame publishes snapshot");
+        assert_eq!(narrow.root_title.as_deref(), Some("Snapshot article"));
+        let narrow_link = narrow
+            .links
+            .iter()
+            .find(|link| link.url == "https://example.test/go")
+            .expect("reader link");
+        assert_eq!(narrow_link.label, label, "decorative arrow is excluded");
+        assert!(
+            narrow_link.rects.len() >= 2,
+            "the narrow frame keeps one logical link across wrapped rectangles"
+        );
+        let identity = narrow_link.identity;
+
+        let (x, y) = reader(session.as_ref())
+            .accessibility_pointer_target(identity)
+            .expect("visible semantic link resolves to a retained point");
+        assert!(x >= 0.0 && x < 130.0 && y >= 0.0 && y < 300.0);
+
+        // A sizing query can rebuild retained geometry but cannot publish it
+        // as the next a11y snapshot before the corresponding frame finishes.
+        let _ = session.content_height(640, 300);
+        assert!(
+            reader(session.as_ref()).accessibility_snapshot().is_none(),
+            "a size-triggered layout rebuild revokes the prior presentation"
+        );
+        let _ = session.frame(640, 300);
+        let wide = reader(session.as_ref())
+            .accessibility_snapshot()
+            .expect("reflowed completed frame publishes snapshot");
+        let wide_link = wide
+            .links
+            .iter()
+            .find(|link| link.url == "https://example.test/go")
+            .expect("reader link survives reflow");
+        assert_eq!(
+            wide_link.identity, identity,
+            "geometry does not define identity"
+        );
+    }
+
+    #[test]
+    fn reader_pointer_target_rechecks_current_scroll_and_content_hole() {
+        let body: String = (0..40)
+            .map(|index| format!("<p>Reader body line {index} has enough text for extraction.</p>"))
+            .collect();
+        let html = format!(
+            "<html><head><title>Scrolled snapshot</title></head><body><main>\
+             <h1>Scrolled snapshot</h1>{body}\
+             <p><a href='/tail'>tail link</a></p></main></body></html>"
+        );
+        let mut session = reader_session(&html, 400, 120);
+        let _ = session.frame(400, 120);
+        assert!(
+            reader(session.as_ref())
+                .accessibility_snapshot()
+                .expect("completed frame")
+                .links
+                .is_empty(),
+            "the tail is not initially in the content hole"
+        );
+
+        session.scroll_to(f32::MAX);
+        let snapshot = reader(session.as_ref())
+            .accessibility_snapshot()
+            .expect("scroll reads retained geometry");
+        let tail = snapshot
+            .links
+            .iter()
+            .find(|link| link.url == "https://example.test/tail")
+            .expect("tail link becomes visible after scroll");
+        let identity = tail.identity;
+        let point = reader(session.as_ref())
+            .accessibility_pointer_target(identity)
+            .expect("current visible tail has a pointer target");
+        assert!(point.0 >= 0.0 && point.0 < 400.0 && point.1 >= 0.0 && point.1 < 120.0);
+
+        session.scroll_to(0.0);
+        assert!(
+            reader(session.as_ref())
+                .accessibility_pointer_target(identity)
+                .is_none(),
+            "the old snapshot token is not used once scroll hides its retained rect"
+        );
     }
 
     #[test]
