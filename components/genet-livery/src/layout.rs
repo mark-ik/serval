@@ -7963,9 +7963,11 @@ fn physical_flex_gap(
 }
 
 /// The K5b flex/grid provider is selected only after the direct child is
-/// attached to the scratch parent. Livery supplies generated CSS ownership;
-/// Buckram owns the narrow renderer-role transition and retains the static
-/// rectangle it yields for the later K5d equation.
+/// attached to the scratch parent. This is also the narrow point where a
+/// flex item's `align-self` can see the parent's physical flex axes. Livery
+/// supplies generated CSS ownership; Buckram owns the renderer-role
+/// transition and retains the static rectangle it yields for the later K5d
+/// equation.
 fn enable_flex_grid_static_position_provider<Id, Context, Source>(
     tree: &mut AlgorithmTree<Style, Context, Source>,
     styles: &StylePlane<Id>,
@@ -7980,9 +7982,26 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
     if !matches!(inside, Some(DisplayInside::Flex | DisplayInside::Grid)) {
         return;
     }
+    let flex_parent = (inside == Some(DisplayInside::Flex))
+        .then(|| element_origin_node(boxes[container].origin).and_then(|node| styles.get(node)))
+        .flatten();
     let grid_flow = (inside == Some(DisplayInside::Grid)).then_some(boxes[container].flow);
     let children = tree.children(container_node).to_vec();
     for child in children {
+        let direct_child = tree.source(child).direct_box();
+        if let (Some(parent), Some(child_box)) = (flex_parent, direct_child) {
+            let css_box = &boxes[child_box];
+            if let Some(child_computed) =
+                element_origin_node(css_box.origin).and_then(|node| styles.get(node))
+            {
+                map_flex_child_self_alignment(
+                    tree.style_mut(child),
+                    parent,
+                    css_box.flow,
+                    child_computed,
+                );
+            }
+        }
         if matches!(
             tree.block_style(child).position,
             BuckramBlockPosition::Absolute | BuckramBlockPosition::Fixed
@@ -8024,6 +8043,112 @@ fn enable_flex_grid_static_position_provider<Id, Context, Source>(
                 tree.use_grid_area_for_static_position(child);
             }
         }
+    }
+}
+
+/// Only an element-originated generated box owns the corresponding computed
+/// style. Text, pseudo, and anonymous boxes may name an owner for provenance,
+/// but that owner's `align-self`, dimensions, and writing mode are not the
+/// generated item's own values.
+fn element_origin_node<Id: Copy>(origin: BoxOrigin<Id>) -> Option<Id> {
+    match origin {
+        BoxOrigin::Element(node) => Some(node),
+        BoxOrigin::Text(_) | BoxOrigin::Pseudo { .. } | BoxOrigin::Anonymous { .. } => None,
+    }
+}
+
+/// Project a direct flex child's logical `align-self` after its parent's
+/// physical flex direction is known. Taffy can represent a physical column's
+/// right cross start with `Direction::Rtl`, but cannot resolve `self-start`
+/// and `self-end` against a differently written subject.
+fn map_flex_child_self_alignment(
+    style: &mut Style,
+    parent: &ComputedValues,
+    subject_flow: FlowAxes,
+    subject: &ComputedValues,
+) {
+    debug_assert_eq!(parent.display, CssDisplay::Flex);
+    let parent_flow = flex_flow_axes(parent);
+    let physical_direction = physical_flex_direction(parent.flex_direction, parent_flow);
+    let backend_direction =
+        physical_flex_cross_axis_direction(parent.flex_direction, physical_direction, parent_flow);
+    let cross_size = match physical_direction {
+        FlexDirection::Row | FlexDirection::RowReverse => subject.height,
+        FlexDirection::Column | FlexDirection::ColumnReverse => subject.width,
+    };
+    let Some(value) = effective_flex_child_alignment(parent, subject, cross_size) else {
+        // Preserve taffy's native inheritance for ordinary auto/stretch.
+        style.align_self = None;
+        return;
+    };
+    let lowered = match value {
+        CssAlignment::SelfStart | CssAlignment::SelfEnd => {
+            let backend_cross_start =
+                backend_flex_cross_start(physical_direction, backend_direction);
+            let desired = subject_side_on_axis(
+                subject_flow,
+                backend_cross_start,
+                value == CssAlignment::SelfStart,
+            );
+            if desired == backend_cross_start {
+                CssAlignment::Start
+            } else {
+                CssAlignment::End
+            }
+        },
+        value => physical_flex_cross_alignment(
+            parent,
+            value,
+            parent.flex_direction,
+            physical_direction,
+            parent_flow,
+        ),
+    };
+    style.align_self = Some(align_items(lowered));
+}
+
+/// Choose the alignment that a direct flex item contributes after CSS `auto`
+/// inherits the container's `align-items`. Content-keyword cross sizes only
+/// suppress the effective stretch case: an inherited center, end, or
+/// subject-relative self edge still has to align at that edge.
+fn effective_flex_child_alignment(
+    parent: &ComputedValues,
+    subject: &ComputedValues,
+    cross_size: CssSize,
+) -> Option<CssAlignment> {
+    let (value, inherited) = match subject.align_self {
+        CssAlignment::Auto => (parent.align_items, true),
+        value => (value, false),
+    };
+    // `normal` resolves to stretch for flex items. Content-keyword sizes
+    // suppress that stretch regardless of whether it came from `auto` or an
+    // explicit `normal`/`stretch` child value.
+    let value = match value {
+        CssAlignment::Auto | CssAlignment::Normal => CssAlignment::Stretch,
+        value => value,
+    };
+    if value == CssAlignment::Stretch && suppresses_stretch(cross_size) {
+        Some(CssAlignment::FlexStart)
+    } else if inherited && value == CssAlignment::Stretch {
+        // Preserve taffy's native inheritance for ordinary auto/stretch.
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Taffy's cross-axis `Start` is top for physical rows and follows the
+/// container direction for physical columns.
+fn backend_flex_cross_start(
+    physical_direction: FlexDirection,
+    direction: TaffyDirection,
+) -> PhysicalSide {
+    match physical_direction {
+        FlexDirection::Row | FlexDirection::RowReverse => PhysicalSide::Top,
+        FlexDirection::Column | FlexDirection::ColumnReverse => match direction {
+            TaffyDirection::Ltr => PhysicalSide::Left,
+            TaffyDirection::Rtl => PhysicalSide::Right,
+        },
     }
 }
 
@@ -8471,6 +8596,230 @@ mod tests {
         }
         dom.dom_children(node)
             .find_map(|child| node_by_id(dom, child, id))
+    }
+
+    #[test]
+    fn flex_child_align_self_projects_parent_cross_axis_and_subject_flow() {
+        let dom = StaticDocument::parse("<div id=flex><div id=item></div></div>");
+        let project = |parent_css: &str, child_css: &str| {
+            let styles = resolve_styles(
+                &dom,
+                &StyleSet::cambium(&[&format!(
+                    "#flex {{ display: flex; {parent_css} }} #item {{ {child_css} }}"
+                )]),
+                &Device::screen(320.0, 240.0),
+                &InteractionStates::default(),
+            );
+            let parent_node = node_by_id(&dom, dom.document(), "flex").expect("flex");
+            let item_node = node_by_id(&dom, dom.document(), "item").expect("item");
+            let parent = styles.get(parent_node).expect("parent style");
+            let item = styles.get(item_node).expect("item style");
+            let mut style = to_taffy_style(item, 16.0);
+            map_flex_child_self_alignment(
+                &mut style,
+                parent,
+                flex_flow_axes(item),
+                item,
+            );
+            style.align_self.map(|alignment| alignment.keyword)
+        };
+
+        for (description, parent_css, child_css, expected) in [
+            (
+                "vertical-rl rtl column nowrap start",
+                "writing-mode: vertical-rl; direction: rtl; flex-flow: column nowrap;",
+                "align-self: start;",
+                AlignItemsKeyword::End,
+            ),
+            (
+                "vertical-rl rtl column nowrap flex-start",
+                "writing-mode: vertical-rl; direction: rtl; flex-flow: column nowrap;",
+                "align-self: flex-start;",
+                AlignItemsKeyword::FlexEnd,
+            ),
+            (
+                "vertical-rl rtl column wrap-reverse flex-start",
+                "writing-mode: vertical-rl; direction: rtl; flex-flow: column wrap-reverse;",
+                "align-self: flex-start;",
+                AlignItemsKeyword::FlexStart,
+            ),
+            (
+                "vertical-lr rtl column nowrap end",
+                "writing-mode: vertical-lr; direction: rtl; flex-flow: column nowrap;",
+                "align-self: end;",
+                AlignItemsKeyword::Start,
+            ),
+            (
+                "physical column right cross start, horizontal subject self-start",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "writing-mode: horizontal-tb; align-self: self-start;",
+                AlignItemsKeyword::End,
+            ),
+            (
+                "physical column right cross start, vertical-rl subject self-start",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "writing-mode: vertical-rl; align-self: self-start;",
+                AlignItemsKeyword::Start,
+            ),
+            (
+                "physical column right cross start, horizontal subject self-end",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "writing-mode: horizontal-tb; align-self: self-end;",
+                AlignItemsKeyword::Start,
+            ),
+            (
+                "physical column right cross start, vertical-rl subject self-end",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "writing-mode: vertical-rl; align-self: self-end;",
+                AlignItemsKeyword::End,
+            ),
+            (
+                "physical row content fallback reads child height",
+                "writing-mode: vertical-rl; direction: rtl; flex-flow: column wrap-reverse;",
+                "height: max-content; align-self: auto;",
+                AlignItemsKeyword::FlexStart,
+            ),
+            (
+                "physical column content fallback reads child width",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "width: max-content; align-self: auto;",
+                AlignItemsKeyword::FlexStart,
+            ),
+            (
+                "auto content width inherits center instead of stretch fallback",
+                "writing-mode: vertical-rl; flex-flow: row nowrap; align-items: center;",
+                "width: max-content; align-self: auto;",
+                AlignItemsKeyword::Center,
+            ),
+            (
+                "explicit stretch content width uses the flex-start fallback",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "width: max-content; align-self: stretch;",
+                AlignItemsKeyword::FlexStart,
+            ),
+            (
+                "explicit center content width does not use the stretch fallback",
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "width: max-content; align-self: center;",
+                AlignItemsKeyword::Center,
+            ),
+            (
+                "auto content width inherits end instead of stretch fallback",
+                "writing-mode: vertical-rl; flex-flow: row nowrap; align-items: end;",
+                "width: max-content; align-self: auto;",
+                AlignItemsKeyword::End,
+            ),
+        ] {
+            assert_eq!(
+                project(parent_css, child_css),
+                Some(expected),
+                "{description}"
+            );
+        }
+
+        assert_eq!(
+            project(
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "align-self: auto;",
+            ),
+            None,
+            "ordinary auto still inherits the parent's align-items",
+        );
+        assert_eq!(
+            project(
+                "writing-mode: vertical-rl; flex-flow: row nowrap;",
+                "height: max-content; align-self: auto;",
+            ),
+            None,
+            "a physical column ignores the child's main-axis content height",
+        );
+        assert_eq!(
+            project(
+                "writing-mode: vertical-rl; flex-flow: column nowrap;",
+                "width: max-content; align-self: auto;",
+            ),
+            None,
+            "a physical row ignores the child's main-axis content width",
+        );
+    }
+
+    #[test]
+    fn auto_align_self_resolves_parent_self_edges_against_the_subject_flow() {
+        let mut parent = ComputedValues::default();
+        parent.display = CssDisplay::Flex;
+        parent.writing_mode = CssWritingMode::VerticalRl;
+        parent.flex_direction = CssFlexDirection::Row;
+        let mut horizontal = ComputedValues::default();
+        horizontal.align_self = CssAlignment::Auto;
+        let mut vertical = horizontal.clone();
+        vertical.writing_mode = CssWritingMode::VerticalRl;
+
+        let project = |parent: &ComputedValues, subject: &ComputedValues| {
+            let mut style = to_taffy_style(subject, 16.0);
+            map_flex_child_self_alignment(&mut style, parent, flex_flow_axes(subject), subject);
+            style.align_self.map(|alignment| alignment.keyword)
+        };
+
+        parent.align_items = CssAlignment::SelfStart;
+        assert_eq!(
+            project(&parent, &horizontal),
+            Some(AlignItemsKeyword::End),
+            "horizontal subject self-start is its physical left edge",
+        );
+        assert_eq!(
+            project(&parent, &vertical),
+            Some(AlignItemsKeyword::Start),
+            "vertical-rl subject self-start is its physical right edge",
+        );
+
+        parent.align_items = CssAlignment::SelfEnd;
+        assert_eq!(
+            project(&parent, &horizontal),
+            Some(AlignItemsKeyword::Start),
+            "horizontal subject self-end is its physical right edge",
+        );
+        assert_eq!(
+            project(&parent, &vertical),
+            Some(AlignItemsKeyword::End),
+            "vertical-rl subject self-end is its physical left edge",
+        );
+    }
+
+    #[test]
+    fn flex_child_style_projection_excludes_non_element_provenance() {
+        assert_eq!(element_origin_node(BoxOrigin::Element(1u8)), Some(1));
+        assert_eq!(element_origin_node(BoxOrigin::Text(1u8)), None);
+        assert_eq!(
+            element_origin_node(BoxOrigin::Pseudo {
+                owner: 1u8,
+                pseudo: buckram::PseudoElement::Before,
+            }),
+            None,
+        );
+        assert_eq!(
+            element_origin_node(BoxOrigin::Anonymous {
+                owner: Some(1u8),
+                kind: buckram::AnonymousBoxKind::Block,
+            }),
+            None,
+        );
+    }
+
+    #[test]
+    fn non_flex_vertical_style_does_not_receive_flex_direction_lowering() {
+        let dom = StaticDocument::parse("<div id=block></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[
+                "#block { writing-mode: vertical-rl; direction: rtl; display: block; }",
+            ]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let block = styles
+            .get(node_by_id(&dom, dom.document(), "block").expect("block"))
+            .expect("block style");
+        assert_eq!(to_taffy_style(block, 16.0).direction, TaffyDirection::Ltr);
     }
 
     #[test]
