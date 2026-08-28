@@ -11,8 +11,8 @@ Chrome, structural-inspection, and shell accessibility slices completed
 2026-08-27; the narrow-width and high-DPI Chrome receipts completed on Windows
 2026-08-27. Pelt's caller-injected durable Chrome appearance store completed
 2026-08-28. Reader-in-workspace completed 2026-08-27 with a separate
-held-source Fleece/Pelt receipt. IOSurface and DMA-BUF imports remain separate
-platform lanes.
+held-source Fleece/Pelt receipt; Reader's partial Focus-only link tree completed
+2026-08-28. IOSurface and DMA-BUF imports remain separate platform lanes.
 
 ## Objective
 
@@ -1386,6 +1386,58 @@ stability boundary rather than claiming a byte-identical PNG. The capture shows
 the Reader tab and close control, selected Reader engine, extracted article, and
 Fleece lineage in the retained inspector.
 
+#### Reader partial accessibility
+
+**Status:** complete 2026-08-28 for Reader's already-presented visible links.
+This is a bounded Reader child contract, not a generic `DocumentSession` or
+document-canvas accessibility tree.
+
+`document-canvas` now retains an opaque semantic identity and arrow-free label
+for each logical link. The same identity covers every wrapped visual segment and
+survives geometry-only reflow. Reader publishes those currently visible links
+only after a completed frame, as a renderer-neutral snapshot with the current
+viewport-space rectangles. Neither Fleece nor Reader depends on AccessKit.
+
+Pelt adapts that snapshot below each Frisket content aperture. Its global node
+namespace includes the tile, engine source, and controller generation; an
+engine replacement resets the namespace even if the replacement controller
+restarts at generation one. A removed link retains its local mapping for the
+life of its Reader session, so a queued action cannot be reassigned to a later
+link after reflow.
+
+The current action contract is deliberately Focus-only. A Reader link projects
+`Focus`, which changes Pelt's virtual tree focus without pointer capture,
+navigation, or a session replacement. It does not project `Click`: Reader
+receives held source and is fetch-free, while ordinary Pelt navigation needs a
+new held destination body before it can construct the next Reader session.
+That host-source handoff and Reader link activation remain a separate lane.
+
+The named receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
+  --no-default-features --features livery,reader -- \
+  --workspace-receipt reader-accessibility \
+  --artifact target/pelt-receipts/workspace-reader-accessibility.png
+```
+
+It opens two copies of
+`examples/workspace/p7-reader-accessibility/index.html`, explicitly routes both
+through Reader, requires the Windows bridge before it exposes the window, and
+captures the retained Chrome plus two article content holes. Its GPU-free
+counterpart proves that equal Reader-local link nodes become different global
+nodes, stay below their own apertures, accept virtual Focus only, retain the
+sibling Reader tile, and become inert after the first tile is reconstructed as
+Livery.
+
+Recorded 2026-08-28: the 2x GPU-free Reader namespace test passed, the complete
+Pelt desktop workspace-viewer suite passed 24 tests, and the Pelt receipt parser
+suite passed 4 tests. The headed Windows receipt installed AccessKit with 36
+retained workspace nodes, completed in three redraws at 960x640, and captured
+both Reader routes. Its artifact is
+`C:\t\genet-pelt-reader-accessibility.png`, with digest
+`0cd5ab1ac8280a1d`.
+
 ### Tabard consumer receipts
 
 **Status:** complete 2026-08-28 as bounded headed consumer evidence. These are
@@ -1448,15 +1500,16 @@ Fleece article and lineage in Pelt's retained inspector.
 
 P6's retained-shell receipts, P7's Livery child-tree receipt, the separate
 Reader-in-workspace receipt, and the two Tabard consumers are complete. The
-AccessKit tree now composes the retained Livery child tree for its focused
-supported lane; Reader, Scripted, Smolweb, and native child trees still need
-their own namespace and action contracts. Livery's native text-control
-projection and mutation, nested-scroll ScrollIntoView routing, clip-aware
-nested link activation, and nested native textarea input-and-selection receipt
-are complete. `SetValue` remains withheld while a nested scrollport is active;
-Pelt routes ordinary physical selection, text, and IME to the focused retained
-Livery session and revalidates a queued action against its live child projection
-before dispatch. Pelt now owns an
+AccessKit tree now composes the retained Livery child tree and Reader's partial
+Focus-only visible-link tree. Scripted, Smolweb, and native child trees still
+need their own namespace and action contracts; Reader activation still needs a
+host-source handoff that can supply the destination body. Livery's native
+text-control projection and mutation, nested-scroll ScrollIntoView routing,
+clip-aware nested link activation, and nested native textarea
+input-and-selection receipt are complete. `SetValue` remains withheld while a
+nested scrollport is active; Pelt routes ordinary physical selection, text, and
+IME to the focused retained Livery session and revalidates a queued action
+against its live child projection before dispatch. Pelt now owns an
 optional caller-injected local appearance store; system-theme integration,
 multi-window synchronization, and a canonical
 configuration-directory policy remain distinct work. The held-source handoff

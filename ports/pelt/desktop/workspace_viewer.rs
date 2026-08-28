@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use accesskit::{Action, ActionData, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
+use accesskit::{
+    Action, ActionData, Affine, Node as AccessNode, NodeId as AccessNodeId, Rect as AccessRect,
+    Role, TreeUpdate,
+};
 use genet_host_api::ResourceFetcher;
 use genet_host_api::settings::{SettingValue, SettingsProvider};
 use genet_host_api::tile::{
@@ -68,6 +71,8 @@ const ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION: &str = "Pelt routed a Livery text 
 const ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION: &str = "Pelt routed Livery ScrollIntoView through the focused Livery nested scrollport and preserved the sibling tile";
 const ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION: &str = "Pelt revealed a nested Livery target, routed its clip-aware Click through ordinary pointer input, and rejected stale tile actions";
 const ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION: &str = "Pelt preserved a nested textarea action boundary and routed physical selection replacement, Text, and IME only to the focused tile";
+#[cfg(feature = "reader")]
+const READER_ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "Pelt composed partial Reader link trees with distinct tile namespaces, kept Focus virtual, and preserved the sibling Reader session";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
@@ -79,6 +84,9 @@ const TABARD_PREVIEW_WORKSPACE_ASSERTION: &str = "Tabard changed the computed Pe
 const TABARD_READER_PREVIEW_WORKSPACE_ASSERTION: &str = "Tabard recolored Reader's Fleece article through Pelt's host palette while the held response, neighboring Livery tile, and route restoration stayed intact";
 #[cfg(feature = "reader")]
 const READER_FIXTURE_SOURCE: &str = include_str!("../examples/workspace/reader/index.html");
+#[cfg(all(feature = "reader", test))]
+const READER_ACCESSIBILITY_FIXTURE_SOURCE: &str =
+    include_str!("../examples/workspace/p7-reader-accessibility/index.html");
 const INSPECTOR_VISIBLE_ROWS: usize = 3;
 
 /// One bounded semantic receipt for a recursive Pelt workspace.
@@ -121,6 +129,10 @@ pub enum WorkspaceReceipt {
     /// Reader extracts a focused tile's already-held source response in the
     /// shared workspace, then releases it back to its original Livery route.
     Reader,
+    /// Reader's already-presented partial link tree is namespaced under each
+    /// Pelt content aperture. Focus is virtual until a later host source
+    /// handoff can supply destination bodies for Reader navigation.
+    ReaderAccessibility,
     /// A developer-only Tabard palette preview over the retained Pelt Chrome.
     /// This does not persist a Pelt appearance preference or recolor documents.
     TabardPreview,
@@ -147,6 +159,7 @@ impl WorkspaceReceipt {
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
+            Self::ReaderAccessibility => "reader-accessibility",
             Self::TabardPreview => "tabard-preview",
             Self::TabardReaderPreview => "tabard-reader-preview",
         }
@@ -176,6 +189,7 @@ impl WorkspaceReceipt {
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
+                | Self::ReaderAccessibility
                 | Self::TabardPreview
                 | Self::TabardReaderPreview
         )
@@ -390,6 +404,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
+                | WorkspaceReceipt::ReaderAccessibility
                 | WorkspaceReceipt::TabardPreview
                 | WorkspaceReceipt::TabardReaderPreview
         )
@@ -987,7 +1002,10 @@ struct WorkspaceApp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum WorkspaceA11yFocus {
     Frisket(FrisketA11yTarget),
-    Livery(AccessNodeId),
+    /// A virtual focus target in an engine-owned child subtree. The child
+    /// engine remains responsible for its semantics; Pelt owns only its
+    /// one-tree namespace and host focus state.
+    Document(AccessNodeId),
 }
 
 /// A Pelt-owned action target for one node in the composite tree.
@@ -995,6 +1013,19 @@ enum WorkspaceA11yFocus {
 enum WorkspaceA11yActionTarget {
     Frisket(genet_scripted_dom::NodeId),
     Livery(LiveryA11yAction),
+    #[cfg(feature = "reader")]
+    Reader(ReaderA11yAction),
+}
+
+impl WorkspaceA11yActionTarget {
+    fn is_document(&self) -> bool {
+        match self {
+            Self::Frisket(_) => false,
+            Self::Livery(_) => true,
+            #[cfg(feature = "reader")]
+            Self::Reader(_) => true,
+        }
+    }
 }
 
 /// The session identity and workspace point needed to route a retained Livery
@@ -1023,15 +1054,66 @@ struct LiveryA11yAction {
     click_point: Option<(f32, f32)>,
 }
 
+/// The session identity and logical Reader link needed to keep a retained
+/// semantic Focus action virtual and stale-safe.
+#[cfg(feature = "reader")]
+#[derive(Clone, Debug)]
+struct ReaderA11yAction {
+    tile: TileId,
+    session_generation: u64,
+    local_node: AccessNodeId,
+    /// The retained Reader record carries the opaque document-canvas identity.
+    /// It is compared against the current partial snapshot before Pelt accepts
+    /// a virtual Focus action.
+    link: genet_documents::ReaderAccessibilityLink,
+    focus_enabled: bool,
+}
+
 /// One tile-local namespace inside Pelt's root AccessKit tree.
 ///
 /// AccessKit node IDs are only local-tree unique. Pelt owns these assignments
 /// so independently constructed `ScriptedDom`s cannot collide when their
 /// retained trees become siblings below Frisket's content apertures.
-#[derive(Default)]
-struct LiveryA11yNamespace {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DocumentA11ySource {
+    Livery,
+    #[cfg(feature = "reader")]
+    Reader,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DocumentA11ySession {
+    source: DocumentA11ySource,
+    generation: u64,
+}
+
+struct DocumentA11yNamespace {
+    source: DocumentA11ySource,
     session_generation: u64,
     global_ids: HashMap<AccessNodeId, AccessNodeId>,
+    /// Reader's opaque link tokens cannot be represented as accesskit IDs and
+    /// must not be replaced with output order. Retain a tile/session-local
+    /// association so a removed link's global ID becomes inert rather than
+    /// being aliased to its next sibling after a reflow.
+    #[cfg(feature = "reader")]
+    reader_local_ids: Vec<(genet_documents::ReaderAccessibilityLink, AccessNodeId)>,
+    #[cfg(feature = "reader")]
+    next_reader_local_node_id: u64,
+}
+
+impl DocumentA11yNamespace {
+    fn new(source: DocumentA11ySource, session_generation: u64) -> Self {
+        Self {
+            source,
+            session_generation,
+            global_ids: HashMap::new(),
+            #[cfg(feature = "reader")]
+            reader_local_ids: Vec::new(),
+            #[cfg(feature = "reader")]
+            // The Reader root owns local ID 1. Link tokens begin at 2.
+            next_reader_local_node_id: 2,
+        }
+    }
 }
 
 /// The tree and action map delivered together to the one-tree platform bridge.
@@ -1057,6 +1139,57 @@ struct LiveryA11yChild {
     pointer_targets: HashMap<AccessNodeId, (f32, f32)>,
 }
 
+/// A partial Reader semantic tree assembled from its already-presented,
+/// renderer-neutral snapshot. It exposes only visible links and never claims a
+/// complete semantic rendering of Fleece's article.
+#[cfg(feature = "reader")]
+struct ReaderA11yChild {
+    tile: TileId,
+    session_generation: u64,
+    aperture: AccessNodeId,
+    root: AccessNodeId,
+    nodes: Vec<(AccessNodeId, AccessNode)>,
+    transform: Affine,
+    links: HashMap<AccessNodeId, genet_documents::ReaderAccessibilityLink>,
+}
+
+#[cfg(feature = "reader")]
+fn reader_link_bounds(rects: &[[f32; 4]]) -> Option<AccessRect> {
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    for &[x, y, width, height] in rects {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !width.is_finite()
+            || !height.is_finite()
+            || width <= 0.0
+            || height <= 0.0
+        {
+            continue;
+        }
+        let right = x + width;
+        let bottom = y + height;
+        if !right.is_finite() || !bottom.is_finite() {
+            continue;
+        }
+        let rect = (
+            f64::from(x),
+            f64::from(y),
+            f64::from(right),
+            f64::from(bottom),
+        );
+        bounds = Some(match bounds {
+            Some((left, top, old_right, old_bottom)) => (
+                left.min(rect.0),
+                top.min(rect.1),
+                old_right.max(rect.2),
+                old_bottom.max(rect.3),
+            ),
+            None => rect,
+        });
+    }
+    bounds.map(|(left, top, right, bottom)| AccessRect::new(left, top, right, bottom))
+}
+
 /// Per-window platform bridge and retained composite action map.
 struct WorkspaceAccessibility {
     bridge: AccessKitBridge,
@@ -1064,7 +1197,7 @@ struct WorkspaceAccessibility {
     last_install_error: Option<String>,
     action_map: HashMap<AccessNodeId, WorkspaceA11yActionTarget>,
     focus: Option<WorkspaceA11yFocus>,
-    child_namespaces: HashMap<TileId, LiveryA11yNamespace>,
+    child_namespaces: HashMap<TileId, DocumentA11yNamespace>,
     assigned_child_ids: HashSet<AccessNodeId>,
     next_child_node_id: u64,
     wake: Arc<AtomicBool>,
@@ -1095,11 +1228,11 @@ impl WorkspaceAccessibility {
     fn prepare(&mut self, projection: WorkspaceA11yProjection, scale_factor: f64) -> TreeUpdate {
         self.action_map = projection.actions;
         let mut tree = projection.tree;
-        if let Some(WorkspaceA11yFocus::Livery(id)) = self.focus.as_ref()
-            && matches!(
-                self.action_map.get(id),
-                Some(WorkspaceA11yActionTarget::Livery(_))
-            )
+        if let Some(WorkspaceA11yFocus::Document(id)) = self.focus.as_ref()
+            && self
+                .action_map
+                .get(id)
+                .is_some_and(WorkspaceA11yActionTarget::is_document)
         {
             tree.focus = *id;
         }
@@ -1164,25 +1297,31 @@ impl WorkspaceAccessibility {
     fn frisket_focus(&self) -> Option<&FrisketA11yTarget> {
         match self.focus.as_ref() {
             Some(WorkspaceA11yFocus::Frisket(target)) => Some(target),
-            Some(WorkspaceA11yFocus::Livery(_)) | None => None,
+            Some(WorkspaceA11yFocus::Document(_)) | None => None,
         }
     }
 
-    fn retain_livery_namespaces(&mut self, live_sessions: &HashMap<TileId, u64>) {
+    fn retain_document_namespaces(&mut self, live_sessions: &HashMap<TileId, DocumentA11ySession>) {
         self.child_namespaces.retain(|tile, namespace| {
-            live_sessions.get(tile) == Some(&namespace.session_generation)
+            live_sessions.get(tile)
+                == Some(&DocumentA11ySession {
+                    source: namespace.source,
+                    generation: namespace.session_generation,
+                })
         });
     }
 
     fn child_global_id(
         &mut self,
         tile: TileId,
+        source: DocumentA11ySource,
         session_generation: u64,
         local_id: AccessNodeId,
         shell_ids: &HashSet<AccessNodeId>,
     ) -> AccessNodeId {
         let reset_namespace = self.child_namespaces.get(&tile).is_some_and(|namespace| {
-            namespace.session_generation != session_generation
+            namespace.source != source
+                || namespace.session_generation != session_generation
                 || namespace
                     .global_ids
                     .values()
@@ -1203,13 +1342,50 @@ impl WorkspaceAccessibility {
         let namespace = self
             .child_namespaces
             .entry(tile)
-            .or_insert_with(|| LiveryA11yNamespace {
-                session_generation,
-                global_ids: HashMap::new(),
-            });
+            .or_insert_with(|| DocumentA11yNamespace::new(source, session_generation));
+        debug_assert_eq!(namespace.source, source);
         debug_assert_eq!(namespace.session_generation, session_generation);
         namespace.global_ids.insert(local_id, global_id);
         global_id
+    }
+
+    /// Give one opaque Reader link token a stable local AccessKit ID for the
+    /// life of its tile session. This map intentionally retains disappeared
+    /// links until the session is replaced, so a queued action cannot acquire
+    /// a different link merely because the next snapshot emitted it earlier.
+    #[cfg(feature = "reader")]
+    fn reader_local_node_id(
+        &mut self,
+        tile: TileId,
+        session_generation: u64,
+        link: &genet_documents::ReaderAccessibilityLink,
+    ) -> AccessNodeId {
+        let reset_namespace = self.child_namespaces.get(&tile).is_some_and(|namespace| {
+            namespace.source != DocumentA11ySource::Reader
+                || namespace.session_generation != session_generation
+        });
+        if reset_namespace {
+            self.child_namespaces.remove(&tile);
+        }
+        let namespace = self.child_namespaces.entry(tile).or_insert_with(|| {
+            DocumentA11yNamespace::new(DocumentA11ySource::Reader, session_generation)
+        });
+        debug_assert_eq!(namespace.source, DocumentA11ySource::Reader);
+        debug_assert_eq!(namespace.session_generation, session_generation);
+        if let Some((_, id)) = namespace
+            .reader_local_ids
+            .iter()
+            .find(|(known, _)| known.identity == link.identity)
+        {
+            return *id;
+        }
+        let id = AccessNodeId(namespace.next_reader_local_node_id);
+        namespace.next_reader_local_node_id = namespace
+            .next_reader_local_node_id
+            .checked_add(1)
+            .expect("Pelt Reader accessibility local node IDs exhausted");
+        namespace.reader_local_ids.push((link.clone(), id));
+        id
     }
 
     fn allocate_child_id(&mut self, shell_ids: &HashSet<AccessNodeId>) -> AccessNodeId {
@@ -1225,14 +1401,17 @@ impl WorkspaceAccessibility {
         }
     }
 
-    fn clear_stale_livery_focus(
+    fn clear_stale_document_focus(
         &mut self,
         actions: &HashMap<AccessNodeId, WorkspaceA11yActionTarget>,
     ) {
-        let Some(WorkspaceA11yFocus::Livery(id)) = self.focus.as_ref() else {
+        let Some(WorkspaceA11yFocus::Document(id)) = self.focus.as_ref() else {
             return;
         };
-        if !matches!(actions.get(id), Some(WorkspaceA11yActionTarget::Livery(_))) {
+        if !actions
+            .get(id)
+            .is_some_and(WorkspaceA11yActionTarget::is_document)
+        {
             self.focus = None;
         }
     }
@@ -1458,7 +1637,7 @@ impl WorkspaceApp {
     fn livery_accessibility_children(
         &self,
         projection: &FrisketA11yProjection,
-    ) -> (HashMap<TileId, u64>, Vec<LiveryA11yChild>) {
+    ) -> (HashMap<TileId, DocumentA11ySession>, Vec<LiveryA11yChild>) {
         let live_sessions = self
             .workspace
             .tree()
@@ -1469,7 +1648,13 @@ impl WorkspaceApp {
                 controller
                     .session_as_any_ref()
                     .is::<genet_documents::LiveryDocumentSession>()
-                    .then_some((tile.id, controller.session_generation()))
+                    .then_some((
+                        tile.id,
+                        DocumentA11ySession {
+                            source: DocumentA11ySource::Livery,
+                            generation: controller.session_generation(),
+                        },
+                    ))
             })
             .collect::<HashMap<_, _>>();
         let mut children = Vec::new();
@@ -1536,6 +1721,90 @@ impl WorkspaceApp {
         (live_sessions, children)
     }
 
+    /// Gather Reader's independently retained partial snapshot. Reader does
+    /// not publish an AccessKit tree or a generic DocumentSession contract:
+    /// its visible logical links are adapted here, where Pelt owns the one
+    /// platform tree and tile/session namespace.
+    #[cfg(feature = "reader")]
+    fn reader_accessibility_children(
+        &mut self,
+        projection: &FrisketA11yProjection,
+    ) -> (HashMap<TileId, DocumentA11ySession>, Vec<ReaderA11yChild>) {
+        let live_sessions = self
+            .workspace
+            .tree()
+            .tiles()
+            .into_iter()
+            .filter_map(|tile| {
+                let controller = self.workspace.controller(tile.id)?;
+                controller
+                    .session_as_any_ref()
+                    .is::<genet_documents::ReaderDocumentSession>()
+                    .then_some((
+                        tile.id,
+                        DocumentA11ySession {
+                            source: DocumentA11ySource::Reader,
+                            generation: controller.session_generation(),
+                        },
+                    ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut children = Vec::new();
+        for (&tile, &aperture) in &projection.content_nodes {
+            let Some((session_generation, snapshot, content)) = (|| {
+                let controller = self.workspace.controller(tile)?;
+                let session = controller
+                    .session_as_any_ref()
+                    .downcast_ref::<genet_documents::ReaderDocumentSession>()?;
+                let snapshot = session.accessibility_snapshot()?;
+                let content = self.workspace.content_rect(tile)?;
+                Some((controller.session_generation(), snapshot, content))
+            })() else {
+                continue;
+            };
+
+            let root = AccessNodeId(1);
+            let mut root_node = AccessNode::new(Role::Document);
+            root_node.set_label(
+                snapshot
+                    .root_title
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| "Reader document".to_owned()),
+            );
+            let mut nodes = Vec::new();
+            let mut links = HashMap::new();
+            let mut child_ids = Vec::new();
+
+            for link in snapshot.links {
+                let Some(bounds) = reader_link_bounds(&link.rects) else {
+                    continue;
+                };
+                let local_id =
+                    self.accessibility
+                        .reader_local_node_id(tile, session_generation, &link);
+                let mut node = AccessNode::new(Role::Link);
+                node.set_label(link.label.clone());
+                node.set_bounds(bounds);
+                node.add_action(Action::Focus);
+                child_ids.push(local_id);
+                links.insert(local_id, link);
+                nodes.push((local_id, node));
+            }
+            root_node.set_children(child_ids);
+            nodes.insert(0, (root, root_node));
+            children.push(ReaderA11yChild {
+                tile,
+                session_generation,
+                aperture,
+                root,
+                nodes,
+                transform: Affine::translate((f64::from(content.x), f64::from(content.y))),
+                links,
+            });
+        }
+        (live_sessions, children)
+    }
+
     /// Merge Livery's local retained trees into Pelt's one-tree platform
     /// bridge. The current bridge cannot preserve AccessKit graft tree IDs on
     /// actions, so Pelt flattens only this supported lane with fresh IDs.
@@ -1547,8 +1816,19 @@ impl WorkspaceApp {
             .ok_or_else(|| {
                 "Frisket has no completed retained layout for accessibility".to_owned()
             })?;
-        let (live_sessions, children) = self.livery_accessibility_children(&projection);
-        self.accessibility.retain_livery_namespaces(&live_sessions);
+        let (livery_sessions, livery_children) = self.livery_accessibility_children(&projection);
+        #[cfg(feature = "reader")]
+        let (live_sessions, reader_children) = {
+            let mut live_sessions = livery_sessions;
+            let (reader_sessions, reader_children) =
+                self.reader_accessibility_children(&projection);
+            live_sessions.extend(reader_sessions);
+            (live_sessions, reader_children)
+        };
+        #[cfg(not(feature = "reader"))]
+        let live_sessions = livery_sessions;
+        self.accessibility
+            .retain_document_namespaces(&live_sessions);
 
         let shell_ids = projection
             .tree
@@ -1572,7 +1852,7 @@ impl WorkspaceApp {
             .map(|(id, node)| (id, WorkspaceA11yActionTarget::Frisket(node)))
             .collect::<HashMap<_, _>>();
 
-        for child in children {
+        for child in livery_children {
             let LiveryA11yChild {
                 tile,
                 session_generation,
@@ -1589,6 +1869,7 @@ impl WorkspaceApp {
             for (local_id, _) in &child_tree.nodes {
                 let global_id = self.accessibility.child_global_id(
                     tile,
+                    DocumentA11ySource::Livery,
                     session_generation,
                     *local_id,
                     &shell_ids,
@@ -1678,7 +1959,74 @@ impl WorkspaceApp {
                 tree.nodes.push((global_id, node));
             }
         }
-        self.accessibility.clear_stale_livery_focus(&actions);
+        #[cfg(feature = "reader")]
+        for child in reader_children {
+            let ReaderA11yChild {
+                tile,
+                session_generation,
+                aperture,
+                root: local_root,
+                nodes: child_nodes,
+                transform,
+                links,
+            } = child;
+            let mut child_ids = HashMap::new();
+            for (local_id, _) in &child_nodes {
+                let global_id = self.accessibility.child_global_id(
+                    tile,
+                    DocumentA11ySource::Reader,
+                    session_generation,
+                    *local_id,
+                    &shell_ids,
+                );
+                child_ids.insert(*local_id, global_id);
+            }
+            let Some(&child_root) = child_ids.get(&local_root) else {
+                continue;
+            };
+            let Some((_, aperture)) = tree.nodes.iter_mut().find(|(id, _)| *id == aperture) else {
+                continue;
+            };
+            aperture.set_children([child_root]);
+
+            for (local_id, mut node) in child_nodes {
+                let global_id = child_ids
+                    .get(&local_id)
+                    .copied()
+                    .expect("all Reader nodes receive a Pelt accessibility ID");
+                let descendants = node
+                    .children()
+                    .iter()
+                    .map(|local_id| {
+                        child_ids
+                            .get(local_id)
+                            .copied()
+                            .expect("Reader child tree references only its own nodes")
+                    })
+                    .collect::<Vec<_>>();
+                node.set_children(descendants);
+                if local_id == local_root {
+                    node.set_transform(transform);
+                }
+                if let Some(link) = links.get(&local_id) {
+                    let focus_enabled = node.supports_action(Action::Focus);
+                    if focus_enabled {
+                        actions.insert(
+                            global_id,
+                            WorkspaceA11yActionTarget::Reader(ReaderA11yAction {
+                                tile,
+                                session_generation,
+                                local_node: local_id,
+                                link: link.clone(),
+                                focus_enabled,
+                            }),
+                        );
+                    }
+                }
+                tree.nodes.push((global_id, node));
+            }
+        }
+        self.accessibility.clear_stale_document_focus(&actions);
         Ok(WorkspaceA11yProjection {
             tree,
             root,
@@ -1714,7 +2062,8 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::AccessibilityEdit
                     | WorkspaceReceipt::AccessibilityScroll
                     | WorkspaceReceipt::AccessibilityClick
-                    | WorkspaceReceipt::AccessibilityInput,
+                    | WorkspaceReceipt::AccessibilityInput
+                    | WorkspaceReceipt::ReaderAccessibility,
             )
         ) && self.accessibility.status() != BridgeStatus::Installed
         {
@@ -1808,6 +2157,73 @@ impl WorkspaceApp {
         )
     }
 
+    #[cfg(feature = "reader")]
+    fn current_reader_action(
+        &mut self,
+        global_node: AccessNodeId,
+        target: &ReaderA11yAction,
+        action: Action,
+    ) -> bool {
+        let Ok(projection) = self.workspace_accessibility_projection() else {
+            return false;
+        };
+        matches!(
+            projection.actions.get(&global_node),
+            Some(WorkspaceA11yActionTarget::Reader(current))
+                if current.tile == target.tile
+                    && current.session_generation == target.session_generation
+                    && current.local_node == target.local_node
+                    && current.link.identity == target.link.identity
+                    && match action {
+                        Action::Focus => current.focus_enabled,
+                        _ => false,
+                    }
+        )
+    }
+
+    /// Send one accessibility-validated semantic activation through exactly
+    /// the physical primary-button route that ordinary content uses. Callers
+    /// provide a freshly revalidated point, but Pelt retains tile, session,
+    /// content-hole, and capture authority across both transitions.
+    fn route_accessibility_pointer_click(
+        &mut self,
+        tile: TileId,
+        session_generation: u64,
+        content_rect: WorkspaceRect,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        self.clear_chrome_address();
+        self.clear_chrome_engine_menu();
+        self.clear_chrome_appearance();
+        let pressed = self.workspace.input(SessionInput::PointerButton {
+            x,
+            y,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Pressed,
+            modifiers: self.modifiers,
+        });
+        let mut redraw = pressed.redraw;
+        let press_handled = pressed.handled;
+        self.apply_effect(pressed);
+        if !press_handled
+            || self.workspace.document_session_generation(tile) != Some(session_generation)
+            || self.workspace.content_rect(tile) != Some(content_rect)
+        {
+            return redraw;
+        }
+        let released = self.workspace.input(SessionInput::PointerButton {
+            x,
+            y,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Released,
+            modifiers: self.modifiers,
+        });
+        redraw |= released.redraw;
+        self.apply_effect(released);
+        redraw
+    }
+
     fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
         let Some(target) = self.accessibility.action_for(request.target_node) else {
             return false;
@@ -1865,7 +2281,7 @@ impl WorkspaceApp {
                     == Some(target.session_generation))
             .then(|| {
                 self.accessibility
-                    .set_focus(WorkspaceA11yFocus::Livery(request.target_node))
+                    .set_focus(WorkspaceA11yFocus::Document(request.target_node))
             })
             .unwrap_or(false),
             (Action::Click, WorkspaceA11yActionTarget::Livery(target)) => {
@@ -1883,37 +2299,24 @@ impl WorkspaceApp {
                 let Some((x, y)) = self.current_livery_accessibility_click_point(target) else {
                     return false;
                 };
-                self.clear_chrome_address();
-                self.clear_chrome_engine_menu();
-                self.clear_chrome_appearance();
-                let pressed = self.workspace.input(SessionInput::PointerButton {
+                self.route_accessibility_pointer_click(
+                    target.tile,
+                    target.session_generation,
+                    target.content_rect,
                     x,
                     y,
-                    button: SessionPointerButton::Primary,
-                    state: SessionButtonState::Pressed,
-                    modifiers: self.modifiers,
-                });
-                let mut redraw = pressed.redraw;
-                let press_handled = pressed.handled;
-                self.apply_effect(pressed);
-                if !press_handled
-                    || self.workspace.document_session_generation(target.tile)
-                        != Some(target.session_generation)
-                    || self.workspace.content_rect(target.tile) != Some(target.content_rect)
-                {
-                    return redraw;
-                }
-                let released = self.workspace.input(SessionInput::PointerButton {
-                    x,
-                    y,
-                    button: SessionPointerButton::Primary,
-                    state: SessionButtonState::Released,
-                    modifiers: self.modifiers,
-                });
-                redraw |= released.redraw;
-                self.apply_effect(released);
-                redraw
+                )
             },
+            #[cfg(feature = "reader")]
+            (Action::Focus, WorkspaceA11yActionTarget::Reader(target)) => (target.focus_enabled
+                && self.current_reader_action(request.target_node, &target, Action::Focus)
+                && self.workspace.document_session_generation(target.tile)
+                    == Some(target.session_generation))
+            .then(|| {
+                self.accessibility
+                    .set_focus(WorkspaceA11yFocus::Document(request.target_node))
+            })
+            .unwrap_or(false),
             (Action::SetValue, WorkspaceA11yActionTarget::Livery(target)) => {
                 if self.workspace.document_session_generation(target.tile)
                     != Some(target.session_generation)
@@ -2663,6 +3066,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
+                        | WorkspaceReceipt::ReaderAccessibility
                         | WorkspaceReceipt::TabardPreview
                         | WorkspaceReceipt::TabardReaderPreview
                 )
@@ -2892,6 +3296,7 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
+                | WorkspaceReceipt::ReaderAccessibility
                 | WorkspaceReceipt::TabardPreview
                 | WorkspaceReceipt::TabardReaderPreview,
             ) => self.workspace_receipt_outcome.is_some(),
@@ -2955,6 +3360,16 @@ impl WorkspaceApp {
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
+            WorkspaceReceipt::ReaderAccessibility => {
+                #[cfg(feature = "reader")]
+                {
+                    self.drive_reader_accessibility_workspace_receipt_step()
+                }
+                #[cfg(not(feature = "reader"))]
+                {
+                    Err("reader-accessibility receipt needs the Reader feature".to_owned())
+                }
+            },
             WorkspaceReceipt::TabardPreview => self.drive_tabard_preview_workspace_receipt_step(),
             WorkspaceReceipt::TabardReaderPreview => {
                 self.drive_tabard_reader_preview_workspace_receipt_step()
@@ -2978,6 +3393,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
+                    | WorkspaceReceipt::ReaderAccessibility
                     | WorkspaceReceipt::TabardPreview
                     | WorkspaceReceipt::TabardReaderPreview
             )
@@ -4211,6 +4627,152 @@ impl WorkspaceApp {
         }
     }
 
+    /// Prove the bounded Reader accessibility contract without pretending that
+    /// Reader can fetch a link destination from an accessibility action. The
+    /// existing navigation route must receive a new held body from the host,
+    /// so this receipt keeps Reader link activation virtual until that source
+    /// handoff has its own evidence.
+    #[cfg(feature = "reader")]
+    fn drive_reader_accessibility_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let first_tile = TileId(1);
+        let sibling_tile = TileId(2);
+        let label = "Continue through the retained article source";
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 2)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "Reader accessibility receipt has no installed platform bridge".to_owned(),
+                    );
+                }
+                let tree = self.prepare_accessibility_tree()?;
+                let first_link = match reader_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    first_tile,
+                    label,
+                    Role::Link,
+                ) {
+                    Ok(link) => link,
+                    // The first receipt render deliberately runs before
+                    // `workspace.frame`; wait for Reader's completed frame
+                    // rather than deriving semantics early.
+                    Err(_) => return Ok(None),
+                };
+                let sibling_link = reader_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    sibling_tile,
+                    label,
+                    Role::Link,
+                )?;
+                if first_link == sibling_link {
+                    return Err(
+                        "Reader accessibility receipt aliased equal link-local IDs across tiles"
+                            .to_owned(),
+                    );
+                }
+                for link in [first_link, sibling_link] {
+                    let node = tree
+                        .nodes
+                        .iter()
+                        .find(|(candidate, _)| *candidate == link)
+                        .map(|(_, node)| node)
+                        .ok_or("Reader accessibility receipt lost its retained link node")?;
+                    if !node.supports_action(Action::Focus)
+                        || node.supports_action(Action::Click)
+                        || node.supports_action(Action::SetValue)
+                    {
+                        return Err(
+                            "Reader accessibility receipt advertised navigation or editing before host source handoff"
+                                .to_owned(),
+                        );
+                    }
+                }
+                for (tile, link) in [(first_tile, first_link), (sibling_tile, sibling_link)] {
+                    let Some(WorkspaceA11yActionTarget::Reader(action)) =
+                        self.accessibility.action_for(link)
+                    else {
+                        return Err(format!(
+                            "Reader accessibility receipt has no Reader action for tile {}",
+                            tile.0
+                        ));
+                    };
+                    if action.tile != tile || !action.focus_enabled {
+                        return Err(format!(
+                            "Reader accessibility receipt misrouted virtual Focus for tile {}",
+                            tile.0
+                        ));
+                    }
+                }
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Focus,
+                    target_node: first_link,
+                    data: None,
+                }) {
+                    return Err(
+                        "Reader accessibility receipt could not apply its virtual Focus action"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = 1;
+                Ok(None)
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let first_link = reader_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    first_tile,
+                    label,
+                    Role::Link,
+                )?;
+                let sibling_link = reader_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    sibling_tile,
+                    label,
+                    Role::Link,
+                )?;
+                if self.accessibility.focus != Some(WorkspaceA11yFocus::Document(first_link)) {
+                    return Err(
+                        "Reader accessibility receipt did not retain virtual Focus on its first link"
+                            .to_owned(),
+                    );
+                }
+                if first_link == sibling_link || self.workspace.has_active_pointer_capture() {
+                    return Err(
+                        "Reader accessibility receipt crossed tile namespaces or entered pointer capture"
+                            .to_owned(),
+                    );
+                }
+                for tile in [first_tile, sibling_tile] {
+                    let controller = self.workspace.controller(tile).ok_or_else(|| {
+                        format!("Reader accessibility receipt lost tile {}", tile.0)
+                    })?;
+                    let route = self.workspace.route(tile).ok_or_else(|| {
+                        format!("Reader accessibility receipt lost route {}", tile.0)
+                    })?;
+                    if route.selected_engine() != inker::routing::ENGINE_GENET_READER
+                        || !controller
+                            .session_as_any_ref()
+                            .is::<genet_documents::ReaderDocumentSession>()
+                    {
+                        return Err(format!(
+                            "Reader accessibility receipt replaced or rerouted tile {} after virtual Focus",
+                            tile.0
+                        ));
+                    }
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                Ok(Some(READER_ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned()))
+            },
+            _ => Ok(Some(READER_ACCESSIBILITY_WORKSPACE_ASSERTION.to_owned())),
+        }
+    }
+
     fn drive_tabard_reader_preview_workspace_receipt_step(
         &mut self,
     ) -> Result<Option<String>, String> {
@@ -4876,7 +5438,7 @@ impl WorkspaceApp {
                     action: Action::Focus,
                     target_node: link,
                     data: None,
-                }) || self.accessibility.focus != Some(WorkspaceA11yFocus::Livery(link))
+                }) || self.accessibility.focus != Some(WorkspaceA11yFocus::Document(link))
                     || address != self.config.urls[0]
                 {
                     return Err(
@@ -6360,6 +6922,33 @@ fn livery_a11y_node_for_tile(
         })
 }
 
+#[cfg(feature = "reader")]
+fn reader_a11y_node_for_tile(
+    tree: &TreeUpdate,
+    accessibility: &WorkspaceAccessibility,
+    tile: TileId,
+    label: &str,
+    role: Role,
+) -> Result<AccessNodeId, String> {
+    tree.nodes
+        .iter()
+        .find(|(id, node)| {
+            node.role() == role
+                && node.label() == Some(label)
+                && matches!(
+                    accessibility.action_for(*id),
+                    Some(WorkspaceA11yActionTarget::Reader(target)) if target.tile == tile
+                )
+        })
+        .map(|(id, _)| *id)
+        .ok_or_else(|| {
+            format!(
+                "accessibility tree has no Reader {role:?} named {label:?} in tile {}",
+                tile.0
+            )
+        })
+}
+
 fn discard_unimported_surface_frame(frame: SurfaceFrame) {
     #[cfg(target_os = "windows")]
     if let NativeTextureHandle::D3d12Shared {
@@ -7035,6 +7624,21 @@ mod tests {
         assert_eq!(reader.size, Some((960, 640)));
         assert_eq!(reader.frames, Some(3));
         assert!(WorkspaceReceipt::Reader.keeps_chrome());
+        let reader_accessibility = WorkspaceViewerConfig::new(
+            vec!["reader.html".to_owned(), "reader.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(
+            WorkspaceReceipt::ReaderAccessibility,
+            "reader-accessibility.png",
+        );
+        assert_eq!(reader_accessibility.size, Some((960, 640)));
+        assert_eq!(reader_accessibility.frames, Some(3));
+        assert!(WorkspaceReceipt::ReaderAccessibility.keeps_chrome());
+        assert_eq!(
+            WorkspaceReceipt::ReaderAccessibility.id(),
+            "reader-accessibility"
+        );
 
         let accessibility_children =
             WorkspaceViewerConfig::new(vec!["children.html".to_owned()], WindowingMode::Headed)
@@ -8023,16 +8627,298 @@ mod tests {
         let mut accessibility = WorkspaceAccessibility::new();
         let shell_ids = HashSet::from([AccessNodeId(1_u64 << 63)]);
         let local = AccessNodeId(41);
-        let first = accessibility.child_global_id(TileId(1), 1, local, &shell_ids);
-        let same_session = accessibility.child_global_id(TileId(1), 1, local, &shell_ids);
-        let sibling = accessibility.child_global_id(TileId(2), 1, local, &shell_ids);
-        let replacement = accessibility.child_global_id(TileId(1), 2, local, &shell_ids);
+        let first = accessibility.child_global_id(
+            TileId(1),
+            DocumentA11ySource::Livery,
+            1,
+            local,
+            &shell_ids,
+        );
+        let same_session = accessibility.child_global_id(
+            TileId(1),
+            DocumentA11ySource::Livery,
+            1,
+            local,
+            &shell_ids,
+        );
+        let sibling = accessibility.child_global_id(
+            TileId(2),
+            DocumentA11ySource::Livery,
+            1,
+            local,
+            &shell_ids,
+        );
+        let replacement = accessibility.child_global_id(
+            TileId(1),
+            DocumentA11ySource::Livery,
+            2,
+            local,
+            &shell_ids,
+        );
+        #[cfg(feature = "reader")]
+        let different_engine_same_generation = accessibility.child_global_id(
+            TileId(1),
+            DocumentA11ySource::Reader,
+            2,
+            local,
+            &shell_ids,
+        );
 
         assert_eq!(first, same_session);
         assert_ne!(first, sibling);
         assert_ne!(first, replacement);
+        #[cfg(feature = "reader")]
+        assert_ne!(
+            replacement, different_engine_same_generation,
+            "a replacement controller may restart its generation, so source identity also resets the namespace"
+        );
         assert!(!shell_ids.contains(&first));
         assert!(accessibility.child_id_is_reserved(first));
+    }
+
+    #[cfg(feature = "reader")]
+    #[test]
+    fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
+        let article_url = "https://reader.test/p7-reader-accessibility/index.html".to_owned();
+        let response = genet_host_api::ResourceResponse::new(
+            article_url.clone(),
+            READER_ACCESSIBILITY_FIXTURE_SOURCE.as_bytes().to_vec(),
+        )
+        .with_content_type("text/html; charset=utf-8");
+        let fetcher = CountingResourceFetcher {
+            responses: Arc::new(HashMap::from([(article_url.clone(), response.clone())])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let urls = vec![article_url.clone(), article_url.clone()];
+        let tree = tree_from_urls(&urls);
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            reader_test_registries(fetcher, genet_documents::SmolwebTheme::default()),
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("Reader accessibility tree contains only documents");
+                };
+                Ok(held_response_request(response.clone(), address, (960, 640))
+                    .with_engine_override(inker::routing::ENGINE_GENET_READER))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("Reader accessibility fixtures open from their held bodies");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::ReaderAccessibility, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+        // The headed receipt uses its 960x640 physical contract on this
+        // Windows host at 2x. Keep the GPU-free tree proof inside that same
+        // pair of narrow Reader content holes.
+        app.scale_factor = 2.0;
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let (width, height) = app.logical_size();
+            let pane = app
+                .frisket
+                .frame(width, height)
+                .expect("Reader accessibility Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+        fn node(tree: &TreeUpdate, id: AccessNodeId) -> &AccessNode {
+            tree.nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, node)| node)
+                .expect("Reader link remains in the composite tree")
+        }
+
+        compose(&mut app);
+        let initial = app
+            .prepare_accessibility_tree()
+            .expect("initial Reader composite accessibility tree");
+        let first_link = reader_a11y_node_for_tile(
+            &initial,
+            &app.accessibility,
+            TileId(1),
+            "Continue through the retained article source",
+            Role::Link,
+        )
+        .expect("first Reader link");
+        let second_link = reader_a11y_node_for_tile(
+            &initial,
+            &app.accessibility,
+            TileId(2),
+            "Continue through the retained article source",
+            Role::Link,
+        )
+        .expect("second Reader link");
+        assert_ne!(
+            first_link, second_link,
+            "Pelt gives duplicated Reader link-local IDs separate workspace IDs"
+        );
+        let shell = app
+            .frisket
+            .accessibility_projection(None)
+            .expect("Reader accessibility Frisket shell projection");
+        let child_root = |tile, link| {
+            let aperture = *shell
+                .content_nodes
+                .get(&tile)
+                .expect("Reader tile has one Frisket content aperture");
+            let root = initial
+                .nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == aperture)
+                .and_then(|(_, node)| node.children().first().copied())
+                .expect("Reader aperture owns its partial document root");
+            let root_node = initial
+                .nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == root)
+                .map(|(_, node)| node)
+                .expect("Reader partial document root is retained");
+            assert_eq!(root_node.role(), Role::Document);
+            assert!(
+                root_node.children().contains(&link),
+                "Reader link stays below its tile-local document root"
+            );
+            root
+        };
+        assert_ne!(
+            child_root(TileId(1), first_link),
+            child_root(TileId(2), second_link),
+            "Pelt grafts each Reader snapshot below its own Frisket aperture"
+        );
+        for link in [first_link, second_link] {
+            let node = node(&initial, link);
+            assert!(node.supports_action(Action::Focus));
+            assert!(
+                !node.supports_action(Action::Click) && !node.supports_action(Action::SetValue),
+                "Reader exposes only virtual Focus before host source handoff owns navigation"
+            );
+        }
+        let first_action = match app
+            .accessibility
+            .action_for(first_link)
+            .expect("first Reader link has a Pelt action")
+        {
+            WorkspaceA11yActionTarget::Reader(action) => action,
+            WorkspaceA11yActionTarget::Livery(_) | WorkspaceA11yActionTarget::Frisket(_) => {
+                panic!("first Reader link must retain Reader ownership")
+            },
+        };
+        let second_action = match app
+            .accessibility
+            .action_for(second_link)
+            .expect("second Reader link has a Pelt action")
+        {
+            WorkspaceA11yActionTarget::Reader(action) => action,
+            WorkspaceA11yActionTarget::Livery(_) | WorkspaceA11yActionTarget::Frisket(_) => {
+                panic!("second Reader link must retain Reader ownership")
+            },
+        };
+        assert_eq!(first_action.tile, TileId(1));
+        assert_eq!(second_action.tile, TileId(2));
+        assert_eq!(
+            first_action.local_node, second_action.local_node,
+            "the fixture deliberately collides Reader-local IDs across tile sessions"
+        );
+        assert!(first_action.focus_enabled && second_action.focus_enabled);
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Focus,
+            target_node: first_link,
+            data: None,
+        }));
+        assert_eq!(
+            app.accessibility.focus,
+            Some(WorkspaceA11yFocus::Document(first_link)),
+            "Reader Focus remains virtual in Pelt's one-tree bridge"
+        );
+        for tile in [TileId(1), TileId(2)] {
+            let controller = app
+                .workspace
+                .controller(tile)
+                .expect("Reader tile remains live after virtual Focus");
+            assert_eq!(controller.address(), article_url);
+            assert_eq!(controller.session_generation(), 1);
+            assert!(
+                controller
+                    .session_as_any_ref()
+                    .is::<genet_documents::ReaderDocumentSession>(),
+                "virtual Focus does not replace Reader tile {}",
+                tile.0
+            );
+        }
+        assert!(
+            !app.workspace.has_active_pointer_capture(),
+            "virtual Reader Focus does not enter the physical pointer path"
+        );
+
+        assert!(
+            app.workspace
+                .set_route_override(
+                    TileId(1),
+                    Some(inker::routing::ENGINE_GENET_LIVERY.to_owned()),
+                )
+                .expect("held Reader source can reconstruct a Livery session"),
+            "the first route changes from Reader to Livery"
+        );
+        app.frisket.set_tree(app.workspace.tree());
+        let after_replacement = app
+            .prepare_accessibility_tree()
+            .expect("engine-replaced accessibility tree");
+        assert!(
+            app.accessibility.action_for(first_link).is_none(),
+            "an old Reader child ID is removed when the tile's engine source changes"
+        );
+        assert_eq!(
+            app.accessibility.focus, None,
+            "a replaced Reader child cannot retain virtual focus"
+        );
+        assert!(
+            !app.apply_accessibility_request(A11yActionRequest {
+                action: Action::Focus,
+                target_node: first_link,
+                data: None,
+            }),
+            "the stale Reader Focus action is inert after engine replacement"
+        );
+        assert!(
+            app.workspace
+                .controller(TileId(1))
+                .is_some_and(|controller| controller
+                    .session_as_any_ref()
+                    .is::<genet_documents::LiveryDocumentSession>()),
+            "the replaced tile now belongs to Livery"
+        );
+        let sibling = app
+            .workspace
+            .controller(TileId(2))
+            .expect("sibling Reader controller survives replacement");
+        assert_eq!(sibling.address(), article_url);
+        assert_eq!(sibling.session_generation(), 1);
+        assert!(
+            sibling
+                .session_as_any_ref()
+                .is::<genet_documents::ReaderDocumentSession>()
+        );
+        assert_eq!(
+            reader_a11y_node_for_tile(
+                &after_replacement,
+                &app.accessibility,
+                TileId(2),
+                "Continue through the retained article source",
+                Role::Link,
+            )
+            .expect("sibling Reader child stays attached"),
+            second_link,
+            "a sibling Reader namespace survives another tile's source replacement"
+        );
     }
 
     #[test]
@@ -8205,6 +9091,10 @@ mod tests {
             WorkspaceA11yActionTarget::Frisket(_) => {
                 panic!("child link must not use Frisket action routing")
             },
+            #[cfg(feature = "reader")]
+            WorkspaceA11yActionTarget::Reader(_) => {
+                panic!("child link must not use Reader action routing")
+            },
         };
         assert_eq!(action.tile, TileId(1));
         assert_eq!(action.session_generation, 1);
@@ -8248,7 +9138,7 @@ mod tests {
         }));
         assert_eq!(
             app.accessibility.focus,
-            Some(WorkspaceA11yFocus::Livery(link)),
+            Some(WorkspaceA11yFocus::Document(link)),
             "Focus changes only Pelt's virtual child focus"
         );
         assert!(
@@ -8423,6 +9313,10 @@ mod tests {
             WorkspaceA11yActionTarget::Livery(action) => action,
             WorkspaceA11yActionTarget::Frisket(_) => {
                 panic!("second tile link must use Livery routing")
+            },
+            #[cfg(feature = "reader")]
+            WorkspaceA11yActionTarget::Reader(_) => {
+                panic!("second tile link must not use Reader routing")
             },
         };
         assert!(second_action.click_enabled);

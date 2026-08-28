@@ -507,7 +507,7 @@ pub(crate) fn main() {
                         );
                         std::process::exit(2);
                     }
-                    let fixture = reader_fixture_url();
+                    let fixture = reader_accessibility_fixture_url();
                     tile_urls = vec![fixture.clone(), fixture];
                     tile_engine_overrides = vec![
                         (1, inker::routing::ENGINE_GENET_READER.to_owned()),
@@ -1226,11 +1226,11 @@ fn reader_fixture_urls() -> Vec<String> {
         .collect()
 }
 
-fn reader_fixture_url() -> String {
+fn reader_accessibility_fixture_url() -> String {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
         .join("workspace")
-        .join("reader")
+        .join("p7-reader-accessibility")
         .join("index.html")
         .to_string_lossy()
         .into_owned()
@@ -1391,9 +1391,9 @@ mod workspace_receipt_tests {
                 .ends_with("/ports/pelt/examples/workspace/reader/neighbor.html")
         );
         assert!(
-            reader_fixture_url()
+            reader_accessibility_fixture_url()
                 .replace('\\', "/")
-                .ends_with("/ports/pelt/examples/workspace/reader/index.html")
+                .ends_with("/ports/pelt/examples/workspace/p7-reader-accessibility/index.html")
         );
     }
 
