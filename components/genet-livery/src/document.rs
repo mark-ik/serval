@@ -1255,6 +1255,9 @@ where
 
     /// A retained caret rectangle in viewport coordinates.
     pub fn caret_rect(&self, node: D::NodeId, byte: usize) -> Option<TextRect> {
+        if !self.dom.is_live(node) {
+            return None;
+        }
         let frame = self
             .layout
             .as_ref()
@@ -1264,11 +1267,28 @@ where
         })
     }
 
+    /// Resolve a viewport CSS point to a retained shaped-text source and byte
+    /// offset from the last frame. This is a read-only query: it does not
+    /// create or replace the document selection.
+    pub fn text_position_at_point(&self, x: f32, y: f32) -> Option<(D::NodeId, usize)> {
+        let frame = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.fragments.text_frame())?;
+        let position = frame.text_position_at_point(x, y, |source, fragment| {
+            self.viewport_text_rect(source, fragment)
+        })?;
+        self.dom.is_live(position.0).then_some(position)
+    }
+
     /// Retained viewport rectangles for a directed source range.
     pub fn selection_for_range(
         &self,
         range: TextRange<D::NodeId>,
     ) -> Option<TextSelection<D::NodeId>> {
+        if !self.dom.is_live(range.anchor_node) || !self.dom.is_live(range.focus_node) {
+            return None;
+        }
         let frame = self
             .layout
             .as_ref()
@@ -1355,11 +1375,15 @@ where
     /// Recompute the selected text and viewport geometry from the retained
     /// source range.
     pub fn text_selection(&self) -> Option<TextSelection<D::NodeId>> {
+        let range = self.selection_range?;
+        if !self.dom.is_live(range.anchor_node) || !self.dom.is_live(range.focus_node) {
+            return None;
+        }
         let frame = self
             .layout
             .as_ref()
             .and_then(|layout| layout.fragments.text_frame())?;
-        frame.text_selection(self.selection_range?, |source, fragment| {
+        frame.text_selection(range, |source, fragment| {
             self.viewport_text_rect(source, fragment)
         })
     }
@@ -1483,6 +1507,17 @@ where
     }
 
     fn viewport_text_rect(&self, source: D::NodeId, fragment: crate::layout::Fragment) -> TextRect {
+        if !self.dom.is_live(source) {
+            // A retained frame may briefly contain a source removed by a DOM
+            // mutation. Public text queries remain read-only and must treat
+            // that stale source as outside every viewport hit.
+            return TextRect {
+                x: f32::MAX * 0.25,
+                y: f32::MAX * 0.25,
+                width: 0.0,
+                height: 0.0,
+            };
+        }
         let (nested_x, nested_y) = self.ancestor_scroll(source);
         TextRect {
             x: fragment.x - self.scroll.0 - nested_x,
@@ -2194,6 +2229,37 @@ mod tests {
             [fragment] => *fragment,
             fragments => panic!("one table wrapper fragment, got {fragments:?}"),
         }
+    }
+
+    #[test]
+    fn retained_text_position_query_is_frame_backed_and_selection_free() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=target>retained geometry</div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; } #target { width: 120px; height: 24px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        let target = by_id(document.dom(), "target");
+        let source = document
+            .dom()
+            .dom_children(target)
+            .find(|node| document.dom().kind(*node) == NodeKind::Text)
+            .expect("target text source");
+
+        assert!(document.text_position_at_point(0.0, 0.0).is_none());
+        document.frame(160, 120).expect("retained frame");
+        let caret = document.caret_rect(source, 0).expect("retained caret");
+        assert_eq!(
+            document.text_position_at_point(caret.x, caret.y + caret.height * 0.5),
+            Some((source, 0))
+        );
+        assert!(document.text_selection().is_none());
     }
 
     #[test]

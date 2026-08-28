@@ -209,6 +209,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             address: navigation.script_visible_url.clone(),
             focused_node: None,
             editor: None,
+            editor_drag: None,
             active_form: None,
             pressed_submit: None,
             last_error: None,
@@ -232,6 +233,7 @@ pub struct LiveryDocumentSession {
     address: String,
     focused_node: Option<genet_scripted_dom::NodeId>,
     editor: Option<EditableControl>,
+    editor_drag: Option<EditableDrag>,
     active_form: Option<genet_scripted_dom::NodeId>,
     pressed_submit: Option<genet_scripted_dom::NodeId>,
     last_error: Option<String>,
@@ -264,7 +266,26 @@ struct EditableControl {
     kind: EditableKind,
     value: String,
     caret: usize,
+    selection: Option<EditableSelection>,
     composition: Option<String>,
+}
+
+/// A directed range in one shaped source belonging to the active native
+/// editor. This stays separate from Livery's document selection so editor
+/// typing cannot become a page clip.
+#[cfg(feature = "livery")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EditableSelection {
+    source: genet_scripted_dom::NodeId,
+    anchor: usize,
+    focus: usize,
+}
+
+#[cfg(feature = "livery")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EditableDrag {
+    source: genet_scripted_dom::NodeId,
+    anchor: usize,
 }
 
 #[cfg(feature = "livery")]
@@ -305,6 +326,7 @@ impl LiveryDocumentSession {
         editor.value.clear();
         editor.value.push_str(value);
         editor.caret = editor.value.len();
+        editor.selection = None;
         editor.composition = None;
         self.apply_editor();
         true
@@ -451,11 +473,7 @@ impl LiveryDocumentSession {
     /// different value model or need type-specific validation that this
     /// session does not own yet.
     fn accessible_text_kind(&self, node: genet_scripted_dom::NodeId) -> Option<EditableKind> {
-        if self.attribute(node, "disabled").is_some()
-            || self.attribute(node, "readonly").is_some()
-            || self.aria_true(node, "aria-disabled")
-            || self.aria_true(node, "aria-readonly")
-        {
+        if !self.editable_is_writable(node) {
             return None;
         }
         match self.tag(node)? {
@@ -484,7 +502,20 @@ impl LiveryDocumentSession {
         Some((node, self.editable_kind(node)?))
     }
 
+    fn editable_is_writable(&self, node: genet_scripted_dom::NodeId) -> bool {
+        !self.is_disabled_control(node)
+            && self.attribute(node, "readonly").is_none()
+            && !self.aria_true(node, "aria-readonly")
+    }
+
+    fn is_disabled_control(&self, node: genet_scripted_dom::NodeId) -> bool {
+        self.attribute(node, "disabled").is_some() || self.aria_true(node, "aria-disabled")
+    }
+
     fn is_submit_control(&self, node: genet_scripted_dom::NodeId) -> bool {
+        if self.is_disabled_control(node) {
+            return false;
+        }
         match self.tag(node) {
             Some(tag) if tag.eq_ignore_ascii_case("button") => {
                 !self.attribute(node, "type").is_some_and(|kind| {
@@ -529,20 +560,99 @@ impl LiveryDocumentSession {
     }
 
     fn activate_editable(&mut self, node: genet_scripted_dom::NodeId, kind: EditableKind) {
+        self.editor_drag = None;
+        if self.is_disabled_control(node) {
+            self.focused_node = None;
+            self.active_form = None;
+            self.editor = None;
+            return;
+        }
+        self.focused_node = Some(node);
+        if !self.editable_is_writable(node) {
+            self.active_form = None;
+            self.editor = None;
+            return;
+        }
         let value = match kind {
             EditableKind::Input => self.attribute(node, "value").unwrap_or("").to_owned(),
             EditableKind::Textarea => self.text_content(node),
         };
         let caret = value.len();
-        self.focused_node = Some(node);
         self.active_form = self.form_ancestor(node);
         self.editor = Some(EditableControl {
             node,
             kind,
             value,
             caret,
+            selection: None,
             composition: None,
         });
+    }
+
+    fn editor_text_source(
+        &self,
+        node: genet_scripted_dom::NodeId,
+    ) -> Option<genet_scripted_dom::NodeId> {
+        if self.doc.dom().kind(node) == NodeKind::Text {
+            return self.doc.dom().text(node).is_some().then_some(node);
+        }
+        self.doc
+            .dom()
+            .dom_children(node)
+            .find_map(|child| self.editor_text_source(child))
+    }
+
+    fn editor_owns_text_source(
+        &self,
+        editor: genet_scripted_dom::NodeId,
+        source: genet_scripted_dom::NodeId,
+    ) -> bool {
+        self.editable_ancestor(source)
+            .is_some_and(|(owner, _)| owner == editor)
+    }
+
+    fn begin_editor_selection(&mut self, x: f32, y: f32) -> bool {
+        let Some((source, anchor)) = self.doc.text_position_at_point(x, y) else {
+            return false;
+        };
+        let Some(editor_node) = self.editor.as_ref().map(|editor| editor.node) else {
+            return false;
+        };
+        if !self.editor_owns_text_source(editor_node, source) {
+            return false;
+        }
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        editor.caret = anchor;
+        editor.selection = None;
+        self.editor_drag = Some(EditableDrag { source, anchor });
+        true
+    }
+
+    fn extend_editor_selection(&mut self, x: f32, y: f32) -> bool {
+        let Some(drag) = self.editor_drag else {
+            return false;
+        };
+        let Some((source, focus)) = self.doc.text_position_at_point(x, y) else {
+            return false;
+        };
+        let Some(editor_node) = self.editor.as_ref().map(|editor| editor.node) else {
+            return false;
+        };
+        if source != drag.source || !self.editor_owns_text_source(editor_node, source) {
+            return false;
+        }
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        editor.caret = focus;
+        editor.selection = (drag.anchor != focus).then_some(EditableSelection {
+            source,
+            anchor: drag.anchor,
+            focus,
+        });
+        true
     }
 
     /// The click path in CSS space, shared by the boundary's `click_at` and the
@@ -572,10 +682,11 @@ impl LiveryDocumentSession {
             return;
         }
         self.focused_node = self.ancestor_matching(hit, |node, tag| {
-            tag.eq_ignore_ascii_case("button")
-                || tag.eq_ignore_ascii_case("select")
-                || tag.eq_ignore_ascii_case("a") && self.attribute(node, "href").is_some()
-                || self.attribute(node, "tabindex").is_some()
+            !self.is_disabled_control(node)
+                && (tag.eq_ignore_ascii_case("button")
+                    || tag.eq_ignore_ascii_case("select")
+                    || tag.eq_ignore_ascii_case("a") && self.attribute(node, "href").is_some()
+                    || self.attribute(node, "tabindex").is_some())
         });
         self.editor = None;
         self.active_form = self.focused_node.and_then(|node| self.form_ancestor(node));
@@ -640,8 +751,15 @@ impl LiveryDocumentSession {
         let Some(editor) = self.editor.as_mut() else {
             return false;
         };
-        editor.value.insert_str(editor.caret, text);
-        editor.caret += text.len();
+        if let Some(selection) = editor.selection.take() {
+            let start = selection.anchor.min(selection.focus);
+            let end = selection.anchor.max(selection.focus);
+            editor.value.replace_range(start..end, text);
+            editor.caret = start + text.len();
+        } else {
+            editor.value.insert_str(editor.caret, text);
+            editor.caret += text.len();
+        }
         editor.composition = None;
         self.apply_editor();
         true
@@ -651,6 +769,14 @@ impl LiveryDocumentSession {
         let Some(editor) = self.editor.as_mut() else {
             return false;
         };
+        if let Some(selection) = editor.selection.take() {
+            let start = selection.anchor.min(selection.focus);
+            let end = selection.anchor.max(selection.focus);
+            editor.value.replace_range(start..end, "");
+            editor.caret = start;
+            self.apply_editor();
+            return true;
+        }
         if editor.caret == 0 {
             return true;
         }
@@ -668,6 +794,14 @@ impl LiveryDocumentSession {
         let Some(editor) = self.editor.as_mut() else {
             return false;
         };
+        if let Some(selection) = editor.selection.take() {
+            let start = selection.anchor.min(selection.focus);
+            let end = selection.anchor.max(selection.focus);
+            editor.value.replace_range(start..end, "");
+            editor.caret = start;
+            self.apply_editor();
+            return true;
+        }
         if editor.caret == editor.value.len() {
             return true;
         }
@@ -684,6 +818,7 @@ impl LiveryDocumentSession {
         let Some(editor) = self.editor.as_mut() else {
             return false;
         };
+        editor.selection = None;
         editor.caret = if direction < 0 {
             editor.value[..editor.caret]
                 .grapheme_indices(true)
@@ -706,6 +841,7 @@ impl LiveryDocumentSession {
         out: &mut Vec<genet_scripted_dom::NodeId>,
     ) {
         if let Some(tag) = self.tag(node)
+            && !self.is_disabled_control(node)
             && (matches!(
                 tag.to_ascii_lowercase().as_str(),
                 "button" | "input" | "select" | "textarea"
@@ -989,6 +1125,59 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                 }
             }
         }
+        if let Some(editor) = self.editor.as_ref() {
+            let selection = editor.selection.and_then(|selection| {
+                self.doc.selection_for_range(genet_livery::TextRange {
+                    anchor_node: selection.source,
+                    anchor_offset: selection.anchor,
+                    focus_node: selection.source,
+                    focus_offset: selection.focus,
+                })
+            });
+            if let Some(selection) = selection {
+                for rect in selection.rects {
+                    let x0 = self.to_presentation_length(rect.x).max(0.0);
+                    let y0 = self.to_presentation_length(rect.y).max(0.0);
+                    let x1 = self
+                        .to_presentation_length(rect.x + rect.width)
+                        .min(width as f32);
+                    let y1 = self
+                        .to_presentation_length(rect.y + rect.height)
+                        .min(height as f32);
+                    if x0 < x1 && y0 < y1 {
+                        scene.push_rect(x0, y0, x1, y1, [0.18, 0.46, 0.95, 0.34]);
+                    }
+                }
+            } else {
+                let caret = self
+                    .editor_text_source(editor.node)
+                    .and_then(|source| self.doc.caret_rect(source, editor.caret))
+                    .or_else(|| {
+                        (editor.kind == EditableKind::Textarea && editor.value.is_empty())
+                            .then(|| self.doc.fragment_rect(editor.node))
+                            .flatten()
+                            .map(|[x, y, _width, height]| genet_livery::TextRect {
+                                x: x + 1.0,
+                                y: y + 1.0,
+                                width: 1.0,
+                                height: (height - 2.0).clamp(1.0, 16.0),
+                            })
+                    });
+                if let Some(caret) = caret {
+                    let x0 = self.to_presentation_length(caret.x).max(0.0);
+                    let y0 = self.to_presentation_length(caret.y).max(0.0);
+                    let x1 = self
+                        .to_presentation_length(caret.x + caret.width)
+                        .min(width as f32);
+                    let y1 = self
+                        .to_presentation_length(caret.y + caret.height)
+                        .min(height as f32);
+                    if x0 < x1 && y0 < y1 {
+                        scene.push_rect(x0, y0, x1, y1, [0.18, 0.46, 0.95, 0.85]);
+                    }
+                }
+            }
+        }
         scene
     }
 
@@ -1034,11 +1223,20 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
 
     fn pointer_down(&mut self, x: f32, y: f32) -> SessionClick {
         let (x, y) = self.to_css_point(x, y);
+        self.editor_drag = None;
         self.pressed_submit = self
             .doc
             .hit_test(x, y)
             .and_then(|node| self.submit_ancestor(node));
         self.activate_hit(x, y);
+        if self.editor.is_some() {
+            self.doc.select_text_range(None);
+            if self.begin_editor_selection(x, y) {
+                return SessionClick::Handled;
+            }
+            let _ = self.doc.click_at(x, y);
+            return SessionClick::Handled;
+        }
         if self.doc.begin_text_selection(x, y) {
             SessionClick::Handled
         } else if self.editor.is_some() {
@@ -1056,11 +1254,20 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
 
     fn pointer_move(&mut self, x: f32, y: f32) -> bool {
         let (x, y) = self.to_css_point(x, y);
+        if self.editor_drag.is_some() {
+            return self.extend_editor_selection(x, y);
+        }
         self.doc.extend_text_selection(x, y)
     }
 
     fn pointer_up(&mut self, x: f32, y: f32) -> SessionClick {
         let (x, y) = self.to_css_point(x, y);
+        if self.editor_drag.is_some() {
+            let _ = self.extend_editor_selection(x, y);
+            self.editor_drag = None;
+            self.pressed_submit = None;
+            return SessionClick::Handled;
+        }
         if self.doc.finish_text_selection(x, y) {
             self.pressed_submit = None;
             SessionClick::Handled
@@ -1109,10 +1316,12 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
             SessionKey::ArrowRight if self.move_caret(1) => SessionEffect::Handled,
             SessionKey::Home if let Some(editor) = self.editor.as_mut() => {
                 editor.caret = 0;
+                editor.selection = None;
                 SessionEffect::Handled
             },
             SessionKey::End if let Some(editor) = self.editor.as_mut() => {
                 editor.caret = editor.value.len();
+                editor.selection = None;
                 SessionEffect::Handled
             },
             SessionKey::Enter => {
@@ -1182,6 +1391,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
 
     fn focus_input(&mut self, focused: bool) {
         if !focused {
+            self.editor_drag = None;
             self.focused_node = None;
             self.editor = None;
             self.active_form = None;
@@ -1206,6 +1416,12 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
             }),
         };
         let node = focusable[next];
+        if self.is_disabled_control(node) {
+            self.focused_node = None;
+            self.editor = None;
+            self.active_form = None;
+            return false;
+        }
         let Some([x, y, width, height]) = self.doc.fragment_rect(node) else {
             return false;
         };
@@ -1221,6 +1437,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     }
 
     fn cancel_input(&mut self) -> bool {
+        self.editor_drag = None;
         let Some(editor) = self.editor.as_mut() else {
             return false;
         };
@@ -2973,18 +3190,19 @@ mod tests {
 
     #[cfg(feature = "livery")]
     #[test]
-    fn livery_session_rejects_inaccessible_native_text_value_replacements() {
+    fn livery_session_rejects_inaccessible_native_text_value_replacements_and_text_edits() {
         let engine = LiverySessionEngine::new(NoFetch);
         let request = SessionSpawnRequest::new("fixtures/form/index.html")
             .with_body(
-                r#"<html><body>
+                r#"<html><body><form action="result.html">
                     <input id="disabled" disabled value="locked">
                     <textarea id="readonly" readonly>fixed</textarea>
                     <input id="aria-disabled" aria-disabled=" TRUE " value="aria locked">
                     <textarea id="aria-readonly" aria-readonly="true">aria fixed</textarea>
                     <input id="checkbox" type="checkbox" value="on">
                     <input id="password" type="password" value="secret">
-                </body></html>"#,
+                    <button id="disabled-submit" disabled tabindex="0" type="submit">send</button>
+                </form></body></html>"#,
             )
             .with_viewport(400, 240);
         let mut boxed = engine.spawn(&request).expect("control session spawns");
@@ -2998,6 +3216,7 @@ mod tests {
         let aria_readonly = livery_node_with_id(session, "aria-readonly");
         let checkbox = livery_node_with_id(session, "checkbox");
         let password = livery_node_with_id(session, "password");
+        let disabled_submit = livery_node_with_id(session, "disabled-submit");
         let disabled_id = session.document().dom().opaque_id(disabled);
         let readonly_id = session.document().dom().opaque_id(readonly);
         let aria_disabled_id = session.document().dom().opaque_id(aria_disabled);
@@ -3027,6 +3246,77 @@ mod tests {
         assert!(
             session.editor.is_none(),
             "rejected controls do not take edit focus"
+        );
+
+        let _scene = session.frame(400, 240);
+        for node in [disabled, readonly, aria_disabled, aria_readonly] {
+            let [x, y, width, height] = session
+                .document()
+                .fragment_rect(node)
+                .expect("native control has retained geometry");
+            let _ = session.click_at(x + width * 0.5, y + height * 0.5);
+            assert!(
+                !session.text_input("changed"),
+                "disabled and readonly controls reject ordinary text input"
+            );
+            assert_eq!(
+                session.key_input(
+                    SessionKey::Enter,
+                    SessionButtonState::Pressed,
+                    SessionModifiers::default(),
+                    false,
+                ),
+                SessionEffect::Ignored,
+                "disabled and readonly controls do not retain a form submit target"
+            );
+        }
+        assert_eq!(session.attribute(disabled, "value"), Some("locked"));
+        assert_eq!(session.text_content(readonly), "fixed");
+        assert_eq!(
+            session.attribute(aria_disabled, "value"),
+            Some("aria locked")
+        );
+        assert_eq!(session.text_content(aria_readonly), "aria fixed");
+        let [x, y, width, height] = session
+            .document()
+            .fragment_rect(disabled_submit)
+            .expect("disabled submit has retained geometry");
+        assert!(
+            !matches!(
+                session.click_at(x + width * 0.5, y + height * 0.5),
+                SessionClick::Submit(_)
+            ),
+            "a disabled submit control is inert under physical click"
+        );
+        assert_eq!(
+            session.key_input(
+                SessionKey::Enter,
+                SessionButtonState::Pressed,
+                SessionModifiers::default(),
+                false,
+            ),
+            SessionEffect::Ignored,
+            "a disabled submit control cannot retain an Enter submit target"
+        );
+        let mut focusable = Vec::new();
+        session.collect_focusable(session.document().dom().document(), &mut focusable);
+        assert!(
+            !focusable.contains(&disabled_submit),
+            "a disabled tabindex submit control stays out of sequential focus"
+        );
+        session.focused_node = None;
+        session.active_form = None;
+        assert!(session.focus_move(SessionFocusDirection::Forward));
+        assert_ne!(session.focused_node, Some(disabled_submit));
+        assert_eq!(
+            session.key_input(
+                SessionKey::Enter,
+                SessionButtonState::Pressed,
+                SessionModifiers::default(),
+                false,
+            ),
+            SessionEffect::Ignored,
+            "Tab cannot leave a disabled submit control armed for Enter"
         );
     }
 
@@ -3087,6 +3377,157 @@ mod tests {
             session.accessible_pointer_target(u64::MAX),
             None,
             "foreign local ids are inert"
+        );
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_drag_selects_a_textarea_without_creating_a_page_clip() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("fixtures/form/index.html")
+            .with_body(
+                r#"<html><head><style>
+                    html, body { margin: 0; padding: 0; }
+                    textarea { display: block; width: 220px; min-height: 40px; }
+                </style></head><body><p>page selection</p><form>
+                    <textarea id="note" name="note">cedar</textarea>
+                </form></body></html>"#,
+            )
+            .with_viewport(400, 160);
+        let mut boxed = engine.spawn(&request).expect("form session spawns");
+        let session = boxed
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("Livery engine retains its concrete session");
+        let initial = session.frame(400, 160);
+        let page = session
+            .text_target("page selection")
+            .expect("ordinary page text has retained pointer endpoints");
+        assert_eq!(
+            session.pointer_down(page.anchor[0], page.anchor[1]),
+            SessionClick::Handled
+        );
+        assert!(session.pointer_move(page.focus[0], page.focus[1]));
+        assert_eq!(
+            session.pointer_up(page.focus[0], page.focus[1]),
+            SessionClick::Handled
+        );
+        assert!(
+            session.clip().is_some(),
+            "the page selection supplies a clip"
+        );
+        let target = session
+            .text_target("cedar")
+            .expect("the textarea text has retained pointer endpoints");
+
+        assert_eq!(
+            session.pointer_down(target.focus[0], target.focus[1]),
+            SessionClick::Handled
+        );
+        assert!(session.pointer_move(target.anchor[0], target.anchor[1]));
+        assert_eq!(session.pointer_up(390.0, 150.0), SessionClick::Handled);
+        let selection = session
+            .editor
+            .as_ref()
+            .and_then(|editor| editor.selection)
+            .expect("the reverse drag forms a directed editor-local range");
+        assert!(selection.anchor > selection.focus);
+        assert!(session.document().text_selection().is_none());
+        assert!(
+            session.clip().is_none(),
+            "editor selection never becomes a page clip"
+        );
+        let selected = session.frame(400, 160);
+        assert!(
+            selected
+                .ops
+                .iter()
+                .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+                .count()
+                > initial
+                    .ops
+                    .iter()
+                    .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+                    .count(),
+            "the local range produces retained selection overlay geometry"
+        );
+
+        assert!(session.ime_input(SessionIme::Commit("oak".to_owned())));
+        let note = livery_node_with_id(session, "note");
+        assert_eq!(session.text_content(note), "oak");
+        assert_eq!(
+            session.form_submission("fallback.html").fields,
+            [("note".to_owned(), "oak".to_owned())]
+        );
+        assert!(
+            session
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.selection.is_none() && editor.caret == 3)
+        );
+        assert!(
+            matches!(
+                session.pointer_down(target.anchor[0], target.anchor[1]),
+                SessionClick::Handled | SessionClick::Miss
+            ),
+            "a stale pre-mutation text point is inert rather than querying dead text"
+        );
+        assert!(session.document().text_selection().is_none());
+        assert!(session.clip().is_none());
+        assert!(matches!(
+            session.pointer_up(target.anchor[0], target.anchor[1]),
+            SessionClick::Handled | SessionClick::Miss
+        ));
+        let _scene = session.frame(400, 160);
+        let caret_target = session
+            .text_target("oak")
+            .expect("the replacement keeps retained pointer endpoints");
+        assert_eq!(
+            session.pointer_down(caret_target.anchor[0], caret_target.anchor[1]),
+            SessionClick::Handled
+        );
+        assert_eq!(
+            session.pointer_up(caret_target.anchor[0], caret_target.anchor[1]),
+            SessionClick::Handled
+        );
+        assert!(
+            session
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.selection.is_none() && editor.caret == 0),
+            "a collapsed editor gesture preserves its local caret"
+        );
+
+        let full = session
+            .text_target("oak")
+            .expect("the replacement keeps retained pointer endpoints");
+        assert_eq!(
+            session.pointer_down(full.focus[0], full.focus[1]),
+            SessionClick::Handled
+        );
+        assert!(session.pointer_move(full.anchor[0], full.anchor[1]));
+        assert_eq!(
+            session.pointer_up(full.anchor[0], full.anchor[1]),
+            SessionClick::Handled
+        );
+        assert!(session.delete_backward());
+        assert_eq!(session.text_content(note), "");
+        let empty = session.frame(400, 160);
+        let empty_rects = empty
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+            .count();
+        session.focus_input(false);
+        let unfocused = session.frame(400, 160);
+        assert!(
+            empty_rects
+                > unfocused
+                    .ops
+                    .iter()
+                    .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+                    .count(),
+            "an empty focused textarea retains a caret overlay"
         );
     }
 
