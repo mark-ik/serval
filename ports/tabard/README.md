@@ -31,6 +31,10 @@ The first implementation is deliberately portable and library-only:
   Pelt-owned Chrome roles. It proves the shell recolors while the focused
   document, session history, tabs, and content aperture remain held. It is not
   a persistent appearance setting and does not recolor document content.
+- Pelt's optional `tabard-reader-preview` receipt maps the same portable
+  palette onto Reader's existing host palette. It proves a Fleece article
+  keeps its held source and route-restoration behavior while Pelt supplies the
+  Reader colors. Fleece and `genet-documents` do not depend on Tabard.
 
 This slice deliberately does not add host theme structs, syntax-color policy,
 icon policy, persistence, imports, or a DTCG resolver.

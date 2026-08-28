@@ -647,6 +647,7 @@ impl FrisketSurface {
         self.rebuild_document();
     }
 
+    #[cfg(any(feature = "tabard-preview", test))]
     /// Append or remove a host-owned author layer for the workspace shell.
     ///
     /// This deliberately has no document-tile input: Pelt keeps session,
@@ -863,6 +864,7 @@ impl FrisketSurface {
         self.rect_for_attr(ATTR_CHROME_ACTION, action)
     }
 
+    #[cfg(any(feature = "tabard-preview", test))]
     /// Read a resolved style from a named shell class for a focused receipt.
     /// It avoids exposing the transient DOM node identifiers which become
     /// invalid every time the retained Chrome document is rebuilt.

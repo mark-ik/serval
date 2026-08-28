@@ -32,6 +32,9 @@ livery = [
 # Named developer receipt for applying a Tabard artifact to Pelt Chrome. This
 # stays optional so the generic shell has no Tabard runtime dependency.
 tabard-preview = ["livery", "dep:tabard", "dep:tinct"]
+# Named developer receipt for mapping Tabard's portable palette onto the
+# already-owned Reader host palette. This does not persist a Pelt theme.
+tabard-reader-preview = ["livery", "reader", "dep:tabard", "dep:tinct"]
 # Shared fleece reader lane over the portable document canvas.
 reader = [
     "present", "dep:genet-documents", "genet-documents/reader", "dep:inker",
