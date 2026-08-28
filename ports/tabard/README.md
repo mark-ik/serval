@@ -36,6 +36,14 @@ The first implementation is deliberately portable and library-only:
   keeps its held source and route-restoration behavior while Pelt supplies the
   Reader colors. Fleece and `genet-documents` do not depend on Tabard.
 
+Recorded 2026-08-28: both named headed Windows consumer receipts passed at
+960x640. `tabard-preview` completed after three redraws with compositor digest
+`d0affd3746b03554`; `tabard-reader-preview` completed after nine redraws with
+digest `ea505825544747b9`. The latter held a `genet.reader` Fleece article
+beside a `genet.livery` neighbor and retained the Reader inspector's lineage.
+These receipts validate consumer seams, not persistence or a platform theme
+policy.
+
 This slice deliberately does not add host theme structs, syntax-color policy,
 icon policy, persistence, imports, or a DTCG resolver.
 Those become consumer work after the shared artifact has a stable shape.

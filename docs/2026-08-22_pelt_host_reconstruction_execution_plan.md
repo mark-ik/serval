@@ -1203,6 +1203,50 @@ stability boundary rather than claiming a byte-identical PNG. The capture shows
 the Reader tab and close control, selected Reader engine, extracted article, and
 Fleece lineage in the retained inspector.
 
+### Tabard consumer receipts
+
+**Status:** complete 2026-08-28 as bounded headed consumer evidence. These are
+developer-only previews of a portable Tabard artifact, not Pelt appearance
+settings or a new Fleece dependency.
+
+The Chrome-only consumer is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
+  --no-default-features --features tabard-preview -- \
+  --workspace-receipt tabard-preview \
+  --artifact target/pelt-receipts/workspace-tabard-preview.png
+```
+
+It maps Tabard's CSS custom properties only to Pelt-owned Chrome roles. The
+driver requires a changed computed Chrome color while the focused document,
+session history, tab geometry, and content aperture hold. Recorded 2026-08-28:
+the headed Windows run installed 26 retained workspace nodes, completed after
+three redraws at 960x640, and reported `Tabard changed the computed Pelt Chrome
+color while the focused document, session history, tabs, and content aperture
+held`; its compositor digest was `d0affd3746b03554`. The artifact visibly shows
+the colored Pelt Chrome above ordinary Livery document content.
+
+The Fleece/Reader consumer is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
+  --no-default-features --features tabard-reader-preview -- \
+  --workspace-receipt tabard-reader-preview \
+  --artifact target/pelt-receipts/workspace-tabard-reader-preview.png
+```
+
+It passes the same palette through Reader's existing host-theme seam while
+Fleece remains fetch-free. Its driver holds the focused Reader route's source,
+keeps the Livery neighbor, and verifies the normal Reader-to-Livery route
+restoration. Recorded 2026-08-28: the headed Windows run installed 36 retained
+workspace nodes, completed after nine redraws at 960x640 with routes
+`1=genet.reader:document,2=genet.livery:document`, and reported `Tabard
+recolored Reader's Fleece article through Pelt's host palette while the held
+response, neighboring Livery tile, and route restoration stayed intact`; its
+compositor digest was `ea505825544747b9`. The artifact visibly shows the
+Fleece article and lineage in Pelt's retained inspector.
+
 ## Cross-gate rules
 
 - One host-owned wgpu device and compositor serve the full workspace.
@@ -1219,16 +1263,18 @@ Fleece lineage in the retained inspector.
 
 ## Immediate next lane
 
-P6's retained-shell receipts, P7's Livery child-tree receipt, and the separate
-Reader-in-workspace receipt are complete. The AccessKit tree now composes the
-retained Livery child tree for its focused supported lane; Reader, Scripted,
-Smolweb, and native child trees still need their own namespace and action
-contracts. Livery still needs nested-scroll ScrollIntoView/action routing and
-text/value semantics before Pelt can widen that child lane. Pelt now owns an
-optional caller-injected local appearance store; system-theme integration,
-multi-window synchronization, and a canonical configuration-directory policy
-remain distinct work. The held-source handoff is now a reusable Pelt boundary,
-not a fetch API for Fleece.
+P6's retained-shell receipts, P7's Livery child-tree receipt, the separate
+Reader-in-workspace receipt, and the two Tabard consumers are complete. The
+AccessKit tree now composes the retained Livery child tree for its focused
+supported lane; Reader, Scripted, Smolweb, and native child trees still need
+their own namespace and action contracts. Livery still needs nested-scroll
+ScrollIntoView/action routing and text/value semantics before Pelt can widen
+that child lane. Pelt now owns an optional caller-injected local appearance
+store; system-theme integration, multi-window synchronization, and a canonical
+configuration-directory policy remain distinct work. The held-source handoff
+is now a reusable Pelt boundary, not a fetch API for Fleece. Tabard remains a
+portable artifact producer; its recorded Pelt consumers do not make it a
+durable host-theme owner.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and
