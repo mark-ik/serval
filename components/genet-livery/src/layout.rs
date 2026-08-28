@@ -7733,11 +7733,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
         },
         flex_direction,
         direction,
-        flex_wrap: match computed.flex_wrap {
-            CssFlexWrap::NoWrap => FlexWrap::NoWrap,
-            CssFlexWrap::Wrap => FlexWrap::Wrap,
-            CssFlexWrap::WrapReverse => FlexWrap::WrapReverse,
-        },
+        flex_wrap: physical_flex_wrap(computed, flex_direction, flex_flow),
         flex_basis: flex_basis(computed.flex_basis, font_size),
         flex_grow: computed.flex_grow.value(),
         flex_shrink: computed.flex_shrink.value(),
@@ -7777,14 +7773,26 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             ),
         },
         gap: physical_flex_gap(computed, font_size, flex_flow),
-        align_items: Some(align_items(computed.align_items)),
+        align_items: Some(align_items(physical_flex_cross_alignment(
+            computed,
+            computed.align_items,
+            computed.flex_direction,
+            flex_direction,
+            flex_flow,
+        ))),
         // `auto` on the self properties defers to the parent's items value,
         // which is taffy's `None`. A content-keyword size in that axis
         // additionally suppresses stretch (see `suppresses_stretch`).
         align_self: self_alignment(computed.align_self, computed.height),
         justify_items: Some(align_items(computed.justify_items)),
         justify_self: self_alignment(computed.justify_self, computed.width),
-        align_content: Some(align_content(computed.align_content)),
+        align_content: Some(align_content(physical_flex_cross_alignment(
+            computed,
+            computed.align_content,
+            computed.flex_direction,
+            flex_direction,
+            flex_flow,
+        ))),
         justify_content: Some(physical_flex_justify_content(computed, flex_flow)),
         grid_template_columns: grid_template(&computed.grid_template_columns, font_size),
         grid_template_rows: grid_template(&computed.grid_template_rows, font_size),
@@ -7863,6 +7871,49 @@ fn physical_flex_cross_axis_direction(
         TaffyDirection::Rtl
     } else {
         TaffyDirection::Ltr
+    }
+}
+
+fn physical_flex_wrap(
+    computed: &ComputedValues,
+    physical_direction: FlexDirection,
+    flow: FlowAxes,
+) -> FlexWrap {
+    let reverse = computed.display == CssDisplay::Flex
+        && matches!(physical_direction, FlexDirection::Row | FlexDirection::RowReverse)
+        && matches!(
+            computed.flex_direction,
+            CssFlexDirection::Column | CssFlexDirection::ColumnReverse
+        )
+        && flow.inline_start() == PhysicalSide::Bottom;
+    match (computed.flex_wrap, reverse) {
+        (CssFlexWrap::NoWrap, _) => FlexWrap::NoWrap,
+        (CssFlexWrap::Wrap, false) | (CssFlexWrap::WrapReverse, true) => FlexWrap::Wrap,
+        (CssFlexWrap::WrapReverse, false) | (CssFlexWrap::Wrap, true) => FlexWrap::WrapReverse,
+    }
+}
+
+fn physical_flex_cross_alignment(
+    computed: &ComputedValues,
+    value: CssAlignment,
+    direction: CssFlexDirection,
+    physical_direction: FlexDirection,
+    flow: FlowAxes,
+) -> CssAlignment {
+    if computed.display == CssDisplay::Flex
+        && matches!(physical_direction, FlexDirection::Row | FlexDirection::RowReverse)
+        && matches!(direction, CssFlexDirection::Column | CssFlexDirection::ColumnReverse)
+        && flow.inline_start() == PhysicalSide::Bottom
+    {
+        match (value, computed.flex_wrap) {
+            (CssAlignment::Start, _) => CssAlignment::End,
+            (CssAlignment::End, _) => CssAlignment::Start,
+            (CssAlignment::FlexStart, CssFlexWrap::NoWrap) => CssAlignment::FlexEnd,
+            (CssAlignment::FlexEnd, CssFlexWrap::NoWrap) => CssAlignment::FlexStart,
+            (value, _) => value,
+        }
+    } else {
+        value
     }
 }
 
@@ -14704,10 +14755,43 @@ mod tests {
             assert_eq!(to_taffy_style(&computed, 16.0).direction, expected_direction);
         }
 
+        computed.writing_mode = CssWritingMode::VerticalRl;
+        computed.direction = CssDirection::Rtl;
+        for flex_direction in [CssFlexDirection::Column, CssFlexDirection::ColumnReverse] {
+            computed.flex_direction = flex_direction;
+            for (wrap, expected_wrap) in [
+                (CssFlexWrap::Wrap, FlexWrap::WrapReverse),
+                (CssFlexWrap::WrapReverse, FlexWrap::Wrap),
+            ] {
+                computed.flex_wrap = wrap;
+                computed.align_items = CssAlignment::Start;
+                computed.align_content = CssAlignment::End;
+                let style = to_taffy_style(&computed, 16.0);
+                assert_eq!(style.flex_wrap, expected_wrap);
+                assert_eq!(style.align_items.expect("items").keyword, AlignItemsKeyword::End);
+                assert_eq!(
+                    style.align_content.expect("content").keyword,
+                    AlignContentKeyword::Start
+                );
+            }
+        }
+        computed.flex_wrap = CssFlexWrap::NoWrap;
+        computed.align_items = CssAlignment::FlexStart;
+        computed.align_content = CssAlignment::FlexEnd;
+        let nowrap = to_taffy_style(&computed, 16.0);
+        assert_eq!(nowrap.flex_wrap, FlexWrap::NoWrap);
+        assert_eq!(nowrap.align_items.expect("nowrap items").keyword, AlignItemsKeyword::FlexEnd);
+        assert_eq!(
+            nowrap.align_content.expect("nowrap content").keyword,
+            AlignContentKeyword::FlexStart
+        );
+
         computed.display = CssDisplay::Block;
         computed.writing_mode = CssWritingMode::VerticalRl;
         computed.direction = CssDirection::Ltr;
-        assert_eq!(to_taffy_style(&computed, 16.0).direction, TaffyDirection::Ltr);
+        let block = to_taffy_style(&computed, 16.0);
+        assert_eq!(block.direction, TaffyDirection::Ltr);
+        assert_eq!(block.align_items.expect("block items").keyword, AlignItemsKeyword::FlexStart);
     }
 
     #[test]

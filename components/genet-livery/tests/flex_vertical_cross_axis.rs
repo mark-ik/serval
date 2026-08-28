@@ -63,3 +63,26 @@ fn vertical_rl_row_wrap_reverse_keeps_logical_start_and_reverses_flex_lines() {
     assert_eq!(relative("three"), (22.0, 2.0, 10.0, 40.0));
     assert_eq!(relative("four"), (22.0, 42.0, 10.0, 40.0));
 }
+
+#[test]
+fn rtl_vertical_rl_column_wrap_uses_the_bottom_cross_start() {
+    let document = StaticDocument::parse(
+        r#"<html><body><div id="flex"><div id="one"></div><div id="two"></div><div id="three"></div><div id="four"></div></div></body></html>"#,
+    );
+    let styles = resolve_styles(
+        &document,
+        &StyleSet::cambium(&["html, body { margin: 0; } #flex { display: flex; direction: rtl; writing-mode: vertical-rl; flex-flow: column wrap; width: 40px; height: 30px; border: 1px solid black; } #flex > div { width: 20px; height: 15px; }"]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let fragments = layout(&document, &styles, 320.0, 240.0).expect("layout");
+    let rect = |id: &str| {
+        let node = find(&document, document.document(), id).expect(id);
+        let rect = fragments.get(node).expect("fragment").physical_rect();
+        (rect.x, rect.y)
+    };
+    assert_eq!(rect("one"), (21.0, 16.0));
+    assert_eq!(rect("two"), (1.0, 16.0));
+    assert_eq!(rect("three"), (21.0, 1.0));
+    assert_eq!(rect("four"), (1.0, 1.0));
+}
