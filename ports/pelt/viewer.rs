@@ -411,6 +411,7 @@ pub(crate) fn main() {
                         | pelt_desktop::WorkspaceReceipt::AccessibilityEdit
                         | pelt_desktop::WorkspaceReceipt::AccessibilityScroll
                         | pelt_desktop::WorkspaceReceipt::AccessibilityClick
+                        | pelt_desktop::WorkspaceReceipt::AccessibilityInput
                         | pelt_desktop::WorkspaceReceipt::NarrowChrome
                         | pelt_desktop::WorkspaceReceipt::ChromeDpi
                         | pelt_desktop::WorkspaceReceipt::Reader
@@ -473,6 +474,16 @@ pub(crate) fn main() {
                         std::process::exit(2);
                     }
                     let fixture = accessibility_scroll_fixture_url();
+                    tile_urls = vec![fixture.clone(), fixture];
+                },
+                pelt_desktop::WorkspaceReceipt::AccessibilityInput => {
+                    if !cfg!(feature = "livery") {
+                        eprintln!(
+                            "--workspace-receipt accessibility-input needs `--features livery`"
+                        );
+                        std::process::exit(2);
+                    }
+                    let fixture = accessibility_input_fixture_url();
                     tile_urls = vec![fixture.clone(), fixture];
                 },
                 pelt_desktop::WorkspaceReceipt::NarrowChrome => {
@@ -1179,6 +1190,16 @@ fn accessibility_scroll_fixture_url() -> String {
         .into_owned()
 }
 
+fn accessibility_input_fixture_url() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("workspace")
+        .join("p7-accessibility-input")
+        .join("index.html")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn reader_fixture_urls() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
@@ -1203,6 +1224,7 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "accessibility-edit" => pelt_desktop::WorkspaceReceipt::AccessibilityEdit,
         "accessibility-scroll" => pelt_desktop::WorkspaceReceipt::AccessibilityScroll,
         "accessibility-click" => pelt_desktop::WorkspaceReceipt::AccessibilityClick,
+        "accessibility-input" => pelt_desktop::WorkspaceReceipt::AccessibilityInput,
         "narrow-chrome" => pelt_desktop::WorkspaceReceipt::NarrowChrome,
         "chrome-dpi" => pelt_desktop::WorkspaceReceipt::ChromeDpi,
         "reader" => pelt_desktop::WorkspaceReceipt::Reader,
@@ -1210,7 +1232,7 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "tabard-reader-preview" => pelt_desktop::WorkspaceReceipt::TabardReaderPreview,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-address, accessibility-children, accessibility-edit, accessibility-scroll, accessibility-click, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-address, accessibility-children, accessibility-edit, accessibility-scroll, accessibility-click, accessibility-input, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1268,6 +1290,10 @@ mod workspace_receipt_tests {
             pelt_desktop::WorkspaceReceipt::AccessibilityClick
         );
         assert_eq!(
+            parse_workspace_receipt("accessibility-input"),
+            pelt_desktop::WorkspaceReceipt::AccessibilityInput
+        );
+        assert_eq!(
             parse_workspace_receipt("narrow-chrome"),
             pelt_desktop::WorkspaceReceipt::NarrowChrome
         );
@@ -1316,6 +1342,11 @@ mod workspace_receipt_tests {
             accessibility_edit_fixture_url()
                 .replace('\\', "/")
                 .ends_with("/ports/pelt/examples/workspace/p7-accessibility-edit/index.html")
+        );
+        assert!(
+            accessibility_input_fixture_url()
+                .replace('\\', "/")
+                .ends_with("/ports/pelt/examples/workspace/p7-accessibility-input/index.html")
         );
         let reader = reader_fixture_urls();
         assert_eq!(reader.len(), 2);
@@ -1643,7 +1674,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|accessibility-address|accessibility-children|accessibility-edit|narrow-chrome|chrome-dpi|reader|tabard-preview|tabard-reader-preview> (named workspace receipt; needs --artifact; Tabard receipts need their matching feature)
+    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|accessibility-address|accessibility-children|accessibility-edit|accessibility-scroll|accessibility-click|accessibility-input|narrow-chrome|chrome-dpi|reader|tabard-preview|tabard-reader-preview> (named workspace receipt; needs --artifact; Tabard receipts need their matching feature)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

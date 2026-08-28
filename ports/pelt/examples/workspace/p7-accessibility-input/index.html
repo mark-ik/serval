@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Nested accessibility input</title>
+<style>
+  body { font: 16px sans-serif; margin: 8px; }
+  .scrollbox { width: 190px; height: 96px; overflow: auto; border: 2px solid #456; }
+  .spacer { height: 96px; }
+  label, textarea { display: block; }
+  textarea { box-sizing: border-box; width: 170px; height: 42px; }
+  .tail { height: 180px; }
+</style>
+<div class="scrollbox" aria-label="Scrollable editor">
+  <div class="spacer"></div>
+  <label for="note">Nested note</label>
+  <textarea id="note" name="note" aria-label="Nested note">cedar</textarea>
+  <div class="tail"></div>
+</div>
+<h1>Nested accessibility input</h1>
+<p>Wheel scrolling, pointer selection, text input, and IME stay in the focused retained tile.</p>

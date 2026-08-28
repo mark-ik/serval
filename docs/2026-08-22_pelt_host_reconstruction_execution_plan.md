@@ -1286,6 +1286,49 @@ actions`; its compositor digest was `4dd03b9beb65b435`. The capture shows the
 settled destination in tile 1 and the untouched source document in tile 2 inside
 retained Chrome.
 
+#### P7 follow-up: nested native input and selection
+
+**Status:** complete 2026-08-28 for retained native Livery textarea input. It
+does not add a general editable-child contract for Reader, Scripted, Smolweb,
+or native surfaces.
+
+At a nonzero nested-scroll offset, Livery continues to project a textarea's
+current value and `ScrollIntoView`, while withholding `SetValue`. Pelt
+reprojects the live child action map at dispatch, so a raw `SetValue` queued
+before the wheel turn cannot mutate the now-withheld target. Ordinary physical
+pointer press, drag, text, and IME input route through Pelt's focused content
+hole into the retained Livery session instead.
+
+Livery keeps the native editor range separate from its page selection. A
+selector-less `DocumentClip` remains the ordinary whole-document semantic
+fallback; a page range is specifically the `dom-range` selector. The receipt
+therefore rejects a selector-bearing clip after its textarea gesture, text, and
+IME steps rather than confusing the fallback with a page selection.
+
+The twin-tile receipt scrolls tile 1, physically drags its retained textarea,
+replaces `cedar` through `Text("oak")`, then commits `" + ime"` through IME.
+It requires exact `oak + ime`, released pointer capture, no `dom-range` clip,
+unchanged `cedar` in tile 2, and both session generations remaining 1. The
+GPU-free test repeats the path at 2.00x; the headed run retains Chrome and the
+same focused-tile boundary.
+
+The named focused receipt is:
+
+```text
+cargo run -p pelt --no-default-features --features livery -j 1 -- \
+  --workspace-receipt accessibility-input \
+  --artifact target/pelt-receipts/workspace-accessibility-input.png
+```
+
+Recorded 2026-08-28: the retained Livery point query passed 1, the native
+text-control writability and disabled-tab-focus gate passed 1, the local
+textarea drag-selection gate passed 1, the GPU-free Pelt nested-editor suite
+passed 2, and the Pelt viewer parser suite passed 4. The headed Windows receipt
+installed AccessKit with 36 retained workspace nodes, completed after four
+redraws at 960x640, and reported `Pelt preserved a nested textarea action
+boundary and routed physical selection replacement, Text, and IME only to the
+focused tile`; its compositor digest was `f52b6536f31f06ad`.
+
 ### Reader in workspace
 
 **Status:** complete 2026-08-27 as a distinct Fleece/Pelt integration receipt,
@@ -1408,10 +1451,12 @@ Reader-in-workspace receipt, and the two Tabard consumers are complete. The
 AccessKit tree now composes the retained Livery child tree for its focused
 supported lane; Reader, Scripted, Smolweb, and native child trees still need
 their own namespace and action contracts. Livery's native text-control
-projection and mutation, nested-scroll ScrollIntoView routing, and clip-aware
-nested link activation are complete. `SetValue` remains withheld while a nested
-scrollport is active; extending that editable-control path needs a separate
-input and selection receipt. Pelt now owns an
+projection and mutation, nested-scroll ScrollIntoView routing, clip-aware
+nested link activation, and nested native textarea input-and-selection receipt
+are complete. `SetValue` remains withheld while a nested scrollport is active;
+Pelt routes ordinary physical selection, text, and IME to the focused retained
+Livery session and revalidates a queued action against its live child projection
+before dispatch. Pelt now owns an
 optional caller-injected local appearance store; system-theme integration,
 multi-window synchronization, and a canonical
 configuration-directory policy remain distinct work. The held-source handoff

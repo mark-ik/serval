@@ -67,6 +67,7 @@ const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focu
 const ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION: &str = "Pelt routed a Livery text SetValue through its live child namespace, reprojected the value, and submitted only the focused tile";
 const ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION: &str = "Pelt routed Livery ScrollIntoView through the focused Livery nested scrollport and preserved the sibling tile";
 const ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION: &str = "Pelt revealed a nested Livery target, routed its clip-aware Click through ordinary pointer input, and rejected stale tile actions";
+const ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION: &str = "Pelt preserved a nested textarea action boundary and routed physical selection replacement, Text, and IME only to the focused tile";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
@@ -111,6 +112,8 @@ pub enum WorkspaceReceipt {
     AccessibilityScroll,
     /// P7's clip-aware nested Livery Click route after an explicit reveal.
     AccessibilityClick,
+    /// P7's nested Livery editor input and physical text-selection route.
+    AccessibilityInput,
     /// P6's compact Chrome layout at a small logical viewport.
     NarrowChrome,
     /// P6's actual high-DPI Chrome input and capture alignment.
@@ -140,6 +143,7 @@ impl WorkspaceReceipt {
             Self::AccessibilityEdit => "accessibility-edit",
             Self::AccessibilityScroll => "accessibility-scroll",
             Self::AccessibilityClick => "accessibility-click",
+            Self::AccessibilityInput => "accessibility-input",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
@@ -168,6 +172,7 @@ impl WorkspaceReceipt {
                 | Self::AccessibilityEdit
                 | Self::AccessibilityScroll
                 | Self::AccessibilityClick
+                | Self::AccessibilityInput
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
@@ -381,6 +386,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::AccessibilityEdit
                 | WorkspaceReceipt::AccessibilityScroll
                 | WorkspaceReceipt::AccessibilityClick
+                | WorkspaceReceipt::AccessibilityInput
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -1002,6 +1008,15 @@ struct LiveryA11yAction {
     /// Whether the composite tree advertised Click for this action. A pointer
     /// point alone is never authority to activate a disabled or hidden node.
     click_enabled: bool,
+    /// Whether the current composite tree advertised Focus for this node.
+    focus_enabled: bool,
+    /// Whether the current composite tree advertised ScrollIntoView for this
+    /// node.
+    scroll_enabled: bool,
+    /// Whether the current composite tree advertised SetValue for this
+    /// retained node. Accessibility actions are checked against this snapshot
+    /// before Pelt asks Livery to mutate a value.
+    set_value_enabled: bool,
     /// The point published with the composite tree proves that Click was
     /// advertised. Dispatch queries Livery again instead of trusting these
     /// coordinates after a later scroll in the same session.
@@ -1642,6 +1657,9 @@ impl WorkspaceApp {
                     || node.supports_action(Action::ScrollIntoView)
                 {
                     let click_enabled = node.supports_action(Action::Click);
+                    let focus_enabled = node.supports_action(Action::Focus);
+                    let scroll_enabled = node.supports_action(Action::ScrollIntoView);
+                    let set_value_enabled = node.supports_action(Action::SetValue);
                     actions.insert(
                         global_id,
                         WorkspaceA11yActionTarget::Livery(LiveryA11yAction {
@@ -1650,6 +1668,9 @@ impl WorkspaceApp {
                             local_node: local_id,
                             content_rect,
                             click_enabled,
+                            focus_enabled,
+                            scroll_enabled,
+                            set_value_enabled,
                             click_point,
                         }),
                     );
@@ -1692,7 +1713,8 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::AccessibilityChildren
                     | WorkspaceReceipt::AccessibilityEdit
                     | WorkspaceReceipt::AccessibilityScroll
-                    | WorkspaceReceipt::AccessibilityClick,
+                    | WorkspaceReceipt::AccessibilityClick
+                    | WorkspaceReceipt::AccessibilityInput,
             )
         ) && self.accessibility.status() != BridgeStatus::Installed
         {
@@ -1757,6 +1779,35 @@ impl WorkspaceApp {
         content_rect.contains(point.0, point.1).then_some(point)
     }
 
+    /// Rebuild the retained composite action map before mutating a Livery
+    /// control. Platform actions can be queued across an ordinary wheel turn,
+    /// so the snapshot that produced a request is not sufficient to authorize
+    /// SetValue.
+    fn current_livery_action(
+        &mut self,
+        global_node: AccessNodeId,
+        target: &LiveryA11yAction,
+        action: Action,
+    ) -> bool {
+        let Ok(projection) = self.workspace_accessibility_projection() else {
+            return false;
+        };
+        matches!(
+            projection.actions.get(&global_node),
+            Some(WorkspaceA11yActionTarget::Livery(current))
+                if current.tile == target.tile
+                    && current.session_generation == target.session_generation
+                    && current.local_node == target.local_node
+                    && match action {
+                        Action::Focus => current.focus_enabled,
+                        Action::ScrollIntoView => current.scroll_enabled,
+                        Action::SetValue => current.set_value_enabled,
+                        Action::Click => current.click_enabled,
+                        _ => false,
+                    }
+        )
+    }
+
     fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
         let Some(target) = self.accessibility.action_for(request.target_node) else {
             return false;
@@ -1808,15 +1859,15 @@ impl WorkspaceApp {
                 input.replace_on_insert = false;
                 self.submit_chrome_address()
             },
-            (Action::Focus, WorkspaceA11yActionTarget::Livery(target)) => {
-                (self.workspace.document_session_generation(target.tile)
+            (Action::Focus, WorkspaceA11yActionTarget::Livery(target)) => (target.focus_enabled
+                && self.current_livery_action(request.target_node, &target, Action::Focus)
+                && self.workspace.document_session_generation(target.tile)
                     == Some(target.session_generation))
-                .then(|| {
-                    self.accessibility
-                        .set_focus(WorkspaceA11yFocus::Livery(request.target_node))
-                })
-                .unwrap_or(false)
-            },
+            .then(|| {
+                self.accessibility
+                    .set_focus(WorkspaceA11yFocus::Livery(request.target_node))
+            })
+            .unwrap_or(false),
             (Action::Click, WorkspaceA11yActionTarget::Livery(target)) => {
                 if self.workspace.document_session_generation(target.tile)
                     != Some(target.session_generation)
@@ -1866,6 +1917,8 @@ impl WorkspaceApp {
             (Action::SetValue, WorkspaceA11yActionTarget::Livery(target)) => {
                 if self.workspace.document_session_generation(target.tile)
                     != Some(target.session_generation)
+                    || !target.set_value_enabled
+                    || !self.current_livery_action(request.target_node, &target, Action::SetValue)
                 {
                     return false;
                 }
@@ -1888,6 +1941,12 @@ impl WorkspaceApp {
             (Action::ScrollIntoView, WorkspaceA11yActionTarget::Livery(target)) => {
                 if self.workspace.document_session_generation(target.tile)
                     != Some(target.session_generation)
+                    || !target.scroll_enabled
+                    || !self.current_livery_action(
+                        request.target_node,
+                        &target,
+                        Action::ScrollIntoView,
+                    )
                 {
                     return false;
                 }
@@ -2600,6 +2659,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::AccessibilityEdit
                         | WorkspaceReceipt::AccessibilityScroll
                         | WorkspaceReceipt::AccessibilityClick
+                        | WorkspaceReceipt::AccessibilityInput
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
@@ -2827,6 +2887,8 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::AccessibilityEdit
                 | WorkspaceReceipt::AccessibilityScroll
+                | WorkspaceReceipt::AccessibilityClick
+                | WorkspaceReceipt::AccessibilityInput
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -2887,6 +2949,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::AccessibilityClick => {
                 self.drive_accessibility_click_workspace_receipt_step()
             },
+            WorkspaceReceipt::AccessibilityInput => {
+                self.drive_accessibility_input_workspace_receipt_step()
+            },
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
@@ -2909,6 +2974,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::AccessibilityEdit
                     | WorkspaceReceipt::AccessibilityScroll
                     | WorkspaceReceipt::AccessibilityClick
+                    | WorkspaceReceipt::AccessibilityInput
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
@@ -5108,6 +5174,251 @@ impl WorkspaceApp {
         Ok(None)
     }
 
+    fn drive_accessibility_input_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        let sibling = TileId(2);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 2)?;
+                if self.window.is_some() && self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "accessibility-input receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("accessibility-input receipt has no tile-one content hole")?;
+                if !self.workspace.scroll_at(
+                    content.x + content.width.min(190.0) * 0.5,
+                    content.y + content.height.min(96.0) * 0.5,
+                    0.0,
+                    96.0,
+                ) {
+                    return Err(
+                        "accessibility-input fixture did not accept the inducing wheel scroll"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = 1;
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Nested note",
+                    Role::TextInput,
+                )?;
+                let node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == note)
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility-input receipt lost its nested textarea")?;
+                if node.value() != Some("cedar")
+                    || !node.supports_action(Action::ScrollIntoView)
+                    || node.supports_action(Action::SetValue)
+                {
+                    return Err(
+                        "scrolled nested textarea did not retain its value while withholding SetValue"
+                        .to_owned(),
+                    );
+                }
+                if self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::SetValue,
+                    target_node: note,
+                    data: Some(ActionData::Value("wrong path".into())),
+                }) {
+                    return Err(
+                        "scrolled nested textarea accepted the withheld SetValue action".to_owned(),
+                    );
+                }
+                let sibling_note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    sibling,
+                    "Nested note",
+                    Role::TextInput,
+                )?;
+                let sibling_node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == sibling_note)
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility-input receipt lost its sibling textarea")?;
+                if sibling_node.value() != Some("cedar")
+                    || sibling_node.supports_action(Action::ScrollIntoView)
+                {
+                    return Err(
+                        "the untouched sibling acquired the focused tile's nested-scroll action"
+                            .to_owned(),
+                    );
+                }
+
+                let text_target = self
+                    .workspace
+                    .controller(tile)
+                    .and_then(|controller| controller.text_target("cedar"))
+                    .ok_or(
+                        "accessibility-input receipt could not resolve retained textarea text",
+                    )?;
+                if text_target.anchor == text_target.focus {
+                    return Err(
+                        "accessibility-input receipt could not resolve a non-empty drag range"
+                            .to_owned(),
+                    );
+                }
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("accessibility-input receipt lost tile-one content geometry")?;
+                let anchor = (
+                    content.x + text_target.anchor[0],
+                    content.y + text_target.anchor[1],
+                );
+                let focus = (
+                    content.x + text_target.focus[0],
+                    content.y + text_target.focus[1],
+                );
+                if !content.contains(anchor.0, anchor.1) || !content.contains(focus.0, focus.1) {
+                    return Err(
+                        "accessibility-input receipt resolved textarea drag points outside its tile"
+                            .to_owned(),
+                    );
+                }
+                self.pointer_move(anchor.0, anchor.1);
+                if !self.pointer_down() {
+                    return Err(
+                        "ordinary Pelt pointer press did not focus the retained textarea"
+                            .to_owned(),
+                    );
+                }
+                self.pointer_move(focus.0, focus.1);
+                if !self.pointer_up() {
+                    return Err(
+                        "ordinary Pelt pointer drag did not finish the retained text selection"
+                            .to_owned(),
+                    );
+                }
+                if self
+                    .workspace
+                    .controller(tile)
+                    .and_then(PeltController::clip)
+                    .is_some_and(|clip| clip.selector.is_some())
+                {
+                    return Err(
+                        "ordinary editor selection produced a DOM-range document clip".to_owned(),
+                    );
+                }
+                if self.workspace.has_active_pointer_capture() {
+                    return Err(
+                        "ordinary Pelt pointer drag left a stale physical pointer capture"
+                            .to_owned(),
+                    );
+                }
+                let text_effect = self.workspace.input(SessionInput::Text("oak".to_owned()));
+                if !text_effect.handled {
+                    return Err("SessionInput::Text did not reach the focused textarea".to_owned());
+                }
+                self.apply_effect(text_effect);
+                if self
+                    .workspace
+                    .controller(tile)
+                    .and_then(PeltController::clip)
+                    .is_some_and(|clip| clip.selector.is_some())
+                {
+                    return Err(
+                        "text input produced a DOM-range document clip from the editor selection"
+                            .to_owned(),
+                    );
+                }
+                for ime in [
+                    SessionIme::Enabled,
+                    SessionIme::Preedit {
+                        text: "+ ime".to_owned(),
+                        selection: None,
+                    },
+                    SessionIme::Commit(" + ime".to_owned()),
+                ] {
+                    let effect = self.workspace.input(SessionInput::Ime(ime));
+                    if !effect.handled {
+                        return Err(
+                            "SessionInput::Ime did not reach the focused textarea".to_owned()
+                        );
+                    }
+                    self.apply_effect(effect);
+                }
+                if self
+                    .workspace
+                    .controller(tile)
+                    .and_then(PeltController::clip)
+                    .is_some_and(|clip| clip.selector.is_some())
+                {
+                    return Err(
+                        "IME input produced a DOM-range document clip from the editor selection"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = 2;
+            },
+            2 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Nested note",
+                    Role::TextInput,
+                )?;
+                let node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == note)
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility-input receipt lost its edited textarea")?;
+                if node.value() != Some("oak + ime")
+                    || !node.supports_action(Action::ScrollIntoView)
+                    || node.supports_action(Action::SetValue)
+                {
+                    return Err(
+                        "textarea did not reproject exact `oak + ime` replacement while retaining its nested-scroll action boundary".to_owned(),
+                    );
+                }
+                let sibling_note = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    sibling,
+                    "Nested note",
+                    Role::TextInput,
+                )?;
+                let sibling_node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == sibling_note)
+                    .map(|(_, node)| node)
+                    .ok_or("accessibility-input receipt lost its sibling textarea")?;
+                if sibling_node.value() != Some("cedar")
+                    || self.workspace.document_session_generation(tile) != Some(1)
+                    || self.workspace.document_session_generation(sibling) != Some(1)
+                {
+                    return Err(
+                        "physical nested editor input changed the sibling or replaced a session"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = 3;
+                return Ok(Some(ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION.to_owned())),
+        }
+        Ok(None)
+    }
+
     fn drive_accessibility_edit_workspace_receipt_step(
         &mut self,
     ) -> Result<Option<String>, String> {
@@ -6765,6 +7076,21 @@ mod tests {
             WorkspaceReceipt::AccessibilityEdit.id(),
             "accessibility-edit"
         );
+        let accessibility_input = WorkspaceViewerConfig::new(
+            vec!["input.html".to_owned(), "sibling.html".to_owned()],
+            WindowingMode::Headed,
+        )
+        .with_workspace_receipt(
+            WorkspaceReceipt::AccessibilityInput,
+            "accessibility-input.png",
+        );
+        assert_eq!(accessibility_input.size, Some((960, 640)));
+        assert_eq!(accessibility_input.frames, Some(3));
+        assert!(WorkspaceReceipt::AccessibilityInput.keeps_chrome());
+        assert_eq!(
+            WorkspaceReceipt::AccessibilityInput.id(),
+            "accessibility-input"
+        );
 
         let tabard =
             WorkspaceViewerConfig::new(vec!["tabard.html".to_owned()], WindowingMode::Headed)
@@ -8332,6 +8658,182 @@ mod tests {
             app.workspace.controller(TileId(2)).is_some_and(|other| {
                 other.address().replace('\\', "/").ends_with("/index.html")
             })
+        );
+    }
+
+    #[test]
+    fn livery_nested_editor_rejects_a_queued_pre_scroll_set_value() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p7-accessibility-input/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let urls = vec![fixture.clone(), fixture.clone()];
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("nested editor tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("nested editor fixtures open");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::AccessibilityInput, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+        app.scale_factor = 2.0;
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let (width, height) = app.logical_size();
+            let pane = app
+                .frisket
+                .frame(width, height)
+                .expect("nested editor Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let initial = app
+            .prepare_accessibility_tree()
+            .expect("initial nested editor accessibility tree");
+        let note = livery_a11y_node_for_tile(
+            &initial,
+            &app.accessibility,
+            TileId(1),
+            "Nested note",
+            Role::TextInput,
+        )
+        .expect("initial nested textarea");
+        assert!(
+            initial
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == note)
+                .is_some_and(|(_, node)| node.supports_action(Action::SetValue))
+        );
+        let content = app
+            .workspace
+            .content_rect(TileId(1))
+            .expect("nested editor content hole");
+        assert!(app.workspace.scroll_at(
+            content.x + content.width.min(190.0) * 0.5,
+            content.y + content.height.min(96.0) * 0.5,
+            0.0,
+            96.0,
+        ));
+
+        assert!(
+            !app.apply_accessibility_request(A11yActionRequest {
+                action: Action::SetValue,
+                target_node: note,
+                data: Some(ActionData::Value("stale mutation".into())),
+            }),
+            "a queued pre-scroll SetValue must be rejected against the live projection"
+        );
+        compose(&mut app);
+        let scrolled = app
+            .prepare_accessibility_tree()
+            .expect("scrolled nested editor accessibility tree");
+        let scrolled_note = livery_a11y_node_for_tile(
+            &scrolled,
+            &app.accessibility,
+            TileId(1),
+            "Nested note",
+            Role::TextInput,
+        )
+        .expect("scrolled nested textarea");
+        let node = scrolled
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == scrolled_note)
+            .map(|(_, node)| node)
+            .expect("scrolled nested textarea node");
+        assert_eq!(node.value(), Some("cedar"));
+        assert!(node.supports_action(Action::ScrollIntoView));
+        assert!(!node.supports_action(Action::SetValue));
+    }
+
+    #[test]
+    fn livery_nested_editor_accessibility_input_receipt_runs_at_two_x() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p7-accessibility-input/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let urls = vec![fixture.clone(), fixture.clone()];
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("nested editor tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("nested editor fixtures open");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::AccessibilityInput, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+        app.scale_factor = 2.0;
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let (width, height) = app.logical_size();
+            let pane = app
+                .frisket
+                .frame(width, height)
+                .expect("nested editor Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        compose(&mut app);
+        let mut assertion = None;
+        for _ in 0..4 {
+            assertion = app
+                .drive_accessibility_input_workspace_receipt_step()
+                .expect("accessibility-input receipt state machine");
+            compose(&mut app);
+            if assertion.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            assertion.as_deref(),
+            Some(ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION),
+            "the GPU-free twin-tile receipt must complete its physical wheel, drag, Text, and IME path"
         );
     }
 
