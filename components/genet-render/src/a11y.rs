@@ -369,7 +369,7 @@ where
     let focusable = semantic_control || has_tabindex(dom, node) || is_content_editable(dom, node);
     let action_blocked_by_nested_scroll = scroll_offsets
         .is_some_and(|scroll_offsets| has_active_scrolled_ancestor(dom, node, scroll_offsets));
-    if action_blocked_by_nested_scroll {
+    if !disabled && action_blocked_by_nested_scroll {
         // The current retained scroll offsets identify the exact document-local
         // scroller Livery must adjust. Until Pelt has refreshed this tree with
         // the revealed bounds, a pointer action would still be stale.
@@ -432,9 +432,9 @@ where
 
 /// Project a retained document after Livery has applied nested element scroll.
 ///
-/// Bounds move with each scrolled ancestor. Descendants of an active nested
-/// scrollport advertise `ScrollIntoView`, while Click remains withheld until
-/// Pelt owns the matching refreshed pointer-routing semantics.
+/// Bounds move with each scrolled ancestor. Enabled descendants of an active
+/// nested scrollport advertise `ScrollIntoView`, while Click remains withheld
+/// until Pelt owns the matching refreshed pointer-routing semantics.
 pub fn accesskit_tree_with_scroll<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -665,6 +665,38 @@ mod tests {
         assert_eq!(node.value(), Some("nested"));
         assert!(!node.supports_action(Action::SetValue));
         assert!(node.supports_action(Action::ScrollIntoView));
+    }
+
+    #[test]
+    fn disabled_nested_controls_do_not_advertise_scroll_into_view() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        dom.set_inner_html(
+            root,
+            "<div><button disabled>Unavailable</button><div role=\"link\" aria-disabled=\"true\" tabindex=\"0\">Also unavailable</div></div>",
+        );
+        let container = dom
+            .dom_children(root)
+            .find(|node| dom.kind(*node) == NodeKind::Element)
+            .expect("scroll container");
+        let fragments = fragments_from_scripted_dom(&dom, SHEET, 400, 300).expect("layout");
+        let mut offsets = ScrollOffsets::new();
+        offsets.insert(container, (0.0, 24.0));
+        let tree = accesskit_tree_with_scroll(&dom, &fragments, None, &offsets);
+
+        for label in ["Unavailable", "Also unavailable"] {
+            let node = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .map(|(_, node)| node)
+                .expect("disabled nested control");
+            assert!(node.is_disabled());
+            assert!(!node.supports_action(Action::Click));
+            assert!(!node.supports_action(Action::Focus));
+            assert!(!node.supports_action(Action::ScrollIntoView));
+            assert!(!node.supports_action(Action::SetValue));
+        }
     }
 
     #[test]

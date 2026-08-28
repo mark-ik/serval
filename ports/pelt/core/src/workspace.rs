@@ -460,6 +460,13 @@ impl<F: 'static> PeltWorkspace<F> {
         self.focused
     }
 
+    /// Whether an ordinary physical pointer gesture still owns workspace
+    /// routing. Synthetic semantic activation must wait for that gesture to
+    /// finish rather than borrowing its capture target.
+    pub fn has_active_pointer_capture(&self) -> bool {
+        self.pointer_capture.is_some()
+    }
+
     pub fn controller(&self, tile: TileId) -> Option<&PeltController<F>> {
         self.controllers.get(&tile)
     }

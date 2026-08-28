@@ -1135,6 +1135,59 @@ where
         changed
     }
 
+    /// Return a retained CSS-space point that can activate one accessible
+    /// element through ordinary pointer input.
+    ///
+    /// The point is the visible intersection of the element, every clipping
+    /// ancestor, and the viewport. It is accepted only when Livery's current
+    /// scroll-aware hit test resolves inside `node`, so a host cannot turn a
+    /// stale accessibility bound into a pointer action after nested scrolling.
+    /// The result intentionally stays in CSS space; the host applies its
+    /// presentation-scale and content-hole transform at the session boundary.
+    pub fn accessible_pointer_target(&self, node: D::NodeId) -> Option<(f32, f32)> {
+        let layout = self.layout.as_ref()?;
+        let active = self.sticky_layout(layout);
+        let target = active.get(node)?;
+        let target_scroll = self.ancestor_scroll(node);
+        let mut visible = [
+            target.x - self.scroll.0 - target_scroll.0,
+            target.y - self.scroll.1 - target_scroll.1,
+            target.x + target.width - self.scroll.0 - target_scroll.0,
+            target.y + target.height - self.scroll.1 - target_scroll.1,
+        ];
+        visible = intersect_viewport_rect(
+            visible,
+            [0.0, 0.0, layout.viewport.0 as f32, layout.viewport.1 as f32],
+        )?;
+
+        let mut parent = self.dom.parent(node);
+        while let Some(ancestor) = parent {
+            if let Some(style) = layout.styles.get(ancestor)
+                && self.clips_content(style)
+            {
+                let clip = active.get(ancestor)?;
+                let clip_scroll = self.ancestor_scroll(ancestor);
+                visible = intersect_viewport_rect(
+                    visible,
+                    [
+                        clip.x - self.scroll.0 - clip_scroll.0,
+                        clip.y - self.scroll.1 - clip_scroll.1,
+                        clip.x + clip.width - self.scroll.0 - clip_scroll.0,
+                        clip.y + clip.height - self.scroll.1 - clip_scroll.1,
+                    ],
+                )?;
+            }
+            parent = self.dom.parent(ancestor);
+        }
+
+        let point = (
+            (visible[0] + visible[2]) * 0.5,
+            (visible[1] + visible[3]) * 0.5,
+        );
+        let hit = self.hit_test(point.0, point.1)?;
+        self.node_contains(hit, node).then_some(point)
+    }
+
     pub fn scroll_to(&mut self, y: f32) {
         let before = self.scroll;
         self.scroll.1 = y;
@@ -1902,6 +1955,17 @@ where
         offset
     }
 
+    fn node_contains(&self, node: D::NodeId, ancestor: D::NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(candidate) = current {
+            if candidate == ancestor {
+                return true;
+            }
+            current = self.dom.parent(candidate);
+        }
+        false
+    }
+
     fn attribute(&self, id: D::NodeId, local: &str) -> Option<&str> {
         self.dom
             .attribute(id, &Namespace::from(""), &LocalName::from(local))
@@ -1910,6 +1974,19 @@ where
     pub fn into_dom(self) -> D {
         self.dom
     }
+}
+
+fn intersect_viewport_rect(left: [f32; 4], right: [f32; 4]) -> Option<[f32; 4]> {
+    let intersection = [
+        left[0].max(right[0]),
+        left[1].max(right[1]),
+        left[2].min(right[2]),
+        left[3].min(right[3]),
+    ];
+    (intersection.iter().all(|value| value.is_finite())
+        && intersection[0] < intersection[2]
+        && intersection[1] < intersection[3])
+        .then_some(intersection)
 }
 
 fn keyframe_properties(keyframes: &Keyframes) -> Vec<PropertyId> {
@@ -4212,6 +4289,64 @@ mod tests {
             "an already revealed target has no active nested offset to change"
         );
         assert!(!document.scroll_accessible_node_into_view(document.dom().document()));
+    }
+
+    #[test]
+    fn accessible_pointer_target_uses_the_visible_clipped_hit_descendant() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=scroller><div id=before></div><a id=target href=/next><span id=label>Open</span></a><div id=tail></div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } #scroller { width: 100px; height: 40px; overflow-y: auto; } #before { height: 30px; } #target, #label { display: block; width: 100px; height: 40px; } #tail { height: 120px; }"]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("initial clipped frame");
+        let scroller = by_id(document.dom(), "scroller");
+        let target = by_id(document.dom(), "target");
+        let label = by_id(document.dom(), "label");
+        document.nested_scroll.insert(scroller, (0.0, 45.0));
+
+        let point = document
+            .accessible_pointer_target(target)
+            .expect("the partly visible link has a retained pointer target");
+        assert!(point.1 > 0.0 && point.1 < 25.0, "visible point: {point:?}");
+        assert_eq!(
+            document.hit_test(point.0, point.1),
+            Some(label),
+            "the chosen point resolves to the link's painted descendant"
+        );
+        assert_eq!(
+            document.click_at(point.0, point.1),
+            ClickOutcome::Navigate("/next".to_owned()),
+            "ordinary Livery pointer activation follows the same retained hit"
+        );
+
+        document.nested_scroll.insert(scroller, (0.0, 71.0));
+        assert_eq!(
+            document.accessible_pointer_target(target),
+            None,
+            "a fully clipped link has no host-guessable pointer coordinate"
+        );
+
+        let mut blocked_dom = ScriptedDom::from_serialized_document(
+            "<html><body><a id=target href=/blocked>Blocked</a></body></html>",
+        );
+        let mut blocked_mutations = Vec::new();
+        blocked_dom.drain_mutations(&mut blocked_mutations);
+        let mut blocked = LiveryDocument::new(
+            blocked_dom,
+            StyleSet::cambium(&["html, body { margin: 0; padding: 0; } #target { display: block; width: 100px; height: 40px; pointer-events: none; }"]),
+            Device::screen(160.0, 120.0),
+        );
+        blocked.frame(160, 120).expect("pointer-events frame");
+        assert_eq!(
+            blocked.accessible_pointer_target(by_id(blocked.dom(), "target")),
+            None,
+            "a pointer-events-disabled target cannot mint a host pointer action"
+        );
     }
 
     #[test]

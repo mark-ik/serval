@@ -319,6 +319,24 @@ impl LiveryDocumentSession {
         self.doc.dom().is_live(node) && self.doc.scroll_accessible_node_into_view(node)
     }
 
+    /// Resolve an accessible node to a visible retained pointer target in CSS
+    /// space.
+    ///
+    /// Pelt owns its composite-tree identity and session-generation checks.
+    /// Livery owns clipping and hit testing, so a failed query is inert rather
+    /// than a request for the host to guess coordinates from accessibility
+    /// bounds. The host owns the CSS-to-presentation transform before it sends
+    /// ordinary press and release input back through this session.
+    pub fn accessible_pointer_target(&self, local_node_id: u64) -> Option<(f32, f32)> {
+        let raw_node_id = usize::try_from(local_node_id).ok()?;
+        let node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        self.doc
+            .dom()
+            .is_live(node)
+            .then_some(node)
+            .and_then(|node| self.doc.accessible_pointer_target(node))
+    }
+
     /// The applied page-zoom factor in presentation pixels per CSS pixel.
     ///
     /// A host composing Livery's retained semantics into a larger tree uses
@@ -3009,6 +3027,66 @@ mod tests {
         assert!(
             session.editor.is_none(),
             "rejected controls do not take edit focus"
+        );
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_session_projects_accessible_pointer_targets_in_css_space() {
+        let engine = LiverySessionEngine::new(NoFetch);
+        let request = SessionSpawnRequest::new("https://example.test/")
+            .with_body(
+                r#"<html><head><style>
+                    html, body { margin: 0; padding: 0; }
+                    #scroller { width: 100px; height: 40px; overflow-y: auto; }
+                    #before { height: 30px; }
+                    #target, #label { display: block; width: 100px; height: 40px; }
+                    #tail { height: 120px; }
+                </style></head><body><div id="scroller"><div id="before"></div>
+                <a id="target" href="/next"><span id="label">Open</span></a>
+                <div id="tail"></div></div></body></html>"#,
+            )
+            .with_viewport(320, 160);
+        let mut boxed = engine.spawn(&request).expect("Livery session spawns");
+        boxed
+            .set_page_zoom(1.25)
+            .expect("Livery accepts the focused page zoom");
+        let _scene = boxed.frame(320, 160);
+        let session = boxed
+            .as_any()
+            .downcast_mut::<LiveryDocumentSession>()
+            .expect("Livery engine retains its concrete session");
+        let scroller = livery_node_with_id(session, "scroller");
+        let target = livery_node_with_id(session, "target");
+        let target_id = session.document().dom().opaque_id(target);
+        assert!(session.doc.scroll_at(5.0, 5.0, 0.0, 45.0));
+
+        let css = session
+            .document()
+            .accessible_pointer_target(target)
+            .expect("partly visible link has a CSS-space target");
+        assert_eq!(
+            session.accessible_pointer_target(target_id),
+            Some(css),
+            "the concrete session preserves Livery's CSS coordinate ownership"
+        );
+        assert_eq!(
+            session.click_at(css.0 * 1.25, css.1 * 1.25),
+            SessionClick::Navigate("/next".to_owned()),
+            "the host-side CSS-to-presentation transform reaches normal Livery input"
+        );
+        assert!(
+            session
+                .document()
+                .element_scroll()
+                .get(&scroller)
+                .is_some_and(|&(_, y)| y > 0.0),
+            "activation leaves the nested retained scroll state in Livery"
+        );
+        assert_eq!(
+            session.accessible_pointer_target(u64::MAX),
+            None,
+            "foreign local ids are inert"
         );
     }
 

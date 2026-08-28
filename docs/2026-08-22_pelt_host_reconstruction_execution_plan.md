@@ -1199,12 +1199,12 @@ It does not add a generic child-engine reveal contract or widen pointer action
 routing for Reader, Scripted, Smolweb, or native surfaces.
 
 When a Livery descendant has a nonzero retained nested-scroll ancestor,
-`genet-render` advertises `ScrollIntoView` while continuing to withhold `Click`
-and `SetValue`. Livery owns the reveal: it visits active scrollports from inner
-to outer, applies a nearest-edge clamped adjustment, invalidates only its paint
-cache, and leaves the root viewport to its existing host path. A node with no
-laid fragment, no active retained scrollport, or an already satisfied reveal is
-inert.
+`genet-render` advertises `ScrollIntoView` and continues to withhold `Click`
+and `SetValue` in its local tree. Livery owns the reveal: it visits active
+scrollports from inner to outer, applies a nearest-edge clamped adjustment,
+invalidates only its paint cache, and leaves the root viewport to its existing
+host path. A node with no laid fragment, no active retained scrollport, or an
+already satisfied reveal is inert.
 
 Pelt retains the global child ID, tile, and session generation. Its action map
 routes only `ScrollIntoView` to the typed Livery session after rechecking both
@@ -1223,9 +1223,9 @@ cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
 ```
 
 This is evidence for an installed Pelt action-map route, not for an OS screen
-reader emitting a request. The next nested-pointer slice needs a separate
-clip-aware coordinate proof before it may restore `Click`; `SetValue` remains
-withheld in this scrolled state.
+reader emitting a request. The follow-up `accessibility-click` receipt records
+the separate clip-aware coordinate proof needed to restore `Click`; `SetValue`
+remains withheld in this scrolled state.
 
 Recorded 2026-08-28: focused Livery reveal geometry passed 1 test,
 `genet-render` nested-scroll accessibility passed 2, the GPU-free Pelt
@@ -1236,6 +1236,55 @@ through the focused Livery nested scrollport and preserved the sibling tile`;
 its compositor digest was `fb9210fd3497705e`. The capture shows the focused
 tile's revealed link and its sibling's unchanged scrollport inside retained
 Chrome.
+
+#### P7 follow-up: clip-aware nested Livery Click
+
+**Status:** complete 2026-08-28 for retained Livery nested-link activation. It
+does not widen pointer routing for Reader, Scripted, Smolweb, or native
+surfaces, and `SetValue` remains withheld while a nested scrollport is active.
+
+For a retained nested node, Pelt may restore `Click` only when the Livery
+session returns a concrete CSS-space pointer target for that live node and the
+composite tree already marks that node enabled and clickable. Disabled nodes do
+not advertise `ScrollIntoView` or regain `Click` through this path.
+Livery's point is already viewport-relative, so Pelt applies only the
+page-zoom and content-hole origin, then requires the result to remain inside
+the focused tile. AccessKit bounds are descriptive and are not used as an
+activation oracle. The host sends the ordinary primary press first and sends
+release only when that press was handled; tile and session-generation checks
+run before both transitions. At dispatch Pelt re-queries the live Livery
+session after those guards, so a wheel scroll within the same session gets a
+fresh hit-tested point or is rejected rather than reusing old-tree coordinates.
+Pelt also rejects the semantic activation while any ordinary physical pointer
+capture is active, so an accessibility request cannot borrow another tile's
+gesture route.
+
+The twin-tile receipt is named `accessibility-click` and uses the existing
+`p7-accessibility-scroll` fixture. It scrolls tile 1, routes
+`ScrollIntoView`, rebuilds the tree, verifies the revealed link has a
+clip-aware Click target, activates it through ordinary Pelt pointer input,
+rejects the retained pre-navigation node after the session generation changes,
+proves tile 2 remains on the source document, and waits for tile 1 to settle
+`Ready` before returning the receipt assertion and allowing the headed capture.
+
+Livery owns `accessible_pointer_target`: it intersects the retained target with
+the viewport and every overflow clip, then accepts its interior CSS-space point
+only when Livery's scroll-aware hit test resolves to that node or a descendant.
+The concrete Livery session rejects a non-live local ID and preserves that CSS
+point unchanged. Pelt remains responsible for the presentation transform and
+the guarded ordinary press/release route.
+
+Recorded 2026-08-28: the focused Livery clip geometry test passed 1, the
+focused Livery session zoom-boundary test passed 1, the disabled nested-control
+projection test passed 1, the GPU-free Pelt twin-tile receipt passed 1, the
+root-scroll plus zoom and fresh-geometry action regression passed 1, the
+cross-tile physical-capture rejection passed 1, and the Pelt viewer parser suite
+passed 4. The headed Windows run installed the bridge, completed after seven
+redraws at 960x640, and reported `Pelt revealed a nested Livery target, routed
+its clip-aware Click through ordinary pointer input, and rejected stale tile
+actions`; its compositor digest was `4dd03b9beb65b435`. The capture shows the
+settled destination in tile 1 and the untouched source document in tile 2 inside
+retained Chrome.
 
 ### Reader in workspace
 
@@ -1359,9 +1408,10 @@ Reader-in-workspace receipt, and the two Tabard consumers are complete. The
 AccessKit tree now composes the retained Livery child tree for its focused
 supported lane; Reader, Scripted, Smolweb, and native child trees still need
 their own namespace and action contracts. Livery's native text-control
-projection and mutation, plus nested-scroll ScrollIntoView routing, are
-complete; nested pointer activation still needs its own clip-aware coordinate
-receipt before Pelt can widen that child lane. Pelt now owns an
+projection and mutation, nested-scroll ScrollIntoView routing, and clip-aware
+nested link activation are complete. `SetValue` remains withheld while a nested
+scrollport is active; extending that editable-control path needs a separate
+input and selection receipt. Pelt now owns an
 optional caller-injected local appearance store; system-theme integration,
 multi-window synchronization, and a canonical
 configuration-directory policy remain distinct work. The held-source handoff

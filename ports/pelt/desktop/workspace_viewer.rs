@@ -66,6 +66,7 @@ const ACCESSIBILITY_ADDRESS_WORKSPACE_ASSERTION: &str = "installed AccessKit add
 const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focused Livery child tree through its retained content hole; Focus stayed virtual and Click navigated only that session";
 const ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION: &str = "Pelt routed a Livery text SetValue through its live child namespace, reprojected the value, and submitted only the focused tile";
 const ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION: &str = "Pelt routed Livery ScrollIntoView through the focused Livery nested scrollport and preserved the sibling tile";
+const ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION: &str = "Pelt revealed a nested Livery target, routed its clip-aware Click through ordinary pointer input, and rejected stale tile actions";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
@@ -108,6 +109,8 @@ pub enum WorkspaceReceipt {
     /// P7's nested-scroll Livery ScrollIntoView route through Pelt's
     /// composite accessibility namespace.
     AccessibilityScroll,
+    /// P7's clip-aware nested Livery Click route after an explicit reveal.
+    AccessibilityClick,
     /// P6's compact Chrome layout at a small logical viewport.
     NarrowChrome,
     /// P6's actual high-DPI Chrome input and capture alignment.
@@ -136,6 +139,7 @@ impl WorkspaceReceipt {
             Self::AccessibilityChildren => "accessibility-children",
             Self::AccessibilityEdit => "accessibility-edit",
             Self::AccessibilityScroll => "accessibility-scroll",
+            Self::AccessibilityClick => "accessibility-click",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
@@ -163,6 +167,7 @@ impl WorkspaceReceipt {
                 | Self::AccessibilityChildren
                 | Self::AccessibilityEdit
                 | Self::AccessibilityScroll
+                | Self::AccessibilityClick
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
@@ -375,6 +380,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::AccessibilityEdit
                 | WorkspaceReceipt::AccessibilityScroll
+                | WorkspaceReceipt::AccessibilityClick
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -993,6 +999,12 @@ struct LiveryA11yAction {
     session_generation: u64,
     local_node: AccessNodeId,
     content_rect: WorkspaceRect,
+    /// Whether the composite tree advertised Click for this action. A pointer
+    /// point alone is never authority to activate a disabled or hidden node.
+    click_enabled: bool,
+    /// The point published with the composite tree proves that Click was
+    /// advertised. Dispatch queries Livery again instead of trusting these
+    /// coordinates after a later scroll in the same session.
     click_point: Option<(f32, f32)>,
 }
 
@@ -1024,8 +1036,10 @@ struct LiveryA11yChild {
     transform: Affine,
     content_rect: WorkspaceRect,
     content_origin: (f32, f32),
-    scroll: (f32, f32),
     page_zoom: f32,
+    /// Livery-owned CSS hit points for semantic Click targets. AccessKit
+    /// bounds remain presentation data and are not a pointer-routing oracle.
+    pointer_targets: HashMap<AccessNodeId, (f32, f32)>,
 }
 
 /// Per-window platform bridge and retained composite action map.
@@ -1474,6 +1488,19 @@ impl WorkspaceApp {
             let Some(root) = tree.tree.as_ref().map(|tree| tree.root) else {
                 continue;
             };
+            let pointer_targets = tree
+                .nodes
+                .iter()
+                .filter_map(|(local_node, node)| {
+                    (node.supports_action(Action::Click)
+                        || node.supports_action(Action::ScrollIntoView))
+                    .then(|| {
+                        session
+                            .accessible_pointer_target(local_node.0)
+                            .map(|point| (*local_node, point))
+                    })?
+                })
+                .collect();
             let scroll = document.scroll();
             let transform = Affine::translate((f64::from(content.x), f64::from(content.y)))
                 * Affine::scale(f64::from(page_zoom))
@@ -1487,8 +1514,8 @@ impl WorkspaceApp {
                 transform,
                 content_rect: content,
                 content_origin: (content.x, content.y),
-                scroll,
                 page_zoom,
+                pointer_targets,
             });
         }
         (live_sessions, children)
@@ -1540,8 +1567,8 @@ impl WorkspaceApp {
                 transform,
                 content_rect,
                 content_origin,
-                scroll,
                 page_zoom,
+                pointer_targets,
             } = child;
             let mut child_ids = HashMap::new();
             for (local_id, _) in &child_tree.nodes {
@@ -1580,24 +1607,33 @@ impl WorkspaceApp {
                 if local_id == local_root {
                     node.set_transform(transform);
                 }
-                let click_point = node
-                    .supports_action(Action::Click)
-                    .then(|| {
-                        let bounds = node.bounds()?;
-                        let center_x = ((bounds.x0 + bounds.x1) / 2.0) as f32;
-                        let center_y = ((bounds.y0 + bounds.y1) / 2.0) as f32;
-                        Some((
-                            content_origin.0 + (center_x - scroll.0) * page_zoom,
-                            content_origin.1 + (center_y - scroll.1) * page_zoom,
-                        ))
+                let click_point = pointer_targets
+                    .get(&local_id)
+                    .copied()
+                    .map(|(x, y)| {
+                        (
+                            content_origin.0 + x * page_zoom,
+                            content_origin.1 + y * page_zoom,
+                        )
                     })
-                    .flatten()
                     .filter(|&(x, y)| content_rect.contains(x, y));
-                if node.supports_action(Action::Click) && click_point.is_none() {
-                    // This slice has root-scroll geometry but does not yet own
-                    // ScrollIntoView. Do not advertise a click that would
-                    // target another tile. Livery separately withholds Click
-                    // below active nested scrollers.
+                if !node.is_disabled()
+                    && click_point.is_some()
+                    && node.supports_action(Action::ScrollIntoView)
+                {
+                    // A revealed nested target may advertise only
+                    // ScrollIntoView in the renderer's conservative tree.
+                    // Promote Click only after Livery supplies a clip-aware
+                    // point that remains in this tile's content hole.
+                    node.add_action(Action::Click);
+                }
+                if node.is_disabled()
+                    || (node.supports_action(Action::Click) && click_point.is_none())
+                {
+                    // A node's AccessKit bounds are descriptive, not a safe
+                    // activation point. Livery owns clip-aware target
+                    // selection; Pelt only promotes Click when that query
+                    // returns a point that remains inside this tile's hole.
                     node.remove_action(Action::Click);
                 }
                 if node.supports_action(Action::Focus)
@@ -1605,6 +1641,7 @@ impl WorkspaceApp {
                     || node.supports_action(Action::SetValue)
                     || node.supports_action(Action::ScrollIntoView)
                 {
+                    let click_enabled = node.supports_action(Action::Click);
                     actions.insert(
                         global_id,
                         WorkspaceA11yActionTarget::Livery(LiveryA11yAction {
@@ -1612,6 +1649,7 @@ impl WorkspaceApp {
                             session_generation,
                             local_node: local_id,
                             content_rect,
+                            click_enabled,
                             click_point,
                         }),
                     );
@@ -1653,7 +1691,8 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::AccessibilityAddress
                     | WorkspaceReceipt::AccessibilityChildren
                     | WorkspaceReceipt::AccessibilityEdit
-                    | WorkspaceReceipt::AccessibilityScroll,
+                    | WorkspaceReceipt::AccessibilityScroll
+                    | WorkspaceReceipt::AccessibilityClick,
             )
         ) && self.accessibility.status() != BridgeStatus::Installed
         {
@@ -1679,6 +1718,43 @@ impl WorkspaceApp {
             .fold(false, |redraw, request| {
                 self.apply_accessibility_request(request) || redraw
             })
+    }
+
+    /// Revalidate a queued Livery Click against current retained geometry.
+    ///
+    /// `click_point` in the action map proves the old tree advertised Click,
+    /// but a scroll can move or clip the node without replacing its session.
+    /// Livery returns a fresh viewport CSS point only after its own clip-aware
+    /// hit test succeeds; Pelt applies the current presentation transform and
+    /// keeps tile/session/content-hole authority here.
+    fn current_livery_accessibility_click_point(
+        &self,
+        target: LiveryA11yAction,
+    ) -> Option<(f32, f32)> {
+        let (css_x, css_y, page_zoom) = {
+            let controller = self.workspace.controller(target.tile)?;
+            if controller.session_generation() != target.session_generation {
+                return None;
+            }
+            let session = controller
+                .session_as_any_ref()
+                .downcast_ref::<genet_documents::LiveryDocumentSession>()?;
+            let page_zoom = session.page_zoom();
+            if !page_zoom.is_finite() || page_zoom <= 0.0 {
+                return None;
+            }
+            let (css_x, css_y) = session.accessible_pointer_target(target.local_node.0)?;
+            (css_x, css_y, page_zoom)
+        };
+        let content_rect = self.workspace.content_rect(target.tile)?;
+        if content_rect != target.content_rect {
+            return None;
+        }
+        let point = (
+            content_rect.x + css_x * page_zoom,
+            content_rect.y + css_y * page_zoom,
+        );
+        content_rect.contains(point.0, point.1).then_some(point)
     }
 
     fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
@@ -1747,14 +1823,15 @@ impl WorkspaceApp {
                 {
                     return false;
                 }
-                let Some((x, y)) = target.click_point else {
-                    return false;
-                };
-                if self.workspace.content_rect(target.tile) != Some(target.content_rect)
-                    || !target.content_rect.contains(x, y)
+                if !target.click_enabled
+                    || target.click_point.is_none()
+                    || self.workspace.has_active_pointer_capture()
                 {
                     return false;
                 }
+                let Some((x, y)) = self.current_livery_accessibility_click_point(target) else {
+                    return false;
+                };
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
                 self.clear_chrome_appearance();
@@ -1766,9 +1843,11 @@ impl WorkspaceApp {
                     modifiers: self.modifiers,
                 });
                 let mut redraw = pressed.redraw;
+                let press_handled = pressed.handled;
                 self.apply_effect(pressed);
-                if self.workspace.document_session_generation(target.tile)
-                    != Some(target.session_generation)
+                if !press_handled
+                    || self.workspace.document_session_generation(target.tile)
+                        != Some(target.session_generation)
                     || self.workspace.content_rect(target.tile) != Some(target.content_rect)
                 {
                     return redraw;
@@ -2520,6 +2599,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::AccessibilityChildren
                         | WorkspaceReceipt::AccessibilityEdit
                         | WorkspaceReceipt::AccessibilityScroll
+                        | WorkspaceReceipt::AccessibilityClick
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
@@ -2804,6 +2884,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::AccessibilityScroll => {
                 self.drive_accessibility_scroll_workspace_receipt_step()
             },
+            WorkspaceReceipt::AccessibilityClick => {
+                self.drive_accessibility_click_workspace_receipt_step()
+            },
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
@@ -2825,6 +2908,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::AccessibilityChildren
                     | WorkspaceReceipt::AccessibilityEdit
                     | WorkspaceReceipt::AccessibilityScroll
+                    | WorkspaceReceipt::AccessibilityClick
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
@@ -4778,6 +4862,7 @@ impl WorkspaceApp {
                 };
                 if action.tile != tile
                     || action.session_generation != 2
+                    || !action.click_enabled
                     || action.click_point.is_none()
                     || self.accessibility.focus.is_some()
                 {
@@ -4875,6 +4960,151 @@ impl WorkspaceApp {
             },
             _ => return Ok(Some(ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION.to_owned())),
         }
+        Ok(None)
+    }
+
+    fn drive_accessibility_click_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let tile = TileId(1);
+        let sibling = TileId(2);
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 2)?;
+                if self.accessibility.status() != BridgeStatus::Installed {
+                    return Err(
+                        "nested-click receipt began without an installed platform bridge"
+                            .to_owned(),
+                    );
+                }
+                let content = self
+                    .workspace
+                    .content_rect(tile)
+                    .ok_or("nested-click receipt has no tile-one content hole")?;
+                if !self.workspace.scroll_at(
+                    content.x + content.width.min(180.0) * 0.5,
+                    content.y + content.height.min(100.0) * 0.5,
+                    0.0,
+                    96.0,
+                ) {
+                    return Err(
+                        "nested-click fixture did not accept the inducing scroll".to_owned()
+                    );
+                }
+            },
+            1 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let link = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Open nested destination",
+                    Role::Link,
+                )?;
+                let supports = |action| {
+                    tree.nodes
+                        .iter()
+                        .find(|(id, _)| *id == link)
+                        .is_some_and(|(_, node)| node.supports_action(action))
+                };
+                if !supports(Action::ScrollIntoView) || supports(Action::Click) {
+                    return Err(
+                        "nested-click target advertised the wrong pre-reveal actions".to_owned(),
+                    );
+                }
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::ScrollIntoView,
+                    target_node: link,
+                    data: None,
+                }) {
+                    return Err("nested-click receipt could not route ScrollIntoView".to_owned());
+                }
+            },
+            2 => {
+                let tree = self.prepare_accessibility_tree()?;
+                let link = livery_a11y_node_for_tile(
+                    &tree,
+                    &self.accessibility,
+                    tile,
+                    "Open nested destination",
+                    Role::Link,
+                )?;
+                let node = tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == link)
+                    .map(|(_, node)| node)
+                    .ok_or("nested-click receipt lost its revealed link")?;
+                let action = self
+                    .accessibility
+                    .action_for(link)
+                    .ok_or("nested-click target has no Pelt action target")?;
+                let WorkspaceA11yActionTarget::Livery(action) = action else {
+                    return Err("nested-click target was routed through Frisket".to_owned());
+                };
+                if !node.supports_action(Action::Click)
+                    || !action.click_enabled
+                    || action.click_point.is_none()
+                    || action.tile != tile
+                    || action.session_generation != 1
+                {
+                    return Err(
+                        "nested-click target did not publish a clip-aware tile-local Click"
+                            .to_owned(),
+                    );
+                }
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: link,
+                    data: None,
+                }) {
+                    return Err(
+                        "nested-click receipt could not route ordinary pointer Click".to_owned(),
+                    );
+                }
+                if self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::Click,
+                    target_node: link,
+                    data: None,
+                }) {
+                    return Err(
+                        "nested-click receipt accepted a stale pre-navigation action".to_owned(),
+                    );
+                }
+                let focused = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("nested-click receipt lost its focused controller")?;
+                if !focused
+                    .address()
+                    .replace('\\', "/")
+                    .ends_with("/result.html")
+                    || focused.session_generation() != 2
+                    || !self.workspace.controller(sibling).is_some_and(|other| {
+                        other.address().replace('\\', "/").ends_with("/index.html")
+                    })
+                {
+                    return Err(
+                        "nested-click receipt changed the wrong tile or retained the old session"
+                            .to_owned(),
+                    );
+                }
+                self.receipt_step = 3;
+            },
+            3 => {
+                let focused = self
+                    .workspace
+                    .controller(tile)
+                    .ok_or("nested-click receipt lost its focused controller while settling")?;
+                if !matches!(focused.document_state(), PeltDocumentState::Ready) {
+                    return Ok(None);
+                }
+                self.receipt_step = self.receipt_step.saturating_add(1);
+                return Ok(Some(ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION.to_owned())),
+        }
+        self.receipt_step = self.receipt_step.saturating_add(1);
         Ok(None)
     }
 
@@ -7659,6 +7889,31 @@ mod tests {
             action.content_rect.contains(click_point.0, click_point.1),
             "the transformed child click remains inside its own content hole"
         );
+        let (css_point, point_zoom) = {
+            let controller = app
+                .workspace
+                .controller(TileId(1))
+                .expect("first child controller exposes its live point");
+            let session = controller
+                .session_as_any_ref()
+                .downcast_ref::<genet_documents::LiveryDocumentSession>()
+                .expect("first child remains a Livery session");
+            (
+                session
+                    .accessible_pointer_target(action.local_node.0)
+                    .expect("visible child link has a clip-aware CSS point"),
+                session.page_zoom(),
+            )
+        };
+        let expected_click_point = (
+            content.x + css_point.0 * point_zoom,
+            content.y + css_point.1 * point_zoom,
+        );
+        assert!(
+            (click_point.0 - expected_click_point.0).abs() < 0.01
+                && (click_point.1 - expected_click_point.1).abs() < 0.01,
+            "Livery returns a viewport CSS point, so Pelt applies page zoom and the content origin exactly once"
+        );
 
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Focus,
@@ -7670,11 +7925,53 @@ mod tests {
             Some(WorkspaceA11yFocus::Livery(link)),
             "Focus changes only Pelt's virtual child focus"
         );
-        assert!(app.apply_accessibility_request(A11yActionRequest {
-            action: Action::Click,
-            target_node: link,
-            data: None,
-        }));
+        assert!(
+            app.workspace.scroll_at(
+                content.x + content.width / 2.0,
+                content.y + content.height / 2.0,
+                0.0,
+                64.0,
+            ),
+            "a later root wheel moves the live child without replacing its session"
+        );
+        let (fresh_css_point, fresh_scroll, fresh_zoom) = {
+            let controller = app
+                .workspace
+                .controller(TileId(1))
+                .expect("first child controller remains live after a wheel");
+            let session = controller
+                .session_as_any_ref()
+                .downcast_ref::<genet_documents::LiveryDocumentSession>()
+                .expect("first child remains a Livery session after a wheel");
+            (
+                session
+                    .accessible_pointer_target(action.local_node.0)
+                    .expect("the still-visible child link has a fresh CSS point"),
+                session.document().scroll(),
+                session.page_zoom(),
+            )
+        };
+        assert_ne!(
+            fresh_scroll, scroll,
+            "the queued action spans a real root-scroll geometry change"
+        );
+        let fresh_click_point = (
+            content.x + fresh_css_point.0 * fresh_zoom,
+            content.y + fresh_css_point.1 * fresh_zoom,
+        );
+        assert!(
+            (fresh_click_point.0 - click_point.0).abs() > 0.01
+                || (fresh_click_point.1 - click_point.1).abs() > 0.01,
+            "the fresh CSS point differs from the point published in the old tree"
+        );
+        assert!(
+            app.apply_accessibility_request(A11yActionRequest {
+                action: Action::Click,
+                target_node: link,
+                data: None,
+            }),
+            "a queued Click re-queries live Livery geometry after the wheel"
+        );
         let controller = app
             .workspace
             .controller(TileId(1))
@@ -7726,6 +8023,118 @@ mod tests {
             .expect("replacement session has its own child link");
         assert_ne!(link, replacement_link);
         assert_eq!(app.accessibility.focus, None);
+    }
+
+    #[test]
+    fn livery_accessibility_click_waits_for_a_physical_pointer_capture() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p7-accessibility-children/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let urls = vec![fixture.clone(), fixture.clone()];
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("capture fixture contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("capture fixtures open");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::Accessibility, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+        app.refresh_chrome();
+        let (width, height) = app.logical_size();
+        let pane = app
+            .frisket
+            .frame(width, height)
+            .expect("capture Frisket frame");
+        app.workspace
+            .set_content_rects(pane.content_rects.iter().copied());
+        let _ = app.workspace.pump();
+        let _ = app.workspace.frame();
+        app.workspace.mark_visible_documents_presented();
+
+        let tree = app
+            .prepare_accessibility_tree()
+            .expect("capture composite accessibility tree");
+        let first_link = livery_a11y_node_for_tile(
+            &tree,
+            &app.accessibility,
+            TileId(1),
+            "Open child destination",
+            Role::Link,
+        )
+        .expect("first tile link");
+        let second_link = livery_a11y_node_for_tile(
+            &tree,
+            &app.accessibility,
+            TileId(2),
+            "Open child destination",
+            Role::Link,
+        )
+        .expect("second tile link");
+        let second_action = match app
+            .accessibility
+            .action_for(second_link)
+            .expect("second tile link has a Pelt action")
+        {
+            WorkspaceA11yActionTarget::Livery(action) => action,
+            WorkspaceA11yActionTarget::Frisket(_) => {
+                panic!("second tile link must use Livery routing")
+            },
+        };
+        assert!(second_action.click_enabled);
+        let (x, y) = second_action
+            .click_point
+            .expect("second tile link has a concrete pointer point");
+        let held = app.workspace.input(SessionInput::PointerButton {
+            x,
+            y,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Pressed,
+            modifiers: SessionModifiers::default(),
+        });
+        assert!(held.handled, "ordinary second-tile press starts capture");
+        assert!(
+            app.workspace.has_active_pointer_capture(),
+            "the workspace records the physical pointer capture"
+        );
+        assert!(
+            !app.apply_accessibility_request(A11yActionRequest {
+                action: Action::Click,
+                target_node: first_link,
+                data: None,
+            }),
+            "an accessibility Click cannot borrow another tile's physical capture"
+        );
+        for tile in [TileId(1), TileId(2)] {
+            assert!(
+                app.workspace.controller(tile).is_some_and(|controller| {
+                    controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/index.html")
+                }),
+                "capture rejection leaves tile {} on its source document",
+                tile.0
+            );
+        }
     }
 
     #[test]
@@ -8081,8 +8490,53 @@ mod tests {
         assert_ne!(bounds(&revealed, revealed_link), before_bounds);
         assert!(supports(&revealed, revealed_link, Action::ScrollIntoView));
         assert!(
-            !supports(&revealed, revealed_link, Action::Click),
-            "nested pointer activation remains outside this ScrollIntoView slice"
+            supports(&revealed, revealed_link, Action::Click),
+            "a revealed nested target regains Click only after clip-aware Livery promotion"
+        );
+        assert!(
+            matches!(
+                app.accessibility.action_for(revealed_link),
+                Some(WorkspaceA11yActionTarget::Livery(action))
+                    if action.click_enabled && action.click_point.is_some()
+            ),
+            "a revealed nested target has a concrete tile-local pointer point"
+        );
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: revealed_link,
+            data: None,
+        }));
+        assert!(
+            !app.apply_accessibility_request(A11yActionRequest {
+                action: Action::Click,
+                target_node: revealed_link,
+                data: None,
+            }),
+            "the retained pre-navigation action is stale after Click replaces the session"
+        );
+        assert!(
+            app.workspace
+                .controller(TileId(1))
+                .is_some_and(|controller| {
+                    controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/result.html")
+                        && controller.session_generation() == 2
+                }),
+            "ordinary pointer Click navigates only the focused tile"
+        );
+        assert!(
+            app.workspace
+                .controller(TileId(2))
+                .is_some_and(|controller| {
+                    controller
+                        .address()
+                        .replace('\\', "/")
+                        .ends_with("/index.html")
+                        && controller.session_generation() == 1
+                }),
+            "nested Click leaves the sibling tile's session untouched"
         );
     }
 
