@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "cd4e8ab840cc3a5f17a8719fa7f35b46a4745e5e74c3ee40d6db820f15b9c6f9",
+  "runner_sha256": "73a476e96efc44d16b16f59cd8175f10698438be3eea42826634e7056408918e",
   "subset": "css/css-flexbox/flexbox-writing-mode-003.html",
   "tests": {
     "css/css-flexbox/flexbox-writing-mode-003.html": "pass"

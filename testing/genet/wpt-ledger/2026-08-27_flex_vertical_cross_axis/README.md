@@ -1,8 +1,8 @@
 # Vertical flex cross-axis receipt
 
-Source: `560627d0152`; runner: `C:\t\genet-row18-vertical-flex-runner-560627d0152.exe`; runner SHA-256: `cd4e8ab840cc3a5f17a8719fa7f35b46a4745e5e74c3ee40d6db820f15b9c6f9`; manifest SHA-256: `d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422`.
+Source: `63950e568b2`; runner: `C:\t\genet-row18-vertical-flex-runner-63950e568b2.exe`; runner SHA-256: `73a476e96efc44d16b16f59cd8175f10698438be3eea42826634e7056408918e`; manifest SHA-256: `d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422`.
 
-The runner was released and frozen with isolated `CARGO_HOME` and `CARGO_TARGET_DIR`, `--locked --offline -j1`; the checked-in JSON files are raw runner outputs. Each case used `genet-wpt reftest css/css-flexbox/<case> --renderer livery --expectation-policy exact --write-expectations <ledger>/<case>.json -v`.
+The runner was released and frozen with isolated `CARGO_HOME` and `CARGO_TARGET_DIR`, `--locked --offline -j1`; the checked-in JSON files are raw runner outputs. The ignored `Cargo.lock` SHA-256 is `BDBE23A467DCFCA4260E74F42587E8929B775B1EC39DE1E98DBA79529ACFB661`; it was regenerated offline after current-main Pelt manifest changes before the successful locked build. Each case used `genet-wpt reftest css/css-flexbox/<case> --renderer livery --expectation-policy exact --write-expectations <ledger>/<case>.json -v`.
 
 | Cases | Result |
 |---|---|
