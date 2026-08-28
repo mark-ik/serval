@@ -47,8 +47,9 @@ use taffy::{
     },
     style::{
         AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, BoxSizing, Display,
-        FlexBasis as TaffyFlexBasis, FlexDirection, FlexWrap, Float as TaffyFloat, GridAutoFlow,
-        GridPlacement, GridTemplateComponent, JustifyContent, Overflow, Position, Style,
+        Direction as TaffyDirection, FlexBasis as TaffyFlexBasis, FlexDirection, FlexWrap,
+        Float as TaffyFloat, GridAutoFlow, GridPlacement, GridTemplateComponent, JustifyContent,
+        Overflow, Position, Style,
     },
 };
 
@@ -7668,6 +7669,11 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
     };
     let flex_flow = flex_flow_axes(computed);
     let flex_direction = physical_flex_direction(computed.flex_direction, flex_flow);
+    let direction = if computed.display == CssDisplay::Flex {
+        physical_flex_cross_axis_direction(computed.flex_direction, flex_direction, flex_flow)
+    } else {
+        TaffyDirection::Ltr
+    };
     let float = match computed.float {
         CssFloat::None => TaffyFloat::None,
         CssFloat::Left => TaffyFloat::Left,
@@ -7726,6 +7732,7 @@ fn to_taffy_style(computed: &ComputedValues, font_size: f32) -> Style {
             },
         },
         flex_direction,
+        direction,
         flex_wrap: match computed.flex_wrap {
             CssFlexWrap::NoWrap => FlexWrap::NoWrap,
             CssFlexWrap::Wrap => FlexWrap::Wrap,
@@ -7830,6 +7837,32 @@ fn physical_flex_main_axis_start(direction: CssFlexDirection, flow: FlowAxes) ->
     match direction {
         CssFlexDirection::Row | CssFlexDirection::RowReverse => flow.inline_start(),
         CssFlexDirection::Column | CssFlexDirection::ColumnReverse => flow.block_start(),
+    }
+}
+
+/// Taffy uses `direction` only for a physical column's horizontal cross axis.
+/// Keep it Ltr unless the CSS flex cross-start is the physical right edge: the
+/// one targeted Rtl case preserves `start`/`end` and lets Taffy's existing
+/// wrap-reverse XOR keep flex-relative alignment and line order in sync.
+/// Physical-row containers with a vertical cross axis, and mixed-writing-mode
+/// baseline alignment, need their own lowering rather than this direction bit.
+fn physical_flex_cross_axis_direction(
+    direction: CssFlexDirection,
+    physical_direction: FlexDirection,
+    flow: FlowAxes,
+) -> TaffyDirection {
+    let cross_start = match direction {
+        CssFlexDirection::Row | CssFlexDirection::RowReverse => flow.block_start(),
+        CssFlexDirection::Column | CssFlexDirection::ColumnReverse => flow.inline_start(),
+    };
+    if matches!(
+        physical_direction,
+        FlexDirection::Column | FlexDirection::ColumnReverse
+    ) && cross_start == PhysicalSide::Right
+    {
+        TaffyDirection::Rtl
+    } else {
+        TaffyDirection::Ltr
     }
 }
 
@@ -14574,6 +14607,107 @@ mod tests {
                 height: length(11.0),
             }
         );
+    }
+
+    #[test]
+    fn flex_cross_axis_projects_logical_start_and_wrap_reversal() {
+        let cases = [
+            (
+                CssWritingMode::VerticalRl,
+                CssDirection::Ltr,
+                TaffyDirection::Rtl,
+            ),
+            (
+                CssWritingMode::VerticalRl,
+                CssDirection::Rtl,
+                TaffyDirection::Rtl,
+            ),
+            (
+                CssWritingMode::VerticalLr,
+                CssDirection::Ltr,
+                TaffyDirection::Ltr,
+            ),
+            (
+                CssWritingMode::VerticalLr,
+                CssDirection::Rtl,
+                TaffyDirection::Ltr,
+            ),
+        ];
+        let mut computed = ComputedValues::default();
+        computed.display = CssDisplay::Flex;
+
+        for (writing_mode, direction, expected_direction) in cases {
+            computed.writing_mode = writing_mode;
+            computed.direction = direction;
+
+            for flex_direction in [CssFlexDirection::Row, CssFlexDirection::RowReverse] {
+                computed.flex_direction = flex_direction;
+                for (wrap, expected_wrap) in [
+                    (CssFlexWrap::Wrap, FlexWrap::Wrap),
+                    (CssFlexWrap::WrapReverse, FlexWrap::WrapReverse),
+                ] {
+                    computed.flex_wrap = wrap;
+                    for (alignment, expected_items, expected_content) in [
+                        (
+                            CssAlignment::Start,
+                            AlignItemsKeyword::Start,
+                            AlignContentKeyword::Start,
+                        ),
+                        (
+                            CssAlignment::End,
+                            AlignItemsKeyword::End,
+                            AlignContentKeyword::End,
+                        ),
+                        (
+                            CssAlignment::FlexStart,
+                            AlignItemsKeyword::FlexStart,
+                            AlignContentKeyword::FlexStart,
+                        ),
+                        (
+                            CssAlignment::FlexEnd,
+                            AlignItemsKeyword::FlexEnd,
+                            AlignContentKeyword::FlexEnd,
+                        ),
+                        (
+                            CssAlignment::Center,
+                            AlignItemsKeyword::Center,
+                            AlignContentKeyword::Center,
+                        ),
+                    ] {
+                        computed.align_items = alignment;
+                        computed.align_content = alignment;
+                        let style = to_taffy_style(&computed, 16.0);
+                        assert_eq!(style.direction, expected_direction);
+                        assert_eq!(style.flex_wrap, expected_wrap);
+                        assert_eq!(
+                            style.align_items.expect("flex alignment").keyword,
+                            expected_items,
+                            "{writing_mode:?} {direction:?} {wrap:?} {alignment:?}"
+                        );
+                        assert_eq!(
+                            style.align_content.expect("line alignment").keyword,
+                            expected_content,
+                            "{writing_mode:?} {direction:?} {wrap:?} {alignment:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        computed.writing_mode = CssWritingMode::HorizontalTb;
+        computed.flex_direction = CssFlexDirection::Column;
+        for (direction, expected_direction) in [
+            (CssDirection::Ltr, TaffyDirection::Ltr),
+            (CssDirection::Rtl, TaffyDirection::Rtl),
+        ] {
+            computed.direction = direction;
+            assert_eq!(to_taffy_style(&computed, 16.0).direction, expected_direction);
+        }
+
+        computed.display = CssDisplay::Block;
+        computed.writing_mode = CssWritingMode::VerticalRl;
+        computed.direction = CssDirection::Ltr;
+        assert_eq!(to_taffy_style(&computed, 16.0).direction, TaffyDirection::Ltr);
     }
 
     #[test]
