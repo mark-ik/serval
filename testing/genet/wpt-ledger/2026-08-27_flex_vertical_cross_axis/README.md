@@ -42,3 +42,11 @@ the available `flexbox-align-self-vert-*` family also exercises baseline,
 intrinsic dimension, and reference-layout behavior. Mixed-writing-mode
 baseline alignment, the two auto-width intrinsic row-wrap cases, and
 generated/pseudo inherited self-edge projection remain separate residuals.
+
+## Auto-width row-wrap closure
+
+The two auto-width row-wrap residuals were repaired at implementation source
+`c5cb56902fe` and pass twice under the exact release receipt at
+`testing/genet/wpt-ledger/2026-08-28_flex_vertical_auto_block`. The failed maps
+above remain the historical pre-repair evidence. Mixed-writing-mode baseline
+alignment and generated/pseudo inherited self-edge projection remain open.

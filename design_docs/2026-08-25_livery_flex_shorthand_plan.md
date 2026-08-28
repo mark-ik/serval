@@ -5,10 +5,11 @@
 **Status:** In progress. The `flex` and `flex-flow` cascade, bounded
 specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
 generic inline declaration reflection, and physical flex main-axis, alignment,
-and gap projection are complete. The flex-basis content used-value and
-automatic-minimum-size slices are complete. Row 18 remains open for the
-remaining vertical-flex work, shared `ex` and zero-percentage provenance, and
-grid.
+and gap projection are complete. The flex-basis content used-value,
+automatic-minimum-size, bounded vertical-flex cross-axis, element-owned
+self-alignment, and orthogonal auto-block row slices are complete. Row 18
+remains open for mixed-writing-mode baseline and generated/pseudo self-edge
+work, shared `ex` and zero-percentage provenance, and grid.
 
 **Parent:** [Buckram and Livery lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md),
 row 18.
@@ -331,9 +332,14 @@ measured: the 2026-08-27 receipt passes writing-mode 002/003/005/006.
 Element-owned child `align-self` is also measured through its parent-context
 keyword matrix and five live fixtures, including inherited alignment,
 subject-relative edges, content-keyword stretch fallback, and anonymous-item
-provenance containment. Mixed-writing-mode baseline alignment, generated or
-pseudo inherited self-edge projection, and the two auto-width intrinsic
-row-wrap cases remain open; this is not general vertical-flex completion.
+provenance containment. The two auto-width row-wrap cases are also measured:
+the bounded Buckram admission keeps the horizontal parent block lane while
+Taffy derives the vertical flex container's automatic physical width, and both
+target WPTs pass twice beside writing-mode 002/003/005/006. The exact receipt
+is under `testing/genet/wpt-ledger/2026-08-28_flex_vertical_auto_block`.
+Mixed-writing-mode baseline alignment and generated or pseudo inherited
+self-edge projection remain open; this is not general vertical-flex
+completion.
 
 The `flex-basis: content` slice is complete: `content` bypasses the preferred
 main-size fallback while `auto` retains it; the row and column content queries
@@ -363,8 +369,8 @@ observes `200 x 200` instead of `100 x 100` on the untouched baseline.
 has SHA-256 `50F2A560C4025930D7138D18BA78C55B3C40E562A2927B3D58E871771DB0676D`;
 consumer resolution is clean.
 
-- Validate and repair the remaining vertical-flex cross-axis alignment and
-  wrap-reversal surface beyond the main-axis projection.
+- Continue vertical-flex work only at the remaining mixed-writing-mode
+  baseline and generated/pseudo self-edge boundaries.
 - Add shared `ex` font metrics and generic zero-percentage provenance rather
   than encoding either exception inside `FlexBasis`.
 - Inventory and implement the remaining grid surface, including auto tracks
@@ -480,3 +486,17 @@ consumer resolution is clean.
   stretch. The native receipt is Genet-Livery library 229 pass with the known
   canvas baseline filtered, live vertical fixtures 5 / 5, automatic minimum
   1 / 1, content basis 2 / 2, content repro 6 / 6, and Buckram 255 / 255.
+
+### 2026-08-28
+
+- Admitted the bounded vertical flex row/row-reverse automatic block-size
+  shape into Buckram's horizontal parent walk while leaving its physical width
+  unknown for Taffy. Exact containing-flow, sizing, direction, positioning,
+  float, and containment guards keep the admission local.
+- Made the live regression faithful to the WPT paragraph and ignored
+  `float:right` flex-item declarations. The merged native receipt is
+  Genet-Livery 6 / 6 and Buckram 257 / 257.
+- Built and froze runner
+  `E833A632E9F2CD590DE5B4D983A7EAC923E155814749BDBE662BE8C76A7F3D6D`.
+  Both target auto-width WPTs pass twice with byte-identical maps, and
+  writing-mode 002/003/005/006 remain 4 / 4 green under the exact policy.
