@@ -327,10 +327,13 @@ recorded under
 ## Row 18 closure and remaining work
 
 Container-level vertical flex row/column cross-axis and wrap projection is
-measured: the 2026-08-27 receipt passes writing-mode 002/003/005/006. Explicit
-child `align-self`, mixed-writing-mode baseline alignment, and the two
-auto-width intrinsic row-wrap cases remain open; this is not general
-vertical-flex completion.
+measured: the 2026-08-27 receipt passes writing-mode 002/003/005/006.
+Element-owned child `align-self` is also measured through its parent-context
+keyword matrix and five live fixtures, including inherited alignment,
+subject-relative edges, content-keyword stretch fallback, and anonymous-item
+provenance containment. Mixed-writing-mode baseline alignment, generated or
+pseudo inherited self-edge projection, and the two auto-width intrinsic
+row-wrap cases remain open; this is not general vertical-flex completion.
 
 The `flex-basis: content` slice is complete: `content` bypasses the preferred
 main-size fallback while `auto` retains it; the row and column content queries
@@ -470,3 +473,10 @@ consumer resolution is clean.
   Consumer resolution is clean. Release-native gates are Buckram 255 / 255,
   Genet-Livery automatic minimum 1 / 1, flex-basis content 2 / 2, and
   content-basis repro 6 / 6; all nine focused WPT cases pass.
+- Projected element-owned flex-item `align-self` only after the parent's
+  physical axes are known. The lowering distinguishes logical and
+  flex-relative edges, resolves inherited and explicit `self-start`/`self-end`
+  against the subject flow, and limits content-keyword fallback to effective
+  stretch. The native receipt is Genet-Livery library 229 pass with the known
+  canvas baseline filtered, live vertical fixtures 5 / 5, automatic minimum
+  1 / 1, content basis 2 / 2, content repro 6 / 6, and Buckram 255 / 255.

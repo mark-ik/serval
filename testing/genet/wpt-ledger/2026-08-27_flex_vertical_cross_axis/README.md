@@ -9,4 +9,36 @@ The runner was released and frozen with isolated `CARGO_HOME` and `CARGO_TARGET_
 | `flexbox-writing-mode-002/003/005/006` | 4 pass |
 | `css-flexbox-row-wrap-reverse`, `css-flexbox-row-reverse-wrap-reverse` | 2 fail, localized 1% diffs |
 
-At source `560627d0152`, locked/offline `-j1` native checks were: matrix 1/1, live fixtures 2/2, direction 1/1, and automatic minimum 1/1. Explicit child `align-self`, mixed baseline alignment, and the auto-width intrinsic residual remain open.
+At source `560627d0152`, locked/offline `-j1` native checks were: matrix 1/1, live fixtures 2/2, direction 1/1, and automatic minimum 1/1.
+
+## Element-owned flex item self-alignment
+
+Implementation source `0f49c1ab4fc` adds the parent-context projection for
+element-owned flex items. It distinguishes logical `start`/`end` from
+flex-relative edges, resolves `self-start`/`self-end` against the subject's
+writing mode, inherits the container's effective `align-items` for
+`align-self: auto`, and applies the content-keyword fallback only when that
+effective alignment is `normal` or `stretch`. Anonymous, text, and pseudo box
+provenance is not treated as the owner's computed style.
+
+The ignored root lock SHA-256 was
+`20D4CF1F8F6D0A3B29437516DD7E39F8990908EFFB02CD76DB2B4E7553769196`.
+All counted commands used `--locked --offline -j1` and
+`--config profile.test.debug=0` with the isolated target
+`C:\t\genet-row18-flex-align-self-debug0-target`.
+
+| Native gate | Result |
+|---|---|
+| Genet-Livery library, known canvas baseline filtered | 229 pass |
+| Vertical cross-axis live fixtures | 5 / 5 |
+| Automatic minimum | 1 / 1 |
+| Content basis | 2 / 2 |
+| Content-basis repro | 6 / 6 |
+| Buckram library | 255 / 255 |
+
+The isolated canvas baseline still fails with `200 x 200` observed against
+`100 x 100` expected. No upstream WPT movement is claimed for this sub-slice:
+the available `flexbox-align-self-vert-*` family also exercises baseline,
+intrinsic dimension, and reference-layout behavior. Mixed-writing-mode
+baseline alignment, the two auto-width intrinsic row-wrap cases, and
+generated/pseudo inherited self-edge projection remain separate residuals.
