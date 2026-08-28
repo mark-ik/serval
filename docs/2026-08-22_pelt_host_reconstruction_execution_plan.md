@@ -1192,6 +1192,51 @@ submitted only the focused tile`; its compositor digest was
 `f3ca804897eebe30`. The capture shows the focused submitted result and its
 unchanged editable sibling in retained Chrome.
 
+#### P7 follow-up: retained Livery nested-scroll reveal
+
+**Status:** complete 2026-08-28 for active retained Livery nested scrollports.
+It does not add a generic child-engine reveal contract or widen pointer action
+routing for Reader, Scripted, Smolweb, or native surfaces.
+
+When a Livery descendant has a nonzero retained nested-scroll ancestor,
+`genet-render` advertises `ScrollIntoView` while continuing to withhold `Click`
+and `SetValue`. Livery owns the reveal: it visits active scrollports from inner
+to outer, applies a nearest-edge clamped adjustment, invalidates only its paint
+cache, and leaves the root viewport to its existing host path. A node with no
+laid fragment, no active retained scrollport, or an already satisfied reveal is
+inert.
+
+Pelt retains the global child ID, tile, and session generation. Its action map
+routes only `ScrollIntoView` to the typed Livery session after rechecking both
+generations; the session converts the local ID and rejects a non-live DOM node.
+The prior nested wheel route is deliberately part of the receipt: two identical
+tiles begin at the same document, Pelt scrolls only tile 1, and the retained
+action then reveals its link without replacing either session.
+
+The named receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
+  --no-default-features --features livery -- \
+  --workspace-receipt accessibility-scroll \
+  --artifact target/pelt-receipts/workspace-accessibility-scroll.png
+```
+
+This is evidence for an installed Pelt action-map route, not for an OS screen
+reader emitting a request. The next nested-pointer slice needs a separate
+clip-aware coordinate proof before it may restore `Click`; `SetValue` remains
+withheld in this scrolled state.
+
+Recorded 2026-08-28: focused Livery reveal geometry passed 1 test,
+`genet-render` nested-scroll accessibility passed 2, the GPU-free Pelt
+twin-tile receipt passed 1 at the headed 2x geometry, and the Pelt viewer
+parser suite passed 4. The headed Windows run installed the bridge, completed
+after four redraws at 960x640, and reported `Pelt routed Livery ScrollIntoView
+through the focused Livery nested scrollport and preserved the sibling tile`;
+its compositor digest was `fb9210fd3497705e`. The capture shows the focused
+tile's revealed link and its sibling's unchanged scrollport inside retained
+Chrome.
+
 ### Reader in workspace
 
 **Status:** complete 2026-08-27 as a distinct Fleece/Pelt integration receipt,
@@ -1314,8 +1359,9 @@ Reader-in-workspace receipt, and the two Tabard consumers are complete. The
 AccessKit tree now composes the retained Livery child tree for its focused
 supported lane; Reader, Scripted, Smolweb, and native child trees still need
 their own namespace and action contracts. Livery's native text-control
-projection and mutation are complete; nested-scroll ScrollIntoView/action
-routing remains before Pelt can widen that child lane. Pelt now owns an
+projection and mutation, plus nested-scroll ScrollIntoView routing, are
+complete; nested pointer activation still needs its own clip-aware coordinate
+receipt before Pelt can widen that child lane. Pelt now owns an
 optional caller-injected local appearance store; system-theme integration,
 multi-window synchronization, and a canonical
 configuration-directory policy remain distinct work. The held-source handoff

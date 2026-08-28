@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Nested accessibility scroll</title>
+<style>
+  body { font: 16px sans-serif; margin: 8px; }
+  .scrollbox { width: 180px; height: 96px; overflow: auto; border: 2px solid #456; }
+  .spacer { height: 240px; }
+  a { display: block; padding: 12px; background: #d9e8ff; }
+</style>
+<div class="scrollbox" aria-label="Scrollable content">
+  <div class="spacer"></div>
+  <a href="result.html">Open nested destination</a>
+</div>
+<h1>Nested accessibility scroll</h1>
+<p>Two retained tiles share this document. The destination begins below the nested scrollport.</p>

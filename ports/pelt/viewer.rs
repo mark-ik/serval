@@ -409,6 +409,7 @@ pub(crate) fn main() {
                         | pelt_desktop::WorkspaceReceipt::AccessibilityAddress
                         | pelt_desktop::WorkspaceReceipt::AccessibilityChildren
                         | pelt_desktop::WorkspaceReceipt::AccessibilityEdit
+                        | pelt_desktop::WorkspaceReceipt::AccessibilityScroll
                         | pelt_desktop::WorkspaceReceipt::NarrowChrome
                         | pelt_desktop::WorkspaceReceipt::ChromeDpi
                         | pelt_desktop::WorkspaceReceipt::Reader
@@ -451,6 +452,16 @@ pub(crate) fn main() {
                         std::process::exit(2);
                     }
                     let fixture = accessibility_edit_fixture_url();
+                    tile_urls = vec![fixture.clone(), fixture];
+                },
+                pelt_desktop::WorkspaceReceipt::AccessibilityScroll => {
+                    if !cfg!(feature = "livery") {
+                        eprintln!(
+                            "--workspace-receipt accessibility-scroll needs `--features livery`"
+                        );
+                        std::process::exit(2);
+                    }
+                    let fixture = accessibility_scroll_fixture_url();
                     tile_urls = vec![fixture.clone(), fixture];
                 },
                 pelt_desktop::WorkspaceReceipt::NarrowChrome => {
@@ -1147,6 +1158,16 @@ fn accessibility_edit_fixture_url() -> String {
         .into_owned()
 }
 
+fn accessibility_scroll_fixture_url() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("workspace")
+        .join("p7-accessibility-scroll")
+        .join("index.html")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn reader_fixture_urls() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
@@ -1169,6 +1190,7 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "accessibility-address" => pelt_desktop::WorkspaceReceipt::AccessibilityAddress,
         "accessibility-children" => pelt_desktop::WorkspaceReceipt::AccessibilityChildren,
         "accessibility-edit" => pelt_desktop::WorkspaceReceipt::AccessibilityEdit,
+        "accessibility-scroll" => pelt_desktop::WorkspaceReceipt::AccessibilityScroll,
         "narrow-chrome" => pelt_desktop::WorkspaceReceipt::NarrowChrome,
         "chrome-dpi" => pelt_desktop::WorkspaceReceipt::ChromeDpi,
         "reader" => pelt_desktop::WorkspaceReceipt::Reader,
@@ -1176,7 +1198,7 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "tabard-reader-preview" => pelt_desktop::WorkspaceReceipt::TabardReaderPreview,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-address, accessibility-children, accessibility-edit, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, accessibility-address, accessibility-children, accessibility-edit, accessibility-scroll, narrow-chrome, chrome-dpi, reader, tabard-preview, or tabard-reader-preview (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1224,6 +1246,10 @@ mod workspace_receipt_tests {
         assert_eq!(
             parse_workspace_receipt("accessibility-edit"),
             pelt_desktop::WorkspaceReceipt::AccessibilityEdit
+        );
+        assert_eq!(
+            parse_workspace_receipt("accessibility-scroll"),
+            pelt_desktop::WorkspaceReceipt::AccessibilityScroll
         );
         assert_eq!(
             parse_workspace_receipt("narrow-chrome"),

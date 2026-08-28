@@ -65,6 +65,7 @@ const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the 
 const ACCESSIBILITY_ADDRESS_WORKSPACE_ASSERTION: &str = "installed AccessKit address SetValue routing navigated only the focused Pelt tile through loading and retained error content while preserving the successful address and history";
 const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focused Livery child tree through its retained content hole; Focus stayed virtual and Click navigated only that session";
 const ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION: &str = "Pelt routed a Livery text SetValue through its live child namespace, reprojected the value, and submitted only the focused tile";
+const ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION: &str = "Pelt routed Livery ScrollIntoView through the focused Livery nested scrollport and preserved the sibling tile";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
@@ -104,6 +105,9 @@ pub enum WorkspaceReceipt {
     /// P7's native Livery text-control SetValue route, including retained
     /// value projection and ordinary form submission.
     AccessibilityEdit,
+    /// P7's nested-scroll Livery ScrollIntoView route through Pelt's
+    /// composite accessibility namespace.
+    AccessibilityScroll,
     /// P6's compact Chrome layout at a small logical viewport.
     NarrowChrome,
     /// P6's actual high-DPI Chrome input and capture alignment.
@@ -131,6 +135,7 @@ impl WorkspaceReceipt {
             Self::AccessibilityAddress => "accessibility-address",
             Self::AccessibilityChildren => "accessibility-children",
             Self::AccessibilityEdit => "accessibility-edit",
+            Self::AccessibilityScroll => "accessibility-scroll",
             Self::NarrowChrome => "narrow-chrome",
             Self::ChromeDpi => "chrome-dpi",
             Self::Reader => "reader",
@@ -157,6 +162,7 @@ impl WorkspaceReceipt {
                 | Self::AccessibilityAddress
                 | Self::AccessibilityChildren
                 | Self::AccessibilityEdit
+                | Self::AccessibilityScroll
                 | Self::NarrowChrome
                 | Self::ChromeDpi
                 | Self::Reader
@@ -368,6 +374,7 @@ pub fn run_livery_workspace_viewer(
                 | WorkspaceReceipt::AccessibilityAddress
                 | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::AccessibilityEdit
+                | WorkspaceReceipt::AccessibilityScroll
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -1596,6 +1603,7 @@ impl WorkspaceApp {
                 if node.supports_action(Action::Focus)
                     || click_point.is_some()
                     || node.supports_action(Action::SetValue)
+                    || node.supports_action(Action::ScrollIntoView)
                 {
                     actions.insert(
                         global_id,
@@ -1644,7 +1652,8 @@ impl WorkspaceApp {
                 WorkspaceReceipt::Accessibility
                     | WorkspaceReceipt::AccessibilityAddress
                     | WorkspaceReceipt::AccessibilityChildren
-                    | WorkspaceReceipt::AccessibilityEdit,
+                    | WorkspaceReceipt::AccessibilityEdit
+                    | WorkspaceReceipt::AccessibilityScroll,
             )
         ) && self.accessibility.status() != BridgeStatus::Installed
         {
@@ -1795,6 +1804,25 @@ impl WorkspaceApp {
                     .downcast_mut::<genet_documents::LiveryDocumentSession>()
                     .is_some_and(|session| {
                         session.replace_accessible_text_value(target.local_node.0, value.as_ref())
+                    })
+            },
+            (Action::ScrollIntoView, WorkspaceA11yActionTarget::Livery(target)) => {
+                if self.workspace.document_session_generation(target.tile)
+                    != Some(target.session_generation)
+                {
+                    return false;
+                }
+                let Some(controller) = self.workspace.controller_mut(target.tile) else {
+                    return false;
+                };
+                if controller.session_generation() != target.session_generation {
+                    return false;
+                }
+                controller
+                    .session_as_any_mut()
+                    .downcast_mut::<genet_documents::LiveryDocumentSession>()
+                    .is_some_and(|session| {
+                        session.scroll_accessible_node_into_view(target.local_node.0)
                     })
             },
             _ => false,
@@ -2491,6 +2519,7 @@ impl WorkspaceApp {
                         | WorkspaceReceipt::AccessibilityAddress
                         | WorkspaceReceipt::AccessibilityChildren
                         | WorkspaceReceipt::AccessibilityEdit
+                        | WorkspaceReceipt::AccessibilityScroll
                         | WorkspaceReceipt::NarrowChrome
                         | WorkspaceReceipt::ChromeDpi
                         | WorkspaceReceipt::Reader
@@ -2717,6 +2746,7 @@ impl WorkspaceApp {
                 | WorkspaceReceipt::AccessibilityAddress
                 | WorkspaceReceipt::AccessibilityChildren
                 | WorkspaceReceipt::AccessibilityEdit
+                | WorkspaceReceipt::AccessibilityScroll
                 | WorkspaceReceipt::NarrowChrome
                 | WorkspaceReceipt::ChromeDpi
                 | WorkspaceReceipt::Reader
@@ -2771,6 +2801,9 @@ impl WorkspaceApp {
             WorkspaceReceipt::AccessibilityEdit => {
                 self.drive_accessibility_edit_workspace_receipt_step()
             },
+            WorkspaceReceipt::AccessibilityScroll => {
+                self.drive_accessibility_scroll_workspace_receipt_step()
+            },
             WorkspaceReceipt::NarrowChrome => self.drive_narrow_chrome_workspace_receipt_step(),
             WorkspaceReceipt::ChromeDpi => self.drive_chrome_dpi_workspace_receipt_step(),
             WorkspaceReceipt::Reader => self.drive_reader_workspace_receipt_step(),
@@ -2791,6 +2824,7 @@ impl WorkspaceApp {
                     | WorkspaceReceipt::AccessibilityAddress
                     | WorkspaceReceipt::AccessibilityChildren
                     | WorkspaceReceipt::AccessibilityEdit
+                    | WorkspaceReceipt::AccessibilityScroll
                     | WorkspaceReceipt::NarrowChrome
                     | WorkspaceReceipt::ChromeDpi
                     | WorkspaceReceipt::Reader
@@ -4758,6 +4792,89 @@ impl WorkspaceApp {
             _ => return Ok(Some(ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION.to_owned())),
         }
         self.receipt_step = self.receipt_step.saturating_add(1);
+        Ok(None)
+    }
+
+    fn drive_accessibility_scroll_workspace_receipt_step(
+        &mut self,
+    ) -> Result<Option<String>, String> {
+        let tree = self.prepare_accessibility_tree()?;
+        let link = livery_a11y_node_for_tile(
+            &tree,
+            &self.accessibility,
+            TileId(1),
+            "Open nested destination",
+            Role::Link,
+        )?;
+        let supports = |action| {
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == link)
+                .is_some_and(|(_, node)| node.supports_action(action))
+        };
+        match self.receipt_step {
+            0 => {
+                require_tile(self.workspace.tree(), 2)?;
+                let content = self.workspace.content_rect(TileId(1)).ok_or_else(|| {
+                    "nested-scroll receipt has no tile-one content hole".to_owned()
+                })?;
+                if !self.workspace.scroll_at(
+                    content.x + content.width.min(180.0) * 0.5,
+                    content.y + content.height.min(100.0) * 0.5,
+                    0.0,
+                    96.0,
+                ) {
+                    return Err(
+                        "nested-scroll fixture did not accept the inducing scroll".to_owned()
+                    );
+                }
+                self.receipt_step = 1;
+            },
+            1 => {
+                if !supports(Action::ScrollIntoView) || supports(Action::Click) {
+                    return Err("nested link advertised the wrong post-scroll actions".to_owned());
+                }
+                if !self.apply_accessibility_request(A11yActionRequest {
+                    action: Action::ScrollIntoView,
+                    target_node: link,
+                    data: None,
+                }) {
+                    return Err("nested ScrollIntoView was not routed".to_owned());
+                }
+                self.receipt_step = 2;
+            },
+            2 => {
+                let has_active_nested_scroll = |tile| {
+                    self.workspace
+                        .controller(tile)
+                        .and_then(|controller| {
+                            controller
+                                .session_as_any_ref()
+                                .downcast_ref::<genet_documents::LiveryDocumentSession>()
+                        })
+                        .is_some_and(|session| {
+                            session
+                                .document()
+                                .element_scroll()
+                                .values()
+                                .any(|&(x, y)| x != 0.0 || y != 0.0)
+                        })
+                };
+                if !has_active_nested_scroll(TileId(1)) || has_active_nested_scroll(TileId(2)) {
+                    return Err(
+                        "nested ScrollIntoView did not retain tile-local scroll state".to_owned(),
+                    );
+                }
+                if self.workspace.document_session_generation(TileId(1)) != Some(1)
+                    || self.workspace.document_session_generation(TileId(2)) != Some(1)
+                {
+                    return Err("ScrollIntoView changed a session generation".to_owned());
+                }
+                self.receipt_step = 3;
+                return Ok(Some(ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION.to_owned()));
+            },
+            _ => return Ok(Some(ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION.to_owned())),
+        }
         Ok(None)
     }
 
@@ -7806,6 +7923,166 @@ mod tests {
             app.workspace.controller(TileId(2)).is_some_and(|other| {
                 other.address().replace('\\', "/").ends_with("/index.html")
             })
+        );
+    }
+
+    #[test]
+    fn livery_child_accessibility_scroll_into_view_is_namespaced_and_tile_local() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p7-accessibility-scroll/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let urls = vec![fixture.clone(), fixture.clone()];
+        let tree = tree_from_urls(&urls);
+        #[cfg(target_os = "windows")]
+        let registries = workspace_registries(None);
+        #[cfg(not(target_os = "windows"))]
+        let registries = workspace_registries();
+        let workspace = PeltWorkspace::try_routed(
+            tree,
+            registries,
+            |tile| {
+                let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                    unreachable!("accessibility scroll tree contains only documents");
+                };
+                Ok(PeltTileRequest::new(address, (960, 640)))
+            },
+            || Box::new(WorkspaceClock(Instant::now())),
+        )
+        .expect("accessibility scroll fixtures open");
+        let frisket = FrisketSurface::new(workspace.tree());
+        let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+            .with_workspace_receipt(WorkspaceReceipt::AccessibilityScroll, "unused.png");
+        #[cfg(target_os = "windows")]
+        let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+        #[cfg(not(target_os = "windows"))]
+        let mut app = WorkspaceApp::new(config, workspace, frisket);
+        // Match the headed receipt's small 2x logical content holes so the
+        // initial wheel route and subsequent a11y reveal share its geometry.
+        app.scale_factor = 2.0;
+
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let (width, height) = app.logical_size();
+            let pane = app
+                .frisket
+                .frame(width, height)
+                .expect("accessibility scroll Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+        let node = |app: &WorkspaceApp, tree: &TreeUpdate, tile| {
+            livery_a11y_node_for_tile(
+                tree,
+                &app.accessibility,
+                tile,
+                "Open nested destination",
+                Role::Link,
+            )
+            .unwrap_or_else(|error| panic!("{error}"))
+        };
+        let supports = |tree: &TreeUpdate, id, action| {
+            tree.nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .is_some_and(|(_, node)| node.supports_action(action))
+        };
+        let bounds = |tree: &TreeUpdate, id| {
+            tree.nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .and_then(|(_, node)| node.bounds())
+                .map(|rect| (rect.x0, rect.y0, rect.x1, rect.y1))
+                .expect("nested link bounds")
+        };
+        let scrolls = |app: &WorkspaceApp, tile| {
+            app.workspace
+                .controller(tile)
+                .and_then(|controller| {
+                    controller
+                        .session_as_any_ref()
+                        .downcast_ref::<genet_documents::LiveryDocumentSession>()
+                })
+                .map(|session| session.document().element_scroll().clone())
+                .expect("scroll fixture stays a Livery session")
+        };
+
+        compose(&mut app);
+        let content = app
+            .workspace
+            .content_rect(TileId(1))
+            .expect("first scroll fixture content hole");
+        assert!(
+            app.workspace.scroll_at(
+                content.x + content.width.min(180.0) * 0.5,
+                content.y + content.height.min(100.0) * 0.5,
+                0.0,
+                96.0,
+            ),
+            "Pelt's tile-local wheel route enters the nested scrollport"
+        );
+        let pre_reveal_scroll = scrolls(&app, TileId(1));
+        let sibling_scroll = scrolls(&app, TileId(2));
+        assert!(!pre_reveal_scroll.is_empty());
+        assert!(sibling_scroll.is_empty());
+
+        compose(&mut app);
+        let scrolled = app
+            .prepare_accessibility_tree()
+            .expect("scrolled composite accessibility tree");
+        let link = node(&app, &scrolled, TileId(1));
+        let sibling_link = node(&app, &scrolled, TileId(2));
+        assert!(supports(&scrolled, link, Action::ScrollIntoView));
+        assert!(!supports(&scrolled, link, Action::Click));
+        assert!(
+            !supports(&scrolled, sibling_link, Action::ScrollIntoView),
+            "the untouched sibling cannot acquire the focused tile's reveal action"
+        );
+        let before_bounds = bounds(&scrolled, link);
+        let target = app
+            .accessibility
+            .action_for(link)
+            .expect("scrolled nested link has a Pelt action target");
+        let WorkspaceA11yActionTarget::Livery(target) = target else {
+            panic!("nested link must route through Pelt's Livery namespace");
+        };
+        assert_eq!(target.tile, TileId(1));
+        assert_eq!(target.session_generation, 1);
+        assert!(app.apply_accessibility_request(A11yActionRequest {
+            action: Action::ScrollIntoView,
+            target_node: link,
+            data: None,
+        }));
+        assert_ne!(scrolls(&app, TileId(1)), pre_reveal_scroll);
+        assert_eq!(scrolls(&app, TileId(2)), sibling_scroll);
+        assert_eq!(
+            app.workspace.document_session_generation(TileId(1)),
+            Some(1)
+        );
+        assert_eq!(
+            app.workspace.document_session_generation(TileId(2)),
+            Some(1)
+        );
+
+        compose(&mut app);
+        let revealed = app
+            .prepare_accessibility_tree()
+            .expect("revealed composite accessibility tree");
+        let revealed_link = node(&app, &revealed, TileId(1));
+        assert_eq!(
+            revealed_link, link,
+            "reveal retains the child node identity"
+        );
+        assert_ne!(bounds(&revealed, revealed_link), before_bounds);
+        assert!(supports(&revealed, revealed_link, Action::ScrollIntoView));
+        assert!(
+            !supports(&revealed, revealed_link, Action::Click),
+            "nested pointer activation remains outside this ScrollIntoView slice"
         );
     }
 

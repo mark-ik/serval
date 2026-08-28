@@ -310,6 +310,15 @@ impl LiveryDocumentSession {
         true
     }
 
+    /// Reveal a retained Livery node through its active nested scrollports.
+    pub fn scroll_accessible_node_into_view(&mut self, local_node_id: u64) -> bool {
+        let Ok(raw_node_id) = usize::try_from(local_node_id) else {
+            return false;
+        };
+        let node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        self.doc.dom().is_live(node) && self.doc.scroll_accessible_node_into_view(node)
+    }
+
     /// The applied page-zoom factor in presentation pixels per CSS pixel.
     ///
     /// A host composing Livery's retained semantics into a larger tree uses

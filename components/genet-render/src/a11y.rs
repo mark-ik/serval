@@ -245,9 +245,10 @@ where
     total
 }
 
-/// An active nested scrollport has visual bounds but Pelt does not yet own a
-/// corresponding ScrollIntoView/action route. Keep its descendants semantic
-/// and focusable while withholding Click rather than exposing a stale target.
+/// An active nested scrollport moves its descendant bounds. Pelt can route a
+/// retained `ScrollIntoView` request back to Livery, but it does not yet own
+/// the corresponding nested-pointer route. Keep descendants semantic and
+/// focusable, advertise only the reveal action, and withhold Click.
 fn has_active_scrolled_ancestor<D>(
     dom: &D,
     node: D::NodeId,
@@ -368,6 +369,12 @@ where
     let focusable = semantic_control || has_tabindex(dom, node) || is_content_editable(dom, node);
     let action_blocked_by_nested_scroll = scroll_offsets
         .is_some_and(|scroll_offsets| has_active_scrolled_ancestor(dom, node, scroll_offsets));
+    if action_blocked_by_nested_scroll {
+        // The current retained scroll offsets identify the exact document-local
+        // scroller Livery must adjust. Until Pelt has refreshed this tree with
+        // the revealed bounds, a pointer action would still be stale.
+        access.add_action(Action::ScrollIntoView);
+    }
     if !disabled
         && !action_blocked_by_nested_scroll
         && (semantic_control || is_content_editable(dom, node))
@@ -425,9 +432,9 @@ where
 
 /// Project a retained document after Livery has applied nested element scroll.
 ///
-/// Bounds move with each scrolled ancestor. Click is intentionally withheld
-/// from descendants of an active nested scrollport until the host owns the
-/// matching ScrollIntoView and pointer-routing semantics.
+/// Bounds move with each scrolled ancestor. Descendants of an active nested
+/// scrollport advertise `ScrollIntoView`, while Click remains withheld until
+/// Pelt owns the matching refreshed pointer-routing semantics.
 pub fn accesskit_tree_with_scroll<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -657,6 +664,7 @@ mod tests {
             .expect("scrolled input");
         assert_eq!(node.value(), Some("nested"));
         assert!(!node.supports_action(Action::SetValue));
+        assert!(node.supports_action(Action::ScrollIntoView));
     }
 
     #[test]
@@ -799,5 +807,6 @@ mod tests {
             !after_link.supports_action(Action::Click),
             "an active nested scrollport cannot advertise a stale Click target"
         );
+        assert!(after_link.supports_action(Action::ScrollIntoView));
     }
 }

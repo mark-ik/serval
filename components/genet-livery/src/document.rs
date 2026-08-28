@@ -1059,6 +1059,82 @@ where
         self.scroll_by(dx, dy)
     }
 
+    /// Reveal one retained node within every currently active nested
+    /// scrollport that contains it.
+    ///
+    /// This is the document-local half of the narrow accessibility
+    /// `ScrollIntoView` route. It intentionally works only with scrollports
+    /// that already have a nonzero retained offset: the accessibility
+    /// projection advertises the action under that same condition, so no
+    /// style-plane or host-wide scrolling contract is needed. The operation
+    /// uses nearest-edge placement and leaves root viewport scrolling to its
+    /// existing host path.
+    pub fn scroll_accessible_node_into_view(&mut self, node: D::NodeId) -> bool {
+        let Some(layout) = self.layout.as_ref() else {
+            return false;
+        };
+        if layout.fragments.get(node).is_none() {
+            return false;
+        }
+
+        // Visit the innermost scrollport first. Its new offset changes the
+        // target's position seen by every outer scrollport, which makes the
+        // following outer adjustments use the final retained geometry.
+        let mut active_scrollports = Vec::new();
+        let mut parent = self.dom.parent(node);
+        while let Some(ancestor) = parent {
+            if self
+                .nested_scroll
+                .get(&ancestor)
+                .is_some_and(|&(x, y)| x != 0.0 || y != 0.0)
+            {
+                active_scrollports.push(ancestor);
+            }
+            parent = self.dom.parent(ancestor);
+        }
+
+        let mut changed = false;
+        for scrollport in active_scrollports {
+            let Some(style) = layout.styles.get(scrollport) else {
+                continue;
+            };
+            let Some(container) = layout.fragments.get(scrollport) else {
+                continue;
+            };
+            let Some(target) = layout.fragments.get(node) else {
+                continue;
+            };
+            let current = self.nested_scroll.get(&scrollport).copied().unwrap_or_default();
+            let target_ancestor_scroll = self.ancestor_scroll(node);
+            let container_ancestor_scroll = self.ancestor_scroll(scrollport);
+            let local_x =
+                target.x - container.x - (target_ancestor_scroll.0 - container_ancestor_scroll.0);
+            let local_y =
+                target.y - container.y - (target_ancestor_scroll.1 - container_ancestor_scroll.1);
+            let (max_x, max_y) = self.scroll_extent(layout, scrollport);
+            let next = (
+                if self.scrolls_x(style) {
+                    reveal_scroll_offset(current.0, local_x, target.width, container.width, max_x)
+                } else {
+                    current.0
+                },
+                if self.scrolls_y(style) {
+                    reveal_scroll_offset(current.1, local_y, target.height, container.height, max_y)
+                } else {
+                    current.1
+                },
+            );
+            if next != current {
+                self.nested_scroll.insert(scrollport, next);
+                changed = true;
+            }
+        }
+        if changed {
+            self.cached = None;
+        }
+        changed
+    }
+
     pub fn scroll_to(&mut self, y: f32) {
         let before = self.scroll;
         self.scroll.1 = y;
@@ -1928,6 +2004,27 @@ fn resolve_keyframe_color_value(
         },
         value => value,
     }
+}
+
+/// Move a retained scroll offset only as far as needed to show one axis of a
+/// target. Oversized targets anchor their leading edge, matching the least
+/// surprising result when neither edge can fit simultaneously.
+fn reveal_scroll_offset(
+    current: f32,
+    target_start: f32,
+    target_extent: f32,
+    viewport_extent: f32,
+    max: f32,
+) -> f32 {
+    let target_end = target_start + target_extent;
+    let next = if target_start < 0.0 {
+        current + target_start
+    } else if target_end > viewport_extent {
+        current + target_end - viewport_extent
+    } else {
+        current
+    };
+    next.clamp(0.0, max)
 }
 
 fn find_id<D: LayoutDom>(dom: &D, id: D::NodeId, target: &str) -> Option<D::NodeId> {
@@ -4072,6 +4169,49 @@ mod tests {
             .expect("active nested sticky fragment");
         assert_eq!(sticky_rect.y, 150.0);
         assert_eq!(sticky_rect.y - document.element_scroll()[&scroller].1, 0.0);
+    }
+
+    #[test]
+    fn accessible_reveal_unwinds_active_nested_scrollports_inside_out() {
+        let mut dom = ScriptedDom::from_serialized_document(
+            "<html><body><div id=outer><div id=outer-top></div><div id=inner><div id=target>target</div><div id=inner-tail></div></div><div id=outer-tail></div></div></body></html>",
+        );
+        let mut initial_mutations = Vec::new();
+        dom.drain_mutations(&mut initial_mutations);
+        let mut document = LiveryDocument::new(
+            dom,
+            StyleSet::cambium(&[
+                "html, body { margin: 0; padding: 0; } \
+                 #outer { width: 100px; height: 80px; overflow-y: auto; } \
+                 #outer-top { height: 40px; } \
+                 #inner { width: 80px; height: 80px; overflow-y: auto; } \
+                 #target { height: 20px; } \
+                 #inner-tail, #outer-tail { height: 160px; }",
+            ]),
+            Device::screen(160.0, 120.0),
+        );
+        document.frame(160, 120).expect("initial nested-scroll frame");
+        let outer = by_id(document.dom(), "outer");
+        let inner = by_id(document.dom(), "inner");
+        let target = by_id(document.dom(), "target");
+        document.nested_scroll.insert(outer, (0.0, 120.0));
+        document.nested_scroll.insert(inner, (0.0, 60.0));
+
+        assert!(document.cached.is_some(), "the completed frame populated paint cache");
+        assert!(document.scroll_accessible_node_into_view(target));
+        assert_eq!(document.element_scroll().get(&inner), Some(&(0.0, 0.0)));
+        assert_eq!(document.element_scroll().get(&outer), Some(&(0.0, 40.0)));
+        assert_eq!(
+            document.fragment_rect(target),
+            Some([0.0, 0.0, 80.0, 20.0]),
+            "the target is visible inside the final outer scrollport viewport"
+        );
+        assert!(document.cached.is_none(), "revealing invalidates only paint cache");
+        assert!(
+            !document.scroll_accessible_node_into_view(target),
+            "an already revealed target has no active nested offset to change"
+        );
+        assert!(!document.scroll_accessible_node_into_view(document.dom().document()));
     }
 
     #[test]
