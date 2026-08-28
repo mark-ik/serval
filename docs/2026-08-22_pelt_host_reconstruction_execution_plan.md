@@ -9,7 +9,9 @@ import, repeated fence waits, and visible same-window composition. P5 completed
 2026-08-27 with all eight deterministic product receipts. P6's focused-tile
 Chrome, structural-inspection, and shell accessibility slices completed
 2026-08-27; the narrow-width and high-DPI Chrome receipts completed on Windows
-2026-08-27. IOSurface and DMA-BUF imports remain separate platform lanes.
+2026-08-27. Reader-in-workspace completed 2026-08-27 with a separate
+held-source Fleece/Pelt receipt. IOSurface and DMA-BUF imports remain separate
+platform lanes.
 
 ## Objective
 
@@ -971,6 +973,63 @@ The GPU-free desktop test separately fixes a 2.00x conversion to guard the
 coordinate path on machines where the headed environmental receipt correctly
 declines to run.
 
+### Reader in workspace
+
+**Status:** complete 2026-08-27 as a distinct Fleece/Pelt integration receipt,
+not a ninth P5 fixture.
+
+Reader consumes a host-held source response; it does not fetch. When an
+installed document exposes the standard `SourceResponse` clip artifact, Pelt
+copies its canonical identity, media type, and text body into the tile's
+existing `SessionSpawnRequest` while that request has no caller-owned body. The
+`SourceResponse` artifact is byte-bearing at the clip boundary; the existing
+request seam uses `String::from_utf8_lossy` for the held text body. Pelt
+preserves a requested fragment when the canonical response URI has none.
+
+This is intentionally a Pelt-core handoff rather than a Fleece special case.
+An ordinary Livery route acquires the source once, Pelt retains its identity,
+media type, and text body in the tile request, and an explicit `genet.reader`
+selection can reuse it. Moving back to Automatic reconstructs Livery from that
+same held request. Fleece and `ReaderSessionEngine` remain fetch-free. An
+initially explicit Reader pin is
+still host policy: the desktop host acquires the source before constructing that
+Reader request, without giving fetching authority to Fleece.
+
+The named receipt is:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -j 1 -p pelt \
+  --no-default-features --features livery,reader -- \
+  --workspace-receipt reader \
+  --artifact target/pelt-receipts/workspace-reader.png
+```
+
+It owns `examples/workspace/reader/index.html` and its ordinary Livery neighbor.
+The driver starts with both tiles on automatic Livery, opens the live Chrome
+engine menu, chooses Reader for the focused article, inspects Fleece lineage,
+returns to Automatic Livery, and chooses Reader again. Its GPU-free counterpart
+uses a counting host fetcher: the article and neighbor each acquire one response,
+and the Livery-to-Reader-to-Livery-to-Reader cycle causes no second document
+fetch. It also checks the held body, Reader's resolved link, Livery's original
+relative link spelling, extracted heading/title, Fleece lineage, and the
+unchanged neighbor route.
+
+Recorded 2026-08-27: `pelt-core` routing passed 3 tests, including
+`source_artifact_is_held_across_a_live_route_switch`; the Livery/Reader
+`pelt-desktop` suite passed 35 tests; the Pelt viewer parser suite passed 4;
+and the Reader-only `genet-documents` suite passed 5. Two headed Windows runs
+completed after 9 redraws at 960x640 with routes
+`1=genet.reader:document,2=genet.livery:document`. They produced the same
+semantic assertion and two 177,896-byte PNGs, but not byte-identical rasters:
+their compositor digests were `c0636e846a7651d2` and `28fca32b4c7b3797`, with
+SHA-256 `D3B775C92B814202D6BC3B967EFE38B216A1F29962D99BDCD6861D5346C1B798`
+and `A9D518956D7E41FAE2A21CD9BDB6E4687C740AC3F1193B0AAA6CA342E0039618`.
+The decoded captures differ by one blue-channel value in one Chrome-status text
+pixel, so this receipt treats its semantic driver and bounded artifact as its
+stability boundary rather than claiming a byte-identical PNG. The capture shows
+the Reader tab and close control, selected Reader engine, extracted article, and
+Fleece lineage in the retained inspector.
+
 ## Cross-gate rules
 
 - One host-owned wgpu device and compositor serve the full workspace.
@@ -987,13 +1046,12 @@ declines to run.
 
 ## Immediate next lane
 
-P6's retained-shell receipts are complete. The AccessKit tree currently covers
-the retained Pelt shell and labelled content apertures; a namespaced child-tree
-and action-composition protocol remains a separate lane. The Appearance drawer
-stays session-only until Pelt owns a durable configuration policy. The next
-product lane is Reader-in-workspace: it must carry held source bytes rather
-than teaching Fleece to fetch, and it remains a distinct Fleece/Pelt integration
-receipt rather than an unrecorded ninth P5 fixture.
+P6's retained-shell receipts and the separate Reader-in-workspace receipt are
+complete. The AccessKit tree currently covers the retained Pelt shell and
+labelled content apertures; a namespaced child-tree and action-composition
+protocol remains a separate lane. The Appearance drawer stays session-only until
+Pelt owns a durable configuration policy. The held-source handoff is now a
+reusable Pelt boundary, not a fetch API for Fleece.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and

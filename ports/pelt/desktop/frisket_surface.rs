@@ -315,6 +315,7 @@ impl ChromeTheme {
 pub(crate) enum ChromeEngineChoice {
     Automatic,
     Livery,
+    Reader,
     Scripted,
 }
 
@@ -323,6 +324,7 @@ impl ChromeEngineChoice {
         match self {
             Self::Automatic => "Automatic",
             Self::Livery => "Livery",
+            Self::Reader => "Reader",
             Self::Scripted => "Scripted",
         }
     }
@@ -331,6 +333,7 @@ impl ChromeEngineChoice {
         match self {
             Self::Automatic => "Auto",
             Self::Livery => "Livery",
+            Self::Reader => "Reader",
             Self::Scripted => "Scripted",
         }
     }
@@ -339,6 +342,7 @@ impl ChromeEngineChoice {
         match self {
             Self::Automatic => "engine-automatic",
             Self::Livery => "engine-livery",
+            Self::Reader => "engine-reader",
             Self::Scripted => "engine-scripted",
         }
     }
@@ -347,6 +351,7 @@ impl ChromeEngineChoice {
         match self {
             Self::Automatic => "automatic",
             Self::Livery => "genet.livery",
+            Self::Reader => "genet.reader",
             Self::Scripted => "genet.scripted",
         }
     }
@@ -944,6 +949,7 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
                     Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Automatic))
                 },
                 "engine-livery" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Livery)),
+                "engine-reader" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Reader)),
                 "engine-scripted" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Scripted)),
                 "inspect" => Some(ChromeAction::ToggleInspector),
                 "appearance" => Some(ChromeAction::ToggleAppearance),

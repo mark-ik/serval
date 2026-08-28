@@ -394,7 +394,8 @@ pub(crate) fn main() {
                         | pelt_desktop::WorkspaceReceipt::Appearance
                         | pelt_desktop::WorkspaceReceipt::Accessibility
                         | pelt_desktop::WorkspaceReceipt::NarrowChrome
-                        | pelt_desktop::WorkspaceReceipt::ChromeDpi => unreachable!(
+                        | pelt_desktop::WorkspaceReceipt::ChromeDpi
+                        | pelt_desktop::WorkspaceReceipt::Reader => unreachable!(
                             "fallback was handled by the separate workspace receipt branch"
                         ),
                     };
@@ -416,6 +417,13 @@ pub(crate) fn main() {
                 },
                 pelt_desktop::WorkspaceReceipt::ChromeDpi => {
                     tile_urls = vec![appearance_fixture_url()];
+                },
+                pelt_desktop::WorkspaceReceipt::Reader => {
+                    if !cfg!(feature = "reader") {
+                        eprintln!("--workspace-receipt reader needs `--features reader`");
+                        std::process::exit(2);
+                    }
+                    tile_urls = reader_fixture_urls();
                 },
             }
         }
@@ -1045,6 +1053,17 @@ fn accessibility_fixture_url() -> String {
         .into_owned()
 }
 
+fn reader_fixture_urls() -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("workspace")
+        .join("reader");
+    ["index.html", "neighbor.html"]
+        .into_iter()
+        .map(|name| root.join(name).to_string_lossy().into_owned())
+        .collect()
+}
+
 fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
     match value {
         "mixed" => pelt_desktop::WorkspaceReceipt::Mixed,
@@ -1055,9 +1074,10 @@ fn parse_workspace_receipt(value: &str) -> pelt_desktop::WorkspaceReceipt {
         "accessibility" => pelt_desktop::WorkspaceReceipt::Accessibility,
         "narrow-chrome" => pelt_desktop::WorkspaceReceipt::NarrowChrome,
         "chrome-dpi" => pelt_desktop::WorkspaceReceipt::ChromeDpi,
+        "reader" => pelt_desktop::WorkspaceReceipt::Reader,
         _ => {
             eprintln!(
-                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, or chrome-dpi (got '{value}')"
+                "--workspace-receipt expects mixed, fallback, chrome, loading-error, appearance, accessibility, narrow-chrome, chrome-dpi, or reader (got '{value}')"
             );
             std::process::exit(2);
         },
@@ -1102,6 +1122,10 @@ mod workspace_receipt_tests {
             parse_workspace_receipt("chrome-dpi"),
             pelt_desktop::WorkspaceReceipt::ChromeDpi
         );
+        assert_eq!(
+            parse_workspace_receipt("reader"),
+            pelt_desktop::WorkspaceReceipt::Reader
+        );
         assert!(
             fallback_fixture_url()
                 .replace('\\', "/")
@@ -1121,6 +1145,18 @@ mod workspace_receipt_tests {
             accessibility_fixture_url()
                 .replace('\\', "/")
                 .ends_with("/ports/pelt/examples/workspace/p6-accessibility/index.html")
+        );
+        let reader = reader_fixture_urls();
+        assert_eq!(reader.len(), 2);
+        assert!(
+            reader[0]
+                .replace('\\', "/")
+                .ends_with("/ports/pelt/examples/workspace/reader/index.html")
+        );
+        assert!(
+            reader[1]
+                .replace('\\', "/")
+                .ends_with("/ports/pelt/examples/workspace/reader/neighbor.html")
         );
     }
 
@@ -1435,7 +1471,7 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
-    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|narrow-chrome|chrome-dpi> (P5/P6 named workspace receipt; needs --artifact)
+    --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|narrow-chrome|chrome-dpi|reader> (named workspace receipt; needs --artifact)
     --netrender-smoke
     --webgl-wgpu-smoke
     --windows-present-smoke            (requires --features windows-present, target_os = \"windows\")

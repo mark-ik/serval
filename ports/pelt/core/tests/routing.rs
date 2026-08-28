@@ -7,10 +7,11 @@ use genet_host_api::tile::{
 };
 use inker::routing::{ENGINE_SCRYING_WEB, EngineRoutePolicy, EngineRouteRule, SurfaceContractMode};
 use inker::{
-    A11yCapability, DocumentSession, EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent,
-    SessionClick, SessionEngine, SessionError, SessionRegistry, SessionScrollKey,
-    SessionSpawnRequest, SurfaceEngine, SurfaceEngineRegistry, SurfaceError, SurfaceFrame,
-    SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest,
+    A11yCapability, DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession,
+    EngineProfileBinding, FocusReason, KeyboardEvent, MouseEvent, SessionClick, SessionEngine,
+    SessionError, SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngine,
+    SurfaceEngineRegistry, SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings,
+    SurfaceSpawnRequest,
 };
 use pelt_core::{
     PeltClock, PeltDocumentState, PeltRegistries, PeltRouteSource, PeltRouteState, PeltTileRequest,
@@ -98,6 +99,97 @@ impl DocumentSession<String> for FakeDocument {
 
     fn as_any(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+struct SourceArtifactEngine {
+    requests: Arc<Mutex<Vec<SessionSpawnRequest>>>,
+}
+
+impl SessionEngine<String> for SourceArtifactEngine {
+    fn engine_id(&self) -> &str {
+        "fake.source"
+    }
+
+    fn spawn(
+        &self,
+        request: &SessionSpawnRequest,
+    ) -> Result<Box<dyn DocumentSession<String>>, SessionError> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(Box::new(SourceArtifactDocument {
+            address: request.address.clone(),
+        }))
+    }
+}
+
+struct SourceArtifactDocument {
+    address: String,
+}
+
+impl DocumentSession<String> for SourceArtifactDocument {
+    fn frame(&mut self, width: u32, height: u32) -> String {
+        format!("source:{}@{width}x{height}", self.address)
+    }
+
+    fn scroll_by(&mut self, _dx: f32, _dy: f32) -> bool {
+        false
+    }
+
+    fn scroll_for_key(&mut self, _key: SessionScrollKey) -> bool {
+        false
+    }
+
+    fn click_at(&mut self, _x: f32, _y: f32) -> SessionClick {
+        SessionClick::Miss
+    }
+
+    fn links(&self) -> Vec<inker::SessionLink> {
+        Vec::new()
+    }
+
+    fn clip(&self) -> Option<DocumentClip> {
+        Some(DocumentClip {
+            source_url: self.address.clone(),
+            title: None,
+            text: "Held source".to_owned(),
+            selector: None,
+            links: Vec::new(),
+            artifacts: vec![DocumentClipArtifact {
+                role: DocumentClipArtifactRole::SourceResponse,
+                media_type: "text/html; charset=utf-8".to_owned(),
+                canonical_uri: "https://reader.test/final.html".to_owned(),
+                bytes: b"<main><h1>Held source</h1></main>".to_vec(),
+            }],
+        })
+    }
+
+    fn as_any_ref(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+struct HeldBodyEngine {
+    requests: Arc<Mutex<Vec<SessionSpawnRequest>>>,
+}
+
+impl SessionEngine<String> for HeldBodyEngine {
+    fn engine_id(&self) -> &str {
+        "fake.reader"
+    }
+
+    fn spawn(
+        &self,
+        request: &SessionSpawnRequest,
+    ) -> Result<Box<dyn DocumentSession<String>>, SessionError> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(Box::new(FakeDocument {
+            id: "fake.reader",
+            address: request.address.clone(),
+        }))
     }
 }
 
@@ -545,4 +637,90 @@ fn failed_document_navigation_keeps_the_prior_session_and_records_a_recoverable_
         controller.document_state(),
         PeltDocumentState::Error { address, .. } if address == "tile-1.html"
     ));
+}
+
+#[test]
+fn source_artifact_is_held_across_a_live_route_switch() {
+    let source_requests = Arc::new(Mutex::new(Vec::new()));
+    let reader_requests = Arc::new(Mutex::new(Vec::new()));
+    let mut sessions = SessionRegistry::new();
+    sessions.register(Box::new(SourceArtifactEngine {
+        requests: source_requests.clone(),
+    }));
+    sessions.register(Box::new(HeldBodyEngine {
+        requests: reader_requests.clone(),
+    }));
+    let registries = PeltRegistries::new(
+        sessions,
+        SurfaceEngineRegistry::new(),
+        EngineRoutePolicy {
+            rules: Vec::new(),
+            fallback: EngineRouteRule::new(
+                std::iter::empty::<&str>(),
+                "fake.source",
+                SurfaceContractMode::CompositedTexture,
+            ),
+            per_host_overrides: HashMap::new(),
+        },
+        "pelt-source-retention-test",
+        "fake.source",
+        EngineProfileBinding {
+            user_data_dir: "pelt-source-retention-test-profile".to_owned(),
+        },
+    );
+    let mut workspace = PeltWorkspace::try_routed(
+        TileTree::single(tile(1)),
+        registries,
+        |tile| {
+            let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                unreachable!()
+            };
+            Ok(PeltTileRequest::new(
+                format!("{address}#reader-source"),
+                (800, 600),
+            ))
+        },
+        || Box::new(TestClock),
+    )
+    .expect("source document opens");
+
+    assert!(
+        workspace
+            .set_route_override(TileId(1), Some("fake.reader".to_owned()))
+            .expect("reader route uses the retained source")
+    );
+    let reader_request = reader_requests
+        .lock()
+        .expect("reader request lock")
+        .pop()
+        .expect("reader was spawned from the source artifact");
+    assert_eq!(
+        reader_request.address,
+        "https://reader.test/final.html#reader-source"
+    );
+    assert_eq!(
+        reader_request.body.as_deref(),
+        Some("<main><h1>Held source</h1></main>")
+    );
+    assert_eq!(
+        reader_request.content_type.as_deref(),
+        Some("text/html; charset=utf-8")
+    );
+
+    assert!(
+        workspace
+            .set_route_override(TileId(1), None)
+            .expect("automatic route reconstructs from the retained source")
+    );
+    let source_requests = source_requests.lock().expect("source request lock");
+    assert_eq!(source_requests.len(), 2);
+    assert_eq!(source_requests[0].body, None);
+    assert_eq!(
+        source_requests[1].body.as_deref(),
+        Some("<main><h1>Held source</h1></main>")
+    );
+    assert_eq!(
+        source_requests[1].content_type.as_deref(),
+        Some("text/html; charset=utf-8")
+    );
 }
