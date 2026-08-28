@@ -8,6 +8,7 @@
 //! dialogs, filesystem integration, and platform event-loop glue. It stays
 //! above `genet-host-api` and below the UI chrome crate.
 
+mod appearance;
 #[cfg(all(feature = "livery", target_os = "windows"))]
 mod dx12_surface;
 #[cfg(feature = "livery")]
@@ -80,6 +81,10 @@ mod smoke_webgl;
 #[cfg(feature = "windows-present")]
 mod smoke_windows;
 
+pub use appearance::{
+    APPEARANCE_REFERENCE, AppearanceSettingsProvider, AppearanceStore, AppearanceTheme,
+    CHROME_THEME_SETTING, FileAppearanceStore, InMemoryAppearanceStore,
+};
 #[cfg(any(feature = "scripted", feature = "smolweb"))]
 pub use href::resolve_href;
 pub use pelt_core::{

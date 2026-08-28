@@ -17,6 +17,8 @@ use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use pelt_core::WorkspaceRect;
 
+use crate::appearance::AppearanceTheme;
+
 type FrameView = Box<dyn AnyView<FrameState, (), GenetCtx, GenetElement>>;
 type FrameLogic = fn(&FrameState) -> FrameView;
 
@@ -138,7 +140,7 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
         chrome_toggle_button(
             "appearance",
             "Theme",
-            "Toggle session appearance settings",
+            "Toggle Pelt appearance settings",
             chrome.appearance.is_some(),
         ),
     ];
@@ -213,7 +215,7 @@ pub(crate) struct FrisketFrame {
     /// Bounds of the host-owned loading/error document. The desktop host
     /// restores this crop after document and native tile composition.
     pub diagnostic_rect: Option<WorkspaceRect>,
-    /// Bounds of the session-only appearance drawer. The desktop host restores
+    /// Bounds of the Pelt-owned appearance drawer. The desktop host restores
     /// this crop after document and native tile composition.
     pub appearance_rect: Option<WorkspaceRect>,
 }
@@ -279,39 +281,7 @@ pub(crate) enum ChromeAction {
     ChooseEngine(ChromeEngineChoice),
     ToggleInspector,
     ToggleAppearance,
-    ChooseTheme(ChromeTheme),
-}
-
-/// The presentation palette of Pelt's retained host chrome. This is a
-/// session-only host choice: document engines retain their own appearance
-/// policy and are not recolored through the Pelt wrapper.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ChromeTheme {
-    Dark,
-    Light,
-}
-
-impl ChromeTheme {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Dark => "Dark",
-            Self::Light => "Light",
-        }
-    }
-
-    const fn class(self) -> &'static str {
-        match self {
-            Self::Dark => "pelt-theme-dark",
-            Self::Light => "pelt-theme-light",
-        }
-    }
-
-    const fn action(self) -> &'static str {
-        match self {
-            Self::Dark => "appearance-dark",
-            Self::Light => "appearance-light",
-        }
-    }
+    ChooseTheme(AppearanceTheme),
 }
 
 /// One explicitly available engine choice in the focused-tile Pelt menu.
@@ -381,14 +351,15 @@ fn engine_choice_view(choice: ChromeEngineChoice, selected: bool) -> FrameView {
     )
 }
 
-/// Session-only, Pelt-owned appearance controls. The selection is intentionally
-/// kept separate from document engine themes and storage policy.
+/// Pelt-owned appearance controls. The selection is intentionally kept
+/// separate from document engine themes and Tabard's preview-only palette.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ChromeAppearance {
-    pub theme: ChromeTheme,
+    pub theme: AppearanceTheme,
+    pub persistent: bool,
 }
 
-fn appearance_choice_view(theme: ChromeTheme, selected: bool) -> FrameView {
+fn appearance_choice_view(theme: AppearanceTheme, selected: bool) -> FrameView {
     Box::new(
         el::<_, FrameState, ()>("div", theme.label())
             .attr(
@@ -406,7 +377,7 @@ fn appearance_choice_view(theme: ChromeTheme, selected: bool) -> FrameView {
 }
 
 fn appearance_view(appearance: &ChromeAppearance) -> FrameView {
-    let options = [ChromeTheme::Dark, ChromeTheme::Light]
+    let options = [AppearanceTheme::Dark, AppearanceTheme::Light]
         .into_iter()
         .map(|theme| appearance_choice_view(theme, appearance.theme == theme))
         .collect::<Vec<_>>();
@@ -424,8 +395,15 @@ fn appearance_view(appearance: &ChromeAppearance) -> FrameView {
                 .attr("aria-label", "Chrome theme"),
         ),
         Box::new(
-            el::<_, FrameState, ()>("div", "This Pelt session only.")
-                .attr("class", "pelt-appearance-scope"),
+            el::<_, FrameState, ()>(
+                "div",
+                if appearance.persistent {
+                    "Saved for this Pelt application."
+                } else {
+                    "This Pelt session only. Supply an appearance store to keep it after restart."
+                },
+            )
+            .attr("class", "pelt-appearance-scope"),
         ),
         Box::new(
             el::<_, FrameState, ()>("div", "Document content keeps its engine-owned theme.")
@@ -600,7 +578,7 @@ pub(crate) struct WorkspaceChrome {
     pub address: String,
     pub route: String,
     pub status: String,
-    pub theme: ChromeTheme,
+    pub theme: AppearanceTheme,
     pub address_focused: bool,
     pub can_go_back: bool,
     pub can_go_forward: bool,
@@ -1008,8 +986,8 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
                 "engine-scripted" => Some(ChromeAction::ChooseEngine(ChromeEngineChoice::Scripted)),
                 "inspect" => Some(ChromeAction::ToggleInspector),
                 "appearance" => Some(ChromeAction::ToggleAppearance),
-                "appearance-dark" => Some(ChromeAction::ChooseTheme(ChromeTheme::Dark)),
-                "appearance-light" => Some(ChromeAction::ChooseTheme(ChromeTheme::Light)),
+                "appearance-dark" => Some(ChromeAction::ChooseTheme(AppearanceTheme::Dark)),
+                "appearance-light" => Some(ChromeAction::ChooseTheme(AppearanceTheme::Light)),
                 _ => None,
             };
         }
@@ -1276,7 +1254,7 @@ mod tests {
             address: "C:/example/static.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Dark,
+            theme: AppearanceTheme::Dark,
             address_focused: false,
             can_go_back: false,
             can_go_forward: false,
@@ -1385,7 +1363,7 @@ mod tests {
             address: "C:/example/static.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Dark,
+            theme: AppearanceTheme::Dark,
             address_focused: false,
             can_go_back: false,
             can_go_forward: false,
@@ -1424,7 +1402,7 @@ mod tests {
 
         // Light's built-in variables have higher specificity than a bare
         // workspace selector, so a portable artifact maps both selectors.
-        chrome.theme = ChromeTheme::Light;
+        chrome.theme = AppearanceTheme::Light;
         surface.set_chrome(Some(chrome.clone()));
         let light_preview = surface.frame(800, 600).expect("light preview Chrome frame");
         assert_eq!(light_preview.content_rects, baseline.content_rects);
@@ -1454,7 +1432,7 @@ mod tests {
             Some("rgb(160, 176, 192)")
         );
 
-        chrome.theme = ChromeTheme::Dark;
+        chrome.theme = AppearanceTheme::Dark;
         surface.set_chrome(Some(chrome));
         surface.set_chrome_stylesheet(None);
         let restored = surface.frame(800, 600).expect("restored Chrome frame");
@@ -1495,7 +1473,7 @@ mod tests {
             address: "C:/example/static.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Dark,
+            theme: AppearanceTheme::Dark,
             address_focused: false,
             can_go_back: false,
             can_go_forward: false,
@@ -1580,7 +1558,7 @@ mod tests {
             address: "C:/example/index.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Dark,
+            theme: AppearanceTheme::Dark,
             address_focused: false,
             can_go_back: true,
             can_go_forward: false,
@@ -1675,7 +1653,7 @@ mod tests {
             address: "C:/example/index.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Dark,
+            theme: AppearanceTheme::Dark,
             address_focused: false,
             can_go_back: true,
             can_go_forward: false,
@@ -1692,9 +1670,10 @@ mod tests {
         let baseline = surface.frame(800, 600).expect("baseline chrome frame");
 
         surface.set_chrome(Some(WorkspaceChrome {
-            theme: ChromeTheme::Light,
+            theme: AppearanceTheme::Light,
             appearance: Some(ChromeAppearance {
-                theme: ChromeTheme::Light,
+                theme: AppearanceTheme::Light,
+                persistent: false,
             }),
             ..chrome
         }));
@@ -1712,7 +1691,7 @@ mod tests {
                 light_choice.y + light_choice.height / 2.0
             ),
             Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
-                ChromeTheme::Light
+                AppearanceTheme::Light
             )))
         );
         assert_eq!(
@@ -1774,7 +1753,7 @@ mod tests {
             address: "C:/example/index.html".to_owned(),
             route: "Automatic: genet.livery · document".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Light,
+            theme: AppearanceTheme::Light,
             address_focused: false,
             can_go_back: true,
             can_go_forward: false,
@@ -1784,7 +1763,8 @@ mod tests {
             engine_choices: vec![ChromeEngineChoice::Automatic, ChromeEngineChoice::Livery],
             inspector: None,
             appearance: Some(ChromeAppearance {
-                theme: ChromeTheme::Light,
+                theme: AppearanceTheme::Light,
+                persistent: false,
             }),
             diagnostic: None,
         };
@@ -1874,7 +1854,7 @@ mod tests {
         assert_eq!(
             surface.accessibility_target(light_dom),
             Some(FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(
-                ChromeTheme::Light
+                AppearanceTheme::Light
             )))
         );
 
@@ -1912,7 +1892,7 @@ mod tests {
             address: "C:/example/surface.html".to_owned(),
             route: "Automatic: scrying.web · surface".to_owned(),
             status: "Ready".to_owned(),
-            theme: ChromeTheme::Dark,
+            theme: AppearanceTheme::Dark,
             address_focused: false,
             can_go_back: false,
             can_go_forward: false,

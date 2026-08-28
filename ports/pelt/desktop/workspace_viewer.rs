@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 
 use accesskit::{Action, Affine, NodeId as AccessNodeId, Role, TreeUpdate};
 use genet_host_api::ResourceFetcher;
+use genet_host_api::settings::{SettingValue, SettingsProvider};
 use genet_host_api::tile::{
-    ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
-    TileTree,
+    ContentSource, DocumentRef, DropTarget, Edge, SettingsRef, SplitAxis, Tile, TileBranch,
+    TileEvent, TileId, TileTree,
 };
 use genet_winit_host::{
     A11yActionRequest, AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit,
@@ -36,11 +37,15 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::appearance::{
+    APPEARANCE_REFERENCE, AppearanceSettingsProvider, AppearanceStore, AppearanceTheme,
+    CHROME_THEME_SETTING, InMemoryAppearanceStore,
+};
 #[cfg(target_os = "windows")]
 use crate::dx12_surface::Dx12SurfaceCache;
 use crate::frisket_surface::{
     ChromeAction, ChromeAppearance, ChromeDocument, ChromeDocumentKind, ChromeEngineChoice,
-    ChromeInspector, ChromeInspectorSection, ChromeTheme, FrisketA11yProjection, FrisketA11yTarget,
+    ChromeInspector, ChromeInspectorSection, FrisketA11yProjection, FrisketA11yTarget,
     FrisketContentA11y, FrisketHit, FrisketSurface, WorkspaceChrome,
 };
 #[cfg(target_os = "windows")]
@@ -55,8 +60,8 @@ const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history,
 const LOADING_ERROR_WORKSPACE_ASSERTION: &str =
     "host-owned loading and error documents preserved the focused tile's prior session and history";
 const APPEARANCE_WORKSPACE_ASSERTION: &str =
-    "session-only appearance changed the live Pelt chrome theme while the focused document held";
-const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the session appearance controls";
+    "Pelt-owned appearance changed the live chrome theme while the focused document held";
+const ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "AccessKit installed before the Pelt window became visible; typed Focus held state while Click opened and selected the Pelt appearance controls";
 const ACCESSIBILITY_CHILDREN_WORKSPACE_ASSERTION: &str = "Pelt composed the focused Livery child tree through its retained content hole; Focus stayed virtual and Click navigated only that session";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
@@ -83,8 +88,8 @@ pub enum WorkspaceReceipt {
     /// P6's document-lane loading and failed-navigation projection, without a
     /// native surface dependency.
     LoadingError,
-    /// P6's session-only Pelt appearance drawer, without a document theme or
-    /// persistence claim.
+    /// P6's Pelt-owned appearance drawer. This named receipt uses in-memory
+    /// storage, while callers may supply a durable Pelt store.
     Appearance,
     /// P6's retained Chrome/Frisket AccessKit tree and typed action routing.
     Accessibility,
@@ -183,6 +188,9 @@ pub struct WorkspaceViewerConfig {
     pub artifact: Option<PathBuf>,
     /// One-based tile number to explicit engine id.
     pub route_overrides: HashMap<u64, String>,
+    /// Caller-owned Pelt appearance storage. Without it Chrome selection stays
+    /// in this process only; Pelt does not invent a config-directory owner.
+    pub appearance_store: Option<Box<dyn AppearanceStore>>,
 }
 
 impl WorkspaceViewerConfig {
@@ -200,6 +208,7 @@ impl WorkspaceViewerConfig {
             workspace_receipt_stage_timeout: WORKSPACE_RECEIPT_STAGE_TIMEOUT,
             artifact: None,
             route_overrides: HashMap::new(),
+            appearance_store: None,
         }
     }
 
@@ -222,6 +231,12 @@ impl WorkspaceViewerConfig {
 
     pub fn with_route_override(mut self, tile: u64, engine_id: impl Into<String>) -> Self {
         self.route_overrides.insert(tile, engine_id.into());
+        self
+    }
+
+    /// Keep Pelt Chrome appearance in a caller-selected store.
+    pub fn with_appearance_store(mut self, store: impl AppearanceStore + 'static) -> Self {
+        self.appearance_store = Some(Box::new(store));
         self
     }
 
@@ -745,7 +760,7 @@ fn tabard_preview_stylesheet() -> String {
     );
     // Pelt's Light appearance declares the same roles on the compound
     // selector. Keep equal specificity here so a Tabard preview owns either
-    // session appearance without making Tabard responsible for Chrome names.
+    // Pelt appearance without making Tabard responsible for Chrome names.
     stylesheet.push_str(
         "\
 .pelt-workspace, .pelt-workspace.pelt-theme-light { \
@@ -917,7 +932,7 @@ struct WorkspaceApp {
     chrome_address: Option<ChromeAddressInput>,
     chrome_engine_menu: Option<ChromeEngineMenu>,
     chrome_inspector_open: bool,
-    chrome_theme: ChromeTheme,
+    appearance: AppearanceSettingsProvider<Box<dyn AppearanceStore>>,
     chrome_appearance_open: bool,
     appearance_receipt_baseline: Option<AppearanceReceiptBaseline>,
     #[cfg(feature = "tabard-preview")]
@@ -1200,12 +1215,18 @@ struct MixedPendingResize {
 
 impl WorkspaceApp {
     fn new(
-        config: WorkspaceViewerConfig,
+        mut config: WorkspaceViewerConfig,
         workspace: PeltWorkspace<Scene>,
         frisket: FrisketSurface,
         #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
     ) -> Self {
         let (width, height) = config.size.unwrap_or((1100, 750));
+        let appearance = AppearanceSettingsProvider::new(
+            config
+                .appearance_store
+                .take()
+                .unwrap_or_else(|| Box::new(InMemoryAppearanceStore::default())),
+        );
         Self {
             config,
             workspace,
@@ -1231,7 +1252,7 @@ impl WorkspaceApp {
             chrome_address: None,
             chrome_engine_menu: None,
             chrome_inspector_open: false,
-            chrome_theme: ChromeTheme::Dark,
+            appearance,
             chrome_appearance_open: false,
             appearance_receipt_baseline: None,
             #[cfg(feature = "tabard-preview")]
@@ -1247,6 +1268,17 @@ impl WorkspaceApp {
             mixed_pending_resize: None,
             #[cfg(target_os = "windows")]
             scrying_host,
+        }
+    }
+
+    fn chrome_theme(&self) -> AppearanceTheme {
+        self.appearance.store().theme()
+    }
+
+    fn chrome_appearance(&self) -> ChromeAppearance {
+        ChromeAppearance {
+            theme: self.chrome_theme(),
+            persistent: self.appearance.store().is_persistent(),
         }
     }
 
@@ -1758,13 +1790,14 @@ impl WorkspaceApp {
     }
 
     fn chrome_model(&self) -> WorkspaceChrome {
+        let theme = self.chrome_theme();
         let Some(tile) = self.workspace.focused_tile() else {
             return WorkspaceChrome {
                 title: "No focused tile".to_owned(),
                 address: String::new(),
                 route: "No route".to_owned(),
                 status: self.chrome_status.label(),
-                theme: self.chrome_theme,
+                theme,
                 address_focused: self.chrome_address.is_some(),
                 can_go_back: false,
                 can_go_forward: false,
@@ -1773,9 +1806,9 @@ impl WorkspaceApp {
                 engine_selected: None,
                 engine_choices: Self::chrome_engine_choices(),
                 inspector: None,
-                appearance: self.chrome_appearance_open.then_some(ChromeAppearance {
-                    theme: self.chrome_theme,
-                }),
+                appearance: self
+                    .chrome_appearance_open
+                    .then(|| self.chrome_appearance()),
                 diagnostic: None,
             };
         };
@@ -1866,7 +1899,7 @@ impl WorkspaceApp {
             address,
             route,
             status,
-            theme: self.chrome_theme,
+            theme,
             address_focused: self.chrome_address.is_some(),
             can_go_back: controller.is_some_and(PeltController::can_go_back),
             can_go_forward: controller.is_some_and(PeltController::can_go_forward),
@@ -1879,9 +1912,9 @@ impl WorkspaceApp {
             inspector: self
                 .chrome_inspector_open
                 .then(|| self.chrome_inspector(tile)),
-            appearance: self.chrome_appearance_open.then_some(ChromeAppearance {
-                theme: self.chrome_theme,
-            }),
+            appearance: self
+                .chrome_appearance_open
+                .then(|| self.chrome_appearance()),
             diagnostic,
         }
     }
@@ -2071,12 +2104,27 @@ impl WorkspaceApp {
         true
     }
 
-    fn choose_chrome_theme(&mut self, theme: ChromeTheme) -> bool {
+    fn choose_chrome_theme(&mut self, theme: AppearanceTheme) -> bool {
         if !self.chrome_appearance_open {
             return false;
         }
-        self.chrome_theme = theme;
-        self.chrome_status = ChromeStatus::Message(format!("Chrome theme: {}", theme.label()));
+        let reference = SettingsRef(APPEARANCE_REFERENCE.into());
+        if let Err(error) = self.appearance.apply(
+            &reference,
+            CHROME_THEME_SETTING,
+            SettingValue::Text(theme.as_str().to_owned()),
+        ) {
+            self.chrome_status =
+                ChromeStatus::Error(format!("Could not save Chrome theme: {error:?}"));
+            return true;
+        }
+        let persistence = if self.appearance.store().is_persistent() {
+            "saved"
+        } else {
+            "session only"
+        };
+        self.chrome_status =
+            ChromeStatus::Message(format!("Chrome theme: {} ({persistence})", theme.label()));
         true
     }
 
@@ -3690,7 +3738,7 @@ impl WorkspaceApp {
                     .ok_or("Chrome DPI receipt lost its focused controller")?;
                 if !rect_fits_viewport(appearance, viewport)
                     || content.y <= appearance.y + appearance.height
-                    || self.chrome_theme != ChromeTheme::Dark
+                    || self.chrome_theme() != AppearanceTheme::Dark
                     || self.chrome_appearance_open
                 {
                     return Err(
@@ -3716,7 +3764,7 @@ impl WorkspaceApp {
                         self.frisket
                             .hit(light.x + light.width / 2.0, light.y + light.height / 2.0),
                         Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
-                            ChromeTheme::Light
+                            AppearanceTheme::Light
                         )))
                     )
                 {
@@ -3747,7 +3795,7 @@ impl WorkspaceApp {
                 let placement =
                     fragment_placement(drawer, (self.width, self.height), self.scale_factor);
                 let [x0, y0, x1, y1] = placement.dest_rect;
-                if self.chrome_theme != ChromeTheme::Light
+                if self.chrome_theme() != AppearanceTheme::Light
                     || self.workspace.content_rect(tile) != Some(baseline.content)
                     || controller.address() != baseline.address.as_str()
                     || controller.can_go_back() != baseline.can_go_back
@@ -4043,7 +4091,7 @@ impl WorkspaceApp {
                 if trigger.width <= 0.0
                     || trigger.height <= 0.0
                     || content.y <= trigger.y + trigger.height
-                    || self.chrome_theme != ChromeTheme::Dark
+                    || self.chrome_theme() != AppearanceTheme::Dark
                     || self.chrome_appearance_open
                 {
                     return Err(
@@ -4064,18 +4112,15 @@ impl WorkspaceApp {
                     .frisket
                     .chrome_rect("appearance-light")
                     .ok_or("appearance receipt did not render a Light choice")?;
-                if chrome.theme != ChromeTheme::Dark
-                    || chrome.appearance
-                        != Some(ChromeAppearance {
-                            theme: ChromeTheme::Dark,
-                        })
+                if chrome.theme != AppearanceTheme::Dark
+                    || chrome.appearance != Some(self.chrome_appearance())
                     || light.width <= 0.0
                     || light.height <= 0.0
                     || !matches!(
                         self.frisket
                             .hit(light.x + light.width / 2.0, light.y + light.height / 2.0),
                         Some(FrisketHit::ChromeAction(ChromeAction::ChooseTheme(
-                            ChromeTheme::Light
+                            AppearanceTheme::Light
                         )))
                     )
                 {
@@ -4096,12 +4141,9 @@ impl WorkspaceApp {
                     .controller(tile)
                     .ok_or("appearance receipt lost its focused controller")?;
                 let chrome = self.chrome_model();
-                if self.chrome_theme != ChromeTheme::Light
-                    || chrome.theme != ChromeTheme::Light
-                    || chrome.appearance
-                        != Some(ChromeAppearance {
-                            theme: ChromeTheme::Light,
-                        })
+                if self.chrome_theme() != AppearanceTheme::Light
+                    || chrome.theme != AppearanceTheme::Light
+                    || chrome.appearance != Some(self.chrome_appearance())
                     || self.workspace.content_rect(tile) != Some(baseline.content)
                     || controller.address() != baseline.address.as_str()
                     || controller.can_go_back() != baseline.can_go_back
@@ -4236,12 +4278,12 @@ impl WorkspaceApp {
                             .to_owned(),
                     );
                 }
-                let theme = a11y_node(&tree, "Toggle session appearance settings", Role::Button)?;
+                let theme = a11y_node(&tree, "Toggle Pelt appearance settings", Role::Button)?;
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Focus,
                     target_node: theme,
                 }) || self.chrome_appearance_open
-                    || self.chrome_theme != ChromeTheme::Dark
+                    || self.chrome_theme() != AppearanceTheme::Dark
                 {
                     return Err(
                         "accessibility Focus activated Pelt's appearance control instead of only moving virtual focus"
@@ -4251,7 +4293,7 @@ impl WorkspaceApp {
             },
             1 => {
                 let tree = self.prepare_accessibility_tree()?;
-                let theme = a11y_node(&tree, "Toggle session appearance settings", Role::Button)?;
+                let theme = a11y_node(&tree, "Toggle Pelt appearance settings", Role::Button)?;
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Click,
                     target_node: theme,
@@ -4269,7 +4311,7 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Focus,
                     target_node: light,
-                }) || self.chrome_theme != ChromeTheme::Dark
+                }) || self.chrome_theme() != AppearanceTheme::Dark
                     || !self.chrome_appearance_open
                 {
                     return Err(
@@ -4284,12 +4326,10 @@ impl WorkspaceApp {
                 if !self.apply_accessibility_request(A11yActionRequest {
                     action: Action::Click,
                     target_node: light,
-                }) || self.chrome_theme != ChromeTheme::Light
+                }) || self.chrome_theme() != AppearanceTheme::Light
                     || !self.chrome_appearance_open
                 {
-                    return Err(
-                        "accessibility Click did not select Pelt's Light session theme".to_owned(),
-                    );
+                    return Err("accessibility Click did not select Pelt's Light theme".to_owned());
                 }
             },
             4 => {
@@ -5518,6 +5558,7 @@ fn session_ime(ime: winit::event::Ime) -> SessionIme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FileAppearanceStore;
     #[cfg(feature = "reader")]
     use std::sync::Mutex;
 
@@ -6300,7 +6341,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.starts_with(CHROME_DPI_WORKSPACE_ASSERTION_PREFIX))
         );
-        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Light);
         assert!(app.chrome_appearance_open);
         let controller = app
             .workspace
@@ -6367,7 +6408,7 @@ mod tests {
             }
         }
         assert_eq!(assertion.as_deref(), Some(APPEARANCE_WORKSPACE_ASSERTION));
-        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Light);
         assert!(app.chrome_appearance_open);
         let controller = app
             .workspace
@@ -6389,6 +6430,134 @@ mod tests {
             ),
             Some(FrisketHit::Content(TileId(1)))
         );
+    }
+
+    #[test]
+    fn file_appearance_store_restores_theme_after_workspace_recreation() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pelt desktop has a parent")
+            .join("examples/workspace/p6-appearance/index.html")
+            .to_string_lossy()
+            .into_owned();
+        let path = std::env::temp_dir().join(format!(
+            "pelt-workspace-appearance-{}-{}.theme",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let make_app = |store: FileAppearanceStore| {
+            let tree = tree_from_urls(&[fixture.clone()]);
+            #[cfg(target_os = "windows")]
+            let registries = workspace_registries(None);
+            #[cfg(not(target_os = "windows"))]
+            let registries = workspace_registries();
+            let workspace = PeltWorkspace::try_routed(
+                tree,
+                registries,
+                |tile| {
+                    let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                        unreachable!("appearance store test contains only documents");
+                    };
+                    Ok(PeltTileRequest::new(address, (960, 640)))
+                },
+                || Box::new(WorkspaceClock(Instant::now())),
+            )
+            .expect("appearance store test opens its seed document");
+            let frisket = FrisketSurface::new(workspace.tree());
+            let config = WorkspaceViewerConfig::new(vec![fixture.clone()], WindowingMode::Headed)
+                .with_size(960, 640)
+                .with_appearance_store(store);
+            #[cfg(target_os = "windows")]
+            {
+                WorkspaceApp::new(config, workspace, frisket, None)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                WorkspaceApp::new(config, workspace, frisket)
+            }
+        };
+        let compose = |app: &mut WorkspaceApp| {
+            app.refresh_chrome();
+            let pane = app
+                .frisket
+                .frame(960, 640)
+                .expect("appearance store Frisket frame");
+            app.workspace
+                .set_content_rects(pane.content_rects.iter().copied());
+            let _ = app.workspace.pump();
+            let _ = app.workspace.frame();
+            app.workspace.mark_visible_documents_presented();
+        };
+
+        let mut app = make_app(FileAppearanceStore::load(&path).unwrap());
+        compose(&mut app);
+        let tile = TileId(1);
+        let baseline_content = app
+            .workspace
+            .content_rect(tile)
+            .expect("appearance store test retains its content hole");
+        let baseline_address = app
+            .workspace
+            .controller(tile)
+            .expect("appearance store test retains its document")
+            .address()
+            .to_owned();
+        let baseline_route = app
+            .workspace
+            .route(tile)
+            .cloned()
+            .expect("appearance store test retains its route");
+        let baseline_history = app
+            .workspace
+            .controller(tile)
+            .map(|controller| (controller.can_go_back(), controller.can_go_forward()))
+            .expect("appearance store test retains history");
+
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Dark);
+        assert!(app.apply_chrome_action(ChromeAction::ToggleAppearance));
+        assert!(app.apply_chrome_action(ChromeAction::ChooseTheme(AppearanceTheme::Light)));
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Light);
+        assert!(app.chrome_appearance().persistent);
+        drop(app);
+
+        let mut restored = make_app(FileAppearanceStore::load(&path).unwrap());
+        assert_eq!(restored.chrome_theme(), AppearanceTheme::Light);
+        compose(&mut restored);
+        assert_eq!(restored.chrome_theme(), AppearanceTheme::Light);
+        assert_eq!(
+            restored.workspace.content_rect(tile),
+            Some(baseline_content)
+        );
+        assert_eq!(
+            restored
+                .workspace
+                .controller(tile)
+                .expect("restored workspace retains its document")
+                .address(),
+            baseline_address
+        );
+        assert_eq!(restored.workspace.route(tile), Some(&baseline_route));
+        assert_eq!(
+            restored
+                .workspace
+                .controller(tile)
+                .map(|controller| (controller.can_go_back(), controller.can_go_forward())),
+            Some(baseline_history)
+        );
+        assert!(restored.apply_chrome_action(ChromeAction::ToggleAppearance));
+        assert_eq!(
+            restored.chrome_model().appearance,
+            Some(ChromeAppearance {
+                theme: AppearanceTheme::Light,
+                persistent: true,
+            })
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -6435,13 +6604,13 @@ mod tests {
             .map(|(_, node)| node)
             .expect("window root");
         assert_eq!(root.transform(), Some(&Affine::scale(1.25)));
-        let theme = a11y_node(&initial, "Toggle session appearance settings", Role::Button)
+        let theme = a11y_node(&initial, "Toggle Pelt appearance settings", Role::Button)
             .expect("appearance toggle");
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Focus,
             target_node: theme,
         }));
-        assert_eq!(app.chrome_theme, ChromeTheme::Dark);
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Dark);
         assert!(!app.chrome_appearance_open);
         assert!(app.accessibility.focus.is_some());
 
@@ -6458,13 +6627,13 @@ mod tests {
             action: Action::Focus,
             target_node: light,
         }));
-        assert_eq!(app.chrome_theme, ChromeTheme::Dark);
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Dark);
 
         assert!(app.apply_accessibility_request(A11yActionRequest {
             action: Action::Click,
             target_node: light,
         }));
-        assert_eq!(app.chrome_theme, ChromeTheme::Light);
+        assert_eq!(app.chrome_theme(), AppearanceTheme::Light);
         let selected = app
             .prepare_accessibility_tree()
             .expect("selected appearance accessibility tree");
@@ -6481,7 +6650,7 @@ mod tests {
         assert_eq!(
             app.accessibility.focus,
             Some(WorkspaceA11yFocus::Frisket(
-                FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(ChromeTheme::Light))
+                FrisketA11yTarget::ChromeAction(ChromeAction::ChooseTheme(AppearanceTheme::Light))
             ))
         );
         assert_eq!(

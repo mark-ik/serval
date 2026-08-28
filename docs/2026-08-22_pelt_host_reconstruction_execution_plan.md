@@ -9,7 +9,8 @@ import, repeated fence waits, and visible same-window composition. P5 completed
 2026-08-27 with all eight deterministic product receipts. P6's focused-tile
 Chrome, structural-inspection, and shell accessibility slices completed
 2026-08-27; the narrow-width and high-DPI Chrome receipts completed on Windows
-2026-08-27. Reader-in-workspace completed 2026-08-27 with a separate
+2026-08-27. Pelt's caller-injected durable Chrome appearance store completed
+2026-08-28. Reader-in-workspace completed 2026-08-27 with a separate
 held-source Fleece/Pelt receipt. IOSurface and DMA-BUF imports remain separate
 platform lanes.
 
@@ -725,8 +726,9 @@ supplement those deterministic receipts.
 
 **Status:** complete for the retained Pelt shell scope. The bounded focused-tile
 Chrome, engine-choice-menu, structural-inspection, loading/error-document,
-session-only appearance, shell AccessKit, narrow-width Chrome, and actual
-high-DPI Chrome receipts completed on Windows 2026-08-27.
+Pelt-owned appearance with optional caller-injected durable storage, shell
+AccessKit, narrow-width Chrome, and actual high-DPI Chrome receipts completed
+on Windows 2026-08-28.
 
 Add the browser surface that makes the host usable: address field, title and
 status, back/forward/reload, tile controls, route indicator, per-tile engine
@@ -854,10 +856,10 @@ cargo run --config 'profile.dev.debug=0' --offline -p pelt \
 It owns `examples/workspace/p6-appearance/index.html` at 960x640. The driver
 opens Pelt's retained Appearance drawer through its live Frisket hit path,
 selects Light, and captures the composed Chrome frame. Dark and Light are
-explicit Pelt-session choices. The palette reaches Pelt's Chrome, Frisket tabs,
+explicit Pelt-owned choices. The palette reaches Pelt's Chrome, Frisket tabs,
 drawer, inspector, and diagnostic documents, while the document engine keeps
-its own theme authority. Persistence, platform-theme integration, and
-cross-session restoration remain outside this receipt.
+its own theme authority. The recorded 2026-08-27 capture used the default
+in-memory store; the durable follow-up is recorded below.
 
 The GPU-free checks verify semantic radio controls, the Light action, the exact
 physical crop calculation used for post-native replay, unchanged tile-1
@@ -869,6 +871,57 @@ hit routing after drawer dismissal. Recorded 2026-08-27: the Livery-only
 document held`; the captured compositor digest was `b1f8e383dea75045`. The PNG
 shows the Light Chrome shell, checked Light choice, retained document hole, and
 the session/document ownership notes together.
+
+#### P6 follow-up: caller-owned durable Chrome appearance
+
+Recorded 2026-08-28: Pelt now owns its application-local Chrome appearance
+value without taking ownership of a platform configuration directory. The
+single `AppearanceTheme` type serves the retained Chrome model and the
+`AppearanceSettingsProvider`. That provider describes
+`pelt/appearance` / `chrome.theme` as an ordinary, live, application-scoped,
+local-only `Text` choice (`dark` or `light`). A rejected reference, setting,
+type, or value does not change the active palette.
+
+`WorkspaceViewerConfig::with_appearance_store` receives the caller's store;
+without one, Pelt uses an in-memory Dark store and the drawer says that the
+choice is session-only. `FileAppearanceStore::load` defaults missing or
+malformed values to Dark but returns access and sharing errors to the caller.
+Its write path syncs a sibling file and replaces the prior value atomically
+(`ReplaceFileW` on Windows), so the live palette changes only after the durable
+write succeeds. The reference Pelt CLI exposes this explicitly as
+`--appearance-store <path>`, which implies `--tiles`; it invents neither an
+app-data path nor a Servo-global preference.
+
+With a caller-supplied file, the same drawer says `Saved for this Pelt
+application.` The setting changes only Pelt Chrome, Frisket tabs, drawers, and
+diagnostic documents. It does not recolor the Livery document, turn Tabard into
+a persistence owner, or move document-engine settings into Pelt.
+
+The GPU-free restart test selects Light through the real Chrome action,
+reconstructs the workspace with a fresh store for the same file, and proves the
+Light setting, address, selected route, Back/Forward posture, and Frisket
+content hole all hold. Missing/malformed fallback, nonrecoverable load errors,
+typed settings rejection, and a Light-to-Dark file round trip are covered in
+the focused store/provider tests.
+
+The Windows headed receipt used an explicit isolated store and captured the
+persisted view:
+
+```sh
+cargo run --config 'profile.dev.debug=0' --offline -p pelt \
+  --no-default-features --features livery -j 1 -- \
+  --workspace-receipt appearance \
+  --appearance-store C:\t\genet-pelt-appearance\workspace-appearance.theme \
+  --artifact C:\t\genet-pelt-appearance\workspace-appearance-persistent.png
+```
+
+It completed after four redraws at 960x640 with assertion
+`Pelt-owned appearance changed the live chrome theme while the focused document
+held`, digest `f1022ff378c5862e`, and a 134,840-byte PNG. The final store value
+was `light`; the capture visibly shows the checked Light option and the saved
+application scope beside engine-owned document content. Focused store and
+appearance tests passed 9/9, the full Livery `pelt-desktop` suite passed 43/43,
+Pelt's viewer suite passed 4/4, and `genet-host-api` settings tests passed 4/4.
 
 The bounded P6 accessibility receipt is:
 
@@ -1114,10 +1167,11 @@ Reader-in-workspace receipt are complete. The AccessKit tree now composes the
 retained Livery child tree for its focused supported lane; Reader, Scripted,
 Smolweb, and native child trees still need their own namespace and action
 contracts. Livery still needs nested-scroll ScrollIntoView/action routing and
-text/value semantics before Pelt can widen that child lane. The Appearance
-drawer stays session-only until Pelt owns a durable configuration policy. The
-held-source handoff is now a reusable Pelt boundary, not a fetch API for
-Fleece.
+text/value semantics before Pelt can widen that child lane. Pelt now owns an
+optional caller-injected local appearance store; system-theme integration,
+multi-window synchronization, and a canonical configuration-directory policy
+remain distinct work. The held-source handoff is now a reusable Pelt boundary,
+not a fetch API for Fleece.
 
 The completed Windows P4 route remains the external-engine comparison lane.
 IOSurface, DMA-BUF, multi-GPU adapter selection, native-overlay attachment, and

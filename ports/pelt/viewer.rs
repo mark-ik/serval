@@ -52,6 +52,7 @@ pub(crate) fn main() {
     let mut tile_receipt = false;
     let mut capability_receipt = false;
     let mut workspace_receipt: Option<pelt_desktop::WorkspaceReceipt> = None;
+    let mut appearance_store: Option<std::path::PathBuf> = None;
     let mut tile_engine_overrides = Vec::new();
     let mut tile_urls = Vec::new();
     let mut netrender_smoke = false;
@@ -139,6 +140,18 @@ pub(crate) fn main() {
             },
             value if value.starts_with("--artifact=") => {
                 artifact = Some(value["--artifact=".len()..].into());
+            },
+            "--appearance-store" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--appearance-store requires a caller-selected file path");
+                    std::process::exit(2);
+                };
+                appearance_store = Some(value.into());
+                with_tiles = true;
+            },
+            value if value.starts_with("--appearance-store=") => {
+                appearance_store = Some(value["--appearance-store=".len()..].into());
+                with_tiles = true;
             },
             "--tiles" => {
                 with_tiles = true;
@@ -518,6 +531,7 @@ pub(crate) fn main() {
             capability_receipt,
             workspace_receipt,
             artifact,
+            appearance_store,
             workspace_size_matrix,
             tile_engine_overrides,
         );
@@ -948,11 +962,25 @@ fn run_workspace_profile(
     capability_receipt: bool,
     workspace_receipt: Option<pelt_desktop::WorkspaceReceipt>,
     artifact: Option<std::path::PathBuf>,
+    appearance_store: Option<std::path::PathBuf>,
     workspace_size_matrix: Option<Vec<(u32, u32)>>,
     route_overrides: Vec<(u64, String)>,
 ) {
     let mut config =
         pelt_desktop::WorkspaceViewerConfig::new(urls, pelt_desktop::WindowingMode::Headed);
+    if let Some(path) = appearance_store {
+        let store = match pelt_desktop::FileAppearanceStore::load(&path) {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!(
+                    "could not load Pelt appearance store {}: {error}",
+                    path.display()
+                );
+                std::process::exit(2);
+            },
+        };
+        config = config.with_appearance_store(store);
+    }
     if let Some(receipt) = workspace_receipt {
         config = config.with_workspace_receipt(
             receipt,
@@ -1527,6 +1555,7 @@ Options:
     --frames <N>                       (headed profiles: exit after N presented frames)
     --product-receipt <article|controls|responsive|scripted|text-fragment|resources|gemtext> (bounded fixture + semantic assertion + PNG)
     --artifact <path.png>              (required with a named receipt)
+    --appearance-store <path>          (persist Pelt Chrome appearance at this caller-selected path; implies --tiles)
     --tiles                            (route positional URLs in a recursive Frisket workspace)
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)

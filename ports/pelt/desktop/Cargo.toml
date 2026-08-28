@@ -27,7 +27,7 @@ livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
     "dep:cambium", "dep:genet-livery", "dep:genet-scripted-dom",
     "dep:genet-render", "dep:accesskit", "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
-    "dep:windows", "dep:windows-sys", "dep:dpi", "dep:scrying-engine",
+    "dep:windows", "dep:dpi", "dep:scrying-engine",
 ]
 # Named developer receipt for applying a Tabard artifact to Pelt Chrome. This
 # stays optional so the generic shell has no Tabard runtime dependency.
@@ -175,8 +175,9 @@ base64 = { workspace = true, optional = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_Threading",
-], optional = true }
+] }
 # Windows presentation bridges HWND into paint; the Livery workspace also
 # imports D3D12 textures and constructs its registered Scrying producer.
 windows = { workspace = true, features = ["Win32_System_Threading"], optional = true }
