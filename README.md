@@ -14,8 +14,6 @@ reference material rather than a runtime dependency.
 |---|---|
 | <img src="assets/screenshots/pelt-gemini.png" alt="A Gemini capsule rendered as a native typographic document inside the Pelt workspace"> | <img src="assets/screenshots/pelt-scripted.png" alt="The scripted profile running a page whose DOM is rebuilt live by JavaScript, the engine control reading Scripted"> |
 | <sub>The smolweb lane: a Gemini capsule as a native document.</sub> | <sub>The scripted profile: a live DOM driven through script-runtime-api.</sub> |
-| <img src="assets/screenshots/pelt-reader.png" alt="Reader view of a web article, the title bar reading fleece 0.4.0 with a 34-block extraction"> | <img src="assets/screenshots/pelt-chrome.png" alt="Pelt tiling the Genet project page beside the Floodgap Gopher menu"> |
-| <sub>Reader: Fleece extracts the article, the tile keeps its held response.</sub> | <sub>The same workspace over the Genet project page.</sub> |
 
 ## Status (2026-08-22)
 

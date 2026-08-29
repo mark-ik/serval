@@ -1203,6 +1203,14 @@ the Genet-page workspace); merelyllc.com's showcase entry gains the same
 captures as a rotation. The `mixed` receipt remains flaky one run in ten, as
 recorded in the decomposition plan.
 
+The Reader capture was cut from the showcase (Mark, 2026-08-28): Reader draws
+an article's `Block::Image` as an empty placeholder because nothing feeds it
+decoded bytes. The lowering already exists (`reader.rs` turns a Fleece
+`Figure` into a canvas image block with a resolved URL); the missing half is
+the image-fetch actor the smolweb lane already owns — its `DecodedImage`
+store and unresolved-inline-image handoff in `smolweb.rs` are the pattern to
+reuse. When that lands, Reader earns its showcase slot back.
+
 ### P7: Livery child accessibility composition
 
 **Status:** complete 2026-08-28 for the retained Livery document lane. This
