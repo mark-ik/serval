@@ -1,7 +1,8 @@
 # Orchestrator decomposition plan
 
-**Status:** in progress (2026-08-29). Phases 1 (Pelt `workspace_viewer.rs`)
-and 2 (`genet-documents/engines.rs`) landed; Phases 3–7 planned.
+**Status:** in progress (2026-08-29). Phases 1 (Pelt `workspace_viewer.rs`),
+2 (`genet-documents/engines.rs`) and 3 (`genet-livery/document.rs`) landed;
+Phases 4–7 planned.
 
 genet is healthy but lumpy. The architecture has real seams, yet several active
 orchestrators have accumulated receipts, policy and mechanics in one file. This
@@ -303,3 +304,30 @@ the code they inspect need the touched internals scoped (`pub(crate)` on five
 session fields, four methods, and the editable types), and a helper only its
 own module uses (`dom_path`) went back to private instead of riding the
 re-export.
+
+### 2026-08-29 — Phase 3 landed
+
+`document.rs` **4,451 → 502 lines**, along the plan's four areas plus tests:
+`document/frame.rs` (513: layout-damage tracking and the paint pipeline,
+including the sticky pass), `document/scrolling.rs` (456: scrollport and
+nested-scroller geometry, extents, clamping, scroll-into-view),
+`document/animation.rs` (349: transitions, keyframes, and the `pump`/`settled`
+clock), `document/selection.rs` (348: text selection, caret geometry, links,
+pointer activation), `document/resources.rs` (95: host image and font bytes),
+and `document/tests.rs` (2,280). `LiveryDocument`, its fields, and the shared
+damage/animation types stay in the parent, so 71 of 96 methods moved out of a
+1,843-line impl block.
+
+**The public surface is byte-identical**: 54 `pub fn` before, 54 after, none
+of them touched. The only annotation the moved code carries is
+`pub(in crate::document)` on the 37 methods that were private — naming the
+scope they already had, since a private inherent method is private to the
+module holding its impl block. `find_id` needed a `#[cfg(test)]` re-export
+because only the test module still calls it.
+
+Verified: `cargo check -p genet-livery` clean on the first attempt (the
+visibility shape was known from Phases 1 and 2); the livery test set unchanged
+name for name at 234 entries — 232 passing plus
+`replaced_html_dimensions_use_computed_css_and_canvas_intrinsics`, which
+already fails on `origin/main`; genet-documents and both Pelt suites hold at
+their own baselines; `cargo fmt` clean.
