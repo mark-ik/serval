@@ -3081,7 +3081,14 @@ impl ApplicationHandler for WorkspaceApp {
         window.request_redraw();
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A caption Close can arrive through any dispatch path - the pointer,
+        // or an AccessKit Click on the button - and this hook runs after all
+        // of them.
+        if self.close_requested {
+            event_loop.exit();
+            return;
+        }
         if self.accessibility.take_wake() {
             self.request_redraw();
         }
