@@ -1,8 +1,8 @@
 # Orchestrator decomposition plan
 
 **Status:** in progress (2026-08-29). Phases 1 (Pelt `workspace_viewer.rs`),
-2 (`genet-documents/engines.rs`) and 3 (`genet-livery/document.rs`) landed;
-Phases 4–7 planned.
+2 (`genet-documents/engines.rs`), 3 (`genet-livery/document.rs`) and 4
+(`genet-livery/layout.rs`) landed; Phases 5–7 planned.
 
 genet is healthy but lumpy. The architecture has real seams, yet several active
 orchestrators have accumulated receipts, policy and mechanics in one file. This
@@ -331,3 +331,41 @@ name for name at 234 entries — 232 passing plus
 `replaced_html_dimensions_use_computed_css_and_canvas_intrinsics`, which
 already fails on `origin/main`; genet-documents and both Pelt suites hold at
 their own baselines; `cargo fmt` clean.
+
+### 2026-08-29 — Phase 4 landed
+
+`layout.rs` **15,382 → 6,165 lines**, taking only the four seams the phase
+named and leaving the central transaction alone: `layout/tests.rs` (6,726),
+`layout/taffy_style.rs` (993: the CSS-to-Taffy projection, its flex and grid
+axis mappings, the value converters, and the calc() scratch),
+`layout/positioned.rs` (861: static positions, relative offsets, absolute and
+fixed containing blocks), `layout/tables.rs` (446: the retained table paint
+model, plane, and structure commit), and `layout/hit_testing.rs` (223:
+stacking-aware candidate collection).
+
+`layout_impl`, `layout_atomic_subtrees`, `layout_inline_groups`,
+`layout_retained_formatting_root` and `layout_with_text_system` all stay in the
+parent, untouched, as the phase requires. The parent's only additions are the
+module ladder, the re-exports, and two call sites.
+
+**Both done-conditions met.** The livery test set is unchanged name for name at
+234 entries, and the flexbox receipt holds exactly: `genet-wpt run
+css/css-flexbox` reports **1321 passed, 0 failed, 0 errored, 37 skipped of
+1358 files** on this branch and, run again in the same environment, the
+identical figures on `origin/main`. That 1,358 is the same identity count the
+flex-shorthand plan records. Buckram 257, both Pelt suites, and
+genet-documents hold at their baselines.
+
+Three findings this file added to the ledger:
+
+- **A seam module must not shadow a function it carries.** Naming the module
+  `hit_test` broke `lib.rs`'s `layout::hit_test` re-export, because the module
+  won the path. It is `hit_testing`.
+- **A glob re-import does not re-export.** Four converters
+  (`line_height_px`, `length_percentage_px`, `signed_length_percentage_px`,
+  `border_width_px`) plus `TablePaintModel`, the two stacking helpers and both
+  hit tests are called from `text`, `paint`, `table_sizing`, `document` and
+  `lib` as `layout::<name>`; each needs an explicit `pub(crate) use` or
+  `pub use` beside the glob, or every external call site breaks.
+- **Trait-impl methods take no visibility qualifier.** Scoping inherent
+  methods is right; doing it inside `impl Trait for T` is `E0449`.
