@@ -35,9 +35,7 @@ use parley::{
     TextWrapMode as ParleyTextWrapMode, WordBreak as ParleyWordBreak, layout::YieldData,
 };
 
-use crate::{
-    LiveryLayout, StylePlane, TextDirective, layout::Fragment, paint::resolve_color,
-};
+use crate::{LiveryLayout, StylePlane, TextDirective, layout::Fragment, paint::resolve_color};
 
 pub(crate) trait FragmentLookup<Id> {
     fn rect(&self, id: Id) -> Option<&Fragment>;
@@ -2019,12 +2017,16 @@ where
         let whitespace = |character: char| character.is_whitespace();
         let has_prefix = |start: usize| {
             directive.prefix.as_ref().is_none_or(|prefix| {
-                logical[..start].trim_end_matches(whitespace).ends_with(prefix)
+                logical[..start]
+                    .trim_end_matches(whitespace)
+                    .ends_with(prefix)
             })
         };
         let has_suffix = |end: usize| {
             directive.suffix.as_ref().is_none_or(|suffix| {
-                logical[end..].trim_start_matches(whitespace).starts_with(suffix)
+                logical[end..]
+                    .trim_start_matches(whitespace)
+                    .starts_with(suffix)
             })
         };
 

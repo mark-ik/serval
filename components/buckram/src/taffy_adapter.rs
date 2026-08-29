@@ -163,6 +163,11 @@ struct AlgorithmNode<S, Context, Source> {
 /// methods expose only Buckram identifiers and geometry.
 pub struct AlgorithmTree<S, Context, Source> {
     nodes: Vec<AlgorithmNode<S, Context, Source>>,
+    /// Resolves a Taffy calc() pointer against a percentage basis. The tree
+    /// owner stores calc values with stable addresses, tags them into
+    /// `Dimension::calc`, and installs the matching interpreter here; without
+    /// one, a calc dimension resolves to zero (Taffy's own fallback).
+    calc_resolver: Option<fn(*const (), f32) -> f32>,
 }
 
 impl<S, Context, Source> Default for AlgorithmTree<S, Context, Source> {
@@ -173,7 +178,16 @@ impl<S, Context, Source> Default for AlgorithmTree<S, Context, Source> {
 
 impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            calc_resolver: None,
+        }
+    }
+
+    /// Install the interpreter for calc()-tagged dimensions in this tree's
+    /// styles. The caller guarantees every tagged pointer outlives the tree.
+    pub fn set_calc_resolver(&mut self, resolver: fn(*const (), f32) -> f32) {
+        self.calc_resolver = Some(resolver);
     }
 
     pub fn new_with_children(
@@ -3179,8 +3193,10 @@ where
         self.tree.nodes[AlgorithmNodeId::from_taffy(node_id).index()].unrounded_layout = *layout;
     }
 
-    fn resolve_calc_value(&self, _value: *const (), _basis: f32) -> f32 {
-        0.0
+    fn resolve_calc_value(&self, value: *const (), basis: f32) -> f32 {
+        self.tree
+            .calc_resolver
+            .map_or(0.0, |resolver| resolver(value, basis))
     }
 
     fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput {
@@ -3441,7 +3457,9 @@ mod tests {
     #[test]
     fn automatic_minimum_mode_stays_on_buckrams_content_sizing_route() {
         assert!(is_content_sizing_mode(SizingMode::ContentSize));
-        assert!(is_content_sizing_mode(SizingMode::ContentSizeForAutomaticMinimum));
+        assert!(is_content_sizing_mode(
+            SizingMode::ContentSizeForAutomaticMinimum
+        ));
         assert!(!is_content_sizing_mode(SizingMode::InherentSize));
     }
 

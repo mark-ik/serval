@@ -231,7 +231,8 @@ impl TableShadowLedger {
         self.honored += other.honored;
         self.divergences.extend(other.divergences.iter().copied());
         self.skipped.extend(other.skipped.iter().cloned());
-        self.positioning_gaps.extend(other.positioning_gaps.iter().copied());
+        self.positioning_gaps
+            .extend(other.positioning_gaps.iter().copied());
         self.block.merge(other.block.clone());
     }
 
@@ -263,11 +264,7 @@ impl TableShadowLedger {
     }
 }
 
-fn table_is_descendant_of<Id>(
-    boxes: &buckram::CssBoxTree<Id>,
-    table: BoxId,
-    root: BoxId,
-) -> bool
+fn table_is_descendant_of<Id>(boxes: &buckram::CssBoxTree<Id>, table: BoxId, root: BoxId) -> bool
 where
     Id: Copy + Eq + Hash,
 {

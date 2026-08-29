@@ -126,7 +126,9 @@ fn rtl_vertical_rl_column_wrap_uses_the_bottom_cross_start() {
     );
     let styles = resolve_styles(
         &document,
-        &StyleSet::cambium(&["html, body { margin: 0; } #flex { display: flex; direction: rtl; writing-mode: vertical-rl; flex-flow: column wrap; width: 40px; height: 30px; border: 1px solid black; } #flex > div { width: 20px; height: 15px; }"]),
+        &StyleSet::cambium(&[
+            "html, body { margin: 0; } #flex { display: flex; direction: rtl; writing-mode: vertical-rl; flex-flow: column wrap; width: 40px; height: 30px; border: 1px solid black; } #flex > div { width: 20px; height: 15px; }",
+        ]),
         &Device::screen(320.0, 240.0),
         &InteractionStates::default(),
     );

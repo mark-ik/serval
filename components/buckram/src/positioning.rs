@@ -432,39 +432,35 @@ fn resolve_replaced_size(
     let ratio = style_ratio.or(intrinsic_ratio);
 
     let inline = specified_inline.or_else(|| {
-        specified_block.and_then(|block| {
-            ratio.map(|ratio| {
-                let block_content = content_from_border_box(
-                    block,
-                    block_padding,
-                    style.box_sizing,
-                );
-                border_box_from_content(block_content * ratio, inline_padding, style.box_sizing)
+        specified_block
+            .and_then(|block| {
+                ratio.map(|ratio| {
+                    let block_content =
+                        content_from_border_box(block, block_padding, style.box_sizing);
+                    border_box_from_content(block_content * ratio, inline_padding, style.box_sizing)
+                })
             })
-        })
-        .or_else(|| {
-            intrinsic.map(|size| {
-                border_box_from_content(size.inline, inline_padding, style.box_sizing)
+            .or_else(|| {
+                intrinsic.map(|size| {
+                    border_box_from_content(size.inline, inline_padding, style.box_sizing)
+                })
             })
-        })
     });
     let block = specified_block.or_else(|| {
-        specified_inline.and_then(|inline| {
-            ratio.map(|ratio| {
-                let inline_content = content_from_border_box(
-                    inline,
-                    inline_padding,
-                    style.box_sizing,
-                );
-                border_box_from_content(inline_content / ratio, block_padding, style.box_sizing)
+        specified_inline
+            .and_then(|inline| {
+                ratio.map(|ratio| {
+                    let inline_content =
+                        content_from_border_box(inline, inline_padding, style.box_sizing);
+                    border_box_from_content(inline_content / ratio, block_padding, style.box_sizing)
+                })
             })
-        })
-        .or_else(|| {
-            intrinsic.map(|size| {
-                let content = style_ratio.map_or(size.block, |ratio| size.inline / ratio);
-                border_box_from_content(content, block_padding, style.box_sizing)
+            .or_else(|| {
+                intrinsic.map(|size| {
+                    let content = style_ratio.map_or(size.block, |ratio| size.inline / ratio);
+                    border_box_from_content(content, block_padding, style.box_sizing)
+                })
             })
-        })
     });
     ReplacedAxisSize { inline, block }
 }

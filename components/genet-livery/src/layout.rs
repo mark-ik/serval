@@ -46,8 +46,8 @@ use taffy::{
         min_content, percent, span,
     },
     style::{
-        AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, BoxSizing, Display,
-        Direction as TaffyDirection, FlexBasis as TaffyFlexBasis, FlexDirection, FlexWrap,
+        AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, BoxSizing,
+        Direction as TaffyDirection, Display, FlexBasis as TaffyFlexBasis, FlexDirection, FlexWrap,
         Float as TaffyFloat, GridAutoFlow, GridPlacement, GridTemplateComponent, JustifyContent,
         Overflow, Position, Style,
     },
@@ -1388,6 +1388,7 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    CALC_SCRATCH.with(|scratch| scratch.borrow_mut().clear());
     let image_sources = ImageSources::new();
     let viewport = ViewportSizes::uniform(viewport_width, viewport_height);
     let resolved =
@@ -1459,6 +1460,7 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    CALC_SCRATCH.with(|scratch| scratch.borrow_mut().clear());
     let styles =
         resolve_container_relative_styles_with_images(dom, styles, viewport, image_sources)?;
     let boxes = GeneratedBoxTree::from_dom(dom, &styles);
@@ -1559,7 +1561,11 @@ where
         styles,
         boxes: &boxes,
         atomic: &atomic,
-        tree: AlgorithmTree::new(),
+        tree: {
+            let mut tree = AlgorithmTree::new();
+            tree.set_calc_resolver(resolve_taffy_calc);
+            tree
+        },
         image_sources,
         table_shadow: TableShadowLedger::default(),
         pending_tables: Vec::new(),
@@ -2181,7 +2187,11 @@ where
         dom,
         styles,
         boxes: &boxes,
-        tree: AlgorithmTree::new(),
+        tree: {
+            let mut tree = AlgorithmTree::new();
+            tree.set_calc_resolver(resolve_taffy_calc);
+            tree
+        },
         image_sources,
         text: None,
         table_shadow: TableShadowLedger::default(),
@@ -2424,7 +2434,11 @@ where
             dom,
             styles,
             boxes,
-            tree: AlgorithmTree::new(),
+            tree: {
+                let mut tree = AlgorithmTree::new();
+                tree.set_calc_resolver(resolve_taffy_calc);
+                tree
+            },
             image_sources,
             text: Some(&mut *text),
             table_shadow: TableShadowLedger::default(),
@@ -2797,7 +2811,11 @@ where
         styles,
         boxes: &boxes,
         atomic,
-        tree: AlgorithmTree::new(),
+        tree: {
+            let mut tree = AlgorithmTree::new();
+            tree.set_calc_resolver(resolve_taffy_calc);
+            tree
+        },
         image_sources,
         table_shadow: TableShadowLedger::default(),
         pending_tables: Vec::new(),
@@ -7880,7 +7898,10 @@ fn physical_flex_wrap(
     flow: FlowAxes,
 ) -> FlexWrap {
     let reverse = computed.display == CssDisplay::Flex
-        && matches!(physical_direction, FlexDirection::Row | FlexDirection::RowReverse)
+        && matches!(
+            physical_direction,
+            FlexDirection::Row | FlexDirection::RowReverse
+        )
         && matches!(
             computed.flex_direction,
             CssFlexDirection::Column | CssFlexDirection::ColumnReverse
@@ -7901,8 +7922,14 @@ fn physical_flex_cross_alignment(
     flow: FlowAxes,
 ) -> CssAlignment {
     if computed.display == CssDisplay::Flex
-        && matches!(physical_direction, FlexDirection::Row | FlexDirection::RowReverse)
-        && matches!(direction, CssFlexDirection::Column | CssFlexDirection::ColumnReverse)
+        && matches!(
+            physical_direction,
+            FlexDirection::Row | FlexDirection::RowReverse
+        )
+        && matches!(
+            direction,
+            CssFlexDirection::Column | CssFlexDirection::ColumnReverse
+        )
         && flow.inline_start() == PhysicalSide::Bottom
     {
         match (value, computed.flex_wrap) {
@@ -8408,10 +8435,50 @@ pub(crate) fn line_height_px(height: &LineHeight, font_size: f32) -> f32 {
     }
 }
 
+thread_local! {
+    /// The calc()/math lengths this thread's current layout pass tagged into
+    /// Taffy `Dimension::calc` slots, addressed by the index encoded in each
+    /// tag. Cleared at the public layout entries; sound because a layout pass
+    /// builds and resolves its algorithm trees on one thread.
+    static CALC_SCRATCH: std::cell::RefCell<Vec<(CssLengthPercentage, f32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Encode a [`CALC_SCRATCH`] index as the non-null, 8-aligned opaque pointer
+/// `Dimension::calc` requires. Taffy never dereferences it; it comes back
+/// verbatim to [`resolve_taffy_calc`].
+fn calc_tag(index: usize) -> *const () {
+    ((index + 1) << 3) as *const ()
+}
+
+fn resolve_taffy_calc(ptr: *const (), basis: f32) -> f32 {
+    let index = ((ptr as usize) >> 3).wrapping_sub(1);
+    CALC_SCRATCH.with(|scratch| {
+        scratch.borrow().get(index).map_or(0.0, |&(value, em)| {
+            absolute_length_percentage(value, em, 16.0, basis)
+        })
+    })
+}
+
 fn dimension(size: CssSize, em: f32) -> Dimension {
     match size {
         CssSize::Value(value) => match value {
             CssLengthPercentage::Percentage(value) => Dimension::percent(value),
+            // calc()/min()/max()/clamp() mixing a percentage with lengths has
+            // no linear Taffy form; tag the value into a calc slot the tree's
+            // resolver interprets against the real basis. Resolving against
+            // zero here is what turned min(100% - 48px, 960px) into a
+            // negative used width.
+            CssLengthPercentage::Calc(_) | CssLengthPercentage::Math(_)
+                if value.has_percentage() =>
+            {
+                let index = CALC_SCRATCH.with(|scratch| {
+                    let mut scratch = scratch.borrow_mut();
+                    scratch.push((value, em));
+                    scratch.len() - 1
+                });
+                Dimension::calc(calc_tag(index))
+            },
             _ => Dimension::length(absolute_length_percentage(value, em, 16.0, 0.0)),
         },
         _ => Dimension::auto(),
@@ -8441,15 +8508,22 @@ fn flex_basis(basis: CssFlexBasis, em: f32) -> TaffyFlexBasis {
 
 fn dimension_with_basis(size: CssSize, em: f32, basis: Option<f32>) -> Dimension {
     match (size, basis) {
-        (CssSize::Value(CssLengthPercentage::Calc(calc)), Some(basis))
-            if calc.percentage != 0.0 =>
+        // A calc() or math function mixing a percentage with lengths cannot
+        // ride Taffy's plain percent dimension; resolve it against the
+        // definite basis here. Plain percentages stay native so Taffy keeps
+        // its own dynamic resolution.
+        (CssSize::Value(value), Some(basis))
+            if value.has_percentage() && !matches!(value, CssLengthPercentage::Percentage(_)) =>
         {
-            Dimension::length(absolute_length_percentage(
-                CssLengthPercentage::Calc(calc),
-                em,
-                16.0,
-                basis,
-            ))
+            Dimension::length(absolute_length_percentage(value, em, 16.0, basis))
+        },
+        // A math length with a percentage but no definite basis cannot be
+        // linearized; auto is honest, resolving against zero is not — it
+        // turned min(100% - 48px, 960px) into a negative used width.
+        (CssSize::Value(value), None)
+            if matches!(value, CssLengthPercentage::Math(_)) && value.has_percentage() =>
+        {
+            Dimension::auto()
         },
         (size, _) => dimension(size, em),
     }
@@ -8615,12 +8689,7 @@ mod tests {
             let parent = styles.get(parent_node).expect("parent style");
             let item = styles.get(item_node).expect("item style");
             let mut style = to_taffy_style(item, 16.0);
-            map_flex_child_self_alignment(
-                &mut style,
-                parent,
-                flex_flow_axes(item),
-                item,
-            );
+            map_flex_child_self_alignment(&mut style, parent, flex_flow_axes(item), item);
             style.align_self.map(|alignment| alignment.keyword)
         };
 
@@ -15101,7 +15170,10 @@ mod tests {
             (CssDirection::Rtl, TaffyDirection::Rtl),
         ] {
             computed.direction = direction;
-            assert_eq!(to_taffy_style(&computed, 16.0).direction, expected_direction);
+            assert_eq!(
+                to_taffy_style(&computed, 16.0).direction,
+                expected_direction
+            );
         }
 
         computed.writing_mode = CssWritingMode::VerticalRl;
@@ -15117,7 +15189,10 @@ mod tests {
                 computed.align_content = CssAlignment::End;
                 let style = to_taffy_style(&computed, 16.0);
                 assert_eq!(style.flex_wrap, expected_wrap);
-                assert_eq!(style.align_items.expect("items").keyword, AlignItemsKeyword::End);
+                assert_eq!(
+                    style.align_items.expect("items").keyword,
+                    AlignItemsKeyword::End
+                );
                 assert_eq!(
                     style.align_content.expect("content").keyword,
                     AlignContentKeyword::Start
@@ -15129,7 +15204,10 @@ mod tests {
         computed.align_content = CssAlignment::FlexEnd;
         let nowrap = to_taffy_style(&computed, 16.0);
         assert_eq!(nowrap.flex_wrap, FlexWrap::NoWrap);
-        assert_eq!(nowrap.align_items.expect("nowrap items").keyword, AlignItemsKeyword::FlexEnd);
+        assert_eq!(
+            nowrap.align_items.expect("nowrap items").keyword,
+            AlignItemsKeyword::FlexEnd
+        );
         assert_eq!(
             nowrap.align_content.expect("nowrap content").keyword,
             AlignContentKeyword::FlexStart
@@ -15140,7 +15218,10 @@ mod tests {
         computed.direction = CssDirection::Ltr;
         let block = to_taffy_style(&computed, 16.0);
         assert_eq!(block.direction, TaffyDirection::Ltr);
-        assert_eq!(block.align_items.expect("block items").keyword, AlignItemsKeyword::FlexStart);
+        assert_eq!(
+            block.align_items.expect("block items").keyword,
+            AlignItemsKeyword::FlexStart
+        );
     }
 
     #[test]

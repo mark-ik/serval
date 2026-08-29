@@ -1280,7 +1280,10 @@ where
         self.boxes.push(css_box);
         self.ids.push(id);
         let previous = self.slots.insert(id, self.boxes.len() - 1);
-        assert!(previous.is_none(), "a generated box id cannot occupy two slots");
+        assert!(
+            previous.is_none(),
+            "a generated box id cannot occupy two slots"
+        );
 
         if let Some(parent) = parent {
             self[parent].children.push(id);
@@ -1312,25 +1315,25 @@ where
         let mut consumed = HashSet::new();
 
         for current in self.roots.clone() {
-            let candidate = previous
-                .roots
-                .iter()
-                .copied()
-                .find(|candidate| {
-                    !consumed.contains(candidate)
-                        && same_generation_context(&self[current], &previous[*candidate])
-                });
+            let candidate = previous.roots.iter().copied().find(|candidate| {
+                !consumed.contains(candidate)
+                    && same_generation_context(&self[current], &previous[*candidate])
+            });
             if let Some(candidate) = candidate {
-                self.match_retained_subtree(previous, current, candidate, &mut mapping, &mut consumed);
+                self.match_retained_subtree(
+                    previous,
+                    current,
+                    candidate,
+                    &mut mapping,
+                    &mut consumed,
+                );
             }
         }
 
-        let mut next = previous
-            .ids
-            .iter()
-            .map(|id| id.0)
-            .max()
-            .map_or(0, |id| id.checked_add(1).expect("a CSS box tree exceeded u32::MAX boxes"));
+        let mut next = previous.ids.iter().map(|id| id.0).max().map_or(0, |id| {
+            id.checked_add(1)
+                .expect("a CSS box tree exceeded u32::MAX boxes")
+        });
         for current in self.ids.clone() {
             mapping.entry(current).or_insert_with(|| {
                 let allocated = BoxId(next);
@@ -1375,11 +1378,7 @@ where
     fn remap_identifiers(&mut self, mapping: &HashMap<BoxId, BoxId>) {
         for css_box in &mut self.boxes {
             css_box.parent = css_box.parent.map(|id| mapping[&id]);
-            css_box.children = css_box
-                .children
-                .iter()
-                .map(|id| mapping[id])
-                .collect();
+            css_box.children = css_box.children.iter().map(|id| mapping[id]).collect();
             css_box.containing_block = match css_box.containing_block {
                 ContainingBlock::Initial => ContainingBlock::Initial,
                 ContainingBlock::Box(id) => ContainingBlock::Box(mapping[&id]),
