@@ -114,6 +114,17 @@ repatriated here from mere.
   `FlipDonor`/`FlipBack`/`FlipReceiver` encode no-chain in the types. Gated on
   the inker picker's Phase 4.)
 
+## codebase structure
+
+- [orchestrator_decomposition_plan](2026-08-28_orchestrator_decomposition_plan.md)
+  (**Phase 1 landed 2026-08-28; Phases 2–7 planned**: the measured inventory of
+  first-party files over 600 lines, and the order the large orchestrators come
+  apart in. Phase 1 split Pelt's `workspace_viewer.rs` 10,066 → 3,217 lines into
+  an accessibility module, four receipt modules and a test module, as pure code
+  motion. Records two constraints any later phase inherits: module privacy runs
+  parent-to-child only, so relocating shared types forces a visibility rewrite;
+  and moved inherent methods must have their original scope named explicitly.)
+
 ## Working principles
 
 - **New docs go in `design_docs/`, never `docs/`.** See the policy's two-homes
@@ -135,6 +146,6 @@ repatriated here from mere.
 
 ## Status
 
-Founded 2026-08-24. The active index now covers three flat plans plus eight
+Founded 2026-08-24. The active index now covers four flat plans plus eight
 documents in three area roots. The engine corpus in `docs/` is not indexed here
 and is not governed by the policy yet.
