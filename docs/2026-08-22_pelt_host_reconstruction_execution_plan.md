@@ -1194,6 +1194,15 @@ reader-accessibility. Caption maximize/restore, title-bar drag (exact
 pointer-delta move), and double-click-maximize were each exercised through
 the real pointer path on the undecorated window.
 
+**Re-shot 2026-08-28.** The showcase captures were retaken on the tightened
+shell after the calc()-width fix (commit `78f6bd3eafd`) — merelyllc.com had
+been the live reproducer for that bug, so the retake was gated on it. The
+README now leads with the tiled workspace over the live merely home page and
+carries a four-image gallery (Gemini capsule, scripted profile, Reader, and
+the Genet-page workspace); merelyllc.com's showcase entry gains the same
+captures as a rotation. The `mixed` receipt remains flaky one run in ten, as
+recorded in the decomposition plan.
+
 ### P7: Livery child accessibility composition
 
 **Status:** complete 2026-08-28 for the retained Livery document lane. This
