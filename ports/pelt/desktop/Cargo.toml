@@ -25,7 +25,7 @@ present = [
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [
     "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
-    "dep:cambium", "dep:genet-livery", "dep:genet-scripted-dom",
+    "dep:cambium", "dep:cambium-genet-winit-host", "dep:genet-livery", "dep:genet-scripted-dom",
     "dep:genet-render", "dep:accesskit", "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
     "dep:windows", "dep:dpi", "dep:scrying-engine",
 ]
@@ -117,6 +117,7 @@ linux-present = [
 
 [dependencies]
 cambium = { path = "../../../components/cambium/cambium", optional = true }
+cambium-genet-winit-host = { path = "../../../components/cambium/cambium-genet-winit-host", optional = true }
 netrender = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 paint = { workspace = true, optional = true }

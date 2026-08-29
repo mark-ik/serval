@@ -10,7 +10,10 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows_sys::Win32::UI::WindowsAndMessaging::{HTMAXBUTTON, WM_NCHITTEST};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    HTMAXBUTTON, IsZoomed, SW_MAXIMIZE, SW_RESTORE, ShowWindow, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+    WM_NCLBUTTONUP,
+};
 use winit::window::Window;
 
 const SUBCLASS_ID: usize = 0x4341_4D34;
@@ -83,12 +86,33 @@ unsafe extern "system" fn subclass_proc(
             }
         }
     }
+    // Answering HTMAXBUTTON reroutes the button's own click into the
+    // non-client path, and DefWindowProc does nothing with it on a borderless
+    // window. The bridge owns the click it advertised: press swallowed, the
+    // release performs the toggle.
+    if (message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONUP)
+        && wparam == HTMAXBUTTON as WPARAM
+        && data != 0
+    {
+        if message == WM_NCLBUTTONUP {
+            // SAFETY: `hwnd` is the live window dispatching this message.
+            unsafe {
+                let verb = if IsZoomed(hwnd) != 0 {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                };
+                let _ = ShowWindow(hwnd, verb);
+            }
+        }
+        return 0;
+    }
     // SAFETY: Forward every message outside the declared maximize rect to the
     // next procedure in the HWND's subclass chain.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
-pub(crate) struct SnapLayoutBridge {
+pub struct SnapLayoutBridge {
     hwnd: HWND,
     rect: Box<HitRect>,
 }
@@ -108,7 +132,7 @@ fn device_rect(logical: Option<(f32, f32, f32, f32)>, scale: f64) -> Option<[i32
 }
 
 impl SnapLayoutBridge {
-    pub(crate) fn attach(window: &Window) -> Result<Self, String> {
+    pub fn attach(window: &Window) -> Result<Self, String> {
         let handle = window
             .window_handle()
             .map_err(|error| format!("window handle unavailable: {error}"))?;
@@ -131,7 +155,7 @@ impl SnapLayoutBridge {
 
     /// Publish a logical CSS box as an integer device-pixel hit rectangle.
     /// Returns the effective rect only when it changed.
-    pub(crate) fn update(
+    pub fn update(
         &self,
         logical: Option<(f32, f32, f32, f32)>,
         scale: f64,

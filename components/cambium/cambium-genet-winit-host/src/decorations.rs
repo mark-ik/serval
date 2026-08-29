@@ -55,7 +55,7 @@ use crate::WindowCommands;
 ///
 /// winit reports presses, not clicks, and no platform-independent
 /// double-click signal exists, so the host keeps this small clock itself.
-pub(crate) struct ClickCadence {
+pub struct ClickCadence {
     last: Option<(cambium_rootstock::Instant, (f32, f32))>,
 }
 
@@ -67,14 +67,14 @@ impl ClickCadence {
     /// enough that two deliberate clicks on different controls never merge.
     const SLOP: f32 = 4.0;
 
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self { last: None }
     }
 
     /// Record a press and report whether it completed a double-click. A
     /// double-click consumes the cadence, so a third press starts over rather
     /// than reporting a second double.
-    pub(crate) fn press(&mut self, at: (f32, f32), now: cambium_rootstock::Instant) -> bool {
+    pub fn press(&mut self, at: (f32, f32), now: cambium_rootstock::Instant) -> bool {
         let doubled = self.last.is_some_and(|(t, p)| {
             now.duration_since(t) <= Self::INTERVAL
                 && (p.0 - at.0).abs() <= Self::SLOP

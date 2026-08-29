@@ -1083,6 +1083,117 @@ The GPU-free desktop test separately fixes a 2.00x conversion to guard the
 coordinate path on machines where the headed environmental receipt correctly
 declines to run.
 
+### P6b: client-side decorations for the workspace shell
+
+**Status:** landed 2026-08-28, pulled forward ahead of the showcase
+screenshot refresh (Mark's sequencing decision). Layout decided (Mark,
+2026-08-28): **one dense chrome row** — navigation, omnibar, engine controls,
+inlined status-and-title as the drag surface, and the caption trio at the
+right edge; two bands before content, wrapping to two rows at narrow widths
+under the existing NarrowChrome contract.
+
+The workspace window still wears the OS title bar above Pelt's own chrome, so
+the shell stacks four bands before content: title bar, address row, status
+row, and the per-pane tab strips. The decoration seams this lane needs all
+landed with the 2026-08-10 window-decorations brief (W0-W4) and are proven by
+woodshed and the host smoke: `--app-region: drag`/`no-drag` read off the
+cascade, `TitlebarInsets` published as `--titlebar-area-*`, caption verbs, the
+Windows Snap Layout `HTMAXBUTTON` subclass over a laid-out button, and the
+maximized-overflow inset.
+
+Pelt is the brief's second real consumer, which is the stack's own bar for
+promoting a seam. Pelt keeps its event loop and its `ApplicationHandler`; what
+moves is visibility on the host-side helpers it cannot express itself
+(`ClickCadence`, the snap subclass entry, edge-resize classification), while
+everything expressible in Pelt's own chrome document stays there: the drag
+region and caption buttons are chrome markup under the existing stylesheet
+seam, caption clicks are ordinary `ChromeAction`s (Pelt owns its loop, so the
+`WindowCommands` indirection the cambium host needs does not apply), and the
+buttons join the chrome AccessKit projection Pelt already authors.
+
+Scope boundaries, deliberate:
+
+- **Windows first.** The workspace receipts are Windows-headed today; the
+  macOS transparent-titlebar path is documented in the brief and follows when
+  a workspace receipt runs there.
+- **Workspace shell only.** The static viewer has no chrome at all; an
+  undecorated static window would be unmovable. It keeps OS decorations until
+  it grows a title row of its own.
+- **No window-state persistence** in this slice.
+
+Done when: the workspace window is undecorated on Windows with title and
+caption controls in Pelt's chrome; drag, double-click-maximize, the system
+menu, edge resize, and Snap Layout hover all work; the maximized window does
+not overflow the work area; the caption buttons are named, focusable AccessKit
+buttons; the GPU-free workspace suite and the Chrome, NarrowChrome, ChromeDpi
+and Accessibility receipts are green with their assertions updated to the new
+band layout; and the showcase captures are retaken on the tightened shell.
+
+**Implementation shape (2026-08-28).** Three seams promoted to `pub` in
+`cambium-genet-winit-host` for its second consumer: `SnapLayoutBridge`
+(attach/update over an existing winit HWND), `ClickCadence`, and
+`resize_edge`/`edge_cursor`. On the Pelt side everything else stayed local:
+
+- The chrome collapsed to one dense row: title, route and status join the
+  toolbar, the `.pelt-details` row is gone, and `window_controls: true` adds
+  the caption trio as ordinary chrome buttons (`minimize` / `maximize` /
+  `close-window` actions). Chrome height 70px -> 40px (engine menu open:
+  78px). Below 420px the passive texts hide and the compact two-row wrap
+  keeps its contract.
+- Caption clicks are plain `ChromeAction`s; Pelt owns its event loop, so the
+  cambium host's `WindowCommands` queue is unnecessary indirection here.
+- `FrisketHit::Chrome` — a chrome hit with no interactive target — is the
+  drag surface: press drags, `ClickCadence` double-click toggles maximize,
+  right-click raises the system menu. The `--app-region` cascade seam is not
+  consulted because Pelt owns both the markup and the hit path; the day the
+  chrome accepts third-party styling it should switch to `app_region_of`.
+- The 8px border band resizes ahead of any hit underneath, with the host's
+  cursor affordances; winit's own undecorated-maximize handling covers the
+  work-area clamp the W3 receipts verified.
+- `draws_window_controls` requires a live window, so the windowless GPU-free
+  harness keeps platform-stable expectations while every headed Windows run
+  gets CSD.
+
+**Landed 2026-08-28.** The layout evolved through three product rulings during
+implementation (Mark): one dense row; **no reflow** — a toolbar degrades by
+dropping controls, never by wrapping; and **constant height** — the bar never
+grows, so the engine menu became an overlay strip below it. The final ladder,
+in CSS pixels: below 800 the title/route/status texts drop; below 640 the
+caption trio drops and the engine control compacts; below 520 the address
+floor tightens; below 440 Inspect/Theme shed. Navigation, address, and engine
+hold to the floor. Frisket tabs are Pelt-styled to content width — they hug
+their label and only shrink (then truncate) under crowding.
+
+Contract re-pins that followed: `NARROW_CHROME_WORKSPACE_ASSERTION` now reads
+`single fixed-height Chrome row shed its secondary controls and kept
+navigation, address, tab text, and close targets usable while loading and
+error documents held their content hole`; the narrow driver and the Frisket
+narrow test assert the single-row shape, the shed toggles, and the overlay
+menu below a 40px bar.
+
+Two findings for whoever touches this next:
+
+- **The snap bridge must own the click it advertises.** Answering
+  `HTMAXBUTTON` from `WM_NCHITTEST` reroutes the maximize button's own click
+  into the non-client path, and `DefWindowProc` does nothing with it on a
+  borderless window. `SnapLayoutBridge` now swallows `WM_NCLBUTTONDOWN` and
+  performs the toggle on `WM_NCLBUTTONUP`, for every consumer.
+- **Receipt viewports are physical; shed thresholds are CSS pixels.** On a 2x
+  display a 960x640 receipt window is a 480px chrome, so a threshold above
+  480 sheds the very control a receipt drives. The ladder was shaped so every
+  recorded receipt viewport keeps its subject alive; pinning receipts to
+  logical sizes instead starves the Scrying producer's frame cadence, which
+  speaks logical sizes against a physically-sized compositor hole.
+
+Verified on the tightened shell: the GPU-free suite (56 tests, default
+features) and the 60-test extended suite pass; all sixteen named workspace
+receipts print their pinned assertions headed — chrome, mixed, fallback,
+loading-error, appearance, accessibility, accessibility-address, -children,
+-scroll, -click, -edit, -input, narrow-chrome, chrome-dpi, reader, and
+reader-accessibility. Caption maximize/restore, title-bar drag (exact
+pointer-delta move), and double-click-maximize were each exercised through
+the real pointer path on the undecorated window.
+
 ### P7: Livery child accessibility composition
 
 **Status:** complete 2026-08-28 for the retained Livery document lane. This

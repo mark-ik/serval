@@ -492,7 +492,7 @@ impl WorkspaceApp {
                     .frisket
                     .chrome_rect("address")
                     .ok_or("narrow Chrome receipt has no retained address field")?;
-                for action in ["forward", "reload", "engine-menu", "inspect", "appearance"] {
+                for action in ["forward", "reload", "engine-menu"] {
                     let rect = self.frisket.chrome_rect(action).ok_or_else(|| {
                         format!("narrow Chrome receipt has no {action:?} geometry")
                     })?;
@@ -519,13 +519,25 @@ impl WorkspaceApp {
                     .frisket
                     .close_rect(tile)
                     .ok_or("narrow Chrome receipt has no retained tab close target")?;
+                // The single fixed-height Chrome row: secondary toggles are
+                // deliberately shed at this width, and the address shares the
+                // one row with navigation instead of wrapping under it.
+                if self.frisket.chrome_rect("inspect").is_some()
+                    || self.frisket.chrome_rect("appearance").is_some()
+                {
+                    return Err(
+                        "narrow Chrome kept its secondary toggles instead of shedding them"
+                            .to_owned(),
+                    );
+                }
                 if !rect_fits_viewport(back, viewport)
                     || !rect_fits_viewport(address, viewport)
                     || !rect_fits_viewport(tab, viewport)
                     || !rect_fits_viewport(label, viewport)
                     || !rect_fits_viewport(close, viewport)
-                    || address.y < back.y + back.height
-                    || address.width < 300.0
+                    || address.y + address.height <= back.y
+                    || address.y >= back.y + back.height
+                    || address.width < 120.0
                     || content.y <= address.y + address.height
                     || label.width < 48.0
                     || close.x < tab.x
@@ -601,13 +613,17 @@ impl WorkspaceApp {
                     .frisket
                     .chrome_rect("engine-livery")
                     .ok_or("narrow Chrome receipt did not expose Livery")?;
+                // The menu is an overlay below the fixed-height bar; the
+                // content hole's own preservation is pinned at step 2, so the
+                // fetch above only proves the hole still exists.
+                let _ = content;
                 if !rect_fits_viewport(automatic, viewport)
                     || !rect_fits_viewport(livery, viewport)
-                    || content.y <= automatic.y + automatic.height
-                    || content.y <= livery.y + livery.height
+                    || automatic.y < 40.0
+                    || livery.y < 40.0
                 {
                     return Err(
-                        "narrow Chrome receipt let its engine choices cover content or escape the viewport"
+                        "narrow Chrome receipt let its engine overlay escape the bar or the viewport"
                             .to_owned(),
                     );
                 }

@@ -56,6 +56,19 @@ fn chrome_button(action: &str, label: &str, accessible_label: &str, disabled: bo
     )
 }
 
+/// A CSD caption control. Same retained-button shape as `chrome_button`, its
+/// own class so the stylesheet can give the trio the caption look rather than
+/// the toolbar look.
+fn caption_button(action: &str, glyph: &str, accessible_label: &str) -> FrameView {
+    Box::new(
+        el::<_, FrameState, ()>("div", glyph.to_owned())
+            .attr("class", "pelt-caption-button")
+            .attr("role", "button")
+            .attr("aria-label", accessible_label)
+            .attr(ATTR_CHROME_ACTION, action),
+    )
+}
+
 fn chrome_toggle_button(
     action: &str,
     label: &str,
@@ -144,13 +157,29 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
             chrome.appearance.is_some(),
         ),
     ];
-    let details: Vec<FrameView> = vec![
-        Box::new(el::<_, FrameState, ()>("div", chrome.title.clone()).attr("class", "pelt-title")),
-        Box::new(el::<_, FrameState, ()>("div", chrome.route.clone()).attr("class", "pelt-route")),
-        Box::new(
-            el::<_, FrameState, ()>("div", chrome.status.clone()).attr("class", "pelt-status"),
-        ),
-    ];
+    let mut toolbar = toolbar;
+    // The dense chrome row: title, route and status ride in the same row as
+    // the controls. None of them carries a chrome action, so under CSD this
+    // stretch of the row is the window's drag surface.
+    toolbar.push(Box::new(
+        el::<_, FrameState, ()>("div", chrome.title.clone()).attr("class", "pelt-title"),
+    ));
+    toolbar.push(Box::new(
+        el::<_, FrameState, ()>("div", chrome.route.clone()).attr("class", "pelt-route"),
+    ));
+    toolbar.push(Box::new(
+        el::<_, FrameState, ()>("div", chrome.status.clone()).attr("class", "pelt-status"),
+    ));
+    if chrome.window_controls {
+        let (maximize_glyph, maximize_label) = if chrome.maximized {
+            ("\u{2750}", "Restore")
+        } else {
+            ("\u{25a1}", "Maximize")
+        };
+        toolbar.push(caption_button("minimize", "\u{2013}", "Minimize"));
+        toolbar.push(caption_button("maximize", maximize_glyph, maximize_label));
+        toolbar.push(caption_button("close-window", "\u{d7}", "Close window"));
+    }
     let mut header_items: Vec<FrameView> = vec![Box::new(
         el::<_, FrameState, ()>("div", toolbar).attr("class", "pelt-toolbar"),
     )];
@@ -169,9 +198,6 @@ fn chrome_view(chrome: &WorkspaceChrome, pane: FrameView) -> FrameView {
                 .attr("aria-label", "Engine for focused tile"),
         ));
     }
-    header_items.push(Box::new(
-        el::<_, FrameState, ()>("div", details).attr("class", "pelt-details"),
-    ));
     let header: FrameView = Box::new(el::<_, FrameState, ()>("div", header_items).attr(
         "class",
         if chrome.engine_menu_open {
@@ -282,6 +308,11 @@ pub(crate) enum ChromeAction {
     ToggleInspector,
     ToggleAppearance,
     ChooseTheme(AppearanceTheme),
+    /// CSD caption verbs. Present only when the host asked the chrome to
+    /// draw window controls (an undecorated Windows workspace window).
+    Minimize,
+    ToggleMaximize,
+    CloseWindow,
 }
 
 /// One explicitly available engine choice in the focused-tile Pelt menu.
@@ -589,6 +620,13 @@ pub(crate) struct WorkspaceChrome {
     pub inspector: Option<ChromeInspector>,
     pub appearance: Option<ChromeAppearance>,
     pub diagnostic: Option<ChromeDocument>,
+    /// Draw the caption trio (minimize / maximize / close) in the chrome row.
+    /// True only for an undecorated (CSD) window, where the OS no longer
+    /// supplies them.
+    pub window_controls: bool,
+    /// Whether the window is currently maximized; picks the maximize
+    /// button's glyph and accessible label (Maximize vs Restore).
+    pub maximized: bool,
 }
 
 /// A retained, GPU-free pane frame. Its DOM is produced by Cambium Frisket;
@@ -994,6 +1032,9 @@ fn chrome_action(dom: &ScriptedDom, hit: NodeId) -> Option<ChromeAction> {
                 "appearance" => Some(ChromeAction::ToggleAppearance),
                 "appearance-dark" => Some(ChromeAction::ChooseTheme(AppearanceTheme::Dark)),
                 "appearance-light" => Some(ChromeAction::ChooseTheme(AppearanceTheme::Light)),
+                "minimize" => Some(ChromeAction::Minimize),
+                "maximize" => Some(ChromeAction::ToggleMaximize),
+                "close-window" => Some(ChromeAction::CloseWindow),
                 _ => None,
             };
         }
@@ -1048,23 +1089,22 @@ const PELT_CHROME_CSS: &str = "\
         --pelt-chrome-content-surface: #ffffff; --pelt-chrome-divider: #1a1a1f; \
         position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--pelt-chrome-workspace); \
     } \
-    .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 70px; min-height: 70px; padding: 4px 6px; background: var(--pelt-chrome-surface); border-bottom: 1px solid var(--pelt-chrome-border); } \
-    .pelt-chrome-menu-open { flex-basis: 108px; min-height: 108px; } \
-    .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 32px; min-width: 0; } \
-    .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 4px; padding: 4px 0; text-align: center; color: var(--pelt-chrome-control-text); background: var(--pelt-chrome-control-surface); border: 1px solid var(--pelt-chrome-control-border); } \
+    .pelt-chrome { display: flex; flex-direction: column; flex-grow: 0; flex-shrink: 0; flex-basis: 40px; min-height: 40px; padding: 0 0 0 6px; background: var(--pelt-chrome-surface); border-bottom: 1px solid var(--pelt-chrome-border); } \
+    .pelt-toolbar { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 40px; min-height: 40px; min-width: 0; } \
+    .pelt-chrome-button { flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-right: 6px; padding: 4px 0; text-align: center; color: var(--pelt-chrome-control-text); background: var(--pelt-chrome-control-surface); border: 1px solid var(--pelt-chrome-control-border); } \
     .pelt-chrome-button.disabled { color: var(--pelt-chrome-disabled-text); background: var(--pelt-chrome-disabled-surface); border-color: var(--pelt-chrome-disabled-border); } \
-    .pelt-chrome-toggle { flex-basis: 62px; width: 62px; margin-left: 5px; font-size: 12px; } \
+    .pelt-chrome-toggle { flex-basis: 62px; width: 62px; margin-left: 6px; font-size: 12px; } \
     .pelt-chrome-toggle-open { color: var(--pelt-chrome-accent-text); background: var(--pelt-chrome-accent-surface); border-color: var(--pelt-chrome-accent-border); } \
-    .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-address-text); background: var(--pelt-chrome-address-surface); border: 1px solid var(--pelt-chrome-control-border); } \
-    .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 5px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-context-text); background: var(--pelt-chrome-context-surface); border: 1px solid var(--pelt-chrome-context-border); } \
+    .pelt-address { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 320px; min-width: 160px; max-width: 560px; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-address-text); background: var(--pelt-chrome-address-surface); border: 1px solid var(--pelt-chrome-control-border); } \
+    .pelt-engine { flex-grow: 0; flex-shrink: 0; flex-basis: 112px; width: 112px; height: 28px; margin-left: 6px; padding: 5px 7px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-context-text); background: var(--pelt-chrome-context-surface); border: 1px solid var(--pelt-chrome-context-border); } \
     .pelt-engine-open { color: var(--pelt-chrome-accent-text); background: var(--pelt-chrome-accent-surface); border-color: var(--pelt-chrome-accent-border); } \
-    .pelt-engine-menu { display: flex; flex-direction: row; flex-grow: 0; flex-shrink: 0; flex-basis: 28px; min-height: 28px; margin: 2px 0; } \
+    .pelt-engine-menu { position: absolute; top: 40px; left: 0px; right: 0px; z-index: 4; display: flex; flex-direction: row; min-height: 32px; padding: 4px 6px; background: var(--pelt-chrome-surface); border-bottom: 1px solid var(--pelt-chrome-border); } \
     .pelt-engine-option { display: block; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 28px; padding: 5px 8px; overflow: hidden; white-space: nowrap; text-align: center; color: var(--pelt-chrome-context-text); background: var(--pelt-chrome-context-surface); border: 1px solid var(--pelt-chrome-context-border); } \
     .pelt-engine-option-selected { color: var(--pelt-chrome-selection-text); background: var(--pelt-chrome-selection-surface); border-color: var(--pelt-chrome-selection-border); } \
-    .pelt-details { display: flex; align-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: 26px; min-width: 0; overflow: hidden; } \
-    .pelt-title { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-heading); font-size: 13px; } \
-    .pelt-route { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 260px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-route); font-size: 12px; } \
-    .pelt-status { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 0; max-width: 160px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-status); font-size: 12px; } \
+    .pelt-title { flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 90px; margin-left: 12px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-heading); font-size: 13px; } \
+    .pelt-route { flex-grow: 0; flex-shrink: 2; flex-basis: auto; min-width: 0; max-width: 220px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-route); font-size: 12px; } \
+    .pelt-status { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 40px; max-width: 150px; margin-left: 8px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-status); font-size: 12px; } \
+    .pelt-caption-button { flex-grow: 0; flex-shrink: 0; flex-basis: 44px; width: 44px; height: 40px; margin-left: 0; padding: 13px 0; text-align: center; line-height: 1; font-size: 13px; color: var(--pelt-chrome-control-text); } \
     .pelt-body { position: relative; display: flex; flex-direction: row; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; min-height: 0; } \
     .pelt-pane { display: flex; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; min-height: 0; } \
     .pelt-inspector { position: absolute; top: 0px; right: 0px; bottom: 0px; z-index: 1; display: flex; flex-direction: column; width: 248px; min-width: 248px; min-height: 0; padding: 8px; overflow: hidden; pointer-events: none; color: var(--pelt-chrome-panel-text); background: var(--pelt-chrome-panel-surface); border-left: 1px solid var(--pelt-chrome-panel-border); } \
@@ -1090,23 +1130,29 @@ const PELT_CHROME_CSS: &str = "\
     .pelt-diagnostic-address { flex-grow: 0; flex-shrink: 0; margin-top: 10px; overflow: hidden; white-space: nowrap; color: var(--pelt-chrome-diagnostic-address); font-size: 13px; } \
     .pelt-diagnostic-message { flex-grow: 0; flex-shrink: 0; margin-top: 16px; color: inherit; font-size: 14px; } \
     .pelt-diagnostic-note { flex-grow: 0; flex-shrink: 0; margin-top: 10px; color: var(--pelt-chrome-diagnostic-note); font-size: 13px; } \
-    .pelt-workspace .frisket-tabbar { background: var(--pelt-chrome-tabbar); } \
-    .pelt-workspace .frisket-tab { color: var(--pelt-chrome-tab-text); background: var(--pelt-chrome-tab-surface); } \
+    .pelt-workspace .frisket-tabbar { padding-left: 6px; background: var(--pelt-chrome-tabbar); } \
+    .pelt-workspace .frisket-tab { flex-grow: 0; flex-shrink: 1; flex-basis: auto; min-width: 96px; color: var(--pelt-chrome-tab-text); background: var(--pelt-chrome-tab-surface); } \
+    .pelt-workspace .frisket-label { flex-grow: 0; flex-shrink: 1; flex-basis: auto; text-overflow: ellipsis; } \
     .pelt-workspace .frisket-tab.active { color: var(--pelt-chrome-tab-active-text); background: var(--pelt-chrome-tab-active-surface); } \
     .pelt-workspace .frisket-tab.active .frisket-label { font-weight: bold; } \
     .pelt-workspace .frisket-close { display: flex; align-items: center; justify-content: center; flex-grow: 0; flex-shrink: 0; flex-basis: 28px; width: 28px; height: 28px; margin-left: 4px; padding: 0; line-height: 1; font-size: 18px; font-weight: bold; color: var(--pelt-chrome-tab-close); background: var(--pelt-chrome-tab-close-surface); border: 1px solid var(--pelt-chrome-tab-close-border); } \
     .pelt-workspace .frisket-tab.active .frisket-close { background: var(--pelt-chrome-tab-close-active-surface); border-color: var(--pelt-chrome-tab-close-active-border); } \
     .pelt-workspace .frisket-content { background: var(--pelt-chrome-content-surface); } \
     .pelt-workspace .frisket-divider { background: var(--pelt-chrome-divider); } \
-    @media (max-width: 420px) { \
-        .pelt-chrome { flex-basis: 108px; min-height: 108px; } \
-        .pelt-chrome-menu-open { flex-basis: 146px; min-height: 146px; } \
-        .pelt-toolbar { flex-wrap: wrap; flex-basis: 64px; min-height: 64px; } \
-        .pelt-address { order: 2; flex-grow: 0; flex-basis: 100%; width: 100%; } \
+    @media (max-width: 800px) { \
+        .pelt-title, .pelt-route, .pelt-status { display: none; } \
+    } \
+    @media (max-width: 640px) { \
+        .pelt-caption-button { display: none; } \
         .pelt-engine { flex-basis: 70px; width: 70px; margin-left: 4px; padding: 5px 3px; font-size: 10px; } \
-        .pelt-chrome-toggle { flex-basis: 50px; width: 50px; margin-left: 4px; font-size: 10px; } \
+    } \
+    @media (max-width: 520px) { \
+        .pelt-address { min-width: 140px; } \
         .frisket-tab { padding: 8px 1px; font-size: 12px; } \
         .frisket-close { flex-basis: 28px; width: 28px; margin-left: 2px; } \
+    } \
+    @media (max-width: 440px) { \
+        .pelt-chrome-toggle { display: none; } \
     }";
 
 const PELT_LIGHT_THEME_CSS: &str = "\
@@ -1281,6 +1327,8 @@ mod tests {
             inspector: None,
             appearance: None,
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         }));
         let frame = surface.frame(800, 600).expect("chrome Frisket frame");
         let address = surface.chrome_rect("address").expect("address geometry");
@@ -1386,6 +1434,8 @@ mod tests {
             inspector: None,
             appearance: None,
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
         surface.set_chrome(Some(chrome.clone()));
@@ -1475,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_chrome_wraps_the_address_without_covering_tab_close_targets() {
+    fn narrow_chrome_keeps_one_fixed_row_and_sheds_secondary_controls() {
         let mut tree = nested_tree();
         tree.tile_mut(TileId(1)).expect("first tile").title =
             "A deliberately long workspace title that keeps the close target visible".to_owned();
@@ -1496,6 +1546,8 @@ mod tests {
             inspector: None,
             appearance: None,
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         };
         surface.set_chrome(Some(chrome.clone()));
         let frame = surface.frame(360, 480).expect("narrow Chrome frame");
@@ -1509,7 +1561,7 @@ mod tests {
         };
         let back = surface.chrome_rect("back").expect("back geometry");
         let address = surface.chrome_rect("address").expect("address geometry");
-        for action in ["forward", "reload", "engine-menu", "inspect", "appearance"] {
+        for action in ["forward", "reload", "engine-menu"] {
             assert!(
                 within(
                     surface
@@ -1519,15 +1571,21 @@ mod tests {
                 "{action} stays inside the small Chrome viewport"
             );
         }
+        for action in ["inspect", "appearance"] {
+            assert!(
+                surface.chrome_rect(action).is_none(),
+                "{action} is shed at this width instead of crowding the fixed row"
+            );
+        }
         assert!(within(back));
         assert!(within(address));
         assert!(
-            address.y >= back.y + back.height,
-            "the address receives its own toolbar row instead of shrinking below usability"
+            address.y < back.y + back.height && address.y + address.height > back.y,
+            "the address shares the single fixed-height row with navigation"
         );
         assert!(
-            address.width >= 300.0,
-            "the narrow address remains readable"
+            address.width >= 120.0,
+            "the narrow address keeps a usable minimum width"
         );
         let content = frame
             .content_rects
@@ -1623,6 +1681,8 @@ mod tests {
             inspector: None,
             appearance: None,
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
         surface.set_chrome(Some(chrome.clone()));
@@ -1718,6 +1778,8 @@ mod tests {
             inspector: None,
             appearance: None,
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
         surface.set_chrome(Some(chrome.clone()));
@@ -1821,6 +1883,8 @@ mod tests {
                 persistent: false,
             }),
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
         surface.set_chrome(Some(chrome.clone()));
@@ -1964,6 +2028,8 @@ mod tests {
             }),
             appearance: None,
             diagnostic: None,
+            window_controls: false,
+            maximized: false,
         };
         let mut surface = FrisketSurface::new(&nested_tree());
         surface.set_chrome(Some(chrome.clone()));

@@ -78,7 +78,7 @@ const ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION: &str = "Pelt revealed a nested Li
 const ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION: &str = "Pelt preserved a nested textarea action boundary and routed physical selection replacement, Text, and IME only to the focused tile";
 #[cfg(feature = "reader")]
 const READER_ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "Pelt composed partial Reader link trees with distinct tile namespaces, kept Focus virtual, and preserved the sibling Reader session";
-const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "compact two-row Chrome kept controls, tab text, and close targets usable while loading and error documents held their content hole";
+const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "single fixed-height Chrome row shed its secondary controls and kept navigation, address, tab text, and close targets usable while loading and error documents held their content hole";
 const CHROME_DPI_WORKSPACE_ASSERTION_PREFIX: &str =
     "high-DPI Chrome converted physical pointer input into its retained logical controls";
 #[cfg(feature = "reader")]
@@ -973,6 +973,15 @@ struct WorkspaceApp {
     modifiers: SessionModifiers,
     cursor: (f32, f32),
     gesture: Option<PointerGesture>,
+    /// A caption Close click; honoured by the event loop on the next event,
+    /// which owns `event_loop.exit()`.
+    close_requested: bool,
+    /// Double-click clock for the CSD drag surface.
+    drag_cadence: cambium_genet_winit_host::ClickCadence,
+    /// The border resize direction under the cursor, deduped for cursor swaps.
+    resize_hint: Option<winit::window::ResizeDirection>,
+    #[cfg(target_os = "windows")]
+    snap_bridge: Option<cambium_genet_winit_host::SnapLayoutBridge>,
     receipt_step: u8,
     receipt_complete: bool,
     workspace_receipt_redraws: u32,
@@ -1475,6 +1484,11 @@ impl WorkspaceApp {
             modifiers: SessionModifiers::default(),
             cursor: (0.0, 0.0),
             gesture: None,
+            close_requested: false,
+            drag_cadence: cambium_genet_winit_host::ClickCadence::new(),
+            resize_hint: None,
+            #[cfg(target_os = "windows")]
+            snap_bridge: None,
             receipt_step: 0,
             receipt_complete: false,
             workspace_receipt_redraws: 0,
@@ -1625,6 +1639,21 @@ impl WorkspaceApp {
         )
     }
 
+    /// Whether this workspace draws its own caption controls: only when a
+    /// real window exists and was created undecorated (CSD) — Windows today,
+    /// other platforms when their decoration lanes land. The windowless
+    /// GPU-free harness never draws them, which keeps its expectations
+    /// platform-stable.
+    fn draws_window_controls(&self) -> bool {
+        cfg!(target_os = "windows") && self.window.is_some()
+    }
+
+    fn window_is_maximized(&self) -> bool {
+        self.window
+            .as_deref()
+            .is_some_and(winit::window::Window::is_maximized)
+    }
+
     fn chrome_model(&self) -> WorkspaceChrome {
         let theme = self.chrome_theme();
         let Some(tile) = self.workspace.focused_tile() else {
@@ -1646,6 +1675,8 @@ impl WorkspaceApp {
                     .chrome_appearance_open
                     .then(|| self.chrome_appearance()),
                 diagnostic: None,
+                window_controls: self.draws_window_controls(),
+                maximized: self.window_is_maximized(),
             };
         };
         let controller = self.workspace.controller(tile);
@@ -1752,6 +1783,8 @@ impl WorkspaceApp {
                 .chrome_appearance_open
                 .then(|| self.chrome_appearance()),
             diagnostic,
+            window_controls: self.draws_window_controls(),
+            maximized: self.window_is_maximized(),
         }
     }
 
@@ -1981,6 +2014,23 @@ impl WorkspaceApp {
             self.clear_chrome_appearance();
         }
         match action {
+            ChromeAction::Minimize => {
+                if let Some(window) = self.window.as_deref() {
+                    window.set_minimized(true);
+                }
+                false
+            },
+            ChromeAction::ToggleMaximize => {
+                if let Some(window) = self.window.as_deref() {
+                    window.set_maximized(!window.is_maximized());
+                }
+                self.refresh_chrome();
+                true
+            },
+            ChromeAction::CloseWindow => {
+                self.close_requested = true;
+                false
+            },
             ChromeAction::Back => {
                 let effect = self.workspace.command(SessionNavigationCommand::Back);
                 let redraw = effect.redraw || effect.navigated;
@@ -2593,6 +2643,57 @@ impl WorkspaceApp {
         }
     }
 
+    /// CSD only: the border resize direction under the cursor, None when the
+    /// window is maximized or still decorated.
+    fn csd_resize_edge(&self) -> Option<winit::window::ResizeDirection> {
+        if !self.draws_window_controls() {
+            return None;
+        }
+        let window = self.window.as_deref()?;
+        if window.is_maximized() {
+            return None;
+        }
+        let (x, y) = self.cursor;
+        cambium_genet_winit_host::resize_edge(
+            x,
+            y,
+            self.width as f32 / self.scale_factor,
+            self.height as f32 / self.scale_factor,
+        )
+    }
+
+    /// CSD only: swap in the border resize arrows, deduped on transitions —
+    /// an undecorated window gets no resize cursors from the OS.
+    fn update_resize_cursor(&mut self) {
+        if !self.draws_window_controls() {
+            return;
+        }
+        let direction = self.csd_resize_edge();
+        if direction != self.resize_hint {
+            self.resize_hint = direction;
+            if let Some(window) = self.window.as_deref() {
+                window.set_cursor(
+                    direction
+                        .map(cambium_genet_winit_host::edge_cursor)
+                        .unwrap_or(winit::window::CursorIcon::Default),
+                );
+            }
+        }
+    }
+
+    /// CSD: publish the maximize button's current layout box to the native
+    /// Snap Layout hit-test bridge. Cheap and deduped inside the bridge.
+    fn update_snap_bridge(&mut self) {
+        #[cfg(target_os = "windows")]
+        if let Some(bridge) = self.snap_bridge.as_ref() {
+            let logical = self
+                .frisket
+                .chrome_rect("maximize")
+                .map(|rect| (rect.x, rect.y, rect.width, rect.height));
+            bridge.update(logical, f64::from(self.scale_factor));
+        }
+    }
+
     fn pointer_move(&mut self, x: f32, y: f32) -> bool {
         self.cursor = (x, y);
         let mut redraw = false;
@@ -2638,6 +2739,14 @@ impl WorkspaceApp {
 
     fn pointer_down(&mut self) -> bool {
         let (x, y) = self.cursor;
+        // CSD: the 8px border band resizes before anything underneath it
+        // hits, exactly as an OS frame's grab border would.
+        if let Some(direction) = self.csd_resize_edge()
+            && let Some(window) = self.window.as_deref()
+        {
+            let _ = window.drag_resize_window(direction);
+            return false;
+        }
         match self.frisket.hit(x, y) {
             Some(FrisketHit::ChromeAction(action)) => self.apply_chrome_action(action),
             Some(FrisketHit::Close(tile)) => {
@@ -2705,6 +2814,20 @@ impl WorkspaceApp {
                 let changed =
                     self.chrome_engine_menu.take().is_some() || self.chrome_appearance_open;
                 self.clear_chrome_appearance();
+                // CSD: chrome with no interactive target is the drag surface.
+                if self.draws_window_controls()
+                    && let Some(window) = self.window.clone()
+                {
+                    if self
+                        .drag_cadence
+                        .press((x, y), cambium_genet_winit_host::Instant::now())
+                    {
+                        window.set_maximized(!window.is_maximized());
+                        self.refresh_chrome();
+                        return true;
+                    }
+                    let _ = window.drag_window();
+                }
                 changed
             },
             Some(FrisketHit::Appearance) => true,
@@ -2854,6 +2977,12 @@ impl ApplicationHandler for WorkspaceApp {
         let mut attributes =
             static_viewer::pelt_window_attributes(self.window_title(), self.width, self.height)
                 .with_visible(false);
+        // CSD: the workspace chrome carries the title and caption controls,
+        // so the OS frame would be a second title bar. Windows only — see
+        // the P6b lane; other platforms keep native decorations for now.
+        if cfg!(target_os = "windows") {
+            attributes = attributes.with_decorations(false);
+        }
         if let Some((width, height)) = self
             .config
             .workspace_receipt
@@ -2935,6 +3064,19 @@ impl ApplicationHandler for WorkspaceApp {
             event_loop.exit();
             return;
         }
+        // CSD: answer WM_NCHITTEST over the laid-out maximize button so the
+        // Windows 11 Snap Layout flyout appears on hover, exactly as the
+        // cambium host does for its apps.
+        #[cfg(target_os = "windows")]
+        {
+            match cambium_genet_winit_host::SnapLayoutBridge::attach(&window) {
+                Ok(bridge) => self.snap_bridge = Some(bridge),
+                Err(error) => {
+                    // A missing flyout degrades a nicety, not correctness.
+                    eprintln!("pelt: Snap Layout bridge unavailable: {error}");
+                },
+            }
+        }
         self.workspace_receipt_stage_started = Instant::now();
         window.request_redraw();
     }
@@ -2987,6 +3129,7 @@ impl ApplicationHandler for WorkspaceApp {
             },
             WindowEvent::CursorMoved { position, .. } => {
                 let redraw = self.pointer_move_physical(position.x as f32, position.y as f32);
+                self.update_resize_cursor();
                 if redraw {
                     self.request_redraw();
                 }
@@ -3000,8 +3143,32 @@ impl ApplicationHandler for WorkspaceApp {
                     ElementState::Pressed => self.pointer_down(),
                     ElementState::Released => self.pointer_up(),
                 };
+                if self.close_requested {
+                    event_loop.exit();
+                    return;
+                }
                 if redraw {
                     self.request_redraw();
+                }
+            },
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                // CSD: right-click on the drag surface raises the system menu,
+                // the muscle memory an OS title bar provides.
+                if self.draws_window_controls()
+                    && matches!(
+                        self.frisket.hit(self.cursor.0, self.cursor.1),
+                        Some(FrisketHit::Chrome)
+                    )
+                    && let Some(window) = self.window.as_deref()
+                {
+                    window.show_window_menu(winit::dpi::LogicalPosition::new(
+                        f64::from(self.cursor.0),
+                        f64::from(self.cursor.1),
+                    ));
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3064,7 +3231,10 @@ impl ApplicationHandler for WorkspaceApp {
                 let effect = self.workspace.input(SessionInput::Focus(focused));
                 self.apply_effect(effect);
             },
-            WindowEvent::RedrawRequested => self.render(event_loop),
+            WindowEvent::RedrawRequested => {
+                self.render(event_loop);
+                self.update_snap_bridge();
+            },
             _ => {},
         }
     }

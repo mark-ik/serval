@@ -38,6 +38,8 @@ mod decorations;
 mod harness;
 #[cfg(target_os = "windows")]
 mod windows_snap;
+#[cfg(target_os = "windows")]
+pub use windows_snap::SnapLayoutBridge;
 #[cfg(target_os = "linux")]
 mod x11_frame;
 
@@ -50,9 +52,10 @@ pub use cambium_rootstock::{
 };
 pub use harness::{Harness, inert_hooks};
 
+pub use cambium_rootstock::Instant;
 use cambium_rootstock::meristem_bounds::RootView;
 use cambium_rootstock::{Hook, HostState, env_size};
-use decorations::ClickCadence;
+pub use decorations::ClickCadence;
 #[derive(Clone, Copy, Debug)]
 enum HostEvent {
     Wake,
@@ -433,7 +436,11 @@ where
 }
 /// Which resize edge a point near the window border maps to, in logical
 /// coordinates with an 8px grab margin. `None` in the interior.
-fn resize_edge(x: f32, y: f32, w: f32, h: f32) -> Option<winit::window::ResizeDirection> {
+/// The border resize direction for a cursor position in a CSD window,
+/// using the frame's 8px grab margin. Promoted for Pelt, the second
+/// CSD consumer, which owns its own event loop but wants the same
+/// border feel.
+pub fn resize_edge(x: f32, y: f32, w: f32, h: f32) -> Option<winit::window::ResizeDirection> {
     use winit::window::ResizeDirection as R;
     const M: f32 = 8.0;
     let left = x <= M;
@@ -454,7 +461,7 @@ fn resize_edge(x: f32, y: f32, w: f32, h: f32) -> Option<winit::window::ResizeDi
 }
 /// The resize cursor icon for a border direction — an undecorated (CSD)
 /// window gets no OS resize cursors, so the host supplies the affordance.
-fn edge_cursor(dir: winit::window::ResizeDirection) -> winit::window::CursorIcon {
+pub fn edge_cursor(dir: winit::window::ResizeDirection) -> winit::window::CursorIcon {
     use winit::window::{CursorIcon as C, ResizeDirection as R};
     match dir {
         R::East | R::West => C::EwResize,
