@@ -1,0 +1,1626 @@
+use super::*;
+
+use std::any::Any;
+
+#[cfg(feature = "livery")]
+use genet_document_resources::{ResourceKind, ResourceLimits, StylesheetOwner};
+use genet_host_api::ResourceFetcher;
+#[cfg(feature = "livery")]
+use genet_host_api::ResourceResponse;
+use inker::session_engine::SessionRegistry;
+use inker::session_engine::{
+    DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentFindDirection,
+    DocumentFindMatch, DocumentFindQuery, DocumentFindReveal, DocumentFindState, DocumentSession,
+    DocumentZoomState, SessionButtonState, SessionClick, SessionCursor, SessionEffect,
+    SessionEngine, SessionError, SessionFocusDirection, SessionFormMethod, SessionFormSubmission,
+    SessionIme, SessionKey, SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest,
+    SessionTextTarget,
+};
+use inker::{DocumentCapabilities, DocumentCapabilityStatus};
+#[cfg(feature = "livery")]
+use layout_dom_api::LayoutDom;
+use layout_dom_api::{LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
+use netrender::Scene;
+#[cfg(feature = "livery")]
+use std::sync::{Arc, Mutex};
+
+/// Byte source for spawn-with-body tests; never fetches.
+#[derive(Clone)]
+struct NoFetch;
+impl ResourceFetcher for NoFetch {
+    fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+#[cfg(feature = "livery")]
+struct ImageFetch {
+    bytes: Vec<u8>,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+#[cfg(feature = "livery")]
+impl ResourceFetcher for ImageFetch {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.requests.lock().unwrap().push(url.to_owned());
+        Some(self.bytes.clone())
+    }
+}
+
+#[cfg(feature = "livery")]
+fn livery_node_with_id(
+    session: &LiveryDocumentSession,
+    wanted_id: &str,
+) -> genet_scripted_dom::NodeId {
+    fn find(
+        dom: &genet_scripted_dom::ScriptedDom,
+        node: genet_scripted_dom::NodeId,
+        wanted_id: &str,
+    ) -> Option<genet_scripted_dom::NodeId> {
+        if dom.attribute(node, &Namespace::default(), &LocalName::from("id")) == Some(wanted_id) {
+            return Some(node);
+        }
+        dom.dom_children(node)
+            .find_map(|child| find(dom, child, wanted_id))
+    }
+
+    let dom = session.document().dom();
+    find(dom, dom.document(), wanted_id)
+        .unwrap_or_else(|| panic!("expected retained node #{wanted_id}"))
+}
+
+#[cfg(feature = "smolweb")]
+#[test]
+fn smolweb_session_body_route_requests_and_accepts_inline_images() {
+    let image = image::RgbaImage::from_pixel(2, 1, image::Rgba([0, 128, 255, 255]));
+    let mut image_bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut image_bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode PNG fixture");
+    let engine = SmolwebSessionEngine::new(
+        inker::routing::ENGINE_NEMATIC_GEMTEXT,
+        NoFetch,
+        crate::SmolwebTheme::Plain,
+    )
+    .with_inline_media(crate::SmolwebInlineMediaPolicy::images());
+    let request = SessionSpawnRequest::new("gemini://x.test/docs/index.gmi")
+        .with_body("=> picture.png Picture\n")
+        .with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("smolweb session spawns");
+
+    assert_eq!(session.subresources(), ["gemini://x.test/docs/picture.png"]);
+    assert!(session.provide_subresource("gemini://x.test/docs/picture.png", &image_bytes));
+    let scene = session.frame(320, 240);
+    assert!(
+        scene
+            .ops
+            .iter()
+            .any(|operation| matches!(operation, netrender::SceneOp::Image(_)))
+    );
+    assert!(session.subresources().is_empty());
+    assert_eq!(session.links()[0].url, "gemini://x.test/docs/picture.png");
+}
+
+#[cfg(feature = "livery")]
+struct LinkedResourceFetch {
+    image: Vec<u8>,
+    font: Vec<u8>,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+#[cfg(feature = "livery")]
+impl ResourceFetcher for LinkedResourceFetch {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.requests.lock().unwrap().push(url.to_owned());
+        match url {
+            "https://example.test/docs/styles/site.css" => Some(
+                br#".card { display: block; width: 80px; height: 40px; background-image: url(images/hero.png); }
+@font-face { font-family: linked; src: url(../fonts/text.woff2); }"#
+                    .to_vec(),
+            ),
+            "https://example.test/docs/styles/images/hero.png" => Some(self.image.clone()),
+            "https://example.test/docs/fonts/text.woff2" => Some(self.font.clone()),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "livery")]
+struct ImportedSheetFetch;
+
+#[cfg(feature = "livery")]
+impl ResourceFetcher for ImportedSheetFetch {
+    fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+        match url {
+            "https://example.test/docs/styles/root.css" => Some(
+                genet_host_api::ResourceResponse::new(
+                    "https://cdn.example.test/styles/root.css",
+                    br#"@import "palette.css"; .card { color: rgb(255, 0, 0); }"#.to_vec(),
+                )
+                .with_content_type("text/css"),
+            ),
+            "https://cdn.example.test/styles/palette.css" => Some(
+                genet_host_api::ResourceResponse::new(
+                    url,
+                    br#".card { color: rgb(0, 0, 255); }"#.to_vec(),
+                )
+                .with_content_type("text/css; charset=utf-8"),
+            ),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "livery")]
+struct RedirectedDocumentFetch;
+
+#[cfg(feature = "livery")]
+impl ResourceFetcher for RedirectedDocumentFetch {
+    fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
+        match url {
+            "https://example.test/start" => Some(
+                genet_host_api::ResourceResponse::new(
+                    "https://cdn.example.test/final/index.html",
+                    br#"<link rel="stylesheet" href="site.css"><main class="card"><h1>final base</h1></main>"#
+                        .to_vec(),
+                )
+                .with_content_type("text/html"),
+            ),
+            "https://cdn.example.test/final/site.css" => Some(
+                genet_host_api::ResourceResponse::new(
+                    url,
+                    br#".card { color: rgb(0, 128, 0); }"#.to_vec(),
+                )
+                .with_content_type("text/css"),
+            ),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "scripted")]
+#[test]
+fn scripted_session_selects_and_clips_the_live_dom() {
+    let engine =
+        ScriptedSessionEngine::<script_engine_boa::BoaEngine, _>::new("genet.scripted", NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/report")
+        .with_body(
+            "<html><head><title>Live Page</title></head><body style=\"margin:0\">\
+             <p style=\"margin:0\">before <a id=\"choice\" href=\"/chosen\"></a> and \
+             <a href=\"/also\">second link</a> after <a href=\"/outside\">outside</a></p>\
+             <script>document.getElementById('choice').appendChild(\
+             document.createTextNode('selected link'));</script>\
+             </body></html>",
+        )
+        .with_viewport(640, 200);
+    let mut session = engine.spawn(&request).expect("scripted lane spawns");
+    let unselected = session.frame(640, 200);
+    let unselected_rects = unselected
+        .ops
+        .iter()
+        .filter(|op| matches!(op, netrender::SceneOp::Rect(_)))
+        .count();
+    let report = session.inspect().expect("live DOM is inspectable");
+    assert_eq!(report.title.as_deref(), Some("Live Page"));
+
+    let target = session
+        .text_target("selected link")
+        .expect("post-script first link resolves to pointer endpoints");
+    let second = session
+        .text_target("second link")
+        .expect("second link resolves to pointer endpoints");
+    assert_eq!(
+        session.pointer_down(target.anchor[0], target.anchor[1]),
+        SessionClick::Handled
+    );
+    assert!(
+        session.pointer_move(second.focus[0], second.focus[1]),
+        "the live range extends through ordinary pointer input"
+    );
+    assert_eq!(
+        session.pointer_up(second.focus[0], second.focus[1]),
+        SessionClick::Handled
+    );
+    let selected = session.frame(640, 200);
+    let selected_rects = selected
+        .ops
+        .iter()
+        .filter(|op| matches!(op, netrender::SceneOp::Rect(_)))
+        .count();
+    assert!(
+        selected_rects > unselected_rects,
+        "the retained live range paints selection geometry"
+    );
+
+    let clip = session.clip().expect("live selection supplies a clip");
+    assert_eq!(clip.source_url, "https://example.test/report");
+    assert_eq!(clip.text, "selected link and second link");
+    assert_eq!(clip.links, vec!["/chosen", "/also"]);
+    let selector: serde_json::Value =
+        serde_json::from_str(clip.selector.as_deref().expect("range selector"))
+            .expect("selector is typed JSON");
+    assert_eq!(selector["type"], "dom-range");
+    assert_eq!(selector["version"], 1);
+    assert_eq!(selector["quote"], "selected link and second link");
+    assert!(selector["anchor"]["path"].is_array());
+    assert!(selector["focus"]["path"].is_array());
+}
+
+#[cfg(feature = "scripted")]
+#[test]
+fn scripted_session_returns_only_uncancelled_external_navigation() {
+    let engine =
+        ScriptedSessionEngine::<script_engine_boa::BoaEngine, _>::new("genet.scripted", NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/start")
+        .with_body(
+            r#"<body style="margin:0">
+                <style>a { display:block; width:180px; padding:20px; }</style>
+                <p>Selection start</p>
+                <a href="next.html"><span>Open next</span></a>
+                <a id="blocked" href="blocked.html">Stay here</a>
+                <a id="changed" href="old.html">Change target</a>
+                <script>
+                  document.addEventListener('click', function (event) {
+                    if (event.target.id === 'blocked') event.preventDefault();
+                    if (event.target.id === 'changed') {
+                      event.target.setAttribute('href', 'changed.html');
+                    }
+                  });
+                </script>
+            </body>"#,
+        )
+        .with_viewport(640, 200);
+    let mut session = engine.spawn(&request).expect("scripted lane spawns");
+    let _scene = session.frame(640, 200);
+    session.pump(1.0);
+
+    let right_padding = |target: SessionTextTarget| {
+        (
+            target.focus[0] + 8.0,
+            (target.anchor[1] + target.focus[1]) * 0.5,
+        )
+    };
+    let next_text = session
+        .text_target("Open next")
+        .expect("next link geometry");
+    let next_padding = right_padding(next_text);
+    assert_eq!(
+        session.pointer_down(next_padding.0, next_padding.1),
+        SessionClick::Handled,
+        "an anchor-padding press starts capture without navigating"
+    );
+    assert_eq!(
+        session.pointer_up(
+            next_text.focus[0] - 0.5,
+            (next_text.anchor[1] + next_text.focus[1]) * 0.5,
+        ),
+        SessionClick::Navigate("next.html".to_owned()),
+        "release on the same anchor's inline child keeps one activation target"
+    );
+
+    assert_eq!(
+        session.pointer_down(next_padding.0, next_padding.1),
+        SessionClick::Handled
+    );
+    assert_eq!(
+        session.pointer_up(500.0, 190.0),
+        SessionClick::Handled,
+        "release outside becomes a selection instead of navigation"
+    );
+    assert_eq!(
+        session.pointer_up(next_padding.0, next_padding.1),
+        SessionClick::Miss,
+        "a mismatched release clears the retained press"
+    );
+
+    let blocked = right_padding(
+        session
+            .text_target("Stay here")
+            .expect("cancelled link geometry"),
+    );
+    assert_eq!(
+        session.pointer_down(blocked.0, blocked.1),
+        SessionClick::Handled
+    );
+    assert_eq!(
+        session.pointer_up(blocked.0, blocked.1),
+        SessionClick::Handled,
+        "preventDefault cancels navigation through the ordinary release path"
+    );
+
+    let changed = right_padding(
+        session
+            .text_target("Change target")
+            .expect("mutating link geometry"),
+    );
+    assert_eq!(
+        session.pointer_down(changed.0, changed.1),
+        SessionClick::Handled
+    );
+    assert_eq!(
+        session.pointer_up(changed.0, changed.1),
+        SessionClick::Navigate("changed.html".to_owned()),
+        "the default action reads href after uncancelled listeners run"
+    );
+
+    assert_eq!(
+        session.pointer_down(blocked.0, blocked.1),
+        SessionClick::Handled
+    );
+    let cancelled = session.input(inker::SessionInput::Cancel);
+    assert_eq!(cancelled.effect, SessionEffect::Cancelled);
+    assert_eq!(
+        session.pointer_up(blocked.0, blocked.1),
+        SessionClick::Miss,
+        "cancelled capture cannot activate on a later release"
+    );
+
+    assert_eq!(
+        session.pointer_down(changed.0, changed.1),
+        SessionClick::Handled
+    );
+    let blurred = session.input(inker::SessionInput::Focus(false));
+    assert_eq!(blurred.effect, SessionEffect::Handled);
+    assert_eq!(
+        session.pointer_up(changed.0, changed.1),
+        SessionClick::Miss,
+        "focus loss clears a captured press before its later release"
+    );
+
+    let drag_start = session
+        .text_target("Selection start")
+        .expect("selection start geometry");
+    assert_eq!(
+        session.pointer_down(drag_start.anchor[0], drag_start.anchor[1]),
+        SessionClick::Handled
+    );
+    assert!(session.pointer_move(next_text.focus[0], next_text.focus[1]));
+    assert_eq!(
+        session.pointer_up(next_text.focus[0], next_text.focus[1]),
+        SessionClick::Handled,
+        "a drag selection ending on a link wins over navigation"
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_routes_retained_structural_and_text_paint() {
+    let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
+    registry.register(Box::new(LiverySessionEngine::new(NoFetch)));
+    assert!(registry.contains(inker::routing::ENGINE_GENET_LIVERY));
+
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r#"<html><head><style>.card { background-color: navy; color: white; width: 120px; }</style></head><body><div class="card">Livery <span>session</span></div></body></html>"#,
+        )
+        .with_viewport(320, 240);
+    let mut session = registry
+        .spawn(inker::routing::ENGINE_GENET_LIVERY, &request)
+        .expect("registered Livery lane spawns from body");
+
+    let first = session.frame(320, 240);
+    assert!(
+        first
+            .ops
+            .iter()
+            .any(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+    );
+    assert!(
+        first
+            .ops
+            .iter()
+            .any(|operation| matches!(operation, netrender::SceneOp::GlyphRun(_)))
+    );
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("session keeps its concrete Livery owner");
+    let generation = concrete.document().generation();
+    let shape_count = concrete.document().text_system().shape_count();
+    assert_eq!(concrete.last_error(), None);
+
+    let _cached = session.frame(320, 240);
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("session keeps its concrete Livery owner");
+    assert_eq!(concrete.document().generation(), generation);
+    assert_eq!(concrete.document().text_system().shape_count(), shape_count);
+    assert!(!session.scroll_by(0.0, 100.0));
+    assert_eq!(session.click_at(20.0, 20.0), SessionClick::Miss);
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_activates_the_first_matching_text_directive() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new(
+        "https://example.test/article#:~:text=missing&text=prefix-,target,end,-suffix",
+    )
+    .with_body(
+        r#"<html><head><style>body { margin: 0; }</style></head><body>
+            <div style="height: 900px"></div><p>prefix target end suffix</p>
+            </body></html>"#,
+    )
+    .with_viewport(320, 160);
+    let mut session = engine.spawn(&request).expect("livery session spawns");
+
+    let scene = session.frame(320, 160);
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("retained static session");
+    let selection = concrete
+        .document()
+        .text_selection()
+        .expect("the second directive matched in source order");
+    assert_eq!(selection.text, "target end");
+    assert!(
+        concrete.document().scroll().1 > 0.0,
+        "activation reveals the retained match"
+    );
+    assert!(
+        scene
+            .ops
+            .iter()
+            .any(|operation| matches!(operation, netrender::SceneOp::Rect(_))),
+        "the selection is emitted as scene indication geometry"
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_falls_back_to_the_ordinary_element_fragment() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request =
+        SessionSpawnRequest::new("https://example.test/article#fallback:~:text=not-present")
+            .with_body(
+                r#"<html><head><style>body { margin: 0; }</style></head><body>
+            <div style="height: 900px"></div><p id="fallback">ordinary fallback</p>
+            </body></html>"#,
+            )
+            .with_viewport(320, 160);
+    let mut session = engine.spawn(&request).expect("livery session spawns");
+
+    let _scene = session.frame(320, 160);
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("retained static session");
+    assert!(concrete.document().text_selection().is_none());
+    assert!(
+        concrete.document().scroll().1 > 0.0,
+        "an unmatched text directive falls through to #fallback"
+    );
+}
+
+/// Page zoom is a document scale the host requests and the engine bounds:
+/// the requested factor comes back untouched for the host to persist, while
+/// `applied` is what this lane could honour.
+#[cfg(feature = "livery")]
+#[test]
+fn livery_page_zoom_reports_requested_and_clamped_applied() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body("<html><body><p>zoom</p></body></html>")
+        .with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("livery lane spawns");
+
+    let state = session
+        .set_page_zoom(1.25)
+        .expect("livery honours page zoom");
+    assert_eq!(state.requested, 1.25);
+    assert_eq!(state.applied, 1.25);
+    assert_eq!((state.min, state.max), (0.25, 5.0));
+    assert_eq!(
+        session
+            .as_any_ref()
+            .downcast_ref::<LiveryDocumentSession>()
+            .expect("livery session remains observable")
+            .page_zoom(),
+        1.25
+    );
+
+    let state = session
+        .set_page_zoom(12.0)
+        .expect("an out-of-range request");
+    assert_eq!(state.requested, 12.0, "the request stays the caller's");
+    assert_eq!(state.applied, 5.0, "the engine owns its bounds");
+
+    let state = session
+        .set_page_zoom(0.05)
+        .expect("an out-of-range request");
+    assert_eq!(state.requested, 0.05);
+    assert_eq!(state.applied, 0.25);
+
+    let state = session.set_page_zoom(1.0).expect("reset is factor 1.0");
+    assert_eq!(state.applied, 1.0);
+}
+
+/// Zoom is a user-agent document scale, not a CSS `zoom`: the CSS viewport
+/// shrinks by the factor, so a `max-width` media query flips at a wider
+/// presentation viewport than its own boundary.
+#[cfg(feature = "livery")]
+#[test]
+fn livery_page_zoom_shrinks_the_css_viewport_media_queries_see() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                .grow { height: 100px; }
+                @media (max-width: 500px) { .grow { height: 900px; } }
+            </style></head><body><div class="grow"></div></body></html>"#,
+        )
+        .with_viewport(600, 300);
+    let mut session = engine.spawn(&request).expect("livery lane spawns");
+
+    let _scene = session.frame(600, 300);
+    assert!(
+        session.content_height(600, 300) < 500,
+        "a 600px presentation viewport is a 600px CSS viewport at 100 %"
+    );
+
+    session
+        .set_page_zoom(1.25)
+        .expect("livery honours page zoom");
+    let _scene = session.frame(600, 300);
+    let content = session.content_height(600, 300);
+    assert!(
+        content > 1000,
+        "the 480px CSS viewport matches the query and the 900px block \
+         scales back up: {content}"
+    );
+}
+
+/// The boundary space is stable: link rects leave in presentation space and
+/// pointer coordinates arrive in it, so one visual point keeps resolving to
+/// the same node as the document scales under it.
+#[cfg(feature = "livery")]
+#[test]
+fn livery_page_zoom_keeps_hit_testing_at_the_same_visual_point() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                a { display: block; height: 20px; width: 100px; }
+            </style></head><body><a href="/next">next</a></body></html>"#,
+        )
+        .with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("livery lane spawns");
+    let _scene = session.frame(320, 240);
+
+    let rect = session
+        .links()
+        .into_iter()
+        .next()
+        .expect("retained link")
+        .rect;
+    assert!((rect[2] - 100.0).abs() < 1.0, "{rect:?}");
+    assert_eq!(
+        session.click_at(rect[0] + 10.0, rect[1] + 5.0),
+        SessionClick::Navigate("/next".to_owned())
+    );
+    // Activation restyles the anchor, so the retained layout the hit table
+    // reads is only current again after the next frame.
+    let _scene = session.frame(320, 240);
+    assert_eq!(session.click_at(110.0, 5.0), SessionClick::Miss);
+
+    session
+        .set_page_zoom(1.25)
+        .expect("livery honours page zoom");
+    let _scene = session.frame(320, 240);
+
+    let zoomed = session
+        .links()
+        .into_iter()
+        .next()
+        .expect("retained link")
+        .rect;
+    assert!(
+        (zoomed[2] - 125.0).abs() < 1.0,
+        "the reported rect is presentation space: {zoomed:?}"
+    );
+    assert_eq!(
+        session.click_at(rect[0] + 10.0, rect[1] + 5.0),
+        SessionClick::Navigate("/next".to_owned()),
+        "the same visual point still hits the link"
+    );
+    let _scene = session.frame(320, 240);
+    assert_eq!(
+        session.click_at(110.0, 5.0),
+        SessionClick::Navigate("/next".to_owned()),
+        "and the point the grown link now covers hits it too"
+    );
+}
+
+/// A find reveal is a document offset the host applies in presentation
+/// space, so it scales with zoom and survives the round trip back into the
+/// retained CSS-space scroll.
+#[cfg(feature = "livery")]
+#[test]
+fn livery_page_zoom_keeps_find_reveal_in_presentation_space() {
+    fn reveal(state: &DocumentFindState) -> f32 {
+        match state.current_match().expect("a current match").reveal {
+            DocumentFindReveal::ScrollY(y) => y,
+            DocumentFindReveal::EngineManaged => panic!("the livery lane reveals by offset"),
+        }
+    }
+
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/find")
+        .with_body(
+            r#"<html><head><style>html, body { margin: 0; padding: 0; }</style></head>
+            <body><div style="height: 1200px"></div><p>Last finding.</p>
+            <div style="height: 1200px"></div></body></html>"#,
+        )
+        .with_viewport(480, 240);
+    let mut session = engine.spawn(&request).expect("livery lane spawns");
+    let _scene = session.frame(480, 240);
+
+    let query = DocumentFindQuery::new("finding");
+    let at_100 = reveal(&session.document_find(&query).expect("retained find"));
+    assert!(at_100 > 1000.0, "the match sits below the fold: {at_100}");
+
+    session
+        .set_page_zoom(1.25)
+        .expect("livery honours page zoom");
+    let _scene = session.frame(480, 240);
+    let at_125 = reveal(&session.document_find(&query).expect("retained find"));
+    assert!(
+        (at_125 - at_100 * 1.25).abs() < 1.0,
+        "the reveal offset scales with the document: {at_100} {at_125}"
+    );
+
+    let concrete = session
+        .as_any()
+        .downcast_ref::<LiveryDocumentSession>()
+        .expect("session keeps its concrete Livery owner");
+    let scrolled = concrete.document().scroll().1;
+    assert!(
+        (at_125 / 1.25 - 24.0 - scrolled).abs() < 1.0,
+        "the same offset converts back into the retained CSS scroll: \
+         {at_125} {scrolled}"
+    );
+}
+
+/// The livery lane's structural report through the trait — the same
+/// contract the static lane serves, so a viewer override to livery keeps
+/// the Inspector/a11y read instead of degrading to "none for this lane".
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_reports_structure_through_the_trait() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            "<html><head><title>The Page</title></head>\
+             <body><h1>Heading</h1><a href=\"/next\">next</a></body></html>",
+        )
+        .with_viewport(640, 480);
+    let mut session = engine.spawn(&request).expect("livery lane spawns");
+    let report = session
+        .inspect()
+        .expect("the livery lane has a structural read");
+    assert_eq!(report.title.as_deref(), Some("The Page"));
+    assert_eq!(report.headings, vec!["Heading"]);
+    assert_eq!(report.links, vec!["/next"]);
+
+    let _scene = session.frame(640, 480);
+    let link = session.links().into_iter().next().expect("retained link");
+    let pointer = |state| inker::SessionInput::PointerButton {
+        x: link.rect[0] + 2.0,
+        y: link.rect[1] + 2.0,
+        button: inker::SessionPointerButton::Primary,
+        state,
+        modifiers: SessionModifiers::default(),
+    };
+    let pressed = session.input(pointer(SessionButtonState::Pressed));
+    assert_eq!(pressed.effect, SessionEffect::Handled);
+    assert_eq!(pressed.capture, Some(true));
+    let released = session.input(pointer(SessionButtonState::Released));
+    assert_eq!(released.effect, SessionEffect::Navigate("/next".to_owned()));
+    assert_eq!(released.capture, Some(false));
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_retains_structural_find_and_wraps_reveal() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/find")
+        .with_body(
+            "<html><body><h1>Finding heading</h1><p>First finding.</p>\
+             <div style=\"height: 1200px\"></div><p>Last finding.</p></body></html>",
+        )
+        .with_viewport(480, 240);
+    let mut session = engine.spawn(&request).expect("livery lane spawns");
+    let _ = session.frame(480, 240);
+
+    let capabilities = session.document_capabilities();
+    assert_eq!(
+        capabilities.find_in_page,
+        DocumentCapabilityStatus::Supported
+    );
+    assert_eq!(capabilities.page_zoom, DocumentCapabilityStatus::Supported);
+    assert!(matches!(
+        capabilities.page_capture,
+        DocumentCapabilityStatus::Unsupported { .. }
+    ));
+    assert!(matches!(
+        capabilities.navigation,
+        DocumentCapabilityStatus::Partial { .. }
+    ));
+
+    let state = session
+        .document_find(&DocumentFindQuery::new("finding"))
+        .expect("livery supplies retained find");
+    assert_eq!(state.matches.len(), 3);
+    assert_eq!(state.count, 3);
+    assert_eq!(state.current, Some(0));
+    assert_eq!(
+        state.current_match().and_then(|item| item.role.as_deref()),
+        Some("heading")
+    );
+    assert_eq!(
+        state.current_match().map(|item| item.label.as_str()),
+        Some("Finding heading")
+    );
+
+    let state = session
+        .document_find_step(DocumentFindDirection::Previous)
+        .expect("previous wraps");
+    assert_eq!(state.current, Some(2));
+    assert_eq!(
+        state.current_match().map(|item| item.label.as_str()),
+        Some("Last finding.")
+    );
+    let concrete = session
+        .as_any_ref()
+        .downcast_ref::<LiveryDocumentSession>()
+        .expect("livery session remains concrete");
+    assert!(
+        concrete.document().scroll().1 > 0.0,
+        "wrapped match is revealed"
+    );
+    assert!(concrete.document().text_selection().is_some());
+
+    let state = session
+        .document_find_step(DocumentFindDirection::Next)
+        .expect("next wraps");
+    assert_eq!(state.current, Some(0));
+
+    let changed = session
+        .document_find(&DocumentFindQuery::new("LAST"))
+        .expect("query replacement recomputes the model");
+    assert_eq!(changed.matches.len(), 1);
+    assert_eq!(changed.current, Some(0));
+    assert_eq!(changed.matches[0].role.as_deref(), Some("paragraph"));
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_clip_retains_the_source_response() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let body = "<html><head><title>The Page</title></head><body><main>\
+                <h1>Heading</h1><p>A useful finding.</p></main></body></html>";
+    let request = SessionSpawnRequest::new("https://example.test/report")
+        .with_body(body)
+        .with_content_type("text/html; charset=utf-8");
+    let session = engine.spawn(&request).expect("livery lane spawns");
+    let clip = session.clip().expect("the livery lane can supply a clip");
+
+    assert_eq!(clip.artifacts.len(), 1);
+    assert_eq!(
+        clip.artifacts[0].role,
+        DocumentClipArtifactRole::SourceResponse
+    );
+    assert_eq!(clip.artifacts[0].media_type, "text/html; charset=utf-8");
+    assert_eq!(
+        clip.artifacts[0].canonical_uri,
+        "https://example.test/report"
+    );
+    assert_eq!(clip.artifacts[0].bytes, body.as_bytes());
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_pointer_selection_scopes_clip_and_selector() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/report")
+        .with_body(
+            "<html><head><title>The Page</title><style>\
+             html, body, p { margin: 0; padding: 0; }\
+             </style></head><body><p>before \
+             <a href=\"/chosen\">selected link</a> after \
+             <a href=\"/outside\">outside</a></p></body></html>",
+        )
+        .with_viewport(640, 200);
+    let mut session = engine.spawn(&request).expect("spawns");
+    let unselected = session.frame(640, 200);
+    let unselected_rects = unselected
+        .ops
+        .iter()
+        .filter(|op| matches!(op, netrender::SceneOp::Rect(_)))
+        .count();
+    let target = session
+        .text_target("selected link")
+        .expect("Livery source ranges resolve to pointer endpoints");
+
+    assert_eq!(
+        session.pointer_down(target.anchor[0], target.anchor[1]),
+        SessionClick::Handled
+    );
+    assert!(
+        session.pointer_move(target.focus[0], target.focus[1]),
+        "the range extends through ordinary pointer input"
+    );
+    assert_eq!(
+        session.pointer_up(target.focus[0], target.focus[1]),
+        SessionClick::Handled
+    );
+
+    let selected = session.frame(640, 200);
+    let selected_rects = selected
+        .ops
+        .iter()
+        .filter(|op| matches!(op, netrender::SceneOp::Rect(_)))
+        .count();
+    assert!(
+        selected_rects > unselected_rects,
+        "the retained Livery range paints selection geometry"
+    );
+
+    let clip = session.clip().expect("selection supplies a clip");
+    assert_eq!(clip.source_url, "https://example.test/report");
+    assert_eq!(clip.text, "selected link");
+    assert_eq!(clip.links, vec!["/chosen"]);
+    let selector: serde_json::Value =
+        serde_json::from_str(clip.selector.as_deref().expect("range selector"))
+            .expect("selector is typed JSON");
+    assert_eq!(selector["type"], "dom-range");
+    assert_eq!(selector["version"], 1);
+    assert_eq!(selector["quote"], "selected link");
+    assert!(selector["anchor"]["path"].is_array());
+    assert!(selector["focus"]["path"].is_array());
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_routes_scroll_focus_and_links() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r##"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                .link, .target { display: block; width: 100px; height: 20px; }
+                .spacer { height: 500px; }
+            </style></head><body>
+                <a class="link" href="#target">top</a>
+                <div class="spacer"></div>
+                <div id="target" class="target">target</div>
+            </body></html>"##,
+        )
+        .with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("spawns");
+    let _scene = session.frame(320, 240);
+
+    assert!(session.content_height(320, 240) > 240);
+    let link = session.links().into_iter().next().expect("retained link");
+    let click = session.click_at(link.rect[0] + 5.0, link.rect[1] + 5.0);
+    assert_eq!(click, SessionClick::Handled);
+    assert!(session.scroll_for_key(SessionScrollKey::Home));
+    assert!(session.scroll_by(0.0, 100.0));
+    assert!(session.scroll_for_key(SessionScrollKey::Home));
+    assert!(session.scroll_at(10.0, 10.0, 0.0, 100.0));
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_replaces_accessible_native_text_values() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("fixtures/form/index.html")
+        .with_body(
+            r#"<html><body><form action="result.html" method="get">
+                <input id="query" name="query" type=" EMAIL " value="cedar">
+                <textarea id="note" name="note">old note</textarea>
+            </form></body></html>"#,
+        )
+        .with_viewport(400, 240);
+    let mut boxed = engine.spawn(&request).expect("form session spawns");
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+    let query = livery_node_with_id(session, "query");
+    let note = livery_node_with_id(session, "note");
+    let query_id = session.document().dom().opaque_id(query);
+    let note_id = session.document().dom().opaque_id(note);
+
+    assert!(session.replace_accessible_text_value(query_id, "birch"));
+    assert_eq!(session.attribute(query, "value"), Some("birch"));
+    assert_eq!(
+        session.editor.as_ref().map(|editor| {
+            (
+                editor.node,
+                editor.kind,
+                editor.value.as_str(),
+                editor.caret,
+            )
+        }),
+        Some((query, EditableKind::Input, "birch", "birch".len()))
+    );
+    assert_eq!(
+        session.form_submission("fallback.html").fields,
+        [
+            ("query".to_owned(), "birch".to_owned()),
+            ("note".to_owned(), "old note".to_owned()),
+        ]
+    );
+
+    assert!(session.replace_accessible_text_value(note_id, "new note"));
+    assert_eq!(session.text_content(note), "new note");
+    assert_eq!(
+        session.editor.as_ref().map(|editor| {
+            (
+                editor.node,
+                editor.kind,
+                editor.value.as_str(),
+                editor.caret,
+            )
+        }),
+        Some((note, EditableKind::Textarea, "new note", "new note".len()))
+    );
+    let submission = session.form_submission("fallback.html");
+    assert_eq!(submission.action, "result.html");
+    assert_eq!(submission.method, SessionFormMethod::Get);
+    assert_eq!(
+        submission.fields,
+        [
+            ("query".to_owned(), "birch".to_owned()),
+            ("note".to_owned(), "new note".to_owned()),
+        ]
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_rejects_inaccessible_native_text_value_replacements_and_text_edits() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("fixtures/form/index.html")
+        .with_body(
+            r#"<html><body><form action="result.html">
+                <input id="disabled" disabled value="locked">
+                <textarea id="readonly" readonly>fixed</textarea>
+                <input id="aria-disabled" aria-disabled=" TRUE " value="aria locked">
+                <textarea id="aria-readonly" aria-readonly="true">aria fixed</textarea>
+                <input id="checkbox" type="checkbox" value="on">
+                <input id="password" type="password" value="secret">
+                <button id="disabled-submit" disabled tabindex="0" type="submit">send</button>
+            </form></body></html>"#,
+        )
+        .with_viewport(400, 240);
+    let mut boxed = engine.spawn(&request).expect("control session spawns");
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+    let disabled = livery_node_with_id(session, "disabled");
+    let readonly = livery_node_with_id(session, "readonly");
+    let aria_disabled = livery_node_with_id(session, "aria-disabled");
+    let aria_readonly = livery_node_with_id(session, "aria-readonly");
+    let checkbox = livery_node_with_id(session, "checkbox");
+    let password = livery_node_with_id(session, "password");
+    let disabled_submit = livery_node_with_id(session, "disabled-submit");
+    let disabled_id = session.document().dom().opaque_id(disabled);
+    let readonly_id = session.document().dom().opaque_id(readonly);
+    let aria_disabled_id = session.document().dom().opaque_id(aria_disabled);
+    let aria_readonly_id = session.document().dom().opaque_id(aria_readonly);
+    let checkbox_id = session.document().dom().opaque_id(checkbox);
+    let password_id = session.document().dom().opaque_id(password);
+
+    assert!(!session.replace_accessible_text_value(disabled_id, "changed"));
+    assert!(!session.replace_accessible_text_value(readonly_id, "changed"));
+    assert!(!session.replace_accessible_text_value(aria_disabled_id, "changed"));
+    assert!(!session.replace_accessible_text_value(aria_readonly_id, "changed"));
+    assert!(!session.replace_accessible_text_value(checkbox_id, "changed"));
+    assert!(!session.replace_accessible_text_value(password_id, "changed"));
+    assert!(
+        !session.replace_accessible_text_value(u64::MAX, "changed"),
+        "malformed or foreign local IDs are inert"
+    );
+    assert_eq!(session.attribute(disabled, "value"), Some("locked"));
+    assert_eq!(session.text_content(readonly), "fixed");
+    assert_eq!(
+        session.attribute(aria_disabled, "value"),
+        Some("aria locked")
+    );
+    assert_eq!(session.text_content(aria_readonly), "aria fixed");
+    assert_eq!(session.attribute(checkbox, "value"), Some("on"));
+    assert_eq!(session.attribute(password, "value"), Some("secret"));
+    assert!(
+        session.editor.is_none(),
+        "rejected controls do not take edit focus"
+    );
+
+    let _scene = session.frame(400, 240);
+    for node in [disabled, readonly, aria_disabled, aria_readonly] {
+        let [x, y, width, height] = session
+            .document()
+            .fragment_rect(node)
+            .expect("native control has retained geometry");
+        let _ = session.click_at(x + width * 0.5, y + height * 0.5);
+        assert!(
+            !session.text_input("changed"),
+            "disabled and readonly controls reject ordinary text input"
+        );
+        assert_eq!(
+            session.key_input(
+                SessionKey::Enter,
+                SessionButtonState::Pressed,
+                SessionModifiers::default(),
+                false,
+            ),
+            SessionEffect::Ignored,
+            "disabled and readonly controls do not retain a form submit target"
+        );
+    }
+    assert_eq!(session.attribute(disabled, "value"), Some("locked"));
+    assert_eq!(session.text_content(readonly), "fixed");
+    assert_eq!(
+        session.attribute(aria_disabled, "value"),
+        Some("aria locked")
+    );
+    assert_eq!(session.text_content(aria_readonly), "aria fixed");
+    let [x, y, width, height] = session
+        .document()
+        .fragment_rect(disabled_submit)
+        .expect("disabled submit has retained geometry");
+    assert!(
+        !matches!(
+            session.click_at(x + width * 0.5, y + height * 0.5),
+            SessionClick::Submit(_)
+        ),
+        "a disabled submit control is inert under physical click"
+    );
+    assert_eq!(
+        session.key_input(
+            SessionKey::Enter,
+            SessionButtonState::Pressed,
+            SessionModifiers::default(),
+            false,
+        ),
+        SessionEffect::Ignored,
+        "a disabled submit control cannot retain an Enter submit target"
+    );
+    let mut focusable = Vec::new();
+    session.collect_focusable(session.document().dom().document(), &mut focusable);
+    assert!(
+        !focusable.contains(&disabled_submit),
+        "a disabled tabindex submit control stays out of sequential focus"
+    );
+    session.focused_node = None;
+    session.active_form = None;
+    assert!(session.focus_move(SessionFocusDirection::Forward));
+    assert_ne!(session.focused_node, Some(disabled_submit));
+    assert_eq!(
+        session.key_input(
+            SessionKey::Enter,
+            SessionButtonState::Pressed,
+            SessionModifiers::default(),
+            false,
+        ),
+        SessionEffect::Ignored,
+        "Tab cannot leave a disabled submit control armed for Enter"
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_projects_accessible_pointer_targets_in_css_space() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                #scroller { width: 100px; height: 40px; overflow-y: auto; }
+                #before { height: 30px; }
+                #target, #label { display: block; width: 100px; height: 40px; }
+                #tail { height: 120px; }
+            </style></head><body><div id="scroller"><div id="before"></div>
+            <a id="target" href="/next"><span id="label">Open</span></a>
+            <div id="tail"></div></div></body></html>"#,
+        )
+        .with_viewport(320, 160);
+    let mut boxed = engine.spawn(&request).expect("Livery session spawns");
+    boxed
+        .set_page_zoom(1.25)
+        .expect("Livery accepts the focused page zoom");
+    let _scene = boxed.frame(320, 160);
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+    let scroller = livery_node_with_id(session, "scroller");
+    let target = livery_node_with_id(session, "target");
+    let target_id = session.document().dom().opaque_id(target);
+    assert!(session.doc.scroll_at(5.0, 5.0, 0.0, 45.0));
+
+    let css = session
+        .document()
+        .accessible_pointer_target(target)
+        .expect("partly visible link has a CSS-space target");
+    assert_eq!(
+        session.accessible_pointer_target(target_id),
+        Some(css),
+        "the concrete session preserves Livery's CSS coordinate ownership"
+    );
+    assert_eq!(
+        session.click_at(css.0 * 1.25, css.1 * 1.25),
+        SessionClick::Navigate("/next".to_owned()),
+        "the host-side CSS-to-presentation transform reaches normal Livery input"
+    );
+    assert!(
+        session
+            .document()
+            .element_scroll()
+            .get(&scroller)
+            .is_some_and(|&(_, y)| y > 0.0),
+        "activation leaves the nested retained scroll state in Livery"
+    );
+    assert_eq!(
+        session.accessible_pointer_target(u64::MAX),
+        None,
+        "foreign local ids are inert"
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_drag_selects_a_textarea_without_creating_a_page_clip() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("fixtures/form/index.html")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                textarea { display: block; width: 220px; min-height: 40px; }
+            </style></head><body><p>page selection</p><form>
+                <textarea id="note" name="note">cedar</textarea>
+            </form></body></html>"#,
+        )
+        .with_viewport(400, 160);
+    let mut boxed = engine.spawn(&request).expect("form session spawns");
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+    let initial = session.frame(400, 160);
+    let page = session
+        .text_target("page selection")
+        .expect("ordinary page text has retained pointer endpoints");
+    assert_eq!(
+        session.pointer_down(page.anchor[0], page.anchor[1]),
+        SessionClick::Handled
+    );
+    assert!(session.pointer_move(page.focus[0], page.focus[1]));
+    assert_eq!(
+        session.pointer_up(page.focus[0], page.focus[1]),
+        SessionClick::Handled
+    );
+    assert!(
+        session.clip().is_some(),
+        "the page selection supplies a clip"
+    );
+    let target = session
+        .text_target("cedar")
+        .expect("the textarea text has retained pointer endpoints");
+
+    assert_eq!(
+        session.pointer_down(target.focus[0], target.focus[1]),
+        SessionClick::Handled
+    );
+    assert!(session.pointer_move(target.anchor[0], target.anchor[1]));
+    assert_eq!(session.pointer_up(390.0, 150.0), SessionClick::Handled);
+    let selection = session
+        .editor
+        .as_ref()
+        .and_then(|editor| editor.selection)
+        .expect("the reverse drag forms a directed editor-local range");
+    assert!(selection.anchor > selection.focus);
+    assert!(session.document().text_selection().is_none());
+    assert!(
+        session.clip().is_none(),
+        "editor selection never becomes a page clip"
+    );
+    let selected = session.frame(400, 160);
+    assert!(
+        selected
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+            .count()
+            > initial
+                .ops
+                .iter()
+                .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+                .count(),
+        "the local range produces retained selection overlay geometry"
+    );
+
+    assert!(session.ime_input(SessionIme::Commit("oak".to_owned())));
+    let note = livery_node_with_id(session, "note");
+    assert_eq!(session.text_content(note), "oak");
+    assert_eq!(
+        session.form_submission("fallback.html").fields,
+        [("note".to_owned(), "oak".to_owned())]
+    );
+    assert!(
+        session
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.selection.is_none() && editor.caret == 3)
+    );
+    assert!(
+        matches!(
+            session.pointer_down(target.anchor[0], target.anchor[1]),
+            SessionClick::Handled | SessionClick::Miss
+        ),
+        "a stale pre-mutation text point is inert rather than querying dead text"
+    );
+    assert!(session.document().text_selection().is_none());
+    assert!(session.clip().is_none());
+    assert!(matches!(
+        session.pointer_up(target.anchor[0], target.anchor[1]),
+        SessionClick::Handled | SessionClick::Miss
+    ));
+    let _scene = session.frame(400, 160);
+    let caret_target = session
+        .text_target("oak")
+        .expect("the replacement keeps retained pointer endpoints");
+    assert_eq!(
+        session.pointer_down(caret_target.anchor[0], caret_target.anchor[1]),
+        SessionClick::Handled
+    );
+    assert_eq!(
+        session.pointer_up(caret_target.anchor[0], caret_target.anchor[1]),
+        SessionClick::Handled
+    );
+    assert!(
+        session
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.selection.is_none() && editor.caret == 0),
+        "a collapsed editor gesture preserves its local caret"
+    );
+
+    let full = session
+        .text_target("oak")
+        .expect("the replacement keeps retained pointer endpoints");
+    assert_eq!(
+        session.pointer_down(full.focus[0], full.focus[1]),
+        SessionClick::Handled
+    );
+    assert!(session.pointer_move(full.anchor[0], full.anchor[1]));
+    assert_eq!(
+        session.pointer_up(full.anchor[0], full.anchor[1]),
+        SessionClick::Handled
+    );
+    assert!(session.delete_backward());
+    assert_eq!(session.text_content(note), "");
+    let empty = session.frame(400, 160);
+    let empty_rects = empty
+        .ops
+        .iter()
+        .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+        .count();
+    session.focus_input(false);
+    let unfocused = session.frame(400, 160);
+    assert!(
+        empty_rects
+            > unfocused
+                .ops
+                .iter()
+                .filter(|operation| matches!(operation, netrender::SceneOp::Rect(_)))
+                .count(),
+        "an empty focused textarea retains a caret overlay"
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_edits_and_submits_a_retained_get_form() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("fixtures/form/index.html")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                textarea, button { display: block; width: 220px; min-height: 40px; margin: 8px; }
+            </style></head><body><form action="result.html" method="get">
+                <textarea id="note" name="note">cedar</textarea>
+                <button id="submit" type="submit">send</button>
+            </form></body></html>"#,
+        )
+        .with_viewport(400, 240);
+    let mut session = engine.spawn(&request).expect("form session spawns");
+    let initial = session.frame(400, 240);
+    let initial_glyphs = initial
+        .ops
+        .iter()
+        .filter_map(|operation| match operation {
+            netrender::SceneOp::GlyphRun(run) => Some(run.glyphs.len()),
+            _ => None,
+        })
+        .sum::<usize>();
+    let target = session
+        .text_target("cedar")
+        .expect("the textarea value has a retained text target");
+    let point = (target.anchor[0] + 2.0, target.anchor[1]);
+    let pointer = |state| inker::SessionInput::PointerButton {
+        x: point.0,
+        y: point.1,
+        button: inker::SessionPointerButton::Primary,
+        state,
+        modifiers: SessionModifiers::default(),
+    };
+    assert!(
+        session
+            .input(pointer(SessionButtonState::Pressed))
+            .effect
+            .is_handled()
+    );
+    let released = session.input(pointer(SessionButtonState::Released));
+    assert!(released.editable);
+    assert_eq!(released.cursor, Some(SessionCursor::Text));
+
+    let edited = session.input(inker::SessionInput::Text(" and ash".to_owned()));
+    assert_eq!(edited.effect, SessionEffect::Handled);
+    let edited_scene = session.frame(400, 240);
+    let edited_glyphs = edited_scene
+        .ops
+        .iter()
+        .filter_map(|operation| match operation {
+            netrender::SceneOp::GlyphRun(run) => Some(run.glyphs.len()),
+            _ => None,
+        })
+        .sum::<usize>();
+    assert!(
+        edited_glyphs > initial_glyphs,
+        "the textarea edit reaches paint"
+    );
+    assert!(
+        session
+            .inspect()
+            .expect("form remains inspectable")
+            .outline
+            .iter()
+            .any(|entry| entry.role == "textbox" && entry.name == "cedar and ash")
+    );
+
+    let tabbed = session.input(inker::SessionInput::Key {
+        key: SessionKey::Tab,
+        state: SessionButtonState::Pressed,
+        modifiers: SessionModifiers::default(),
+        repeat: false,
+    });
+    assert_eq!(tabbed.effect, SessionEffect::Handled);
+    assert!(!tabbed.editable, "Tab moves focus to the submit button");
+    let submitted = session.input(inker::SessionInput::Key {
+        key: SessionKey::Enter,
+        state: SessionButtonState::Pressed,
+        modifiers: SessionModifiers::default(),
+        repeat: false,
+    });
+    let SessionEffect::Submit(submission) = submitted.effect else {
+        panic!("Enter on the focused submit button must submit: {submitted:?}");
+    };
+    assert_eq!(submission.action, "result.html");
+    assert_eq!(submission.method, SessionFormMethod::Get);
+    assert_eq!(
+        submission.fields,
+        [("note".to_owned(), "cedar and ash".to_owned())]
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_fetches_remote_image_resources_through_the_host() {
+    let image = image::RgbaImage::from_pixel(2, 3, image::Rgba([0, 0, 255, 255]));
+    let mut bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode test PNG");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let engine = LiverySessionEngine::new(ImageFetch {
+        bytes,
+        requests: requests.clone(),
+    });
+    let request = SessionSpawnRequest::new("https://example.test/docs/index.html")
+        .with_body(
+            r#"<html><head><style>
+                .card { display: block; width: 80px; height: 40px;
+                        background-repeat: no-repeat;
+                        background-image: url(hero.png); }
+            </style></head><body><div class="card"></div></body></html>"#,
+        )
+        .with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("Livery lane spawns");
+
+    let scene = session.frame(320, 240);
+    assert!(
+        scene
+            .ops
+            .iter()
+            .any(|operation| matches!(operation, netrender::SceneOp::Image(_))),
+        "host-fetched image reaches the scene"
+    );
+    assert_eq!(
+        requests.lock().unwrap().as_slice(),
+        ["https://example.test/docs/hero.png"]
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_uses_linked_sheet_identity_and_sheet_relative_resources() {
+    let image = image::RgbaImage::from_pixel(2, 3, image::Rgba([0, 0, 255, 255]));
+    let mut image_bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut image_bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode test PNG");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let engine = LiverySessionEngine::new(LinkedResourceFetch {
+        image: image_bytes,
+        // The retained text system accepts host-provided bytes; rendering
+        // the fake fixture font is outside this source-attribution test.
+        font: b"not-a-real-font".to_vec(),
+        requests: requests.clone(),
+    });
+    let request = SessionSpawnRequest::new("https://example.test/docs/index.html")
+        .with_body(
+            r#"<html><head><link rel="stylesheet" href="styles/site.css" media="screen"></head>
+<body><div class="card">linked resource</div></body></html>"#,
+        )
+        .with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("linked Livery route spawns");
+    let _ = session.frame(320, 240);
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("session keeps its resource ledger");
+    assert_eq!(concrete.resources.stylesheets.len(), 1);
+    let sheet = &concrete.resources.stylesheets[0];
+    assert_eq!(sheet.media.as_deref(), Some("screen"));
+    assert_eq!(
+        sheet.source_url.as_deref(),
+        Some("https://example.test/docs/styles/site.css")
+    );
+    assert!(concrete.resources.resources.iter().any(|resource| {
+        resource.kind == ResourceKind::Image
+            && resource.resolved_url == "https://example.test/docs/styles/images/hero.png"
+    }));
+    assert!(concrete.resources.resources.iter().any(|resource| {
+        resource.kind == ResourceKind::Font
+            && resource.resolved_url == "https://example.test/docs/fonts/text.woff2"
+    }));
+    assert!(concrete.resource_diagnostics().is_empty());
+    assert_eq!(
+        requests.lock().unwrap().as_slice(),
+        [
+            "https://example.test/docs/styles/site.css",
+            "https://example.test/docs/styles/images/hero.png",
+            "https://example.test/docs/fonts/text.woff2",
+        ]
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_applies_imports_before_their_redirected_parent_sheet() {
+    let engine = LiverySessionEngine::new(ImportedSheetFetch);
+    let request = SessionSpawnRequest::new("https://example.test/docs/index.html")
+        .with_body(
+            r#"<html><head><link rel="stylesheet" href="styles/root.css"></head>
+<body><p class="card">cascade</p></body></html>"#,
+        )
+        .with_viewport(320, 240);
+    let mut session = engine
+        .spawn(&request)
+        .expect("imported Livery route spawns");
+    let scene = session.frame(320, 240);
+    assert!(
+        scene.ops.iter().any(|operation| {
+            matches!(operation, netrender::SceneOp::GlyphRun(run) if run.color == [1.0, 0.0, 0.0, 1.0])
+        }),
+        "the parent sheet follows the imported sheet in the author cascade"
+    );
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("session keeps its resource ledger");
+    assert!(concrete.resource_diagnostics().is_empty());
+    assert_eq!(concrete.resources.stylesheets.len(), 2);
+    assert_eq!(
+        concrete.resources.stylesheets[0].owner,
+        StylesheetOwner::Imported
+    );
+    assert_eq!(
+        concrete.resources.stylesheets[1].source_url.as_deref(),
+        Some("https://cdn.example.test/styles/root.css")
+    );
+    assert_eq!(
+        concrete.resources.stylesheets[1].requested_url.as_deref(),
+        Some("https://example.test/docs/styles/root.css")
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_applies_host_selected_import_limits() {
+    let engine =
+        LiverySessionEngine::new(ImportedSheetFetch).with_resource_limits(ResourceLimits {
+            max_import_depth: 0,
+            max_stylesheet_bytes: 2 * 1024 * 1024,
+        });
+    let request = SessionSpawnRequest::new("https://example.test/docs/index.html").with_body(
+        r#"<html><head><link rel="stylesheet" href="styles/root.css"></head>
+<body><p class="card">bounded</p></body></html>"#,
+    );
+    let session = engine.spawn(&request).expect("bounded Livery route spawns");
+    let concrete = session
+        .as_any_ref()
+        .downcast_ref::<LiveryDocumentSession>()
+        .expect("session keeps its resource ledger");
+    assert_eq!(concrete.resource_set().stylesheets.len(), 1);
+    assert!(matches!(
+        concrete.resource_diagnostics(),
+        [genet_document_resources::ResourceDiagnostic::ImportRuleDepthLimit { max_depth: 0, .. }]
+    ));
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_session_resolves_links_against_a_redirected_document_identity() {
+    let engine = LiverySessionEngine::new(RedirectedDocumentFetch);
+    let request = SessionSpawnRequest::new("https://example.test/start").with_viewport(320, 240);
+    let mut session = engine.spawn(&request).expect("redirected document spawns");
+    let scene = session.frame(320, 240);
+    assert!(
+        scene.ops.iter().any(|operation| {
+            matches!(operation, netrender::SceneOp::GlyphRun(run) if run.color == [0.0, 128.0 / 255.0, 0.0, 1.0])
+        }),
+        "the final document identity supplies the linked stylesheet base"
+    );
+    let clip = session.clip().expect("redirected document supplies a clip");
+    assert_eq!(
+        clip.artifacts[0].canonical_uri,
+        "https://cdn.example.test/final/index.html"
+    );
+    assert_eq!(clip.artifacts[0].media_type, "text/html");
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("session keeps its resource ledger");
+    assert_eq!(
+        concrete.resources.document_url.as_deref(),
+        Some("https://cdn.example.test/final/index.html")
+    );
+    assert_eq!(
+        concrete.resources.stylesheets[0].source_url.as_deref(),
+        Some("https://cdn.example.test/final/site.css")
+    );
+}

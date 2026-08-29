@@ -1,7 +1,7 @@
 # Orchestrator decomposition plan
 
-**Status:** in progress (2026-08-28). Phase 1 (Pelt `workspace_viewer.rs`)
-implemented and verified; Phases 2–7 planned, not started.
+**Status:** in progress (2026-08-29). Phases 1 (Pelt `workspace_viewer.rs`)
+and 2 (`genet-documents/engines.rs`) landed; Phases 3–7 planned.
 
 genet is healthy but lumpy. The architecture has real seams, yet several active
 orchestrators have accumulated receipts, policy and mechanics in one file. This
@@ -279,3 +279,27 @@ The split was performed by a brace-accurate extractor rather than by hand; a
 line-multiset comparison across all eight files showed the only content
 difference to be `mod tests {` becoming `mod tests;`, with every other new line
 a module doc, an `impl WorkspaceApp {` wrapper, a `use`, or a `mod` declaration.
+
+### 2026-08-29 — Phase 2 landed
+
+`engines.rs` **3,829 → 73 lines**: the parent keeps the shared capability
+helper and the module ladder; `engines/livery.rs` (1,583 with its editable
+types), `engines/clip.rs` (the ClipRange/report/semantic-clip family Livery
+and Scripted share), `engines/scripted.rs` (245, taking `scripted_scroll_key`
+home), `engines/smolweb.rs` (166), and `engines/tests.rs` (1,640). Whole-module
+feature gates replace thirty-odd per-item gates, and each child carries its own
+imports.
+
+Verified: every lane compiles with only its own feature, zero errors; the
+narrow-feature warnings that motivated the split went **3/11/15 → 0/0/0**
+(one pre-existing stray remains in `net_fetch.rs` under smolweb-only, outside
+this file); the test set is unchanged name for name at 46 passing plus the two
+livery native-editing failures that already fail on `origin/main` (owned by
+the in-flight genet-livery work); pelt-desktop and pelt-core suites hold at
+their Phase 1 counts.
+
+The Pelt findings repeated on schedule: tests moving from child to sibling of
+the code they inspect need the touched internals scoped (`pub(crate)` on five
+session fields, four methods, and the editable types), and a helper only its
+own module uses (`dom_path`) went back to private instead of riding the
+re-export.
