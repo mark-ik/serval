@@ -1,8 +1,7 @@
 # Orchestrator decomposition plan
 
-**Status:** in progress (2026-08-29). Phases 1 (Pelt `workspace_viewer.rs`),
-2 (`genet-documents/engines.rs`), 3 (`genet-livery/document.rs`) and 4
-(`genet-livery/layout.rs`) landed; Phases 5–7 planned.
+**Status:** in progress (2026-08-29). Phases 1–5 landed; Phases 6 and 7
+planned.
 
 genet is healthy but lumpy. The architecture has real seams, yet several active
 orchestrators have accumulated receipts, policy and mechanics in one file. This
@@ -369,3 +368,28 @@ Three findings this file added to the ledger:
   `pub use` beside the glob, or every external call site breaks.
 - **Trait-impl methods take no visibility qualifier.** Scoping inherent
   methods is right; doing it inside `impl Trait for T` is `E0449`.
+
+### 2026-08-29 — Phase 5 landed
+
+`genet-wpt/src/main.rs` **4,943 → 1,013 lines**: `reftest.rs` (873: reference
+resolution, fuzzy policy, image comparison, the table ledger),
+`expectations.rs` (780: recorded and actual results, subtest normalisation,
+the compare/check/write cycle), `net.rs` (686) and `tests.rs` (595) lifted out
+of their existing inline `mod` blocks, `test262_cmd.rs` (514: the command lane
+over the runner core), `args.rs` (262) and `testharness.rs` (245). The parent
+keeps `main`, `real_main`, the command dispatch, test classification and
+collection.
+
+Done-condition met twice over: `genet-wpt run css/css-flexbox` gives **1321
+passed, 0 failed, 0 errored, 37 skipped of 1358** and `run css/CSS2/floats`
+gives **144 of 144**, each identical to the same run on `origin/main` in this
+environment. The crate's own suite is 56 passed, 3 ignored, 0 failed.
+
+**A near-miss worth the ledger: check for an existing file before naming a
+module.** The crate already had `test262.rs` (the runner core: frontmatter
+parsing and script assembly) alongside `harness.rs`, `manifest.rs`,
+`render.rs` and `conformance.rs`. Extracting the test262 *command* lane to
+that name silently overwrote it; `git status` showed it as modified rather
+than added, which is how it was caught. The command lane is `test262_cmd.rs`.
+Phase 4's shadowing rule generalises: a new seam module must collide with
+neither an existing item name nor an existing file.
