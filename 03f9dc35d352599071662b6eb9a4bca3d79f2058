@@ -1,0 +1,1 @@
+Message repair: the sentence beginning "Relative paths that moved" should read "pub(super) meant \ from values/property.rs". The word was lost to shell backtick substitution when the message was written; the code and its comments are unaffected.
