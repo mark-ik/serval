@@ -1,7 +1,6 @@
 # Orchestrator decomposition plan
 
-**Status:** in progress (2026-08-29). Phases 1–5 landed; Phases 6 and 7
-planned.
+**Status:** in progress (2026-08-29). Phases 1–6 landed; Phase 7 planned.
 
 genet is healthy but lumpy. The architecture has real seams, yet several active
 orchestrators have accumulated receipts, policy and mechanics in one file. This
@@ -393,3 +392,31 @@ that name silently overwrote it; `git status` showed it as modified rather
 than added, which is how it was caught. The command lane is `test262_cmd.rs`.
 Phase 4's shadowing rule generalises: a new seam module must collide with
 neither an existing item name nor an existing file.
+
+### 2026-08-29 — Phase 6 landed
+
+`livery/values/property.rs` **4,168 → 23 lines**, a pure family split with no
+test module involved: `layout.rs` (975: sizing, flex and grid vocabulary,
+aspect ratio, radii, gaps, ordering, padding, decoration lines, border width,
+stacking level), `animation.rs` (794: durations, delays, names, the transition
+property list, timing functions), `typography.rs` (788), `backgrounds.rs`
+(641), `transforms.rs` (599: opacity, rotate, scale, the transform list and
+its functions, shadows), and `containment.rs` (391).
+
+The families interleave in the original file, so three of them are gathered
+from several ranges rather than one. A coverage assertion in the split script
+proved **every non-blank line is claimed exactly once**, which is the property
+that makes a scattered gather safe.
+
+The done-condition holds strictly: the only paths that changed are
+`property.rs` itself and its new directory. `git status` shows no other file
+touched, and genet-livery, buckram and genet-documents compile with zero
+errors and no edits, because the parent re-exports every family with
+`pub use`. Livery's own suites are green and buckram holds at 257.
+
+One wrinkle worth naming: **a relative path moves with the code.** The moved
+code carried `super::calc`, `super::LengthUnit`, `super::Color` and
+`pub(super)` — all of which meant `values` from `values/property.rs` but mean
+`values::property` one level deeper. They are now spelled `crate::values::…`
+and `pub(in crate::values)`, which say what they meant and no longer depend on
+nesting depth.
