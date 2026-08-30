@@ -154,9 +154,6 @@ mod tests {
         fn apply_settings(&mut self, _: &SurfaceSettings) -> Result<(), SurfaceError> {
             Ok(())
         }
-        fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-            Err(SurfaceError::Unsupported("stub".into()))
-        }
     }
 
     struct StubFactory;

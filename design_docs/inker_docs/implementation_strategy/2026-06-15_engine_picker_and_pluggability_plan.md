@@ -9,6 +9,10 @@ local-file sniff), Phase 2b (per-host overrides + per-session toggle), Phase 5
 (verso flip), and the register-viewer harvest. *(The §2 "Findings" below are the
 point-in-time pre-Phase-0 state; the "gap" it names is now closed, see the Progress
 log.)*
+**Page capture P1 (2026-08-30): landed at the Inker boundary.** The shared
+contract now has host-minted request ids, viewport-only requests, typed PNG
+outputs, explicit unknown CSS facts, and a correlated hosted completion event.
+No engine declares capture support yet; adapters remain honestly unsupported.
 **Scope**: The user-facing engine **picker** (an inker affordance), the
 **pluggability / extension model** that makes engines build-, session-, and
 activation-managable, the no-handler fallback, local-file ingestion, and the
@@ -173,6 +177,19 @@ WebView flips the node from genet to a live WebView2.
 - 2026-06-15: meerkat's content routing is **two-altitude**, and that is inherent, not accidental: at nav time the host has the url (scheme + pin) but not the content-type, which only the off-thread actor learns post-fetch. The policy is built for this (scheme/pin first pass, content-type second pass), so Phase 0 splits cleanly into 0a (UI-thread tier + pin) and 0b (actor content-type), both consulting one `route_policy`. The `is_available` closure must report *true* for the lanes meerkat handles without a document-registry entry (genet html, mere:// internal, external-protocol, linked-data) or an http node would wrongly fall through to the OS hand-off.
 
 ## Progress
+
+- 2026-08-30: **Page capture P1 contract landed.** Removed the old synchronous
+  `SurfaceProducer::capture_snapshot_png` seam without a compatibility shim.
+  Hosted surfaces now accept `PageCaptureRequest { id, scope: Viewport }` and
+  complete through the ordered `WebSurfaceEvent::PageCaptureCompleted { id,
+  result }` stream; errors retain the same id and the first concrete adapter
+  can use `SurfaceError::Busy` for its one-flight rule. Retained
+  `DocumentSession`s instead return the same `PageCaptureOutput` immediately,
+  defaulting to `SessionError::Unsupported`, rather than gaining a second event
+  queue. The output records only typed PNG bytes, physical output dimensions,
+  optional CSS scroll/viewport facts, and optional engine-reported applied
+  scale. Requested page scale and host provenance remain host-owned. No
+  existing engine capability was promoted.
 
 - 2026-06-15: scry-in-tile (single focused tile) shipped + verified (meerkat 0adca6e); multi-tile scry shipped + verified (06b6ac7) — two independent WebView2 panes on one shared `CompositionRoot`, per-pane input. This advances the verso charter's P4 (scrying tile as a live, interactive actor) but through the ad-hoc `compat_pins` path; Phase 0 folds it into routing.
 - 2026-06-15: Plan authored from a read of routing.rs, engine.rs, surface_engine.rs, scrying-engine, the verso charter, the engine-profile-boundary plan, the browser-multiplexer framing, and the modular-integration plan. Activation scope decided: global default + per-session override.

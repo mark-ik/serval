@@ -258,10 +258,6 @@ impl SurfaceProducer for FakeSurface {
     fn apply_settings(&mut self, _settings: &SurfaceSettings) -> Result<(), SurfaceError> {
         Ok(())
     }
-
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-        Ok(Vec::new())
-    }
 }
 
 struct TestClock;

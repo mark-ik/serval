@@ -163,7 +163,6 @@ pub trait WeldSurface {
     }
 
     fn apply_settings(&mut self, settings: &SurfaceSettings) -> Result<(), SurfaceError>;
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError>;
 }
 
 /// Adapts a `Box<dyn WeldSurface>` onto `inker::SurfaceProducer`.
@@ -235,10 +234,6 @@ impl SurfaceProducer for WeldProducer {
 
     fn apply_settings(&mut self, settings: &SurfaceSettings) -> Result<(), SurfaceError> {
         self.inner.apply_settings(settings)
-    }
-
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-        self.inner.capture_snapshot_png()
     }
 
     fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {

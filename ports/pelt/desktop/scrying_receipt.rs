@@ -182,10 +182,6 @@ impl SurfaceProducer for PeltScryingProducer {
         self.ensure()?.apply_settings(settings)
     }
 
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-        self.ensure()?.capture_snapshot_png()
-    }
-
     fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {
         Some(self)
     }

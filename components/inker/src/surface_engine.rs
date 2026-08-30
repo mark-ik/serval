@@ -21,7 +21,10 @@ use crate::routing::EngineRouteDecision;
 use crate::session_engine::{
     DocumentFindDirection, DocumentFindQuery, DocumentFindState, DocumentZoomState,
 };
-use crate::{A11yCapability, DocumentCapabilities};
+use crate::{
+    A11yCapability, DocumentCapabilities, PageCaptureOutput, PageCaptureRequest,
+    PageCaptureRequestId,
+};
 
 // ── User-agent requests ────────────────────────────────────────────────────
 
@@ -154,6 +157,7 @@ pub enum SurfaceError {
     NavigationFailed(String),
     InputFailed(String),
     FrameAcquisitionFailed(String),
+    Busy { operation: String },
     Unsupported(String),
 }
 
@@ -165,6 +169,7 @@ impl fmt::Display for SurfaceError {
             Self::NavigationFailed(reason) => write!(f, "navigation failed: {reason}"),
             Self::InputFailed(reason) => write!(f, "input failed: {reason}"),
             Self::FrameAcquisitionFailed(reason) => write!(f, "frame acquisition: {reason}"),
+            Self::Busy { operation } => write!(f, "busy: {operation}"),
             Self::Unsupported(reason) => write!(f, "unsupported: {reason}"),
         }
     }
@@ -735,6 +740,13 @@ pub enum WebSurfaceEvent {
     },
     /// Retained find state from an engine-managed page search.
     DocumentFindChanged(DocumentFindState),
+    /// Completion of a request accepted by [`WebSurface::request_page_capture`].
+    /// Errors retain the host-minted id so a host can settle the correct
+    /// provenance record.
+    PageCaptureCompleted {
+        id: PageCaptureRequestId,
+        result: Result<PageCaptureOutput, SurfaceError>,
+    },
     ConsoleMessage {
         level: String,
         text: String,
@@ -884,9 +896,6 @@ pub trait SurfaceProducer {
         ))
     }
 
-    // ── Snapshot ─────────────────────────────────────────────────────────────
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError>;
-
     // ── Optional web control plane ───────────────────────────────────────────
     fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {
         None
@@ -909,6 +918,17 @@ pub trait WebSurface: SurfaceProducer {
     /// The document-control subset of this hosted surface's capabilities.
     fn document_capabilities(&self) -> DocumentCapabilities {
         self.capabilities().document
+    }
+
+    /// Start a viewport capture. Completion is emitted in producer order as a
+    /// [`WebSurfaceEvent::PageCaptureCompleted`] carrying this request's id.
+    ///
+    /// An implementation limited to one capture in flight returns
+    /// [`SurfaceError::Busy`] before accepting another request.
+    fn request_page_capture(&mut self, _request: PageCaptureRequest) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "page capture is not wired for this web surface".into(),
+        ))
     }
 
     // ── Navigation ───────────────────────────────────────────────────────────
@@ -1047,6 +1067,7 @@ mod tests {
 
     use super::*;
     use crate::routing::{SurfaceContract, SurfaceContractMode, SurfaceTargetId};
+    use crate::{PageCaptureImageArtifact, PageCaptureScope, PageCaptureViewportFacts};
 
     struct StubProducer;
 
@@ -1077,9 +1098,6 @@ mod tests {
         }
         fn apply_settings(&mut self, _: &SurfaceSettings) -> Result<(), SurfaceError> {
             Ok(())
-        }
-        fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-            Err(SurfaceError::Unsupported("stub".into()))
         }
     }
 
@@ -1125,9 +1143,6 @@ mod tests {
         }
         fn apply_settings(&mut self, _: &SurfaceSettings) -> Result<(), SurfaceError> {
             Ok(())
-        }
-        fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-            Err(SurfaceError::Unsupported("stub".into()))
         }
         fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {
             Some(self)
@@ -1240,5 +1255,51 @@ mod tests {
             observed.push(event);
         }
         assert_eq!(observed, expected);
+    }
+
+    #[test]
+    fn web_surface_capture_defaults_to_unsupported() {
+        let mut surface = EventQueueSurface {
+            events: VecDeque::new(),
+        };
+        let request = PageCaptureRequest::viewport(PageCaptureRequestId::new(4));
+        assert!(matches!(
+            surface.request_page_capture(request),
+            Err(SurfaceError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn capture_completion_preserves_request_id_for_success_and_error() {
+        let id = PageCaptureRequestId::new(7);
+        let success = WebSurfaceEvent::PageCaptureCompleted {
+            id,
+            result: Ok(PageCaptureOutput {
+                scope: PageCaptureScope::Viewport,
+                image: PageCaptureImageArtifact::Png(vec![137, 80, 78, 71]),
+                viewport: PageCaptureViewportFacts::unknown_css(2, 2),
+                applied_page_scale: None,
+            }),
+        };
+        let failure = WebSurfaceEvent::PageCaptureCompleted {
+            id,
+            result: Err(SurfaceError::Busy {
+                operation: "page capture".into(),
+            }),
+        };
+
+        assert!(matches!(
+            success,
+            WebSurfaceEvent::PageCaptureCompleted {
+                id: actual,
+                result: Ok(PageCaptureOutput {
+                    scope: PageCaptureScope::Viewport,
+                    ..
+                })
+            } if actual == id
+        ));
+        assert!(
+            matches!(failure, WebSurfaceEvent::PageCaptureCompleted { id: actual, result: Err(SurfaceError::Busy { .. }) } if actual == id)
+        );
     }
 }

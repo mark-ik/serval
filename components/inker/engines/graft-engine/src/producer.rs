@@ -107,9 +107,9 @@ pub trait GraftSurface {
             page_zoom: WebFeatureStatus::Partial {
                 detail: "page zoom depends on the host GraftSurface implementation".into(),
             },
-            page_capture: WebFeatureStatus::Partial {
-                detail: "page capture depends on the host GraftSurface implementation".into(),
-            },
+            page_capture: WebFeatureStatus::unsupported(
+                "graft page capture is not wired to Inker's page-capture protocol",
+            ),
             navigation: WebFeatureStatus::Partial {
                 detail: "navigation controls depend on the host GraftSurface implementation".into(),
             },
@@ -147,7 +147,6 @@ pub trait GraftSurface {
     }
 
     fn apply_settings(&mut self, settings: &SurfaceSettings) -> Result<(), SurfaceError>;
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError>;
 }
 
 /// Adapts a `Box<dyn GraftSurface>` onto `inker::SurfaceProducer`.
@@ -220,10 +219,6 @@ impl SurfaceProducer for GraftProducer {
 
     fn apply_settings(&mut self, settings: &SurfaceSettings) -> Result<(), SurfaceError> {
         self.inner.apply_settings(settings)
-    }
-
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-        self.inner.capture_snapshot_png()
     }
 
     fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {

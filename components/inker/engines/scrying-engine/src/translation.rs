@@ -294,7 +294,6 @@ pub fn map_settings(s: &SurfaceSettings) -> WebSurfaceSettings {
 pub fn map_capabilities(caps: ScryingCapabilities) -> InkerWebSurfaceCapabilities {
     let transport_supported = capability_status(caps.imported_texture);
     let overlay_supported = capability_status(caps.native_child_overlay);
-    let snapshot_supported = capability_status(caps.cpu_snapshot);
     let basic_cookie_attrs = CookieAttributeCapabilities {
         same_site: WebFeatureStatus::Supported,
         partitioned: WebFeatureStatus::Partial {
@@ -358,7 +357,12 @@ pub fn map_capabilities(caps: ScryingCapabilities) -> InkerWebSurfaceCapabilitie
             page_zoom: WebFeatureStatus::Partial {
                 detail: "zoom settings are forwarded to the concrete system webview backend".into(),
             },
-            page_capture: snapshot_supported.clone(),
+            // P1 defines a correlated capture protocol. The legacy CPU
+            // snapshot capability cannot satisfy it until this adapter accepts
+            // requests and emits correlated completions.
+            page_capture: WebFeatureStatus::unsupported(
+                "scrying CPU snapshots are not wired to Inker's page-capture protocol",
+            ),
             navigation: WebFeatureStatus::Partial {
                 detail: "navigation controls are forwarded to the concrete system webview backend".into(),
             },

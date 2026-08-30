@@ -58,8 +58,10 @@ repatriated here from mere.
   per-session override, no-handler fallback, local-file ingestion, and the two
   content tiers as the two registries — glass/black-box, wasm/native.
   **Remaining**: Phase 4 (no-handler and local files), Phase 2b (per-host and
-  per-session), Phase 5 (the verso flip). Its progress log names meerkat, which
-  was deleted 2026-07-18; read those as the Turnstone/mere hosts.)
+  per-session), Phase 5 (the verso flip). **Page capture P1 landed 2026-08-30**:
+  Inker defines correlated viewport-only capture requests/results, but no
+  engine yet claims support. Its progress log names meerkat, which was deleted
+  2026-07-18; read those as the Turnstone/mere hosts.)
 
 ## nematic_docs/ — the smolweb engine and knot composition
 

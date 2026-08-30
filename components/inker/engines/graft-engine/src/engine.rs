@@ -151,9 +151,6 @@ mod tests {
         fn apply_settings(&mut self, _: &SurfaceSettings) -> Result<(), SurfaceError> {
             Ok(())
         }
-        fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-            Err(SurfaceError::Unsupported("stub".into()))
-        }
     }
 
     struct StubFactory;
@@ -210,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn default_graft_document_controls_are_host_dependent() {
+    fn graft_capture_stays_unsupported_until_the_protocol_is_wired() {
         let caps = StubSurface.web_capabilities().document;
         assert!(matches!(
             caps.find_in_page,
@@ -219,7 +216,7 @@ mod tests {
         assert!(matches!(caps.page_zoom, CapabilityStatus::Partial { .. }));
         assert!(matches!(
             caps.page_capture,
-            CapabilityStatus::Partial { .. }
+            CapabilityStatus::Unsupported { .. }
         ));
         assert!(matches!(caps.navigation, CapabilityStatus::Partial { .. }));
     }

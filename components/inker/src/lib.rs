@@ -39,6 +39,9 @@ pub mod document;
 /// Engine trait and registry.
 pub mod engine;
 
+/// Shared page-capture request/result vocabulary.
+pub mod page_capture;
+
 /// Session-engine traits and registry — the third engine kind: retained
 /// document sessions producing paint frames (the genet HTML lanes, smolweb
 /// native). Frame-type generic; this crate stays paint-free.
@@ -67,6 +70,10 @@ pub use document::{
     parse_eval, parse_include, resolve_transclusions,
 };
 pub use engine::{Engine, EngineError, EngineInput, EngineRegistry};
+pub use page_capture::{
+    CssExtent, CssPoint, PageCaptureImageArtifact, PageCaptureOutput, PageCaptureRequest,
+    PageCaptureRequestId, PageCaptureScope, PageCaptureViewportFacts,
+};
 pub use routing::{
     EngineRouteDecision, EngineRoutePolicy, EngineRouteRequest, EngineRouteRule, SurfaceContract,
     SurfaceContractMode, SurfaceTargetId, WorkspaceRouteId,

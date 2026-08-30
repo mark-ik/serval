@@ -26,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{A11yCapability, DocumentCapabilities};
+use crate::{A11yCapability, DocumentCapabilities, PageCaptureOutput, PageCaptureRequest};
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 
@@ -806,6 +806,18 @@ pub trait DocumentSession<F>: Any {
         ))
     }
 
+    /// Capture immediately from this retained session. Retained sessions have
+    /// no event queue solely for capture symmetry; a future implementation can
+    /// return the same output vocabulary directly.
+    fn capture_page(
+        &mut self,
+        _request: PageCaptureRequest,
+    ) -> Result<PageCaptureOutput, SessionError> {
+        Err(SessionError::Unsupported(
+            "page capture is not wired for this session".into(),
+        ))
+    }
+
     /// The link hit-table off the retained layout (no live-DOM query per
     /// click) — the mechanism all three lanes already share.
     fn links(&self) -> Vec<SessionLink>;
@@ -968,6 +980,7 @@ impl EngineKindIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PageCaptureRequestId;
 
     /// A frame type that just records what was rendered.
     type TextFrame = String;
@@ -1064,6 +1077,19 @@ mod tests {
         // Static-lane defaults: settled immediately, pump is a no-op.
         assert!(session.settled());
         session.pump(16.0);
+    }
+
+    #[test]
+    fn document_session_capture_defaults_to_unsupported() {
+        let mut session = EchoSession {
+            address: "https://example.test".into(),
+            scroll: 0.0,
+            hidden: false,
+        };
+        assert!(matches!(
+            session.capture_page(PageCaptureRequest::viewport(PageCaptureRequestId::new(9))),
+            Err(SessionError::Unsupported(_))
+        ));
     }
 
     #[test]

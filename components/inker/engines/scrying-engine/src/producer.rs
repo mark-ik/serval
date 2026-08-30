@@ -114,10 +114,6 @@ impl SurfaceProducer for ScryingProducer {
             .map_err(map_error)
     }
 
-    fn capture_snapshot_png(&mut self) -> Result<Vec<u8>, SurfaceError> {
-        self.inner.capture_snapshot_png().map_err(map_error)
-    }
-
     fn as_web_surface(&mut self) -> Option<&mut dyn WebSurface> {
         Some(self)
     }
