@@ -1,6 +1,7 @@
 # Orchestrator decomposition plan
 
-**Status:** in progress (2026-08-29). Phases 1–6 landed; Phase 7 planned.
+**Status:** complete (2026-08-29). All seven phases landed. Follow-ups are
+named at the foot of the Progress log rather than left implicit.
 
 genet is healthy but lumpy. The architecture has real seams, yet several active
 orchestrators have accumulated receipts, policy and mechanics in one file. This
@@ -420,3 +421,56 @@ code carried `super::calc`, `super::LengthUnit`, `super::Color` and
 `values::property` one level deeper. They are now spelled `crate::values::…`
 and `pub(in crate::values)`, which say what they meant and no longer depend on
 nesting depth.
+
+### 2026-08-29 — Phase 7 landed, and the plan is complete
+
+`buckram/taffy_adapter.rs` **7,014 → 1,223 lines**: `taffy_adapter/tests.rs`
+(3,582) and `taffy_adapter/run.rs` (2,219). The phase took its deferred half
+as well as the test move, because the run seam proved contiguous:
+`AlgorithmRun`, its per-run input structs, its 1,740-line impl, the intrinsic
+inline-size helpers, and all eight Taffy trait impls targeting it occupy one
+unbroken range. What stays is the published surface — `AlgorithmTree`, the
+algorithm vocabulary, and the size and available-space conversions.
+
+Both done-conditions hold: **8 `pub` items before and after**, and `git
+status` shows only the adapter and its new directory touched, with
+genet-livery and genet-documents compiling unedited. Buckram is 257 passed, 0
+failed on the first attempt; both Pelt suites green.
+
+## Outcome
+
+Seven files totalling 49,853 lines are now 12,216 in place, with the rest
+moved into modules along seams that already existed:
+
+| File | Before | After |
+|---|---:|---:|
+| `genet-livery/layout.rs` | 15,382 | 6,165 |
+| `pelt/workspace_viewer.rs` | 10,066 | 3,217 |
+| `buckram/taffy_adapter.rs` | 7,014 | 1,223 |
+| `genet-wpt/main.rs` | 4,943 | 1,013 |
+| `genet-livery/document.rs` | 4,451 | 502 |
+| `livery/values/property.rs` | 4,168 | 23 |
+| `genet-documents/engines.rs` | 3,829 | 73 |
+
+No behaviour changed. Every phase verified its test set unchanged name for
+name, and the receipt-bearing phases verified their receipts: sixteen headed
+Pelt receipts, the flexbox map at 1321/1358 and floats at 144/144, and
+narrow-feature warnings driven from 3/11/15 to zero.
+
+**Follow-ups this work names rather than leaves implicit:**
+
+- The `recovery/genet-primary-dirty-pre-reconcile-2026-08-28` branch edits
+  `document.rs` (151+/295−), `layout.rs` (31+/15−) and `taffy_adapter.rs`
+  (3+/1−) as they stood before Phases 3, 4 and 7. Its hunks now target code
+  that lives in child modules, and weave resolves entities within a file
+  rather than following one to another file, so that lane needs a manual
+  reconciliation pass.
+- Promoting Pelt's accessibility *types* into
+  `workspace_viewer/accessibility.rs` wants its own visibility pass; Phase 1
+  measured 150 private-field errors for it.
+- Separating `genet-livery/layout.rs`'s central transaction stays
+  deliberately undone. It needed the extracted helpers independently
+  receipted first, which Phase 4 has now made possible.
+- Margins, paddings, insets and flex-basis still flatten `calc()` at a zero
+  percentage basis. The width repair in `78f6bd3eafd` is the shape that fix
+  takes.
