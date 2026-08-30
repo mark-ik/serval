@@ -1,1 +1,7 @@
-Message repair: the sentence beginning "Relative paths that moved" should read "pub(super) meant \ from values/property.rs". The word was lost to shell backtick substitution when the message was written; the code and its comments are unaffected.
+Message repair: in the paragraph beginning "Relative paths that moved", the
+sentence should read "pub(super) meant values from values/property.rs but
+would mean values::property one level deeper". The word "values" (written
+in backticks) was lost to shell substitution when the message was composed.
+
+The code, its comments, and the plan doc are unaffected — only the commit
+message text dropped the word.
