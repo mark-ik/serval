@@ -2,8 +2,10 @@
 
 **Date**: 2026-08-31
 **Status (2026-08-31)**: W1 through W3 are implemented on coordinated Genet
-and Mere feature branches. Focused core and cross-repo receipts pass. W4
-remains gated on headed host and second-product receipts.
+and Mere feature branches. W4 now has the Graphshell authoring surface and a
+Woodshed open-lane consumer with a six-test harness receipt. It remains open
+for a composited native tearout receipt and the Graphshell wasm/browser
+environment receipt.
 
 ## Ruling
 
@@ -180,3 +182,31 @@ heterogeneous headed consumers.
   the source tile. It must not create a blank window or transfer custody until
   a second `SurfaceHost`/Frisket render loop can compose, resize, route input,
   and close the destination. This is not a headed visual tearout receipt.
+- 2026-08-31: Graphshell's authoring surface advanced after the initial
+  `ProjectionEditor` boundary. Mere commits
+  `7323c703bf3c989ce0fe8c240cd047a4bfbd2fcc` (headed editor surface),
+  `f01dd1914937e4cf5bbc8cc1a052e26922ba54fc` (authoring loop), and
+  `86eb4331f179862a4a5e8c02faea7f7b3af2e972` (keyboard guard) attach the
+  editor to Graphshell's web entry point while retaining draft, save-sink, and
+  endpoint authority in Graphshell. The earlier standalone cross-repo harness
+  remains the eight-test component receipt; these web commits are not a
+  browser-headed receipt. The `wasm32-unknown-unknown` build and a browser run
+  still need their environment/toolchain gate cleared and measured.
+- 2026-08-31: Woodshed is the second heterogeneous consumer at
+  `c2ed2c993ac04d41513daf5422bbe5cbc2871462` on
+  `codex/workbench-consumer-20260831`. Its `woodshed-views` host owns a
+  four-panel, stable-ID `ContentSource::Open` workspace over existing Practice,
+  Set, Related, and Settings surfaces; it translates the shared typed tearout
+  request into a Woodshed host effect and owns JSON snapshot/restore policy.
+  Its focused six-test harness passed: stable IDs/open lanes, activation,
+  tearout custody, in-memory snapshot restore, JSON round-trip, and malformed
+  snapshot rejection. This proves the non-browser/open-lane seam, not a
+  Woodshed headed workspace or persistence migration receipt.
+- 2026-08-31: Pelt's safe defer is committed in Genet as
+  `3dd502661a44051091a5aa2008e433630181308c` atop the custody API commit
+  `52b897ef34c8bd1307c15f2eb738296f89ae6d27`. Its focused custody test passes,
+  but the desktop livery check was only attempted before its uncached
+  Vello/wgpu graph was interrupted. W4 therefore still needs a real second
+  native composition path, deterministic headed acceptance/cancellation
+  receipt, Graphshell wasm build, and browser-headed authoring proof before
+  compatibility removal can be considered.
