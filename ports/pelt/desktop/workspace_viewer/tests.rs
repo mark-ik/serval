@@ -475,6 +475,48 @@ fn tabard_reader_preview_reuses_the_held_response_and_renders_its_palette() {
 }
 
 #[test]
+fn desktop_defers_tearout_until_it_can_compose_a_destination() {
+    let urls = vec!["about:blank".to_owned()];
+    let tree = tree_from_urls(&urls);
+    #[cfg(target_os = "windows")]
+    let registries = workspace_registries(None);
+    #[cfg(not(target_os = "windows"))]
+    let registries = workspace_registries();
+    let workspace = PeltWorkspace::try_routed(
+        tree,
+        registries,
+        |tile| {
+            let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                unreachable!("tearout fixture contains only documents");
+            };
+            Ok(PeltTileRequest::new(address, (960, 640)))
+        },
+        || Box::new(WorkspaceClock(Instant::now())),
+    )
+    .expect("tearout fixture opens its Pelt session");
+    let before = workspace.tree().clone();
+    let frisket = FrisketSurface::new(workspace.tree());
+    let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed);
+    #[cfg(target_os = "windows")]
+    let mut app = WorkspaceApp::new(config, workspace, frisket, None);
+    #[cfg(not(target_os = "windows"))]
+    let mut app = WorkspaceApp::new(config, workspace, frisket);
+
+    assert!(app.apply_tile_event(TileEvent::Dragged {
+        tile: TileId(1),
+        to: DropTarget::Outside,
+    }));
+    assert_eq!(app.workspace.tree(), &before);
+    assert!(app.workspace.controller(TileId(1)).is_some());
+    assert_eq!(
+        app.chrome_status,
+        ChromeStatus::Message(
+            "Tearout requested for tile 1; destination composition is not available yet".to_owned()
+        )
+    );
+}
+
+#[test]
 fn fallback_receipt_keeps_held_html_in_livery_without_scrying() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
