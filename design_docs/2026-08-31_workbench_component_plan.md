@@ -2,10 +2,10 @@
 
 **Date**: 2026-08-31
 **Status (2026-08-31)**: W1 through W3 are implemented on coordinated Genet
-and Mere feature branches. W4 now has the Graphshell authoring surface and a
-Woodshed open-lane consumer with a six-test harness receipt. It remains open
-for a composited native tearout receipt and the Graphshell wasm/browser
-environment receipt.
+and Mere feature branches. W4 now has Graphshell authoring at Mere
+`f0fd0886` and a durable Woodshed open-lane consumer with full view and host
+receipts. It remains open for a composited native Pelt tearout receipt and the
+Graphshell wasm/browser-headed environment receipt.
 
 ## Ruling
 
@@ -191,17 +191,30 @@ heterogeneous headed consumers.
   endpoint authority in Graphshell. The earlier standalone cross-repo harness
   remains the eight-test component receipt; these web commits are not a
   browser-headed receipt. The `wasm32-unknown-unknown` build and a browser run
-  still need their environment/toolchain gate cleared and measured.
-- 2026-08-31: Woodshed is the second heterogeneous consumer at
-  `c2ed2c993ac04d41513daf5422bbe5cbc2871462` on
-  `codex/workbench-consumer-20260831`. Its `woodshed-views` host owns a
-  four-panel, stable-ID `ContentSource::Open` workspace over existing Practice,
-  Set, Related, and Settings surfaces; it translates the shared typed tearout
-  request into a Woodshed host effect and owns JSON snapshot/restore policy.
-  Its focused six-test harness passed: stable IDs/open lanes, activation,
-  tearout custody, in-memory snapshot restore, JSON round-trip, and malformed
-  snapshot rejection. This proves the non-browser/open-lane seam, not a
-  Woodshed headed workspace or persistence migration receipt.
+  still need their environment/toolchain gate cleared and measured. The final
+  coordinated Mere head is `f0fd0886`; any host-side Graphshell check remains
+  a source/host check rather than headed browser evidence.
+- 2026-08-31: Woodshed's final second-consumer branch
+  `codex/workbench-consumer-20260831` is pushed at
+  `a220aab0f037105f52facd9f578674e8bef5e945`, atop the initial consumer
+  `c2ed2c993ac04d41513daf5422bbe5cbc2871462` and follow-up `7db4211`.
+  `woodshed-views` owns a four-panel stable-ID `ContentSource::Open` workspace
+  over existing Practice, Set, Related, and Settings surfaces. Its active
+  panel is host-global across split-local stacks; divider fractions are
+  validated; and its JSON workspace snapshot is embedded in the existing
+  `PersistedSession` with a safe fallback. Woodshed translates the shared
+  typed tearout request into a host effect and keeps product/persistence
+  authority local. The root Parley patch is present, with lock pins for
+  Workbench `d25ef444d216cc71f6897d122c55a92530d5a6ca`, Parley Genet
+  `583266`, and `wasm-bindgen` `0.2.127`.
+
+  The full owned view receipt,
+  `cargo test -p woodshed-views --locked --offline -j1 --config …`, passed
+  41/41. The exact host restore receipt,
+  `cargo test -p woodshed-genet host_session_restores_the_workspace_policy
+  --locked --offline -j1 --config …`, passed 1/1 after 15m16s. Formatting and
+  diff checks passed. This closes the non-browser open-lane and Woodshed
+  persistence evidence, but is not a Woodshed headed workspace receipt.
 - 2026-08-31: Pelt's safe defer is committed in Genet as
   `3dd502661a44051091a5aa2008e433630181308c` atop the custody API commit
   `52b897ef34c8bd1307c15f2eb738296f89ae6d27`. Its focused custody test passes,
