@@ -1,5 +1,11 @@
 use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "windows"
+))]
 use std::path::PathBuf;
 
 use crate::ids::ExternalImageId;

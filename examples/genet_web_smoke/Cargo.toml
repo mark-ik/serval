@@ -51,8 +51,8 @@ paint_list_render = { git = "https://github.com/merely-made/netrender.git", rev 
 
 wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "webgpu"] }
 
-# web glue. wasm-bindgen pinned exactly to the installed CLI version.
-wasm-bindgen = "=0.2.126"
+# Web glue. Keep wasm-bindgen exact so its generated schema stays deliberate.
+wasm-bindgen = "=0.2.127"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Window",
