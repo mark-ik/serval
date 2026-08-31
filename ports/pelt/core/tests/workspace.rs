@@ -262,7 +262,7 @@ fn recursive_workspace_retains_each_tile_across_activation_drag_and_resize() {
 }
 
 #[test]
-fn outside_tearout_preserves_pelt_controller_custody_and_unknown_tile_is_inert() {
+fn outside_tearout_waits_for_host_acceptance_and_retains_pelt_custody() {
     let probe = Arc::new(Mutex::new(Probe::default()));
     let mut workspace = PeltWorkspace::try_new(TileTree::single(tile(1, "a/index.html")), |tile| {
         controller(tile, probe.clone())
@@ -283,12 +283,37 @@ fn outside_tearout_preserves_pelt_controller_custody_and_unknown_tile_is_inert()
     assert!(workspace.controller(TileId(1)).is_some());
     assert_eq!(probe.lock().unwrap().spawns.len(), 1);
 
+    // A cancelled or failed native-window request never calls the acceptance
+    // transfer, so the source tree and its live controller remain intact.
+    let native_window: Result<(), &str> = Err("window creation cancelled");
+    if native_window.is_ok() {
+        let _ = workspace.accept_tearout(TileId(1));
+    }
+    assert_eq!(workspace.tree(), &before);
+    assert!(workspace.controller(TileId(1)).is_some());
+
+    // Once the host has accepted the request, the controller moves rather
+    // than being recreated. The destination keeps the original stable tile
+    // identity and becomes its focused workspace.
+    let detached = workspace
+        .accept_tearout(TileId(1))
+        .expect("known live tile transfers after host acceptance");
+    assert!(workspace.tree().find(TileId(1)).is_none());
+    assert!(workspace.controller(TileId(1)).is_none());
+    assert_eq!(
+        detached.tree().find(TileId(1)).map(|tile| tile.id),
+        Some(TileId(1))
+    );
+    assert_eq!(detached.focused_tile(), Some(TileId(1)));
+    assert!(detached.controller(TileId(1)).is_some());
+    assert_eq!(probe.lock().unwrap().spawns.len(), 1);
+
     let unknown = workspace.apply_outcome(&TileEvent::Dragged {
         tile: TileId(99),
         to: DropTarget::Outside,
     });
     assert_eq!(unknown.effect(), None);
     assert!(!unknown.changed());
-    assert_eq!(workspace.tree(), &before);
-    assert!(workspace.controller(TileId(1)).is_some());
+    assert!(workspace.tree().find(TileId(1)).is_none());
+    assert!(workspace.controller(TileId(1)).is_none());
 }

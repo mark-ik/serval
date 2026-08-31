@@ -37,7 +37,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 use workbench::{
     ContentSource, DocumentRef, DropTarget, Edge, SettingsRef, SplitAxis, Tile, TileBranch,
-    TileEvent, TileId, TileTree,
+    TileEvent, TileId, TileTree, WorkbenchEffect,
 };
 
 use crate::appearance::{
@@ -966,6 +966,11 @@ struct WorkspaceApp {
     frisket: FrisketSurface,
     window: Option<Arc<Window>>,
     host: Option<SurfaceHost>,
+    /// Accepted native tearouts retain their document/controller custody here.
+    /// A follow-up compositor slice will render each destination through the
+    /// same `SurfaceHost` path; this bounded handoff intentionally does not
+    /// invent a second presentation stack.
+    detached_workspaces: HashMap<WindowId, DetachedWorkspace>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -1010,6 +1015,15 @@ struct WorkspaceApp {
     mixed_pending_resize: Option<MixedPendingResize>,
     #[cfg(target_os = "windows")]
     scrying_host: Option<ScryingReceiptHost>,
+}
+
+/// A Pelt-owned destination after Winit has accepted a tearout window.
+///
+/// Keeping both values together makes the transfer explicit: dropping either
+/// is not enough to silently discard the live document session.
+struct DetachedWorkspace {
+    window: Arc<Window>,
+    workspace: PeltWorkspace<Scene>,
 }
 
 /// One stable virtual focus target in the composite workspace tree.
@@ -1477,6 +1491,7 @@ impl WorkspaceApp {
             frisket,
             window: None,
             host: None,
+            detached_workspaces: HashMap::new(),
             width,
             height,
             scale_factor: 1.0,
@@ -2626,9 +2641,19 @@ impl WorkspaceApp {
         }
     }
 
-    fn apply_tile_event(&mut self, event: TileEvent) -> bool {
+    fn apply_tile_event(&mut self, event: TileEvent, event_loop: Option<&ActiveEventLoop>) -> bool {
         let focused_before = self.workspace.focused_tile();
-        if self.workspace.apply(&event) {
+        let outcome = self.workspace.apply_outcome(&event);
+        if let Some(WorkbenchEffect::TearOut { tile }) = outcome.effect() {
+            let Some(event_loop) = event_loop else {
+                self.receipt_error = Some(
+                    "Pelt received a tearout request outside the native event loop".to_owned(),
+                );
+                return false;
+            };
+            return self.accept_native_tearout(event_loop, tile);
+        }
+        if outcome.changed() {
             if self.workspace.focused_tile() != focused_before {
                 self.clear_chrome_engine_menu();
                 self.clear_chrome_appearance();
@@ -2641,6 +2666,64 @@ impl WorkspaceApp {
         } else {
             false
         }
+    }
+
+    /// Accept a Workbench tearout with Pelt's existing Winit window host.
+    ///
+    /// The native allocation happens before the source workspace changes. If
+    /// Winit rejects it, the typed effect remains unaccepted and the source
+    /// tile/controller stay in place. Once accepted, `PeltWorkspace` performs
+    /// the synchronous custody transfer into the retained destination.
+    fn accept_native_tearout(&mut self, event_loop: &ActiveEventLoop, tile: TileId) -> bool {
+        let title = self
+            .workspace
+            .controller(tile)
+            .map(|controller| {
+                static_viewer::pelt_window_title(
+                    controller.title().as_deref(),
+                    Some(controller.address()),
+                )
+            })
+            .or_else(|| {
+                self.workspace
+                    .tree()
+                    .find(tile)
+                    .map(|tile| static_viewer::pelt_window_title(Some(&tile.title), None))
+            });
+        let Some(title) = title else {
+            return false;
+        };
+        let mut attributes = static_viewer::pelt_window_attributes(title, self.width, self.height);
+        if cfg!(target_os = "windows") {
+            attributes = attributes.with_decorations(false);
+        }
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                self.chrome_status =
+                    ChromeStatus::Error(format!("Could not open tearout window: {error}"));
+                return false;
+            },
+        };
+        let Some(destination) = self.workspace.accept_tearout(tile) else {
+            // This should be unreachable after the controller check above,
+            // but preserves source custody if a future route type changes.
+            return false;
+        };
+        window.focus_window();
+        self.detached_workspaces.insert(
+            window.id(),
+            DetachedWorkspace {
+                window,
+                workspace: destination,
+            },
+        );
+        self.frisket.set_tree(self.workspace.tree());
+        if let Some(window) = &self.window {
+            window.set_title(&self.window_title());
+            window.request_redraw();
+        }
+        true
     }
 
     /// CSD only: the border resize direction under the cursor, None when the
@@ -2710,7 +2793,7 @@ impl WorkspaceApp {
                     split: drag.target.path.clone(),
                     fractions,
                 };
-                redraw |= self.apply_tile_event(event);
+                redraw |= self.apply_tile_event(event, None);
             }
             return redraw;
         }
@@ -2753,7 +2836,7 @@ impl WorkspaceApp {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
                 self.clear_chrome_appearance();
-                self.apply_tile_event(TileEvent::Closed(tile))
+                self.apply_tile_event(TileEvent::Closed(tile), None)
             },
             Some(FrisketHit::Divider { target, split_rect }) => {
                 self.clear_chrome_address();
@@ -2835,21 +2918,24 @@ impl WorkspaceApp {
         }
     }
 
-    fn pointer_up(&mut self) -> bool {
+    fn pointer_up(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let gesture = self.gesture.take();
         match gesture {
             Some(PointerGesture::Divider(_)) => true,
             Some(PointerGesture::Tab(drag)) if drag.moved => {
                 let to = self.resolve_drop(drag.tile);
                 to.is_some_and(|to| {
-                    self.apply_tile_event(TileEvent::Dragged {
-                        tile: drag.tile,
-                        to,
-                    })
+                    self.apply_tile_event(
+                        TileEvent::Dragged {
+                            tile: drag.tile,
+                            to,
+                        },
+                        Some(event_loop),
+                    )
                 })
             },
             Some(PointerGesture::Tab(drag)) => {
-                self.apply_tile_event(TileEvent::Activated(drag.tile))
+                self.apply_tile_event(TileEvent::Activated(drag.tile), None)
             },
             Some(PointerGesture::Content) => {
                 let (x, y) = self.cursor;
@@ -3101,6 +3187,15 @@ impl ApplicationHandler for WorkspaceApp {
         event: WindowEvent,
     ) {
         if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
+            if matches!(event, WindowEvent::CloseRequested)
+                && let Some(destination) = self.detached_workspaces.remove(&window_id)
+            {
+                // Explicitly consume both retained values. Closing the
+                // accepted destination ends only that window's Pelt custody;
+                // it never rehydrates a source tile behind the user's back.
+                let _ = destination.window.id();
+                let _ = destination.workspace.focused_tile();
+            }
             return;
         }
         match event {
@@ -3148,7 +3243,7 @@ impl ApplicationHandler for WorkspaceApp {
             } => {
                 let redraw = match state {
                     ElementState::Pressed => self.pointer_down(),
-                    ElementState::Released => self.pointer_up(),
+                    ElementState::Released => self.pointer_up(event_loop),
                 };
                 if self.close_requested {
                     event_loop.exit();

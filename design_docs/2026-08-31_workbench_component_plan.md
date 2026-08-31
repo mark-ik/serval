@@ -170,3 +170,15 @@ heterogeneous headed consumers.
   A standalone cross-repo harness passed eight focused tests. The full Mere
   workspace gate still encounters its older `genet-taffy =0.13.1` patch mismatch
   and workspace-wide resolver fan-out, which are outside this component slice.
+- 2026-08-31: W4 has a bounded Pelt native acceptance half. Pelt's existing
+  Winit host creates a destination window before accepting
+  `WorkbenchEffect::TearOut`; only then does `PeltWorkspace` move the live
+  controller or surface producer, route state, stable `TileId`, and focus into
+  a destination workspace. Core tests cover the request, failed/cancelled
+  acceptance preserving the source, and accepted custody transfer. The
+  destination is retained by Pelt but is not yet composed through a second
+  `SurfaceHost`, so this is not a headed visual tearout receipt. Manual proof
+  for the next compositor slice: open a two-tile Pelt workspace, drag one tab
+  outside the client area, confirm the source keeps it if window creation is
+  declined, then accept and verify the destination renders the same title,
+  address, history, and focused `TileId` while the source no longer owns it.

@@ -781,6 +781,97 @@ impl<F: 'static> PeltWorkspace<F> {
         }
     }
 
+    /// Transfer one live tile into a host-accepted destination workspace.
+    ///
+    /// This is deliberately separate from [`Self::apply_outcome`]: an outside
+    /// drop only requests a tearout, while the native host decides whether it
+    /// can create a destination window. Call this only after that acceptance
+    /// succeeds. The returned workspace keeps the original [`TileId`], route,
+    /// controller or surface producer, and focused-session identity.
+    ///
+    /// `None` means `tile` was not a live Pelt tile. In that case the source
+    /// workspace is left untouched.
+    pub fn accept_tearout(&mut self, tile: TileId) -> Option<Self> {
+        let tile_record = self.workbench.tree().find(tile)?.clone();
+        if !self.has_content(tile) {
+            return None;
+        }
+
+        // This mutation occurs only after the embedding host has accepted the
+        // effect. It cannot fail after the live tile check above, and keeping
+        // it here makes content custody a single synchronous transfer.
+        let removed = self.workbench.apply(&TileEvent::Closed(tile));
+        debug_assert!(matches!(removed, WorkbenchOutcome::Applied));
+        let controller = self.controllers.remove(&tile);
+        let surface = self.surfaces.remove(&tile);
+        let route = self.routes.remove(&tile);
+        let content_rect = self.content_rects.remove(&tile);
+        let routed = self.routed.as_mut().map(|source| RoutedWorkspace {
+            registries: source.registries.clone(),
+            requests: source
+                .requests
+                .remove(&tile)
+                .map(|request| (tile, request))
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+            base_titles: source
+                .base_titles
+                .remove(&tile)
+                .map(|title| (tile, title))
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+            clock_for: Arc::clone(&source.clock_for),
+        });
+
+        let retained = self
+            .workbench
+            .tree()
+            .tiles()
+            .into_iter()
+            .map(|tile| tile.id)
+            .collect::<HashSet<_>>();
+        if self
+            .pointer_capture
+            .is_some_and(|captured| !retained.contains(&captured))
+        {
+            self.pointer_capture = None;
+        }
+        let next_focus = self
+            .focused
+            .filter(|focused| retained.contains(focused))
+            .or_else(|| {
+                active_tiles(self.workbench.tree())
+                    .into_iter()
+                    .find(|id| self.has_content(*id))
+            });
+        if next_focus != self.focused {
+            self.focused = None;
+            if let Some(next) = next_focus {
+                self.focus(next);
+            }
+        }
+        self.sync_visibility();
+
+        let mut destination = Self {
+            workbench: Workbench::new(TileTree::single(tile_record)),
+            controllers: controller
+                .map(|controller| (tile, controller))
+                .into_iter()
+                .collect(),
+            surfaces: surface.map(|surface| (tile, surface)).into_iter().collect(),
+            routes: route.map(|route| (tile, route)).into_iter().collect(),
+            content_rects: content_rect.map(|rect| (tile, rect)).into_iter().collect(),
+            focused: None,
+            pointer_capture: None,
+            surface_scale_factor: self.surface_scale_factor,
+            routed,
+        };
+        destination.focus(tile);
+        destination.sync_tile_metadata();
+        destination.sync_visibility();
+        Some(destination)
+    }
+
     fn has_content(&self, tile: TileId) -> bool {
         self.controllers.contains_key(&tile) || self.surfaces.contains_key(&tile)
     }
