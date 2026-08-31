@@ -603,6 +603,7 @@ pub fn wrap_web_message(payload: String) -> WebMessage {
 mod tests {
     use super::*;
     use inker::{CapabilityStatus, PhysicalPosition, PointerButtons};
+    #[cfg(target_os = "windows")]
     use scrying::native_frame::{Dx12SharedTexture, NativeFrame};
 
     fn touch_pointer(pointer_id: i32, phase: InkerPointerPhase) -> InkerPointerEvent {
@@ -627,6 +628,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn dx12_epoch_handle_is_transferred_and_reuse_may_omit_it() {
         let frame = |handle| {
