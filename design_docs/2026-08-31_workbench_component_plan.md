@@ -1,9 +1,9 @@
 # Workbench Component Plan
 
 **Date**: 2026-08-31
-**Status (2026-08-31)**: W1 and W2 are complete in the isolated Genet
-worktree with focused Cargo receipts. W3 is the coordinated Mere/Graphshell
-adoption, and W4 remains gated on two-host receipts.
+**Status (2026-08-31)**: W1 through W3 are implemented on coordinated Genet
+and Mere feature branches. Focused core and cross-repo receipts pass. W4
+remains gated on headed host and second-product receipts.
 
 ## Ruling
 
@@ -160,3 +160,13 @@ heterogeneous headed consumers.
   genet-host-api -p cambium --offline -j 1` passed (15, 9, and 179 tests), as
   did the focused Pelt custody test and Pelt desktop checks with and without the
   `livery` feature.
+- 2026-08-31: W3 landed on Mere branch
+  `codex/workbench-integration-20260831` at `565285020ca26dcc63dbc6c256f4b9372d503de2`.
+  Mere pins this package at Genet revision
+  `d25ef444d216cc71f6897d122c55a92530d5a6ca`, Platen projects directly into
+  the shared types, and the former Mere `workbench` package is retired.
+  Graphshell's Projection Editor hosts its seven tools as open-lane Workbench
+  tiles while draft validation and persistence remain editor and host concerns.
+  A standalone cross-repo harness passed eight focused tests. The full Mere
+  workspace gate still encounters its older `genet-taffy =0.13.1` patch mismatch
+  and workspace-wide resolver fan-out, which are outside this component slice.
