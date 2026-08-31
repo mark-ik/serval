@@ -10,12 +10,12 @@ use cambium::{
     GenetElement, close_target, content_target, divider_target, el, frisket, stack_target,
     tab_drop_index, tab_target,
 };
-use genet_host_api::tile::{TileId, TilePath, TileTree};
 use genet_livery::{Device, LiveryDocument, StyleSet};
 use genet_render::accesskit_tree;
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use pelt_core::WorkspaceRect;
+use workbench::{TileId, TilePath, TileTree};
 
 use crate::appearance::AppearanceTheme;
 
@@ -1226,7 +1226,7 @@ fn workspace_rect(rect: [f32; 4]) -> WorkspaceRect {
 
 #[cfg(test)]
 mod tests {
-    use genet_host_api::tile::{ContentSource, DocumentRef, SplitAxis, Tile, TileBranch};
+    use workbench::{ContentSource, DocumentRef, SplitAxis, Tile, TileBranch};
 
     use super::*;
 

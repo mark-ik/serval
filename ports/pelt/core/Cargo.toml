@@ -12,5 +12,6 @@ readme = "README.md"
 
 [dependencies]
 genet-host-api = { workspace = true }
+workbench = { workspace = true }
 inker = { workspace = true }
 url = { workspace = true }

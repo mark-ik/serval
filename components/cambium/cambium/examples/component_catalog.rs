@@ -27,13 +27,13 @@ use genet_host_api::settings::{
     SettingControl, SettingMovement, SettingMutability, SettingOption, SettingScope,
     SettingSecurity, SettingSpec, SettingValue,
 };
-use genet_host_api::tile::{
-    ContentSource, DocumentRef, TabStack, Tile, TileBranch, TileEvent, TileId, TileTree,
-};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use sprigging::{
     ColorF, GraphGlyph, GraphGlyphNode, Knob, LeafRegistry, Meter, RenderedLeaves, Size, Swatch,
+};
+use workbench::{
+    ContentSource, DocumentRef, TabStack, Tile, TileBranch, TileEvent, TileId, TileTree,
 };
 
 const THEME: &str = include_str!("component_catalog.css");
@@ -456,7 +456,7 @@ fn catalog_pane_tree() -> TileTree {
         accent: None,
     };
     TileTree::Split {
-        axis: genet_host_api::tile::SplitAxis::Row,
+        axis: workbench::SplitAxis::Row,
         children: vec![
             TileBranch {
                 fraction: 0.6,

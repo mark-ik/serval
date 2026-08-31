@@ -48,6 +48,15 @@ repatriated here from mere.
   the first candidate. The current eight-input Taffy seam is published and
   consumed as `genet-taffy 0.13.1`.)
 
+## workspace composition
+
+- [workbench_component_plan](2026-08-31_workbench_component_plan.md)
+  (**in progress 2026-08-31**: establishes Workbench as the reusable Genet
+  split/tab/tearout component, moves the existing `TileTree` reducer out of
+  `genet-host-api`, makes Pelt and Cambium direct consumers, and defines the
+  coordinated Mere/Graphshell Projection Editor adoption without transferring
+  graph, browser-session, or window authority into the component.)
+
 ## inker_docs/ — the engine controller
 
 - [engine_picker_and_pluggability_plan](inker_docs/implementation_strategy/2026-06-15_engine_picker_and_pluggability_plan.md)

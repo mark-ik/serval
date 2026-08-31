@@ -8,7 +8,7 @@
 //! decide what prints where; this is the same frame, over a window. The name
 //! comes from turnstone's crate, which this module retires: the family had spelled
 //! "a tree of resizable panes" four times (this view trapped in `ports/pelt`, a
-//! second tree in turnstone, the contract in `genet-host-api`, the furniture here),
+//! second tree in turnstone, the reusable `workbench` contract, the furniture here),
 //! and they resolve to one implementation. Direction:
 //! `genet:docs/2026-07-24_frisket_pane_component_direction.md`.
 //!
@@ -33,8 +33,8 @@
 //! external texture, or its own surface into that rect. So a browser pane, a
 //! practice-set pane, and a tactical map pane are the same frame.
 
-use genet_host_api::tile::{SplitAxis, TabStack, TileEvent, TileId, TilePath, TileTree};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
+use workbench::{SplitAxis, TabStack, TileEvent, TileId, TilePath, TileTree};
 
 use crate::pod::GenetElement;
 use crate::{AnyView, GenetCtx, PointerClick, View, el, on_click};
@@ -400,8 +400,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use genet_host_api::tile::{ContentSource, DocumentRef, Tile, TileBranch};
     use genet_scripted_dom::{NodeId, ScriptedDom};
+    use workbench::{ContentSource, DocumentRef, Tile, TileBranch};
 
     use super::*;
     use crate::{DomHandle, GenetAppRunner};

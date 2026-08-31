@@ -11,6 +11,9 @@ description = "Product-neutral host contracts for Genet: engine profiles, capabi
 keywords = ["genet", "host", "tile", "pane", "contract"]
 categories = ["gui", "api-bindings"]
 
+[dependencies]
+workbench = { workspace = true }
+
 [lib]
 name = "genet_host_api"
 path = "lib.rs"

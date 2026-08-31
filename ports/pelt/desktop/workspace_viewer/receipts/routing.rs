@@ -694,7 +694,7 @@ impl WorkspaceApp {
             },
             4 => {
                 let target = cambium::DividerTarget {
-                    path: genet_host_api::tile::TilePath(Vec::new()),
+                    path: workbench::TilePath(Vec::new()),
                     index: 0,
                 };
                 let rect = self

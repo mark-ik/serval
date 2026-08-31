@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use genet_host_api::tile::{ContentSource, Tile, TileEvent, TileId, TileTree};
 use inker::routing::{
     EngineRouteDecision, EngineRoutePolicy, EngineRouteRequest, SurfaceContractMode,
     WorkspaceRouteId, is_surface_engine,
@@ -12,6 +11,9 @@ use inker::{
     SessionButtonState, SessionInput, SessionKey, SessionNavigationCommand, SessionPointerButton,
     SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
     SurfaceProducer, SurfaceSpawnRequest,
+};
+use workbench::{
+    ContentSource, Tile, TileEvent, TileId, TileTree, Workbench, WorkbenchEffect, WorkbenchOutcome,
 };
 
 use crate::{PeltClock, PeltController, PeltControllerConfig, PeltHostEffect};
@@ -236,6 +238,31 @@ pub struct PeltWorkspaceFrame<F> {
     pub surfaces: Vec<PeltSurfaceLayer>,
 }
 
+/// Pelt's result for a workspace command.
+///
+/// The embedded [`WorkbenchOutcome`] reports the shared arrangement result or
+/// a host request. `focus_changed` covers Pelt's retained-controller focus,
+/// which can change even when an already-active tab leaves the tree intact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeltWorkspaceOutcome {
+    workbench: WorkbenchOutcome,
+    focus_changed: bool,
+}
+
+impl PeltWorkspaceOutcome {
+    pub const fn changed(self) -> bool {
+        self.workbench.changed() || self.focus_changed
+    }
+
+    pub const fn effect(self) -> Option<WorkbenchEffect> {
+        self.workbench.effect()
+    }
+
+    pub const fn workbench(self) -> WorkbenchOutcome {
+        self.workbench
+    }
+}
+
 struct PeltSurfaceController {
     producer: Box<dyn SurfaceProducer>,
     viewport: (u32, u32),
@@ -315,12 +342,12 @@ struct RoutedWorkspace<F> {
 
 /// Pelt's window-neutral recursive workspace.
 ///
-/// `TileTree` is the arrangement authority. Every document tile owns a live
-/// controller, including inactive tabs; Frisket content-hole rectangles arrive
-/// from the embedding host and are the only geometry used for routing and
-/// frame sizing.
+/// `Workbench` wraps the arrangement authority. Every document tile owns a
+/// live controller, including inactive tabs; Frisket content-hole rectangles
+/// arrive from the embedding host and are the only geometry used for routing
+/// and frame sizing.
 pub struct PeltWorkspace<F> {
-    tree: TileTree,
+    workbench: Workbench,
     controllers: HashMap<TileId, PeltController<F>>,
     surfaces: HashMap<TileId, PeltSurfaceController>,
     routes: HashMap<TileId, PeltTileRoute>,
@@ -377,7 +404,7 @@ impl<F: 'static> PeltWorkspace<F> {
             })
             .collect();
         let mut workspace = Self {
-            tree,
+            workbench: Workbench::new(tree),
             controllers,
             surfaces: HashMap::new(),
             routes,
@@ -421,7 +448,7 @@ impl<F: 'static> PeltWorkspace<F> {
         let active = active_tiles(&tree);
         let focused = active.iter().copied().find(|id| requests.contains_key(id));
         let mut workspace = Self {
-            tree,
+            workbench: Workbench::new(tree),
             controllers: HashMap::new(),
             surfaces: HashMap::new(),
             routes: HashMap::new(),
@@ -453,7 +480,7 @@ impl<F: 'static> PeltWorkspace<F> {
     }
 
     pub fn tree(&self) -> &TileTree {
-        &self.tree
+        self.workbench.tree()
     }
 
     pub fn focused_tile(&self) -> Option<TileId> {
@@ -685,22 +712,34 @@ impl<F: 'static> PeltWorkspace<F> {
         self.content_rects = rects.into_iter().collect();
     }
 
-    /// Apply a standalone Pelt arrangement gesture through the shared reducer.
+    /// Apply a standalone Pelt arrangement gesture through the shared
+    /// Workbench reducer, preserving Pelt's controller and focus custody.
     pub fn apply(&mut self, event: &TileEvent) -> bool {
-        let changed = self.tree.apply(event);
-        if !changed {
+        self.apply_outcome(event).changed()
+    }
+
+    /// Apply a workspace gesture and expose any request that needs a desktop
+    /// host decision. A tearout leaves the tree and Pelt controller custody
+    /// unchanged until that host accepts it.
+    pub fn apply_outcome(&mut self, event: &TileEvent) -> PeltWorkspaceOutcome {
+        let workbench = self.workbench.apply(event);
+        if !workbench.changed() {
+            let mut focus_changed = false;
             if let TileEvent::Activated(id) = event {
-                if active_tiles(&self.tree).contains(id) && self.has_content(*id) {
-                    let focus_changed = self.focused != Some(*id);
+                if active_tiles(self.workbench.tree()).contains(id) && self.has_content(*id) {
+                    focus_changed = self.focused != Some(*id);
                     self.focus(*id);
-                    return focus_changed;
                 }
             }
-            return false;
+            return PeltWorkspaceOutcome {
+                workbench,
+                focus_changed,
+            };
         }
 
         let retained = self
-            .tree
+            .workbench
+            .tree()
             .tiles()
             .into_iter()
             .map(|tile| tile.id)
@@ -727,7 +766,7 @@ impl<F: 'static> PeltWorkspace<F> {
                 Some(*id)
             },
             _ if self.focused.is_some_and(|id| retained.contains(&id)) => self.focused,
-            _ => active_tiles(&self.tree)
+            _ => active_tiles(self.workbench.tree())
                 .into_iter()
                 .find(|id| self.has_content(*id)),
         };
@@ -736,7 +775,10 @@ impl<F: 'static> PeltWorkspace<F> {
             None => self.focused = None,
         }
         self.sync_visibility();
-        true
+        PeltWorkspaceOutcome {
+            workbench,
+            focus_changed: false,
+        }
     }
 
     fn has_content(&self, tile: TileId) -> bool {
@@ -761,7 +803,7 @@ impl<F: 'static> PeltWorkspace<F> {
     }
 
     fn frame_with_surface_polling(&mut self, poll_surfaces: bool) -> PeltWorkspaceFrame<F> {
-        let active = active_tiles(&self.tree);
+        let active = active_tiles(self.workbench.tree());
         let mut tiles = Vec::with_capacity(active.len());
         let mut surfaces = Vec::new();
         for tile in active {
@@ -798,7 +840,7 @@ impl<F: 'static> PeltWorkspace<F> {
     /// Advance visible sessions. Hidden tabs retain state without driving the
     /// foreground frame loop.
     pub fn pump(&mut self) -> bool {
-        let active = active_tiles(&self.tree);
+        let active = active_tiles(self.workbench.tree());
         // Surface producers do not expose a settled bit. Keep polling every
         // visible producer so a frame that arrives after the first acquire is
         // not stranded until unrelated document activity causes a redraw.
@@ -816,7 +858,7 @@ impl<F: 'static> PeltWorkspace<F> {
     /// The host calls this after its presentation boundary. Hidden tabs retain
     /// their loading state until their own first visible composition.
     pub fn mark_visible_documents_presented(&mut self) {
-        for id in active_tiles(&self.tree) {
+        for id in active_tiles(self.workbench.tree()) {
             if let Some(controller) = self.controllers.get_mut(&id) {
                 controller.mark_document_presented();
             }
@@ -996,7 +1038,7 @@ impl<F: 'static> PeltWorkspace<F> {
     }
 
     fn tile_at(&self, x: f32, y: f32) -> Option<TileId> {
-        active_tiles(&self.tree).into_iter().find(|id| {
+        active_tiles(self.workbench.tree()).into_iter().find(|id| {
             self.content_rects
                 .get(id)
                 .is_some_and(|rect| rect.contains(x, y))
@@ -1019,7 +1061,9 @@ impl<F: 'static> PeltWorkspace<F> {
     }
 
     fn sync_visibility(&mut self) {
-        let active = active_tiles(&self.tree).into_iter().collect::<HashSet<_>>();
+        let active = active_tiles(self.workbench.tree())
+            .into_iter()
+            .collect::<HashSet<_>>();
         for (id, controller) in &mut self.controllers {
             controller.set_hidden(!active.contains(id));
         }
@@ -1067,10 +1111,9 @@ impl<F: 'static> PeltWorkspace<F> {
                     .as_ref()
                     .and_then(|routed| routed.base_titles.get(&id).cloned())
             });
-        if let Some(tile) = self.tree.tile_mut(id) {
+        if let Some(tile) = self.workbench.tree_mut().tile_mut(id) {
             if let Some((request, _, _)) = controller_metadata {
-                tile.content =
-                    ContentSource::Document(genet_host_api::tile::DocumentRef(request.address));
+                tile.content = ContentSource::Document(workbench::DocumentRef(request.address));
             }
             if let Some(route) = route {
                 let selected = route.selected_engine();

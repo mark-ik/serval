@@ -2,15 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! The tile-tree contract (V5): the presentation-grade arrangement vocabulary the
-//! Genet tile surface renders and the host drives.
+//! Reusable split-and-tab workspace organization for Genet hosts.
 //!
 //! A [`TileTree`] is a tree of **splits** (a row/column of children, each with a
 //! fractional share) and **tab-stacks** (a set of tiles, one active). The surface lib
 //! renders a tree and emits [`TileEvent`]s (activate / close / drag / divider move);
 //! the host owns the authoritative tree, applies the events, and feeds back the next
-//! tree. Standalone pelt populates it from its own simple state; mere projects forme
-//! onto it through platen's `tree_projection` — a *projection*, not a second authority.
+//! tree. A host can use the raw [`TileTree`] reducer, or retain one in [`Workbench`]
+//! to receive typed host effects such as a tearout request. Pelt populates it from its
+//! own simple state; Mere projects Forme onto it through Platen's tree projection — a
+//! *projection*, not a second authority.
 //!
 //! **Presentation vocabulary only.** This contract names splits, tabs, fractions, and
 //! the two content lanes — nothing about graphs, sessions, lineage, or arrangement
@@ -188,6 +189,99 @@ pub enum Edge {
     Right,
     Top,
     Bottom,
+}
+
+/// A host action requested by a valid workspace command.
+///
+/// The component never creates platform windows or transfers content custody. It
+/// instead asks its host to do so after the host has decided its own policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkbenchEffect {
+    /// A tile was dropped outside the workbench. The tile remains in the tree
+    /// until the host accepts the request and transfers its own content custody.
+    TearOut { tile: TileId },
+}
+
+/// Result of applying a [`TileEvent`] through [`Workbench`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkbenchOutcome {
+    /// The tree changed through the raw reducer.
+    Applied,
+    /// The command was invalid or already represented by the current tree.
+    Unchanged,
+    /// A valid command requires a host decision and therefore leaves the tree
+    /// untouched.
+    Effect(WorkbenchEffect),
+}
+
+impl WorkbenchOutcome {
+    /// Whether the command changed the retained tree.
+    pub const fn changed(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+
+    /// The requested host action, if this command needs one.
+    pub const fn effect(self) -> Option<WorkbenchEffect> {
+        match self {
+            Self::Effect(effect) => Some(effect),
+            Self::Applied | Self::Unchanged => None,
+        }
+    }
+}
+
+/// A reusable workspace state wrapper over a [`TileTree`].
+///
+/// It preserves the raw tree reducer for hosts that want it, while making the
+/// outside-drop custody boundary explicit to hosts that can open a new window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Workbench {
+    tree: TileTree,
+}
+
+impl Workbench {
+    /// Start from a host-provided presentation tree.
+    pub fn new(tree: TileTree) -> Self {
+        Self { tree }
+    }
+
+    /// The tree rendered by a workspace surface.
+    pub fn tree(&self) -> &TileTree {
+        &self.tree
+    }
+
+    /// Mutable tree access for host-owned initialization or restoration.
+    pub fn tree_mut(&mut self) -> &mut TileTree {
+        &mut self.tree
+    }
+
+    /// Consume this wrapper and recover the host's tree snapshot.
+    pub fn into_tree(self) -> TileTree {
+        self.tree
+    }
+
+    /// Apply a workspace command and return its tree outcome or host effect.
+    ///
+    /// A valid outside drop produces [`WorkbenchEffect::TearOut`] without
+    /// removing the tile. An unknown tile is an ordinary unchanged command.
+    pub fn apply(&mut self, event: &TileEvent) -> WorkbenchOutcome {
+        if let TileEvent::Dragged {
+            tile,
+            to: DropTarget::Outside,
+        } = event
+        {
+            return if self.tree.find(*tile).is_some() {
+                WorkbenchOutcome::Effect(WorkbenchEffect::TearOut { tile: *tile })
+            } else {
+                WorkbenchOutcome::Unchanged
+            };
+        }
+
+        if self.tree.apply(event) {
+            WorkbenchOutcome::Applied
+        } else {
+            WorkbenchOutcome::Unchanged
+        }
+    }
 }
 
 impl TileBranch {
@@ -750,5 +844,37 @@ mod tests {
             to: DropTarget::Outside,
         }));
         assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn workbench_outside_drop_requests_tear_out_without_mutating_tree() {
+        let tree = TileTree::stack(vec![doc_tile(1, "a"), doc_tile(2, "b")], 0);
+        let mut workbench = Workbench::new(tree.clone());
+
+        let outcome = workbench.apply(&TileEvent::Dragged {
+            tile: TileId(1),
+            to: DropTarget::Outside,
+        });
+
+        assert_eq!(
+            outcome,
+            WorkbenchOutcome::Effect(WorkbenchEffect::TearOut { tile: TileId(1) })
+        );
+        assert_eq!(workbench.tree(), &tree, "the host retains tile custody");
+    }
+
+    #[test]
+    fn workbench_unknown_outside_drop_is_unchanged_without_effect() {
+        let tree = TileTree::single(doc_tile(1, "a"));
+        let mut workbench = Workbench::new(tree.clone());
+
+        let outcome = workbench.apply(&TileEvent::Dragged {
+            tile: TileId(99),
+            to: DropTarget::Outside,
+        });
+
+        assert_eq!(outcome, WorkbenchOutcome::Unchanged);
+        assert_eq!(outcome.effect(), None);
+        assert_eq!(workbench.tree(), &tree);
     }
 }

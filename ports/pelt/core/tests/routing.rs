@@ -2,9 +2,6 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use genet_host_api::tile::{
-    ContentSource, DocumentRef, SplitAxis, Tile, TileBranch, TileId, TileTree,
-};
 use inker::routing::{ENGINE_SCRYING_WEB, EngineRoutePolicy, EngineRouteRule, SurfaceContractMode};
 use inker::{
     A11yCapability, DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentSession,
@@ -17,6 +14,7 @@ use pelt_core::{
     PeltClock, PeltDocumentState, PeltRegistries, PeltRouteSource, PeltRouteState, PeltTileRequest,
     PeltWorkspace, WorkspaceRect,
 };
+use workbench::{ContentSource, DocumentRef, SplitAxis, Tile, TileBranch, TileId, TileTree};
 
 #[derive(Default)]
 struct DocumentProbe {

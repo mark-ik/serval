@@ -12,10 +12,6 @@ use accesskit::{
 };
 use genet_host_api::ResourceFetcher;
 use genet_host_api::settings::{SettingValue, SettingsProvider};
-use genet_host_api::tile::{
-    ContentSource, DocumentRef, DropTarget, Edge, SettingsRef, SplitAxis, Tile, TileBranch,
-    TileEvent, TileId, TileTree,
-};
 use genet_winit_host::{
     A11yActionRequest, AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit,
 };
@@ -39,6 +35,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
+use workbench::{
+    ContentSource, DocumentRef, DropTarget, Edge, SettingsRef, SplitAxis, Tile, TileBranch,
+    TileEvent, TileId, TileTree,
+};
 
 use crate::appearance::{
     APPEARANCE_REFERENCE, AppearanceSettingsProvider, AppearanceStore, AppearanceTheme,

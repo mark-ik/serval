@@ -18,7 +18,7 @@ use inker::{
 pub use workspace::{
     PeltRegistries, PeltRouteSource, PeltRouteState, PeltSurfaceLayer, PeltTileFrame,
     PeltTileInspection, PeltTileRequest, PeltTileRoute, PeltWorkspace, PeltWorkspaceFrame,
-    WorkspaceRect,
+    PeltWorkspaceOutcome, WorkspaceRect,
 };
 
 /// Host-neutral state for a controller's document presentation.

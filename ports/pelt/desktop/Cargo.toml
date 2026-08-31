@@ -122,6 +122,7 @@ netrender = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 paint = { workspace = true, optional = true }
 genet-host-api = { workspace = true }
+workbench = { workspace = true }
 genet-documents = { workspace = true, optional = true, default-features = false }
 genet-livery = { path = "../../../components/genet-livery", optional = true }
 genet-render = { path = "../../../components/genet-render", optional = true }

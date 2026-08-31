@@ -1,0 +1,19 @@
+[package]
+name = "workbench"
+version = "0.1.0"
+authors.workspace = true
+license = "MPL-2.0"
+edition.workspace = true
+rust-version.workspace = true
+repository = "https://github.com/merely-made/genet"
+description = "Reusable split-and-tab workspace organization for Genet hosts."
+keywords = ["genet", "workspace", "tabs", "split", "gui"]
+categories = ["gui"]
+publish = true
+
+[lib]
+path = "lib.rs"
+bench = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }

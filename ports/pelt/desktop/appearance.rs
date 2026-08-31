@@ -20,7 +20,7 @@ use genet_host_api::settings::{
     SettingControl, SettingMovement, SettingMutability, SettingOption, SettingScope,
     SettingSecurity, SettingSpec, SettingValue, SettingsError, SettingsProvider,
 };
-use genet_host_api::tile::SettingsRef;
+use workbench::SettingsRef;
 
 pub const APPEARANCE_REFERENCE: &str = "pelt/appearance";
 pub const CHROME_THEME_SETTING: &str = "chrome.theme";

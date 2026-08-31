@@ -2,16 +2,16 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use genet_host_api::tile::{
-    ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
-    TilePath, TileTree,
-};
 use inker::{
     ContentReport, DocumentSession, SessionButtonState, SessionClick, SessionEngine, SessionError,
     SessionInput, SessionModifiers, SessionNavigationCommand, SessionPointerButton,
     SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry,
 };
 use pelt_core::{PeltClock, PeltController, PeltControllerConfig, PeltWorkspace, WorkspaceRect};
+use workbench::{
+    ContentSource, DocumentRef, DropTarget, Edge, SplitAxis, Tile, TileBranch, TileEvent, TileId,
+    TilePath, TileTree,
+};
 
 #[derive(Default)]
 struct Probe {
@@ -259,4 +259,36 @@ fn recursive_workspace_retains_each_tile_across_activation_drag_and_resize() {
     assert!(workspace.controller(TileId(1)).is_some());
     assert!(workspace.controller(TileId(2)).is_some());
     assert!(workspace.controller(TileId(4)).is_some());
+}
+
+#[test]
+fn outside_tearout_preserves_pelt_controller_custody_and_unknown_tile_is_inert() {
+    let probe = Arc::new(Mutex::new(Probe::default()));
+    let mut workspace = PeltWorkspace::try_new(TileTree::single(tile(1, "a/index.html")), |tile| {
+        controller(tile, probe.clone())
+    })
+    .unwrap();
+    let before = workspace.tree().clone();
+
+    let tearout = workspace.apply_outcome(&TileEvent::Dragged {
+        tile: TileId(1),
+        to: DropTarget::Outside,
+    });
+    assert_eq!(
+        tearout.effect(),
+        Some(workbench::WorkbenchEffect::TearOut { tile: TileId(1) })
+    );
+    assert!(!tearout.changed());
+    assert_eq!(workspace.tree(), &before);
+    assert!(workspace.controller(TileId(1)).is_some());
+    assert_eq!(probe.lock().unwrap().spawns.len(), 1);
+
+    let unknown = workspace.apply_outcome(&TileEvent::Dragged {
+        tile: TileId(99),
+        to: DropTarget::Outside,
+    });
+    assert_eq!(unknown.effect(), None);
+    assert!(!unknown.changed());
+    assert_eq!(workspace.tree(), &before);
+    assert!(workspace.controller(TileId(1)).is_some());
 }

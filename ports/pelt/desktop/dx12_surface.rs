@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use genet_host_api::tile::TileId;
 use inker::{
     FrameHandleOwnership, NativeTextureHandle, SurfaceFrame, SurfaceSyncHandle,
     SurfaceTextureFormat,
@@ -17,6 +16,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
 };
+use workbench::TileId;
 
 pub(crate) struct Dx12SurfaceCache {
     textures: HashMap<TileId, ImportedSurface>,
