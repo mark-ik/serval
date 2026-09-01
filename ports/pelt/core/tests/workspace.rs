@@ -269,6 +269,7 @@ fn outside_tearout_waits_for_host_acceptance_and_retains_pelt_custody() {
     })
     .unwrap();
     let before = workspace.tree().clone();
+    let focused_before = workspace.focused_tile();
 
     let tearout = workspace.apply_outcome(&TileEvent::Dragged {
         tile: TileId(1),
@@ -281,9 +282,25 @@ fn outside_tearout_waits_for_host_acceptance_and_retains_pelt_custody() {
     assert!(!tearout.changed());
     assert_eq!(workspace.tree(), &before);
     assert!(workspace.controller(TileId(1)).is_some());
+    assert_eq!(workspace.focused_tile(), focused_before);
     assert_eq!(probe.lock().unwrap().spawns.len(), 1);
 
-    // A cancelled or failed native-window request never calls the acceptance
+    // A host may render a source-owned preflight frame, then discover that
+    // surface configuration or presentation failed. Until it calls the
+    // acceptance transfer, source tree membership, controller custody, and
+    // model focus remain unchanged. Framing may transiently update viewport
+    // geometry, which the native host restores from its source content hole.
+    let preflight = workspace
+        .frame_tile(TileId(1), WorkspaceRect::new(0.0, 0.0, 960.0, 640.0))
+        .expect("live tile produces a destination preflight frame");
+    assert_eq!(preflight.tiles.len(), 1);
+    let destination_presented: Result<(), &str> = Err("destination present failed");
+    assert!(destination_presented.is_err());
+    assert_eq!(workspace.tree(), &before);
+    assert!(workspace.controller(TileId(1)).is_some());
+    assert_eq!(workspace.focused_tile(), focused_before);
+
+    // A cancelled native-window request also never calls the acceptance
     // transfer, so the source tree and its live controller remain intact.
     let native_window: Result<(), &str> = Err("window creation cancelled");
     if native_window.is_ok() {
@@ -291,6 +308,7 @@ fn outside_tearout_waits_for_host_acceptance_and_retains_pelt_custody() {
     }
     assert_eq!(workspace.tree(), &before);
     assert!(workspace.controller(TileId(1)).is_some());
+    assert_eq!(workspace.focused_tile(), focused_before);
 
     // Once the host has accepted the request, the controller moves rather
     // than being recreated. The destination keeps the original stable tile

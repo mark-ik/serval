@@ -2,6 +2,7 @@ use super::*;
 use crate::FileAppearanceStore;
 #[cfg(feature = "reader")]
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[cfg(feature = "reader")]
 #[derive(Clone)]
@@ -475,8 +476,14 @@ fn tabard_reader_preview_reuses_the_held_response_and_renders_its_palette() {
 }
 
 #[test]
-fn desktop_defers_tearout_until_it_can_compose_a_destination() {
-    let urls = vec!["about:blank".to_owned()];
+fn desktop_keeps_source_when_tearout_has_no_native_destination() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("pelt desktop has a parent")
+        .join("examples/workspace/p5-fallback/index.html")
+        .to_string_lossy()
+        .into_owned();
+    let urls = vec![fixture];
     let tree = tree_from_urls(&urls);
     #[cfg(target_os = "windows")]
     let registries = workspace_registries(None);
@@ -495,25 +502,51 @@ fn desktop_defers_tearout_until_it_can_compose_a_destination() {
     )
     .expect("tearout fixture opens its Pelt session");
     let before = workspace.tree().clone();
+    let focused_before = workspace.focused_tile();
     let frisket = FrisketSurface::new(workspace.tree());
-    let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed);
+    let config = WorkspaceViewerConfig::new(urls, WindowingMode::Headed)
+        .with_tearout_cancellation_receipt()
+        .with_workspace_receipt_stage_timeout(Duration::from_millis(1));
     #[cfg(target_os = "windows")]
     let mut app = WorkspaceApp::new(config, workspace, frisket, None);
     #[cfg(not(target_os = "windows"))]
     let mut app = WorkspaceApp::new(config, workspace, frisket);
 
-    assert!(app.apply_tile_event(TileEvent::Dragged {
-        tile: TileId(1),
-        to: DropTarget::Outside,
-    }));
+    assert!(app.apply_tile_event(
+        TileEvent::Dragged {
+            tile: TileId(1),
+            to: DropTarget::Outside,
+        },
+        None,
+    ));
     assert_eq!(app.workspace.tree(), &before);
     assert!(app.workspace.controller(TileId(1)).is_some());
+    assert_eq!(app.workspace.focused_tile(), focused_before);
     assert_eq!(
         app.chrome_status,
         ChromeStatus::Message(
-            "Tearout requested for tile 1; destination composition is not available yet".to_owned()
+            "Tearout requested for tile 1; a native destination is not available in this dispatch"
+                .to_owned()
         )
     );
+    app.tearout_receipt_started = Some(Instant::now() - Duration::from_millis(2));
+    assert!(
+        app.tearout_receipt_timeout_error()
+            .is_some_and(|error| error.contains("W4 cancellation receipt timed out"))
+    );
+}
+
+#[test]
+fn cancellation_receipt_configures_a_separate_bounded_headed_run() {
+    let config = WorkspaceViewerConfig::new(
+        vec!["source.html".to_owned(), "sibling.html".to_owned()],
+        WindowingMode::Headed,
+    )
+    .with_tearout_cancellation_receipt();
+    assert!(config.tearout_cancellation_receipt);
+    assert!(!config.tearout_receipt);
+    assert!(!config.chrome);
+    assert_eq!(config.frames, Some(180));
 }
 
 #[test]

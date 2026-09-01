@@ -47,7 +47,7 @@ pub use genet_render_host::{RenderCore, WindowSurface};
 /// per window directly. The per-frame shape is unchanged — `rasterize` each scene,
 /// `acquire` the backbuffer, composite, present.
 pub struct SurfaceHost {
-    core: RenderCore,
+    core: Arc<RenderCore>,
     surface: WindowSurface,
 }
 
@@ -72,7 +72,7 @@ impl SurfaceHost {
         options: NetrenderOptions,
         transparent: bool,
     ) -> Result<Self, String> {
-        let core = RenderCore::boot(options)?;
+        let core = Arc::new(RenderCore::boot(options)?);
         let surface = core.create_surface_with_transparency(window, width, height, transparent)?;
         Ok(Self { core, surface })
     }
@@ -84,14 +84,21 @@ impl SurfaceHost {
         height: u32,
         options: NetrenderOptions,
     ) -> Result<Self, String> {
-        let core = RenderCore::boot_async(options).await?;
+        let core = Arc::new(RenderCore::boot_async(options).await?);
         let surface = core.create_surface(window, width, height)?;
         Ok(Self { core, surface })
     }
 
     /// The shared render core (device + renderer).
     pub fn core(&self) -> &RenderCore {
-        &self.core
+        self.core.as_ref()
+    }
+
+    /// Clone the render core for a second native surface. A multi-window host
+    /// owns this shared core plus one [`WindowSurface`] per window, preserving
+    /// one wgpu device across every presentation target.
+    pub fn shared_core(&self) -> Arc<RenderCore> {
+        Arc::clone(&self.core)
     }
 
     /// The netrender renderer — call `compose_external_texture` (and friends) on it.

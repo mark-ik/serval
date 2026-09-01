@@ -893,6 +893,40 @@ impl<F: 'static> PeltWorkspace<F> {
         self.frame_with_surface_polling(false)
     }
 
+    /// Produce one tile's current frame at host-provided geometry without
+    /// changing the workspace's active arrangement. A native host uses this
+    /// to preflight a tearout destination while the source still owns the
+    /// controller or surface producer.
+    pub fn frame_tile(
+        &mut self,
+        tile: TileId,
+        rect: WorkspaceRect,
+    ) -> Option<PeltWorkspaceFrame<F>> {
+        let mut tiles = Vec::new();
+        let mut surfaces = Vec::new();
+        if let Some(controller) = self.controllers.get_mut(&tile) {
+            let (width, height) = rect.viewport();
+            tiles.push(PeltTileFrame {
+                tile,
+                rect,
+                frame: controller.frame(width, height),
+            });
+        } else if let Some(surface) = self.surfaces.get_mut(&tile) {
+            let frame = surface.frame(rect, self.surface_scale_factor);
+            let route = self.routes.get(&tile)?.clone();
+            surfaces.push(PeltSurfaceLayer {
+                tile,
+                rect,
+                route,
+                frame,
+            });
+        } else {
+            return None;
+        }
+        self.sync_one_tile_metadata(tile);
+        Some(PeltWorkspaceFrame { tiles, surfaces })
+    }
+
     fn frame_with_surface_polling(&mut self, poll_surfaces: bool) -> PeltWorkspaceFrame<F> {
         let active = active_tiles(self.workbench.tree());
         let mut tiles = Vec::with_capacity(active.len());

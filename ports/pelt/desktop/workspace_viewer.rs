@@ -13,7 +13,8 @@ use accesskit::{
 use genet_host_api::ResourceFetcher;
 use genet_host_api::settings::{SettingValue, SettingsProvider};
 use genet_winit_host::{
-    A11yActionRequest, AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit,
+    A11yActionRequest, AccessKitBridge, BridgeStatus, RenderCore, SurfaceHost, WindowSurface,
+    wheel_delta_from_winit,
 };
 use inker::{
     A11yCapability, EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme,
@@ -26,7 +27,8 @@ use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
     PeltController, PeltDocumentState, PeltHostEffect, PeltRegistries, PeltRouteSource,
-    PeltRouteState, PeltTileInspection, PeltTileRequest, PeltWorkspace, WorkspaceRect,
+    PeltRouteState, PeltTileInspection, PeltTileRequest, PeltWorkspace, PeltWorkspaceFrame,
+    WorkspaceRect,
 };
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -223,6 +225,12 @@ pub struct WorkspaceViewerConfig {
     pub interaction_receipt: bool,
     /// Drive the mixed P4 routing receipt after the first shared frame.
     pub capability_receipt: bool,
+    /// Drive one live document-controller tearout through the native
+    /// two-window acceptance path.
+    pub tearout_receipt: bool,
+    /// Drive a hidden native tearout preflight, then deliberately decline it
+    /// before Pelt moves controller custody to the destination.
+    pub tearout_cancellation_receipt: bool,
     /// Named P5/P6 workspace receipt with a captured compositor artifact.
     pub workspace_receipt: Option<WorkspaceReceipt>,
     /// Show the retained P6 chrome above the Frisket pane frame.
@@ -249,6 +257,8 @@ impl WorkspaceViewerConfig {
             frames: None,
             interaction_receipt: false,
             capability_receipt: false,
+            tearout_receipt: false,
+            tearout_cancellation_receipt: false,
             workspace_receipt: None,
             chrome: true,
             workspace_size_matrix: None,
@@ -291,6 +301,24 @@ impl WorkspaceViewerConfig {
         self.capability_receipt = true;
         self.chrome = false;
         self.frames = Some(self.frames.unwrap_or(0).max(600));
+        self
+    }
+
+    /// Drive the native W4 receipt: a source-owned frame presents on a second
+    /// shared-device surface before the live controller moves there.
+    pub fn with_tearout_receipt(mut self) -> Self {
+        self.tearout_receipt = true;
+        self.chrome = false;
+        self.frames = Some(self.frames.unwrap_or(0).max(180));
+        self
+    }
+
+    /// Drive W4's headed cancellation receipt through a real hidden native
+    /// surface preflight, deliberately before `accept_tearout`.
+    pub fn with_tearout_cancellation_receipt(mut self) -> Self {
+        self.tearout_cancellation_receipt = true;
+        self.chrome = false;
+        self.frames = Some(self.frames.unwrap_or(0).max(180));
         self
     }
 
@@ -341,6 +369,8 @@ pub struct WorkspaceViewerOutcome {
     pub tile_count: usize,
     pub interaction_receipt: bool,
     pub capability_receipt: bool,
+    pub tearout_receipt: bool,
+    pub tearout_cancellation_receipt: bool,
     pub workspace_receipt: Option<WorkspaceReceiptOutcome>,
     pub routes: Vec<String>,
 }
@@ -349,10 +379,22 @@ pub fn run_livery_workspace_viewer(
     config: WorkspaceViewerConfig,
 ) -> Result<WorkspaceViewerOutcome, String> {
     if config.workspace_receipt.is_some()
-        && (config.interaction_receipt || config.capability_receipt)
+        && (config.interaction_receipt
+            || config.capability_receipt
+            || config.tearout_receipt
+            || config.tearout_cancellation_receipt)
     {
         return Err(
-            "a named workspace receipt cannot be combined with the P3 or P4 receipt driver"
+            "a named workspace receipt cannot be combined with the P3, P4, or W4 receipt driver"
+                .to_owned(),
+        );
+    }
+    if config.tearout_receipt && config.tearout_cancellation_receipt {
+        return Err("W4 acceptance and cancellation receipts are separate runs".to_owned());
+    }
+    if (config.tearout_receipt || config.tearout_cancellation_receipt) && config.urls.len() < 2 {
+        return Err(
+            "W4 tearout receipt needs a sibling source tile to keep the primary host live"
                 .to_owned(),
         );
     }
@@ -386,6 +428,8 @@ pub fn run_livery_workspace_viewer(
             tile_count,
             interaction_receipt: false,
             capability_receipt: false,
+            tearout_receipt: false,
+            tearout_cancellation_receipt: false,
             workspace_receipt: None,
             routes: Vec::new(),
         });
@@ -469,6 +513,12 @@ pub fn run_livery_workspace_viewer(
     }
     if app.config.capability_receipt && !app.receipt_complete {
         return Err("P4 capability receipt ended before a native surface frame arrived".to_owned());
+    }
+    if app.config.tearout_receipt && !app.receipt_complete {
+        return Err("W4 tearout receipt ended before destination acceptance".to_owned());
+    }
+    if app.config.tearout_cancellation_receipt && !app.receipt_complete {
+        return Err("W4 tearout cancellation receipt ended before host decline".to_owned());
     }
     if app.config.workspace_receipt.is_some() && app.workspace_receipt_outcome.is_none() {
         return Err("workspace receipt ended before its semantic assertion and capture".to_owned());
@@ -966,6 +1016,13 @@ struct WorkspaceApp {
     frisket: FrisketSurface,
     window: Option<Arc<Window>>,
     host: Option<SurfaceHost>,
+    /// A hidden, already-booted destination that has not yet earned custody.
+    /// Source controllers remain in `workspace` until this surface presents
+    /// its preflight composition.
+    pending_tearouts: HashMap<WindowId, PendingTearout>,
+    /// Live, composed secondary windows. Every entry shares the main window's
+    /// `RenderCore`, but owns its own `WindowSurface` and Pelt workspace.
+    tearouts: HashMap<WindowId, TearoutWindow>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -984,6 +1041,11 @@ struct WorkspaceApp {
     snap_bridge: Option<cambium_genet_winit_host::SnapLayoutBridge>,
     receipt_step: u8,
     receipt_complete: bool,
+    tearout_receipt_tile: Option<TileId>,
+    tearout_cancellation_receipt_tile: Option<TileId>,
+    tearout_cancellation_preflight_presented: bool,
+    tearout_cancellation_hidden_preflight: bool,
+    tearout_receipt_started: Option<Instant>,
     workspace_receipt_redraws: u32,
     receipt_error: Option<String>,
     pending_workspace_assertion: Option<String>,
@@ -1010,6 +1072,43 @@ struct WorkspaceApp {
     mixed_pending_resize: Option<MixedPendingResize>,
     #[cfg(target_os = "windows")]
     scrying_host: Option<ScryingReceiptHost>,
+}
+
+/// One destination that has a configured swapchain and a source-owned snapshot
+/// ready to compose. It remains hidden until that composition succeeds.
+struct PendingTearout {
+    tile: TileId,
+    window: Arc<Window>,
+    core: Arc<RenderCore>,
+    surface: WindowSurface,
+    frisket: FrisketSurface,
+    pane_scene: Scene,
+    frame: PeltWorkspaceFrame<Scene>,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+    disposition: TearoutDisposition,
+}
+
+/// A fully accepted Pelt tearout window. The shared render core preserves the
+/// host-wide wgpu device while this window owns its swapchain and input state.
+struct TearoutWindow {
+    tile: TileId,
+    window: Arc<Window>,
+    core: Arc<RenderCore>,
+    surface: WindowSurface,
+    workspace: PeltWorkspace<Scene>,
+    frisket: FrisketSurface,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+    cursor: (f32, f32),
+    modifiers: SessionModifiers,
+    /// Recorded only after a source-owned preflight frame presented, the host
+    /// requested visibility, and Winit delivered native focus to this window.
+    native_focus_observed: bool,
+    visibility_requested: bool,
+    visible_frame_presented: bool,
 }
 
 /// One stable virtual focus target in the composite workspace tree.
@@ -1477,6 +1576,8 @@ impl WorkspaceApp {
             frisket,
             window: None,
             host: None,
+            pending_tearouts: HashMap::new(),
+            tearouts: HashMap::new(),
             width,
             height,
             scale_factor: 1.0,
@@ -1491,6 +1592,11 @@ impl WorkspaceApp {
             snap_bridge: None,
             receipt_step: 0,
             receipt_complete: false,
+            tearout_receipt_tile: None,
+            tearout_cancellation_receipt_tile: None,
+            tearout_cancellation_preflight_presented: false,
+            tearout_cancellation_hidden_preflight: false,
+            tearout_receipt_started: None,
             workspace_receipt_redraws: 0,
             receipt_error: None,
             pending_workspace_assertion: None,
@@ -1564,6 +1670,9 @@ impl WorkspaceApp {
             tile_count: self.workspace.tree().tiles().len(),
             interaction_receipt: self.config.interaction_receipt && self.receipt_complete,
             capability_receipt: self.config.capability_receipt && self.receipt_complete,
+            tearout_receipt: self.config.tearout_receipt && self.receipt_complete,
+            tearout_cancellation_receipt: self.config.tearout_cancellation_receipt
+                && self.receipt_complete,
             workspace_receipt: self.workspace_receipt_outcome.clone(),
             routes,
         }
@@ -2146,6 +2255,28 @@ impl WorkspaceApp {
                 return;
             }
         }
+        if self.config.tearout_receipt && self.redraws > 0 && !self.receipt_complete {
+            match self.drive_tearout_receipt(event_loop) {
+                Ok(true) => self.receipt_complete = true,
+                Ok(false) => {},
+                Err(error) => {
+                    self.receipt_error = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            }
+        }
+        if self.config.tearout_cancellation_receipt && self.redraws > 0 && !self.receipt_complete {
+            match self.drive_tearout_cancellation_receipt(event_loop) {
+                Ok(true) => self.receipt_complete = true,
+                Ok(false) => {},
+                Err(error) => {
+                    self.receipt_error = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            }
+        }
 
         self.refresh_chrome();
         let (logical_width, logical_height) = self.logical_size();
@@ -2353,11 +2484,20 @@ impl WorkspaceApp {
                 event_loop.exit();
                 return;
             }
+            if let Some(error) = self.tearout_receipt_timeout_error() {
+                self.receipt_error = Some(error);
+                event_loop.exit();
+                return;
+            }
             // An outdated or lost swapchain is deliberately skipped by the
             // shared host. A named receipt must drive one recovery frame,
             // otherwise a geometry change can leave its native surface
             // waiting without another redraw.
-            if self.config.workspace_receipt.is_some() && !self.receipt_complete {
+            if (self.config.workspace_receipt.is_some()
+                || self.config.tearout_receipt
+                || self.config.tearout_cancellation_receipt)
+                && !self.receipt_complete
+            {
                 self.request_redraw();
             }
             return;
@@ -2532,6 +2672,11 @@ impl WorkspaceApp {
             event_loop.exit();
             return;
         }
+        if let Some(error) = self.tearout_receipt_timeout_error() {
+            self.receipt_error = Some(error);
+            event_loop.exit();
+            return;
+        }
 
         let workspace_receipt_finished = match self.config.workspace_receipt {
             Some(
@@ -2626,18 +2771,18 @@ impl WorkspaceApp {
         }
     }
 
-    fn apply_tile_event(&mut self, event: TileEvent) -> bool {
+    fn apply_tile_event(&mut self, event: TileEvent, event_loop: Option<&ActiveEventLoop>) -> bool {
         let focused_before = self.workspace.focused_tile();
         let outcome = self.workspace.apply_outcome(&event);
         if let Some(WorkbenchEffect::TearOut { tile }) = outcome.effect() {
-            self.chrome_status = ChromeStatus::Message(format!(
-                "Tearout requested for tile {}; destination composition is not available yet",
-                tile.0
-            ));
-            // The typed request intentionally remains pending. Do not create
-            // a blank destination or remove the source until a second
-            // SurfaceHost can compose the transferred workspace.
-            return true;
+            let Some(event_loop) = event_loop else {
+                self.chrome_status = ChromeStatus::Message(format!(
+                    "Tearout requested for tile {}; a native destination is not available in this dispatch",
+                    tile.0
+                ));
+                return true;
+            };
+            return self.prepare_native_tearout(event_loop, tile, TearoutDisposition::Accept);
         }
         if outcome.changed() {
             if self.workspace.focused_tile() != focused_before {
@@ -2652,6 +2797,293 @@ impl WorkspaceApp {
         } else {
             false
         }
+    }
+
+    /// Deterministic headed W4 hook. The first settled primary frame requests
+    /// an outside drop through the same host path as a user drag, then records
+    /// the live acceptance facts: a presented/visible destination window, its
+    /// retained stable tile and model focus, and source custody removal.
+    fn drive_tearout_receipt(&mut self, event_loop: &ActiveEventLoop) -> Result<bool, String> {
+        let tile = match self.tearout_receipt_tile {
+            Some(tile) => tile,
+            None => {
+                let tile = self
+                    .workspace
+                    .focused_tile()
+                    .ok_or_else(|| "W4 tearout receipt needs a focused source tile".to_owned())?;
+                if !self.apply_tile_event(
+                    TileEvent::Dragged {
+                        tile,
+                        to: DropTarget::Outside,
+                    },
+                    Some(event_loop),
+                ) {
+                    return Err(
+                        "W4 tearout receipt did not dispatch an outside-drop request".to_owned(),
+                    );
+                }
+                self.tearout_receipt_tile = Some(tile);
+                tile
+            },
+        };
+        if self
+            .pending_tearouts
+            .values()
+            .any(|pending| pending.tile == tile)
+        {
+            self.request_redraw();
+            return Ok(false);
+        }
+        let accepted = self
+            .tearouts
+            .values()
+            .find(|tearout| tearout.tile == tile)
+            .ok_or_else(|| "W4 tearout receipt had no accepted destination window".to_owned())?;
+        if accepted.workspace.focused_tile() != Some(tile)
+            || accepted.workspace.tree().find(tile).is_none()
+            || self.workspace.tree().find(tile).is_some()
+            || self.workspace.controller(tile).is_some()
+        {
+            return Err(
+                "W4 tearout receipt lost destination visibility, tile identity, model focus, or source custody"
+                    .to_owned(),
+            );
+        }
+        if !accepted.native_focus_observed || !accepted.visible_frame_presented {
+            accepted.window.request_redraw();
+            self.request_redraw();
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Deterministic headed W4 cancellation hook. It creates and presents the
+    /// same hidden native destination preflight as acceptance, then the host
+    /// intentionally declines before `PeltWorkspace::accept_tearout` can
+    /// transfer source custody.
+    fn drive_tearout_cancellation_receipt(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<bool, String> {
+        let tile = match self.tearout_cancellation_receipt_tile {
+            Some(tile) => tile,
+            None => {
+                let tile = self.workspace.focused_tile().ok_or_else(|| {
+                    "W4 tearout cancellation receipt needs a focused source tile".to_owned()
+                })?;
+                let outcome = self.workspace.apply_outcome(&TileEvent::Dragged {
+                    tile,
+                    to: DropTarget::Outside,
+                });
+                let Some(WorkbenchEffect::TearOut { tile: effect_tile }) = outcome.effect() else {
+                    return Err(
+                        "W4 tearout cancellation receipt did not dispatch an outside-drop request"
+                            .to_owned(),
+                    );
+                };
+                if effect_tile != tile {
+                    return Err(
+                        "W4 tearout cancellation receipt changed the requested tile identity"
+                            .to_owned(),
+                    );
+                }
+                self.tearout_cancellation_receipt_tile = Some(tile);
+                if !self.prepare_native_tearout(
+                    event_loop,
+                    tile,
+                    TearoutDisposition::DeclineForReceipt,
+                ) {
+                    return Err(
+                        "W4 tearout cancellation receipt could not prepare a native destination"
+                            .to_owned(),
+                    );
+                }
+                tile
+            },
+        };
+        if self
+            .pending_tearouts
+            .values()
+            .any(|pending| pending.tile == tile)
+        {
+            self.request_redraw();
+            return Ok(false);
+        }
+        if self.tearouts.values().any(|tearout| tearout.tile == tile) {
+            return Err("W4 tearout cancellation receipt accepted destination custody".to_owned());
+        }
+        if !self.tearout_cancellation_hidden_preflight {
+            return Err(
+                "W4 tearout cancellation receipt did not keep the native destination hidden"
+                    .to_owned(),
+            );
+        }
+        if !self.tearout_cancellation_preflight_presented {
+            self.request_redraw();
+            return Ok(false);
+        }
+        if self.workspace.focused_tile() != Some(tile)
+            || self.workspace.tree().find(tile).is_none()
+            || self.workspace.controller(tile).is_none()
+        {
+            return Err(
+                "W4 tearout cancellation receipt lost source tree, controller, or model focus"
+                    .to_owned(),
+            );
+        }
+        Ok(true)
+    }
+
+    fn tearout_receipt_timeout_error(&self) -> Option<String> {
+        let started = self.tearout_receipt_started?;
+        if self.receipt_complete || started.elapsed() < self.config.workspace_receipt_stage_timeout
+        {
+            return None;
+        }
+        let kind = if self.config.tearout_cancellation_receipt {
+            "cancellation"
+        } else {
+            "acceptance"
+        };
+        Some(format!(
+            "W4 {kind} receipt timed out after {}s at {}x{} (pending={} accepted={})",
+            self.config.workspace_receipt_stage_timeout.as_secs_f32(),
+            self.width,
+            self.height,
+            self.pending_tearouts.len(),
+            self.tearouts.len(),
+        ))
+    }
+
+    /// Create and preflight a hidden destination surface without moving the
+    /// source controller. `pending_tearouts` presents one source-owned frame
+    /// before it calls `PeltWorkspace::accept_tearout`.
+    fn prepare_native_tearout(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        tile: TileId,
+        disposition: TearoutDisposition,
+    ) -> bool {
+        if self.workspace.controller(tile).is_none() {
+            self.chrome_status = ChromeStatus::Message(format!(
+                "Tearout requested for tile {}; native surface composition is not available yet",
+                tile.0
+            ));
+            return true;
+        }
+        let Some(tile_record) = self.workspace.tree().find(tile).cloned() else {
+            return false;
+        };
+        let Some(core) = self.host.as_ref().map(SurfaceHost::shared_core) else {
+            self.chrome_status = ChromeStatus::Error(
+                "Pelt cannot prepare a tearout before its primary surface is ready".to_owned(),
+            );
+            return true;
+        };
+        let title = static_viewer::pelt_window_title(Some(&tile_record.title), None);
+        // This is an independent native window. Keep the OS frame until the
+        // secondary host has its own CSD and accessibility bridge.
+        let attributes = static_viewer::pelt_window_attributes(title, self.width, self.height)
+            .with_visible(false);
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                self.chrome_status =
+                    ChromeStatus::Error(format!("Could not create tearout window: {error}"));
+                return true;
+            },
+        };
+        // Winit resolves the destination against its actual monitor. Read its
+        // client size and scale after creation rather than assuming the source
+        // window's DPI or physical extent.
+        let size = window.inner_size();
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        let scale_factor = window.scale_factor() as f32;
+        let surface = match core.create_surface(Arc::clone(&window), width, height) {
+            Ok(surface) => surface,
+            Err(error) => {
+                self.chrome_status =
+                    ChromeStatus::Error(format!("Could not configure tearout surface: {error}"));
+                return true;
+            },
+        };
+        let mut frisket = FrisketSurface::new(&TileTree::single(tile_record));
+        let logical_width = static_viewer::logical_extent(width, scale_factor);
+        let logical_height = static_viewer::logical_extent(height, scale_factor);
+        let pane = match frisket.frame(logical_width, logical_height) {
+            Ok(pane) => pane,
+            Err(error) => {
+                self.chrome_status =
+                    ChromeStatus::Error(format!("Could not lay out tearout destination: {error}"));
+                return true;
+            },
+        };
+        let Some((_, rect)) = pane.content_rects.iter().find(|(id, _)| *id == tile) else {
+            self.chrome_status = ChromeStatus::Error(
+                "Tearout destination did not expose its content hole".to_owned(),
+            );
+            return true;
+        };
+        self.workspace.set_surface_scale_factor(scale_factor);
+        let Some(frame) = self.workspace.frame_tile(tile, *rect) else {
+            self.chrome_status = ChromeStatus::Error(
+                "Tearout source no longer owns a live document controller".to_owned(),
+            );
+            return true;
+        };
+        let id = window.id();
+        let pending = PendingTearout {
+            tile,
+            window: Arc::clone(&window),
+            core,
+            surface,
+            frisket,
+            pane_scene: pane.scene,
+            frame,
+            width,
+            height,
+            scale_factor,
+            disposition,
+        };
+        self.chrome_status =
+            ChromeStatus::Message(format!("Preparing tearout for tile {}", tile.0));
+        if disposition == TearoutDisposition::DeclineForReceipt {
+            self.tearout_cancellation_hidden_preflight = window.is_visible() == Some(false);
+            if !self.tearout_cancellation_hidden_preflight {
+                let error =
+                    "W4 cancellation destination became visible before its preflight".to_owned();
+                self.chrome_status = ChromeStatus::Error(error.clone());
+                self.restore_source_after_preflight(tile);
+                self.receipt_error = Some(error);
+                return true;
+            }
+        }
+        // Hidden Winit windows do not reliably receive a redraw on every
+        // platform. Try the preflight synchronously; only a temporarily
+        // unavailable swapchain remains pending for an event-driven retry.
+        match compose_document_workspace_frame(
+            pending.core.as_ref(),
+            &pending.surface,
+            &pending.pane_scene,
+            &pending.frame,
+            pending.width,
+            pending.height,
+            pending.scale_factor,
+        ) {
+            Ok(true) => self.finish_composed_tearout(id, pending),
+            Ok(false) => {
+                self.pending_tearouts.insert(id, pending);
+                window.request_redraw();
+            },
+            Err(error) => {
+                self.chrome_status = ChromeStatus::Error(format!(
+                    "Tearout composition failed before acceptance: {error}"
+                ));
+                self.restore_source_after_preflight(tile);
+            },
+        }
+        true
     }
 
     /// CSD only: the border resize direction under the cursor, None when the
@@ -2691,7 +3123,6 @@ impl WorkspaceApp {
             }
         }
     }
-
     /// CSD: publish the maximize button's current layout box to the native
     /// Snap Layout hit-test bridge. Cheap and deduped inside the bridge.
     fn update_snap_bridge(&mut self) {
@@ -2721,7 +3152,7 @@ impl WorkspaceApp {
                     split: drag.target.path.clone(),
                     fractions,
                 };
-                redraw |= self.apply_tile_event(event);
+                redraw |= self.apply_tile_event(event, None);
             }
             return redraw;
         }
@@ -2764,7 +3195,7 @@ impl WorkspaceApp {
                 self.clear_chrome_address();
                 self.clear_chrome_engine_menu();
                 self.clear_chrome_appearance();
-                self.apply_tile_event(TileEvent::Closed(tile))
+                self.apply_tile_event(TileEvent::Closed(tile), None)
             },
             Some(FrisketHit::Divider { target, split_rect }) => {
                 self.clear_chrome_address();
@@ -2847,20 +3278,31 @@ impl WorkspaceApp {
     }
 
     fn pointer_up(&mut self) -> bool {
+        self.pointer_up_inner(None)
+    }
+
+    fn pointer_up_live(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        self.pointer_up_inner(Some(event_loop))
+    }
+
+    fn pointer_up_inner(&mut self, event_loop: Option<&ActiveEventLoop>) -> bool {
         let gesture = self.gesture.take();
         match gesture {
             Some(PointerGesture::Divider(_)) => true,
             Some(PointerGesture::Tab(drag)) if drag.moved => {
                 let to = self.resolve_drop(drag.tile);
                 to.is_some_and(|to| {
-                    self.apply_tile_event(TileEvent::Dragged {
-                        tile: drag.tile,
-                        to,
-                    })
+                    self.apply_tile_event(
+                        TileEvent::Dragged {
+                            tile: drag.tile,
+                            to,
+                        },
+                        event_loop,
+                    )
                 })
             },
             Some(PointerGesture::Tab(drag)) => {
-                self.apply_tile_event(TileEvent::Activated(drag.tile))
+                self.apply_tile_event(TileEvent::Activated(drag.tile), None)
             },
             Some(PointerGesture::Content) => {
                 let (x, y) = self.cursor;
@@ -2980,6 +3422,538 @@ fn discard_unimported_surface_frame(frame: SurfaceFrame) {
     let _ = frame;
 }
 
+/// Compose a document-only workspace frame through one surface of a shared
+/// render core. Native surface producers deliberately stay with the source
+/// until this host has a tested multi-surface import path.
+fn compose_document_workspace_frame(
+    core: &RenderCore,
+    surface: &WindowSurface,
+    pane_scene: &Scene,
+    frame: &PeltWorkspaceFrame<Scene>,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+) -> Result<bool, String> {
+    if !frame.surfaces.is_empty() {
+        return Err(
+            "native surface tearout needs a shared-device import receipt before acceptance"
+                .to_owned(),
+        );
+    }
+    let (_pane_texture, pane_view) = core.rasterize_scaled(
+        pane_scene,
+        width,
+        height,
+        ColorLoad::Clear(wgpu::Color {
+            r: 0.10,
+            g: 0.10,
+            b: 0.12,
+            a: 1.0,
+        }),
+        scale_factor,
+    );
+    let tile_layers = frame
+        .tiles
+        .iter()
+        .map(|layer| {
+            let (tile_width, tile_height) = (
+                physical_extent(layer.rect.width, scale_factor),
+                physical_extent(layer.rect.height, scale_factor),
+            );
+            let (texture, view) = core.rasterize_scaled(
+                &layer.frame,
+                tile_width,
+                tile_height,
+                ColorLoad::Clear(wgpu::Color::WHITE),
+                scale_factor,
+            );
+            (texture, view, layer.rect)
+        })
+        .collect::<Vec<_>>();
+    let Some(swap) = surface.acquire(core) else {
+        return Ok(false);
+    };
+    let target = swap
+        .texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    core.renderer().compose_external_texture(
+        &pane_view,
+        &target,
+        surface.format(),
+        width,
+        height,
+        ExternalTexturePlacement::new([0.0, 0.0, width as f32, height as f32]),
+    );
+    for (_texture, view, rect) in &tile_layers {
+        core.renderer().compose_external_texture(
+            view,
+            &target,
+            surface.format(),
+            width,
+            height,
+            placement(*rect, scale_factor),
+        );
+    }
+    core.queue().present(swap);
+    Ok(true)
+}
+
+enum TearoutEvent {
+    Keep { redraw: bool },
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TearoutDisposition {
+    Accept,
+    DeclineForReceipt,
+}
+
+impl TearoutWindow {
+    fn logical_size(&self) -> (u32, u32) {
+        (
+            static_viewer::logical_extent(self.width, self.scale_factor),
+            static_viewer::logical_extent(self.height, self.scale_factor),
+        )
+    }
+
+    fn refresh_tree(&mut self) {
+        debug_assert_eq!(self.workspace.focused_tile(), Some(self.tile));
+        self.frisket.set_tree(self.workspace.tree());
+        let title = self
+            .workspace
+            .focused_tile()
+            .and_then(|tile| self.workspace.controller(tile));
+        self.window.set_title(&static_viewer::pelt_window_title(
+            title.and_then(PeltController::title).as_deref(),
+            title.map(PeltController::address),
+        ));
+    }
+
+    fn apply_effect(&mut self, effect: PeltHostEffect) -> bool {
+        if let Some(error) = effect.error {
+            eprintln!("[pelt-tearout] {error}");
+        }
+        if let Some(cursor) = effect.cursor {
+            self.window.set_cursor(match cursor {
+                SessionCursor::Default => winit::window::CursorIcon::Default,
+                SessionCursor::Pointer => winit::window::CursorIcon::Pointer,
+                SessionCursor::Text => winit::window::CursorIcon::Text,
+            });
+        }
+        self.window.set_ime_allowed(effect.editable);
+        if effect.navigated {
+            self.refresh_tree();
+        }
+        effect.redraw || effect.navigated
+    }
+
+    fn render(&mut self) -> Result<bool, String> {
+        let (logical_width, logical_height) = self.logical_size();
+        let pane = self.frisket.frame(logical_width, logical_height)?;
+        self.workspace
+            .set_content_rects(pane.content_rects.iter().copied());
+        self.workspace.set_surface_scale_factor(self.scale_factor);
+        let more = self.workspace.pump();
+        let frame = self.workspace.frame();
+        let composed = compose_document_workspace_frame(
+            self.core.as_ref(),
+            &self.surface,
+            &pane.scene,
+            &frame,
+            self.width,
+            self.height,
+            self.scale_factor,
+        )?;
+        if composed {
+            self.workspace.mark_visible_documents_presented();
+            if self.visibility_requested {
+                self.visible_frame_presented = true;
+            }
+        }
+        Ok(composed && more)
+    }
+
+    fn window_event(&mut self, event: WindowEvent) -> TearoutEvent {
+        match event {
+            WindowEvent::CloseRequested => TearoutEvent::Close,
+            WindowEvent::Resized(size) => {
+                self.width = size.width.max(1);
+                self.height = size.height.max(1);
+                self.surface
+                    .resize(self.core.as_ref(), self.width, self.height);
+                TearoutEvent::Keep { redraw: true }
+            },
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = scale_factor as f32;
+                let size = self.window.inner_size();
+                self.width = size.width.max(1);
+                self.height = size.height.max(1);
+                self.surface
+                    .resize(self.core.as_ref(), self.width, self.height);
+                TearoutEvent::Keep { redraw: true }
+            },
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let state = modifiers.state();
+                self.modifiers = SessionModifiers {
+                    shift: state.shift_key(),
+                    control: state.control_key(),
+                    alt: state.alt_key(),
+                    meta: state.super_key(),
+                };
+                TearoutEvent::Keep { redraw: false }
+            },
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (
+                    static_viewer::logical_position(position.x as f32, self.scale_factor),
+                    static_viewer::logical_position(position.y as f32, self.scale_factor),
+                );
+                let effect = self.workspace.input(SessionInput::PointerMoved {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                    modifiers: self.modifiers,
+                });
+                TearoutEvent::Keep {
+                    redraw: self.apply_effect(effect),
+                }
+            },
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if state == ElementState::Pressed {
+                    match self.frisket.hit(self.cursor.0, self.cursor.1) {
+                        Some(FrisketHit::Tab(tile)) => {
+                            let changed = self.workspace.apply(&TileEvent::Activated(tile));
+                            if changed {
+                                self.refresh_tree();
+                            }
+                            return TearoutEvent::Keep { redraw: changed };
+                        },
+                        Some(FrisketHit::Close(tile)) => {
+                            if self.workspace.apply(&TileEvent::Closed(tile)) {
+                                if self.workspace.tree().tiles().is_empty() {
+                                    return TearoutEvent::Close;
+                                }
+                                self.refresh_tree();
+                                return TearoutEvent::Keep { redraw: true };
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+                let effect = self.workspace.input(SessionInput::PointerButton {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                    button: SessionPointerButton::Primary,
+                    state: button_state(state),
+                    modifiers: self.modifiers,
+                });
+                TearoutEvent::Keep {
+                    redraw: self.apply_effect(effect),
+                }
+            },
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = wheel_delta_from_winit(delta);
+                TearoutEvent::Keep {
+                    redraw: self.workspace.scroll_at(
+                        self.cursor.0,
+                        self.cursor.1,
+                        dx / self.scale_factor,
+                        dy / self.scale_factor,
+                    ),
+                }
+            },
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(command) =
+                    navigation_command(&event.logical_key, event.state, self.modifiers)
+                {
+                    let effect = self.workspace.command(command);
+                    return TearoutEvent::Keep {
+                        redraw: self.apply_effect(effect),
+                    };
+                }
+                let effect = self.workspace.input(SessionInput::Key {
+                    key: session_key(&event.logical_key),
+                    state: button_state(event.state),
+                    modifiers: self.modifiers,
+                    repeat: event.repeat,
+                });
+                let handled = effect.handled;
+                let editable = effect.editable;
+                let mut redraw = self.apply_effect(effect);
+                if event.state == ElementState::Pressed
+                    && !handled
+                    && !editable
+                    && let Some(key) = scroll_key(&event.logical_key, self.modifiers.shift)
+                {
+                    redraw |= self.workspace.scroll_for_key(key);
+                }
+                TearoutEvent::Keep { redraw }
+            },
+            WindowEvent::Ime(ime) => {
+                let effect = self.workspace.input(SessionInput::Ime(session_ime(ime)));
+                TearoutEvent::Keep {
+                    redraw: self.apply_effect(effect),
+                }
+            },
+            WindowEvent::Focused(focused) => {
+                self.native_focus_observed |= focused;
+                let effect = self.workspace.input(SessionInput::Focus(focused));
+                TearoutEvent::Keep {
+                    redraw: self.apply_effect(effect),
+                }
+            },
+            WindowEvent::RedrawRequested => match self.render() {
+                Ok(redraw) => TearoutEvent::Keep { redraw },
+                Err(error) => {
+                    eprintln!("[pelt-tearout] destination render failed: {error}");
+                    TearoutEvent::Keep { redraw: false }
+                },
+            },
+            _ => TearoutEvent::Keep { redraw: false },
+        }
+    }
+}
+
+impl WorkspaceApp {
+    /// A document frame updates its controller viewport. On a rejected
+    /// preflight, restore the source geometry before its next visible frame;
+    /// custody, tree membership, controller identity, and model focus have
+    /// remained source-owned throughout.
+    fn restore_source_after_preflight(&mut self, tile: TileId) {
+        self.workspace.set_surface_scale_factor(self.scale_factor);
+        if let Some(rect) = self.workspace.content_rect(tile) {
+            let _ = self.workspace.frame_tile(tile, rect);
+        }
+        self.request_redraw();
+    }
+
+    /// Resolve a presented native preflight. The cancellation receipt takes
+    /// the host-decline branch before the sole source-mutating accept step.
+    fn finish_composed_tearout(&mut self, window_id: WindowId, pending: PendingTearout) {
+        match pending.disposition {
+            TearoutDisposition::Accept => self.accept_composed_tearout(window_id, pending),
+            TearoutDisposition::DeclineForReceipt => self.decline_composed_tearout(pending),
+        }
+    }
+
+    /// Complete the sole source-mutating step after `pending` has presented
+    /// through the shared render core. A failure before this call cannot remove
+    /// the source tree, controller, or model focus.
+    fn accept_composed_tearout(&mut self, window_id: WindowId, pending: PendingTearout) {
+        let Some(workspace) = self.workspace.accept_tearout(pending.tile) else {
+            self.chrome_status = ChromeStatus::Error(
+                "Tearout source changed before destination acceptance".to_owned(),
+            );
+            self.restore_source_after_preflight(pending.tile);
+            return;
+        };
+        let mut frisket = pending.frisket;
+        frisket.set_tree(workspace.tree());
+        let mut tearout = TearoutWindow {
+            tile: pending.tile,
+            window: Arc::clone(&pending.window),
+            core: pending.core,
+            surface: pending.surface,
+            workspace,
+            frisket,
+            width: pending.width,
+            height: pending.height,
+            scale_factor: pending.scale_factor,
+            cursor: (0.0, 0.0),
+            modifiers: SessionModifiers::default(),
+            native_focus_observed: false,
+            visibility_requested: false,
+            visible_frame_presented: false,
+        };
+        tearout.refresh_tree();
+        self.workspace.set_surface_scale_factor(self.scale_factor);
+        self.frisket.set_tree(self.workspace.tree());
+        if let Some(window) = &self.window {
+            window.set_title(&self.window_title());
+            window.request_redraw();
+        }
+        self.chrome_status = ChromeStatus::Ready;
+        tearout.window.set_visible(true);
+        tearout.visibility_requested = true;
+        tearout.window.focus_window();
+        tearout.window.request_redraw();
+        self.tearouts.insert(window_id, tearout);
+    }
+
+    /// A headed receipt host decline after a real hidden native presentation.
+    /// Dropping `pending` closes the destination before it ever becomes
+    /// visible, while source custody remains in the primary workspace.
+    fn decline_composed_tearout(&mut self, pending: PendingTearout) {
+        let tile = pending.tile;
+        if self.tearout_cancellation_receipt_tile == Some(tile) {
+            self.tearout_cancellation_preflight_presented = true;
+        }
+        self.chrome_status = ChromeStatus::Message(format!(
+            "Tearout for tile {} was declined after hidden native preflight",
+            tile.0
+        ));
+        self.restore_source_after_preflight(tile);
+    }
+
+    fn refresh_pending_tearout(&mut self, pending: &mut PendingTearout) -> Result<(), String> {
+        let logical_width = static_viewer::logical_extent(pending.width, pending.scale_factor);
+        let logical_height = static_viewer::logical_extent(pending.height, pending.scale_factor);
+        let pane = pending
+            .frisket
+            .frame(logical_width, logical_height)
+            .map_err(|error| format!("could not lay out tearout destination: {error}"))?;
+        let (_, rect) = pane
+            .content_rects
+            .iter()
+            .find(|(id, _)| *id == pending.tile)
+            .ok_or_else(|| "tearout destination did not expose its content hole".to_owned())?;
+        self.workspace
+            .set_surface_scale_factor(pending.scale_factor);
+        let frame = self
+            .workspace
+            .frame_tile(pending.tile, *rect)
+            .ok_or_else(|| "tearout source no longer owns a live document controller".to_owned())?;
+        pending.pane_scene = pane.scene;
+        pending.frame = frame;
+        Ok(())
+    }
+
+    fn fail_pending_tearout(
+        &mut self,
+        tile: TileId,
+        disposition: TearoutDisposition,
+        error: String,
+    ) {
+        self.chrome_status = ChromeStatus::Error(error.clone());
+        self.restore_source_after_preflight(tile);
+        let is_receipt = match disposition {
+            TearoutDisposition::Accept => {
+                self.config.tearout_receipt && self.tearout_receipt_tile == Some(tile)
+            },
+            TearoutDisposition::DeclineForReceipt => {
+                self.config.tearout_cancellation_receipt
+                    && self.tearout_cancellation_receipt_tile == Some(tile)
+            },
+        };
+        if is_receipt {
+            self.receipt_error = Some(error);
+        }
+    }
+
+    /// Handle a secondary window without permitting it to mutate source
+    /// custody until its preflight composition has actually presented.
+    fn secondary_window_event(&mut self, window_id: WindowId, event: WindowEvent) -> bool {
+        if self.pending_tearouts.contains_key(&window_id) {
+            let mut pending = self
+                .pending_tearouts
+                .remove(&window_id)
+                .expect("pending tearout was checked above");
+            match event {
+                WindowEvent::CloseRequested => {
+                    self.fail_pending_tearout(
+                        pending.tile,
+                        pending.disposition,
+                        format!(
+                            "Tearout for tile {} was closed before composition",
+                            pending.tile.0
+                        ),
+                    );
+                },
+                WindowEvent::Resized(size) => {
+                    pending.width = size.width.max(1);
+                    pending.height = size.height.max(1);
+                    pending
+                        .surface
+                        .resize(pending.core.as_ref(), pending.width, pending.height);
+                    match self.refresh_pending_tearout(&mut pending) {
+                        Ok(()) => {
+                            pending.window.request_redraw();
+                            self.pending_tearouts.insert(window_id, pending);
+                        },
+                        Err(error) => {
+                            self.fail_pending_tearout(pending.tile, pending.disposition, error);
+                        },
+                    }
+                },
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    pending.scale_factor = scale_factor as f32;
+                    let size = pending.window.inner_size();
+                    pending.width = size.width.max(1);
+                    pending.height = size.height.max(1);
+                    pending
+                        .surface
+                        .resize(pending.core.as_ref(), pending.width, pending.height);
+                    match self.refresh_pending_tearout(&mut pending) {
+                        Ok(()) => {
+                            pending.window.request_redraw();
+                            self.pending_tearouts.insert(window_id, pending);
+                        },
+                        Err(error) => {
+                            self.fail_pending_tearout(pending.tile, pending.disposition, error);
+                        },
+                    }
+                },
+                WindowEvent::RedrawRequested => {
+                    match compose_document_workspace_frame(
+                        pending.core.as_ref(),
+                        &pending.surface,
+                        &pending.pane_scene,
+                        &pending.frame,
+                        pending.width,
+                        pending.height,
+                        pending.scale_factor,
+                    ) {
+                        Ok(false) => {
+                            pending.window.request_redraw();
+                            self.pending_tearouts.insert(window_id, pending);
+                        },
+                        Err(error) => {
+                            self.fail_pending_tearout(
+                                pending.tile,
+                                pending.disposition,
+                                format!("Tearout composition failed before acceptance: {error}"),
+                            );
+                        },
+                        Ok(true) => self.finish_composed_tearout(window_id, pending),
+                    }
+                },
+                _ => {
+                    self.pending_tearouts.insert(window_id, pending);
+                },
+            }
+            return true;
+        }
+        let Some(mut tearout) = self.tearouts.remove(&window_id) else {
+            return false;
+        };
+        let native_focus_observed = tearout.native_focus_observed;
+        let visible_frame_presented = tearout.visible_frame_presented;
+        match tearout.window_event(event) {
+            TearoutEvent::Close => {},
+            TearoutEvent::Keep { redraw } => {
+                if redraw {
+                    tearout.window.request_redraw();
+                }
+                let receipt_progressed = self.tearout_receipt_tile == Some(tearout.tile)
+                    && (tearout.native_focus_observed != native_focus_observed
+                        || tearout.visible_frame_presented != visible_frame_presented);
+                self.tearouts.insert(window_id, tearout);
+                if receipt_progressed {
+                    // The receipt driver runs from the primary render. A
+                    // secondary focus or visible presentation therefore must
+                    // explicitly wake the primary instead of relying on
+                    // focus-loss/redraw ordering between native windows.
+                    self.request_redraw();
+                }
+            },
+        }
+        true
+    }
+}
+
 impl ApplicationHandler for WorkspaceApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -3018,6 +3992,9 @@ impl ApplicationHandler for WorkspaceApp {
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
         self.window = Some(Arc::clone(&window));
+        if self.config.tearout_receipt || self.config.tearout_cancellation_receipt {
+            self.tearout_receipt_started = Some(Instant::now());
+        }
         let mut options = NetrenderOptions {
             tile_cache_size: Some(64),
             enable_vello: true,
@@ -3112,6 +4089,12 @@ impl ApplicationHandler for WorkspaceApp {
         event: WindowEvent,
     ) {
         if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
+            if self.secondary_window_event(window_id, event) {
+                if self.receipt_error.is_some() {
+                    event_loop.exit();
+                }
+                return;
+            }
             return;
         }
         match event {
@@ -3159,7 +4142,7 @@ impl ApplicationHandler for WorkspaceApp {
             } => {
                 let redraw = match state {
                     ElementState::Pressed => self.pointer_down(),
-                    ElementState::Released => self.pointer_up(),
+                    ElementState::Released => self.pointer_up_live(event_loop),
                 };
                 if self.close_requested {
                     event_loop.exit();

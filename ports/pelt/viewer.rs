@@ -51,6 +51,8 @@ pub(crate) fn main() {
     let mut with_tiles = false;
     let mut tile_receipt = false;
     let mut capability_receipt = false;
+    let mut tearout_receipt = false;
+    let mut tearout_cancellation_receipt = false;
     let mut workspace_receipt: Option<pelt_desktop::WorkspaceReceipt> = None;
     let mut appearance_store: Option<std::path::PathBuf> = None;
     let mut tile_engine_overrides = Vec::new();
@@ -163,6 +165,14 @@ pub(crate) fn main() {
             "--capability-receipt" => {
                 with_tiles = true;
                 capability_receipt = true;
+            },
+            "--workspace-tearout-receipt" => {
+                with_tiles = true;
+                tearout_receipt = true;
+            },
+            "--workspace-tearout-cancellation-receipt" => {
+                with_tiles = true;
+                tearout_cancellation_receipt = true;
             },
             "--workspace-receipt" => {
                 let Some(value) = args.next() else {
@@ -364,10 +374,13 @@ pub(crate) fn main() {
     }
 
     if with_tiles {
-        if workspace_receipt.is_some() && (tile_receipt || capability_receipt) {
-            eprintln!(
-                "--workspace-receipt is separate from the P3 tile and P4 native capability receipts"
-            );
+        if workspace_receipt.is_some()
+            && (tile_receipt
+                || capability_receipt
+                || tearout_receipt
+                || tearout_cancellation_receipt)
+        {
+            eprintln!("--workspace-receipt is separate from the P3, P4, and W4 receipt drivers");
             std::process::exit(2);
         }
         if let Some(receipt) = workspace_receipt {
@@ -547,6 +560,10 @@ pub(crate) fn main() {
                 (4, inker::routing::ENGINE_SCRYING_WEB.to_owned()),
             ];
         }
+        if (tearout_receipt || tearout_cancellation_receipt) && tile_urls.len() < 2 {
+            let fixture = tile_urls.first().cloned().unwrap_or_else(|| url.clone());
+            tile_urls = vec![fixture.clone(), fixture];
+        }
         if tile_urls.is_empty() {
             tile_urls.push(url.clone());
         }
@@ -593,6 +610,8 @@ pub(crate) fn main() {
             frames,
             tile_receipt,
             capability_receipt,
+            tearout_receipt,
+            tearout_cancellation_receipt,
             workspace_receipt,
             artifact,
             appearance_store,
@@ -1024,6 +1043,8 @@ fn run_workspace_profile(
     frames: Option<u32>,
     interaction_receipt: bool,
     capability_receipt: bool,
+    tearout_receipt: bool,
+    tearout_cancellation_receipt: bool,
     workspace_receipt: Option<pelt_desktop::WorkspaceReceipt>,
     artifact: Option<std::path::PathBuf>,
     appearance_store: Option<std::path::PathBuf>,
@@ -1069,10 +1090,16 @@ fn run_workspace_profile(
     if capability_receipt {
         config = config.with_capability_receipt();
     }
+    if tearout_receipt {
+        config = config.with_tearout_receipt();
+    }
+    if tearout_cancellation_receipt {
+        config = config.with_tearout_cancellation_receipt();
+    }
     match pelt_desktop::run_livery_workspace_viewer(config) {
         Ok(outcome) => {
             println!(
-                "pelt workspace first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={} capability_receipt={} workspace_receipt={} routes={}",
+                "pelt workspace first_url={} window={} redraws={} size={}x{} tiles={} interaction_receipt={} capability_receipt={} tearout_receipt={} tearout_cancellation_receipt={} workspace_receipt={} routes={}",
                 outcome.first_url,
                 outcome.created_window,
                 outcome.redraws,
@@ -1081,6 +1108,8 @@ fn run_workspace_profile(
                 outcome.tile_count,
                 outcome.interaction_receipt,
                 outcome.capability_receipt,
+                outcome.tearout_receipt,
+                outcome.tearout_cancellation_receipt,
                 outcome
                     .workspace_receipt
                     .as_ref()
@@ -1709,6 +1738,8 @@ Options:
     --tile-engine <N=engine-id>        (override one workspace tile; repeatable)
     --tile-receipt                     (drive the bounded P3 split/tab/navigation receipt)
     --capability-receipt               (drive the mixed P4 routing receipt)
+    --workspace-tearout-receipt        (drive the headed W4 shared-device two-window receipt)
+    --workspace-tearout-cancellation-receipt (drive W4 hidden-preflight host-decline receipt)
     --workspace-receipt <mixed|fallback|chrome|loading-error|appearance|accessibility|accessibility-address|accessibility-children|accessibility-edit|accessibility-scroll|accessibility-click|accessibility-input|narrow-chrome|chrome-dpi|reader|reader-accessibility|tabard-preview|tabard-reader-preview> (named workspace receipt; needs --artifact; Tabard receipts need their matching feature)
     --netrender-smoke
     --webgl-wgpu-smoke

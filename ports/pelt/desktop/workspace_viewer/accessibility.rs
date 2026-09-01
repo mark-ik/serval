@@ -694,13 +694,13 @@ impl WorkspaceApp {
                         self.clear_chrome_address();
                         self.clear_chrome_engine_menu();
                         self.clear_chrome_appearance();
-                        self.apply_tile_event(TileEvent::Closed(tile))
+                        self.apply_tile_event(TileEvent::Closed(tile), None)
                     },
                     Some(FrisketA11yTarget::Tab(tile)) => {
                         self.clear_chrome_address();
                         self.clear_chrome_engine_menu();
                         self.clear_chrome_appearance();
-                        self.apply_tile_event(TileEvent::Activated(tile))
+                        self.apply_tile_event(TileEvent::Activated(tile), None)
                     },
                     None => false,
                 }

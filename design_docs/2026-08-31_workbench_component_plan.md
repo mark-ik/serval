@@ -172,16 +172,25 @@ heterogeneous headed consumers.
   A standalone cross-repo harness passed eight focused tests. The full Mere
   workspace gate still encounters its older `genet-taffy =0.13.1` patch mismatch
   and workspace-wide resolver fan-out, which are outside this component slice.
-- 2026-08-31: W4 has a bounded Pelt custody API but not a live native tearout.
-  `PeltWorkspace::accept_tearout` transfers a live controller or surface
-  producer, route state, stable `TileId`, and focus only after a host has
-  already accepted a destination. Core tests cover the request,
-  failed/cancelled acceptance preserving the source, and accepted custody
-  transfer. The current Winit workspace host leaves an outside drag pending,
-  visibly reports that destination composition is unavailable, and preserves
-  the source tile. It must not create a blank window or transfer custody until
-  a second `SurfaceHost`/Frisket render loop can compose, resize, route input,
-  and close the destination. This is not a headed visual tearout receipt.
+- 2026-08-31: W4's native Pelt route now keeps one shared `RenderCore` and
+  creates an OS-decorated secondary `WindowSurface` rather than booting a
+  second device. A document-controller outside drop creates a hidden
+  destination at that window's own size/DPI, composes and presents a
+  source-owned frame, then transfers the stable `TileId`, controller, route,
+  and model focus through `accept_tearout`; only then does it show/focus the
+  destination. The accepted window redraws, resizes, routes pointer, key, IME,
+  and focus input, and closes independently. Pre-accept cancellation,
+  configure/present failure, and the rare acceptance race preserve source tree
+  membership, controller custody, and model focus, then restore its primary
+  geometry/DPI. Native surface-producer import is an explicitly deferred Pelt
+  follow-up: it never accepts custody without a shared-device import receipt.
+  Secondary AccessKit remains a follow-up.
+
+  `--workspace-tearout-receipt` drives the live W4 path and only succeeds after
+  Winit reports native focus for the secondary and it presents a visible
+  composed destination frame, with stdout recording `tearout_receipt=true`.
+  The focused core custody test is green; the headed command is an available
+  receipt hook until its environmental run is captured.
 - 2026-08-31: Graphshell's authoring surface advanced after the initial
   `ProjectionEditor` boundary. Mere commits
   `7323c703bf3c989ce0fe8c240cd047a4bfbd2fcc` (headed editor surface),
@@ -215,11 +224,8 @@ heterogeneous headed consumers.
   --locked --offline -j1 --config …`, passed 1/1 after 15m16s. Formatting and
   diff checks passed. This closes the non-browser open-lane and Woodshed
   persistence evidence, but is not a Woodshed headed workspace receipt.
-- 2026-08-31: Pelt's safe defer is committed in Genet as
-  `3dd502661a44051091a5aa2008e433630181308c` atop the custody API commit
-  `52b897ef34c8bd1307c15f2eb738296f89ae6d27`. Its focused custody test passes,
-  but the desktop livery check was only attempted before its uncached
-  Vello/wgpu graph was interrupted. W4 therefore still needs a real second
-  native composition path, deterministic headed acceptance/cancellation
-  receipt, Graphshell wasm build, and browser-headed authoring proof before
-  compatibility removal can be considered.
+- 2026-08-31: W4 still needs captured headed acceptance evidence and a
+  separate bounded cancellation receipt, Graphshell's wasm build and
+  browser-headed authoring proof, plus proof that pinned consumers have
+  migrated before compatibility removal can be considered. The native
+  surface-producer limitation is not a Workbench compatibility-removal gate.
