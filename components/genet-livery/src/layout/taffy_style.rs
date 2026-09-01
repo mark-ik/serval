@@ -811,6 +811,19 @@ pub(in crate::layout) fn resolve_taffy_calc(ptr: *const (), basis: f32) -> f32 {
     })
 }
 
+/// Park a percentage-bearing `calc()` in the scratch and hand back the tag the
+/// tree's resolver interprets against the real basis. Every box property that
+/// accepts a percentage goes through here; resolving one against zero silently
+/// drops the percentage, which is how `calc(50% - 10px)` became `-10px`.
+pub(in crate::layout) fn calc_slot(value: CssLengthPercentage, em: f32) -> *const () {
+    let index = CALC_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        scratch.push((value, em));
+        scratch.len() - 1
+    });
+    calc_tag(index)
+}
+
 pub(in crate::layout) fn dimension(size: CssSize, em: f32) -> Dimension {
     match size {
         CssSize::Value(value) => match value {
@@ -823,12 +836,7 @@ pub(in crate::layout) fn dimension(size: CssSize, em: f32) -> Dimension {
             CssLengthPercentage::Calc(_) | CssLengthPercentage::Math(_)
                 if value.has_percentage() =>
             {
-                let index = CALC_SCRATCH.with(|scratch| {
-                    let mut scratch = scratch.borrow_mut();
-                    scratch.push((value, em));
-                    scratch.len() - 1
-                });
-                Dimension::calc(calc_tag(index))
+                Dimension::calc(calc_slot(value, em))
             },
             _ => Dimension::length(absolute_length_percentage(value, em, 16.0, 0.0)),
         },
@@ -844,6 +852,11 @@ pub(in crate::layout) fn flex_basis(basis: CssFlexBasis, em: f32) -> TaffyFlexBa
         CssFlexBasis::Value(value) => match value {
             CssLengthPercentage::Percentage(value) => {
                 TaffyFlexBasis::from(Dimension::percent(value))
+            },
+            CssLengthPercentage::Calc(_) | CssLengthPercentage::Math(_)
+                if value.has_percentage() =>
+            {
+                TaffyFlexBasis::from(Dimension::calc(calc_slot(value, em)))
             },
             _ => TaffyFlexBasis::from(Dimension::length(absolute_length_percentage(
                 value, em, 16.0, 0.0,
@@ -933,6 +946,9 @@ pub(in crate::layout) fn length_percentage_auto(
 ) -> LengthPercentageAuto {
     match value {
         CssLengthPercentage::Percentage(value) => LengthPercentageAuto::percent(value),
+        CssLengthPercentage::Calc(_) | CssLengthPercentage::Math(_) if value.has_percentage() => {
+            LengthPercentageAuto::calc(calc_slot(value, em))
+        },
         _ => LengthPercentageAuto::length(absolute_length_percentage(value, em, 16.0, 0.0)),
     }
 }
@@ -943,6 +959,9 @@ pub(in crate::layout) fn length_percentage(
 ) -> LengthPercentage {
     match value {
         CssLengthPercentage::Percentage(value) => LengthPercentage::percent(value),
+        CssLengthPercentage::Calc(_) | CssLengthPercentage::Math(_) if value.has_percentage() => {
+            LengthPercentage::calc(calc_slot(value, em))
+        },
         _ => LengthPercentage::length(absolute_length_percentage(value, em, 16.0, 0.0)),
     }
 }

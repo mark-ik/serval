@@ -6705,3 +6705,94 @@ fn live_flex_shorthands_reach_taffy_and_change_wrap_geometry() {
         "nowrap geometry did not stay on one row: {n1:?}, {n2:?}, {n3:?}"
     );
 }
+
+#[test]
+fn percentage_bearing_calc_resolves_against_the_same_basis_as_a_bare_percentage() {
+    // Stated without depending on which box supplies the basis: whatever the
+    // engine resolves a bare 50% against, calc(50% - 10px) must land exactly
+    // 10px short of it. A disagreement means the percentage inside calc() went
+    // to a different basis -- to zero, before these properties were tagged.
+    let probe = |declaration: &str| {
+        let dom = StaticDocument::parse("<div id=box><div id=inner></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[&format!(
+                "html, body {{ margin: 0; }} #box {{ width: 200px; {declaration} }} #inner {{ height: 5px; }}"
+            )]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        layout
+            .get(node_by_id(&dom, dom.document(), "inner").expect("inner"))
+            .expect("inner fragment")
+            .physical_rect()
+            .x
+    };
+
+    for (property, bare, calc) in [
+        (
+            "padding-left",
+            "padding-left: 50%;",
+            "padding-left: calc(50% - 10px);",
+        ),
+        (
+            "margin-left",
+            "margin-left: 50%;",
+            "margin-left: calc(50% - 10px);",
+        ),
+    ] {
+        let bare_x = probe(bare);
+        let calc_x = probe(calc);
+        assert_eq!(
+            calc_x,
+            bare_x - 10.0,
+            "{property}: bare 50% gave {bare_x}, calc(50% - 10px) gave {calc_x}"
+        );
+    }
+
+    let basis = |declaration: &str| {
+        let dom = StaticDocument::parse("<div id=flex><div id=item></div></div>");
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[&format!(
+                "html, body {{ margin: 0; }} #flex {{ display: flex; width: 200px; }} #item {{ {declaration} height: 5px; }}"
+            )]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        layout
+            .get(node_by_id(&dom, dom.document(), "item").expect("item"))
+            .expect("item fragment")
+            .physical_rect()
+            .width
+    };
+    let bare = basis("flex-basis: 50%;");
+    let calc = basis("flex-basis: calc(50% - 10px);");
+    assert_eq!(
+        calc,
+        bare - 10.0,
+        "flex-basis: bare 50% gave {bare}, calc(50% - 10px) gave {calc}"
+    );
+}
