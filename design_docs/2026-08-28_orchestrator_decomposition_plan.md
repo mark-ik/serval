@@ -355,6 +355,16 @@ identical figures on `origin/main`. That 1,358 is the same identity count the
 flex-shorthand plan records. Buckram 257, both Pelt suites, and
 genet-documents hold at their baselines.
 
+The WPT subset totals cited in this plan come from `genet-wpt run`, which is a
+crash-smoke pass: a file counts as passed when it lays out without panicking.
+That is the right instrument for a behaviour-preserving split, where the claim
+is "nothing changed", and identical totals plus the per-crate unit suites are
+what each phase was held to. It is not a conformance measure. Pixel
+conformance is `genet-wpt reftest <subset>`, which renders and compares against
+the reference; its baselines at `9df392f42d8` are css-sizing 164/348,
+css-flexbox 485/399 and css-grid 290/853 (passed/failed), captured per-test on
+2026-09-01 so later behaviour changes can be diffed by name rather than by count.
+
 Three findings this file added to the ledger:
 
 - **A seam module must not shadow a function it carries.** Naming the module
@@ -473,4 +483,15 @@ narrow-feature warnings driven from 3/11/15 to zero.
   receipted first, which Phase 4 has now made possible.
 - Margins, paddings, insets and flex-basis still flatten `calc()` at a zero
   percentage basis. The width repair in `78f6bd3eafd` is the shape that fix
-  takes.
+  takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,
+  `length_percentage` and `length_percentage_auto` take the tagged path.
+- An inline `<img>` whose natural size comes from host-resolved bytes lays
+  out at viewport width times its ratio instead of its natural box:
+  `tests/paint.rs::retained_replaced_img_uses_host_resolved_bytes_for_intrinsic_size`
+  expects 2x3 and gets 320x480. Fails identically at `a947c302f69`, before
+  any decomposition or sizing work. A probe through `layout_with_text_system`
+  on the same document shows the box as inline flow-root, `replaced: true`,
+  `replaced_intrinsic_size` returning `Some((2, 3))`, and the fragment still
+  320x480; an inline `<canvas>` on the same path lays out at its natural
+  size, so the fault is specific to the image branch of the inline
+  atomic-root path, not to replaced sizing in general.

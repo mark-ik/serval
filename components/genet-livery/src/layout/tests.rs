@@ -6796,3 +6796,103 @@ fn percentage_bearing_calc_resolves_against_the_same_basis_as_a_bare_percentage(
         "flex-basis: bare 50% gave {bare}, calc(50% - 10px) gave {calc}"
     );
 }
+
+#[test]
+fn replaced_auto_width_is_intrinsic_in_flow_and_stretchable_in_flex_and_grid() {
+    let used_size = |css: &str| {
+        let dom = StaticDocument::parse(
+            "<div id=parent><canvas id=item width=\"100\" height=\"100\"></canvas></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[&format!("html, body {{ margin: 0; }} {css}")]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let rect = layout
+            .get(node_by_id(&dom, dom.document(), "item").expect("item"))
+            .expect("fragment")
+            .physical_rect();
+        (rect.width, rect.height)
+    };
+
+    // CSS 2.1 10.3.4: block-level replaced, `width: auto` is the intrinsic
+    // width, not the containing block. This is the case that laid a 100x100
+    // canvas out at 200x200.
+    assert_eq!(
+        used_size("#parent { width: 200px; } #item { display: block; }"),
+        (100.0, 100.0),
+        "block flow keeps the natural size"
+    );
+    // Flexbox 9.4: an auto cross size with align-items: stretch fills the
+    // line. The intrinsic width must not pin it.
+    assert_eq!(
+        used_size(
+            "#parent { display: flex; flex-direction: column; width: 200px; height: 200px; }"
+        ),
+        (200.0, 100.0),
+        "a column flex item still stretches across the line"
+    );
+    assert_eq!(
+        used_size("#parent { display: flex; width: 200px; } #item { flex-grow: 1; }"),
+        (200.0, 100.0),
+        "a row flex item still grows along the main axis"
+    );
+    // Grid: justify-self and align-self default to stretch for a non-ratio'd
+    // auto size, and a replaced item must not be exempted by its natural width.
+    assert_eq!(
+        used_size("#parent { display: grid; width: 200px; height: 200px; }"),
+        (200.0, 200.0),
+        "a grid item still stretches its area"
+    );
+
+    // An inline replaced element is 10.3.2 and is already right through the
+    // atomic-root path; the block rule must leave it alone. Both halves of a
+    // reftest render here, so widening into inline moved the references.
+    assert_eq!(
+        used_size("#parent { width: 200px; }"),
+        (100.0, 100.0),
+        "an inline canvas keeps its natural box through the inline path"
+    );
+
+    // Each of these is a css-sizing reftest cluster that regressed when the
+    // block-flow rule was wider than CSS 2.1 10.3.2 allows.
+    assert_eq!(
+        used_size("#parent { width: 200px; } #item { display: block; height: 50px; }"),
+        (50.0, 50.0),
+        "a definite height transfers to the width through the natural ratio"
+    );
+    assert_eq!(
+        used_size("#parent { width: 200px; } #item { display: block; width: max-content; height: 50px; }"),
+        (50.0, 50.0),
+        "an intrinsic keyword is not `auto` and keeps its ratio-transferred size"
+    );
+    assert_eq!(
+        used_size("#parent { width: 200px; } #item { display: block; aspect-ratio: 2; height: 50px; }"),
+        (100.0, 50.0),
+        "an author aspect-ratio owns the transfer, not the natural size"
+    );
+    // Deliberately excluded: border-box stays on Taffy's leaf measure so the
+    // ratio-preserving min/max clamp of CSS 2.1 10.4 keeps working
+    // (box-sizing-replaced-001..003). The cost is that this case still
+    // stretches. Widening the rule to cover it is a change to make on
+    // purpose, with those reftests watching.
+    assert_eq!(
+        used_size(
+            "#parent { width: 200px; } #item { display: block; padding: 10px; box-sizing: border-box; }"
+        ),
+        (200.0, 200.0),
+        "border-box replaced elements are left to the measure path"
+    );
+}

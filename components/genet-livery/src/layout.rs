@@ -80,7 +80,6 @@ mod taffy_style;
 #[cfg(test)]
 mod tests;
 
-use hit_testing::*;
 use positioned::*;
 use tables::*;
 use taffy_style::*;
@@ -3160,6 +3159,8 @@ where
                     &computed,
                     self.image_sources,
                     font_size,
+                    matches!(self.boxes[box_id].display.outside, Some(buckram::DisplayOutside::Block))
+                        && !stretched_by_ancestor_context(self.boxes, box_id),
                 );
                 let block_style =
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
@@ -4594,6 +4595,8 @@ where
                     &computed,
                     self.image_sources,
                     font_size,
+                    matches!(self.boxes[box_id].display.outside, Some(buckram::DisplayOutside::Block))
+                        && !stretched_by_ancestor_context(self.boxes, box_id),
                 );
                 let block_style =
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
@@ -6018,6 +6021,29 @@ where
         })
 }
 
+/// Whether the nearest non-anonymous ancestor establishes a flex or grid
+/// formatting context, in which `auto` sizing may stretch. Anonymous boxes
+/// are skipped: an inline-level image in a grid container sits inside an
+/// anonymous grid item, and it is the container's context that governs.
+fn stretched_by_ancestor_context<Id>(boxes: &GeneratedBoxTree<Id>, box_id: BoxId) -> bool
+where
+    Id: Copy + Eq + Hash,
+{
+    let mut parent = boxes[box_id].parent();
+    while let Some(id) = parent {
+        let css_box = &boxes[id];
+        if matches!(css_box.origin, BoxOrigin::Anonymous { .. }) {
+            parent = css_box.parent();
+            continue;
+        }
+        return matches!(
+            css_box.formatting_context,
+            Some(FormattingContextKind::Flex | FormattingContextKind::Grid)
+        );
+    }
+    false
+}
+
 fn apply_replaced_intrinsic_style<D>(
     style: &mut Style,
     dom: &D,
@@ -6025,6 +6051,7 @@ fn apply_replaced_intrinsic_style<D>(
     computed: &ComputedValues,
     image_sources: &ImageSources,
     font_size: f32,
+    block_level_flow: bool,
 ) -> Option<(f32, f32)>
 where
     D: LayoutDom,
@@ -6047,6 +6074,52 @@ where
         // axes are definite. CSS's natural ratio does not, so only expose it
         // while at least one axis still needs intrinsic resolution.
         style.aspect_ratio = natural_ratio;
+    }
+
+    // CSS 2.1 10.3.4: a block-level replaced element in normal flow resolves
+    // `width: auto` to its intrinsic width instead of stretching to its
+    // containing block, so the natural size has to reach Taffy as a definite
+    // length. Without it a `display: block` canvas fills the
+    // container and the natural ratio then stretches its height to match,
+    // which is how a 100x100 canvas laid out at 200x200 inside a 200px parent.
+    //
+    // The rule is narrow on purpose; each exclusion below is a reftest that
+    // failed when it was wider.
+    //
+    // - It is 10.3.4, block-level only. An inline replaced element already
+    //   contributes its natural box through the inline atomic-root path
+    //   (10.3.2), and both halves of a reftest render through this engine,
+    //   so touching inline sizing moved the *references*.
+    // - A flex or grid item is the other way round: `auto` there means the
+    //   item may stretch or grow, and Taffy already feeds the measured
+    //   intrinsic size in as the content size.
+    // - An author `aspect-ratio` owns the transfer between the axes.
+    // - `min-content`, `max-content` and `fit-content` are keywords, not
+    //   `auto`; their replaced contribution is the ratio-transferred size.
+    // - Any non-auto height with a natural ratio transfers to the width
+    //   (10.3.2), so the intrinsic width only stands when nothing else can
+    //   decide it. This is `!height_auto`, not "definite": a percentage
+    //   height is indefinite to `definite_size` but Taffy still resolves it
+    //   against a definite container, and the width must follow that.
+    // - Under `box-sizing: border-box` a replaced element with min/max
+    //   constraints needs CSS 2.1 10.4's ratio-preserving clamp run in
+    //   border-box space. Taffy's leaf measure already does that; a forced
+    //   `size` bypasses it (box-sizing-replaced-001..003), so border-box
+    //   stays on the measure path. A block-level border-box replaced element
+    //   therefore still stretches; that gap is narrower and is left named.
+    let width_auto = matches!(computed.width, CssSize::Auto);
+    let height_auto = matches!(computed.height, CssSize::Auto);
+    let author_ratio = !computed.aspect_ratio.uses_natural_ratio();
+    let content_box = matches!(computed.box_sizing, CssBoxSizing::ContentBox);
+    if let Some((natural_width, natural_height)) =
+        intrinsic.filter(|_| block_level_flow && !author_ratio && content_box)
+    {
+        if width_auto && natural_width > 0.0 && !(!height_auto && natural_ratio.is_some()) {
+            style.size.width = Dimension::length(natural_width);
+        }
+        if height_auto && natural_ratio.is_none() && natural_height > 0.0 {
+            style.size.height = Dimension::length(natural_height);
+        }
     }
     intrinsic
 }
