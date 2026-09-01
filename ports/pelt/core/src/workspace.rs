@@ -514,6 +514,16 @@ impl<F: 'static> PeltWorkspace<F> {
             .map(PeltController::session_generation)
     }
 
+    /// Process-unique controller identity plus its retained-session
+    /// generation. Consumers that namespace externally visible nodes must use
+    /// this rather than generation alone because route reconstruction creates
+    /// a fresh controller at generation one.
+    pub fn document_session_identity(&self, tile: TileId) -> Option<super::PeltSessionIdentity> {
+        self.controllers
+            .get(&tile)
+            .map(PeltController::session_identity)
+    }
+
     pub fn route(&self, tile: TileId) -> Option<&PeltTileRoute> {
         self.routes.get(&tile)
     }

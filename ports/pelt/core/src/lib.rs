@@ -7,12 +7,14 @@
 mod workspace;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use genet_host_api::resolve_href;
 use inker::{
-    A11yCapability, ContentReport, DocumentSession, DocumentZoomState, SessionEffect, SessionError,
-    SessionFormMethod, SessionInput, SessionInputResult, SessionNavigationCommand, SessionRegistry,
-    SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry,
+    A11yCapability, ContentReport, DocumentA11yActionRequest, DocumentA11yClickTarget,
+    DocumentA11yNodeId, DocumentA11yProjection, DocumentSession, DocumentZoomState, SessionEffect,
+    SessionError, SessionFormMethod, SessionInput, SessionInputResult, SessionNavigationCommand,
+    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry,
 };
 
 pub use workspace::{
@@ -34,6 +36,24 @@ pub enum PeltDocumentState {
     Ready,
     Loading { address: String },
     Error { address: String, message: String },
+}
+
+/// Identity of one live Pelt document session. The controller instance never
+/// repeats within this process; generation advances when that controller
+/// replaces its retained session. Hosts retaining namespaced observations use
+/// both values so a reconstructed controller cannot alias a stale node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct PeltSessionIdentity {
+    pub instance_id: u64,
+    pub generation: u64,
+}
+
+static NEXT_CONTROLLER_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_controller_instance_id() -> u64 {
+    NEXT_CONTROLLER_INSTANCE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .expect("Pelt controller instance IDs exhausted")
 }
 
 /// A caller-owned monotonic clock. Pelt asks for the current time only while
@@ -102,6 +122,7 @@ pub struct PeltController<F> {
     viewport: (u32, u32),
     clock: Box<dyn PeltClock>,
     document_state: PeltDocumentState,
+    instance_id: u64,
     session_generation: u64,
 }
 
@@ -152,6 +173,7 @@ impl<F: 'static> PeltController<F> {
             viewport,
             clock,
             document_state: PeltDocumentState::Ready,
+            instance_id: next_controller_instance_id(),
             // Generation zero is reserved as "no successfully opened
             // session" for hosts that retain child trees across tiles.
             session_generation: 1,
@@ -183,23 +205,31 @@ impl<F: 'static> PeltController<F> {
         &self.document_state
     }
 
-    /// Identity generation of the current successfully opened session.
+    /// Controller-local generation of the current successfully opened session.
     ///
     /// This starts at one for the initial session and increases only after a
     /// replacement session has been successfully spawned and installed. Hosts
-    /// that retain concrete session observations, such as accessibility child
-    /// trees, pair this value with their tile identity and discard cached
-    /// observations when it changes.
+    /// retaining externally visible observations must use
+    /// [`Self::session_identity`] instead: a reconstructed controller begins
+    /// again at generation one.
     pub fn session_generation(&self) -> u64 {
         self.session_generation
+    }
+
+    /// Full identity of the current retained session.
+    pub fn session_identity(&self) -> PeltSessionIdentity {
+        PeltSessionIdentity {
+            instance_id: self.instance_id,
+            generation: self.session_generation,
+        }
     }
 
     /// The active document session's concrete observation surface.
     ///
     /// Engine-specific behavior stays behind [`DocumentSession`]. This is for
     /// host-owned observation of a public concrete session type, paired with
-    /// [`Self::session_generation`] so retained host state never outlives a
-    /// successful replacement session.
+    /// [`Self::session_identity`] so retained host state never aliases a
+    /// successful replacement or reconstructed controller.
     pub fn session_as_any_ref(&self) -> &dyn std::any::Any {
         self.session.as_any_ref()
     }
@@ -207,9 +237,9 @@ impl<F: 'static> PeltController<F> {
     /// The active document session's narrowly scoped concrete mutation surface.
     ///
     /// Engine-specific behavior stays behind [`DocumentSession`]. A host that
-    /// owns a typed action route pairs a downcast here with tile identity and
-    /// [`Self::session_generation`] so a stale retained node cannot mutate a
-    /// replacement session.
+    /// owns a typed action route pairs a downcast here with
+    /// [`Self::session_identity`] so a stale retained node cannot mutate a
+    /// replacement or reconstructed session.
     pub fn session_as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self.session.as_any()
     }
@@ -242,6 +272,30 @@ impl<F: 'static> PeltController<F> {
             .get(&self.engine_id)
             .expect("a live Pelt controller keeps its registered session engine")
             .a11y_capability()
+    }
+
+    /// The active session's renderer-neutral accessibility projection.
+    ///
+    /// Its support metadata describes the currently retained semantics more
+    /// precisely than the engine registration's pre-spawn capability.
+    pub fn accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        self.session.accessibility_projection()
+    }
+
+    /// Revalidate a projected clickable target against the live session.
+    /// Pelt's embedding host applies the returned point through its ordinary
+    /// pointer route, preserving session and navigation custody.
+    pub fn accessibility_click_target(
+        &self,
+        target: DocumentA11yNodeId,
+    ) -> Option<DocumentA11yClickTarget> {
+        self.session.accessibility_click_target(target)
+    }
+
+    /// Dispatch one non-pointer accessibility action through the active
+    /// document session after the host has checked its tile/session identity.
+    pub fn dispatch_accessibility_action(&mut self, request: &DocumentA11yActionRequest) -> bool {
+        self.session.dispatch_accessibility_action(request)
     }
 
     /// Semantic clip from the current retained selection or document.

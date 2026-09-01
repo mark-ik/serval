@@ -6,12 +6,16 @@
 //! portable `EngineDocument` -> the existing document canvas.
 
 use std::any::Any;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use fleece::{Article, ExtractionLineage, Inline, RootSelector};
 use inker::{
-    Block, ContentLineage, ContentReport, DocumentCapabilities, DocumentCapabilityStatus,
-    DocumentProvenance, DocumentSession, DocumentTrustState, EngineDocument, InlineSpan,
-    SessionClick, SessionEngine, SessionError, SessionLink, SessionScrollKey, SessionSpawnRequest,
+    Block, ContentLineage, ContentReport, DocumentA11yAction, DocumentA11yBounds, DocumentA11yNode,
+    DocumentA11yNodeId, DocumentA11yProjection, DocumentA11yRole, DocumentA11yState,
+    DocumentA11ySupport, DocumentCapabilities, DocumentCapabilityStatus, DocumentProvenance,
+    DocumentSession, DocumentTrustState, EngineDocument, InlineSpan, SessionClick, SessionEngine,
+    SessionError, SessionLink, SessionScrollKey, SessionSpawnRequest,
 };
 use netrender::Scene;
 
@@ -38,6 +42,41 @@ pub struct ReaderAccessibilityLink {
     pub url: String,
     /// Visible `[x, y, width, height]` rectangles in Reader viewport space.
     pub rects: Vec<[f32; 4]>,
+}
+
+fn reader_link_bounds(rects: &[[f32; 4]]) -> Option<DocumentA11yBounds> {
+    let mut bounds: Option<(f32, f32, f32, f32)> = None;
+    for &[x, y, width, height] in rects {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !width.is_finite()
+            || !height.is_finite()
+            || width <= 0.0
+            || height <= 0.0
+        {
+            continue;
+        }
+        let right = x + width;
+        let bottom = y + height;
+        if !right.is_finite() || !bottom.is_finite() {
+            continue;
+        }
+        bounds = Some(match bounds {
+            Some((left, top, old_right, old_bottom)) => (
+                left.min(x),
+                top.min(y),
+                old_right.max(right),
+                old_bottom.max(bottom),
+            ),
+            None => (x, y, right, bottom),
+        });
+    }
+    bounds.map(|(x, y, right, bottom)| DocumentA11yBounds {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    })
 }
 
 /// The only three outcomes of the cheap static reader pass.
@@ -252,6 +291,8 @@ impl SessionEngine<Scene> for ReaderSessionEngine {
             doc,
             viewport: request.viewport,
             lineage,
+            accessibility_revision: 1,
+            accessibility_nodes: RefCell::new(ReaderAccessibilityNodeMap::default()),
         }))
     }
 }
@@ -261,6 +302,20 @@ pub struct ReaderDocumentSession {
     doc: SmolwebDocument,
     viewport: (u32, u32),
     lineage: ExtractionLineage,
+    /// Every presentation-affecting turn revokes prior geometry and actions.
+    /// The public projection carries this revision so Pelt makes queued
+    /// virtual Focus inert rather than retargeting it after a reflow.
+    accessibility_revision: u64,
+    /// Document-canvas keeps link identities opaque. Retain an engine-local
+    /// projection ID for each one instead of deriving identity from output
+    /// order, URL, or visible rectangles.
+    accessibility_nodes: RefCell<ReaderAccessibilityNodeMap>,
+}
+
+#[derive(Default)]
+struct ReaderAccessibilityNodeMap {
+    ids: HashMap<document_canvas::SemanticInteractionId, DocumentA11yNodeId>,
+    next: u64,
 }
 
 impl ReaderDocumentSession {
@@ -289,6 +344,92 @@ impl ReaderDocumentSession {
                 })
                 .collect(),
         })
+    }
+
+    fn accessibility_node_id(
+        &self,
+        identity: document_canvas::SemanticInteractionId,
+    ) -> DocumentA11yNodeId {
+        let mut nodes = self.accessibility_nodes.borrow_mut();
+        if let Some(id) = nodes.ids.get(&identity) {
+            return *id;
+        }
+        // Reserve 1 for the document root. Never recycle a local identity:
+        // a queued virtual Focus may then only become stale, never point at a
+        // later visible link after reflow.
+        let next = nodes.next.max(2);
+        nodes.next = next
+            .checked_add(1)
+            .expect("Reader accessibility node IDs exhausted");
+        let id = DocumentA11yNodeId::new(next);
+        nodes.ids.insert(identity, id);
+        id
+    }
+
+    fn bump_accessibility_revision(&mut self) {
+        self.accessibility_revision = self
+            .accessibility_revision
+            .checked_add(1)
+            .expect("Reader accessibility revision exhausted");
+    }
+
+    /// Project the completed document-canvas presentation into Inker's
+    /// renderer-neutral semantic contract. Reader currently exposes visible
+    /// links only; Focus is intentionally virtual and activation remains
+    /// unavailable until a host-held destination-body handoff exists.
+    fn document_accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        let snapshot = self.accessibility_snapshot()?;
+        let root = DocumentA11yNodeId::new(1);
+        let title = snapshot
+            .root_title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Reader document".to_owned());
+        let mut links = Vec::new();
+        for link in snapshot.links {
+            let Some(bounds) = reader_link_bounds(&link.rects) else {
+                continue;
+            };
+            links.push(DocumentA11yNode {
+                id: self.accessibility_node_id(link.identity),
+                parent: Some(root),
+                children: Vec::new(),
+                role: DocumentA11yRole::Link,
+                name: Some(link.label),
+                value: None,
+                numeric_value: None,
+                numeric_minimum: None,
+                numeric_maximum: None,
+                bounds: Some(bounds),
+                state: DocumentA11yState::default(),
+                actions: vec![DocumentA11yAction::Focus],
+            });
+        }
+        let mut nodes = vec![DocumentA11yNode {
+            id: root,
+            parent: None,
+            children: links.iter().map(|link| link.id).collect(),
+            role: DocumentA11yRole::Document,
+            name: Some(title),
+            value: None,
+            numeric_value: None,
+            numeric_minimum: None,
+            numeric_maximum: None,
+            bounds: None,
+            state: DocumentA11yState::default(),
+            actions: Vec::new(),
+        }];
+        nodes.extend(links);
+        let support = DocumentA11ySupport::new(
+            inker::A11yCapability::Partial,
+            ["Visible Reader links are composed with virtual Focus; activation remains unavailable until the host holds the destination body."],
+        )
+        .expect("Reader's partial accessibility limitation is non-empty");
+        Some(DocumentA11yProjection::new(
+            self.accessibility_revision,
+            support,
+            root,
+            nodes,
+        ))
     }
 
     /// Re-resolve a current visible point for a Reader semantic link token.
@@ -321,24 +462,45 @@ impl DocumentSession<Scene> for ReaderDocumentSession {
     }
 
     fn frame(&mut self, width: u32, height: u32) -> Scene {
+        let before = self.accessibility_snapshot();
         self.viewport = (width, height);
-        self.doc.frame(width, height)
+        let scene = self.doc.frame(width, height);
+        if self.accessibility_snapshot() != before {
+            self.bump_accessibility_revision();
+        }
+        scene
     }
 
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
-        self.doc.scroll_by(dx, dy)
+        let changed = self.doc.scroll_by(dx, dy);
+        if changed {
+            self.bump_accessibility_revision();
+        }
+        changed
     }
 
     fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        self.doc.scroll_at(x, y, dx, dy)
+        let changed = self.doc.scroll_at(x, y, dx, dy);
+        if changed {
+            self.bump_accessibility_revision();
+        }
+        changed
     }
 
     fn scroll_for_key(&mut self, key: SessionScrollKey) -> bool {
-        self.doc.scroll_for_key(key)
+        let changed = self.doc.scroll_for_key(key);
+        if changed {
+            self.bump_accessibility_revision();
+        }
+        changed
     }
 
     fn scroll_to(&mut self, y: f32) {
+        let before = self.accessibility_snapshot();
         self.doc.scroll_to(y);
+        if self.accessibility_snapshot() != before {
+            self.bump_accessibility_revision();
+        }
     }
 
     fn click_at(&mut self, x: f32, y: f32) -> SessionClick {
@@ -389,6 +551,10 @@ impl DocumentSession<Scene> for ReaderDocumentSession {
         })
     }
 
+    fn accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        self.document_accessibility_projection()
+    }
+
     fn as_any_ref(&self) -> &dyn Any {
         self
     }
@@ -430,7 +596,7 @@ fn content_lineage(lineage: &ExtractionLineage) -> ContentLineage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inker::{SessionRegistry, SessionSpawnRequest};
+    use inker::{DocumentA11yAction, DocumentA11yRole, SessionRegistry, SessionSpawnRequest};
 
     fn reader_session(html: &str, width: u32, height: u32) -> Box<dyn DocumentSession<Scene>> {
         ReaderSessionEngine::new(SmolwebTheme::Plain)
@@ -558,6 +724,47 @@ mod tests {
         assert_eq!(
             wide_link.identity, identity,
             "geometry does not define identity"
+        );
+    }
+
+    #[test]
+    fn reader_projection_is_partial_with_virtual_focus_only() {
+        let html = "<html><head><title>Projection article</title></head><body><main>\
+            <h1>Projection article</h1><p>A sufficiently long Reader paragraph has a \
+            <a href='/next'>visible continuation</a> for the retained canvas.</p></main></body></html>";
+        let mut session = reader_session(html, 480, 300);
+        assert!(session.accessibility_projection().is_none());
+        let _ = session.frame(480, 300);
+        let first = session
+            .accessibility_projection()
+            .expect("completed Reader frame publishes a neutral projection");
+        assert_eq!(first.support().capability(), inker::A11yCapability::Partial);
+        assert!(
+            first
+                .support()
+                .limitations()
+                .iter()
+                .any(|limitation| limitation.contains("activation remains unavailable"))
+        );
+        let root = first.node(first.root()).expect("Reader root");
+        assert_eq!(root.role, DocumentA11yRole::Document);
+        let link = first
+            .nodes()
+            .iter()
+            .find(|node| node.role == DocumentA11yRole::Link)
+            .expect("visible Reader link");
+        assert_eq!(link.actions, [DocumentA11yAction::Focus]);
+        assert!(link.bounds.is_some());
+        let id = link.id;
+        let revision = first.revision();
+        let _ = session.frame(480, 300);
+        let stable = session
+            .accessibility_projection()
+            .expect("same completed frame retains projection");
+        assert_eq!(stable.revision(), revision);
+        assert!(
+            stable.node(id).is_some(),
+            "link ID outlives a stable redraw"
         );
     }
 

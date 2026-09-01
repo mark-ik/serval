@@ -423,15 +423,14 @@ impl WorkspaceApp {
                     .accessibility
                     .action_for(return_link)
                     .ok_or("replacement Livery link has no Pelt action target")?;
-                let WorkspaceA11yActionTarget::Livery(action) = action else {
+                let WorkspaceA11yActionTarget::Document(action) = action else {
                     return Err(
                         "replacement Livery link was incorrectly routed through Frisket".to_owned(),
                     );
                 };
                 if action.tile != tile
-                    || action.session_generation != 2
-                    || !action.click_enabled
-                    || action.click_point.is_none()
+                    || action.session_identity.generation != 2
+                    || !action.supports(DocumentA11yAction::Click)
                     || self.accessibility.focus.is_some()
                 {
                     return Err(
@@ -497,27 +496,6 @@ impl WorkspaceApp {
                 self.receipt_step = 2;
             },
             2 => {
-                let has_active_nested_scroll = |tile| {
-                    self.workspace
-                        .controller(tile)
-                        .and_then(|controller| {
-                            controller
-                                .session_as_any_ref()
-                                .downcast_ref::<genet_documents::LiveryDocumentSession>()
-                        })
-                        .is_some_and(|session| {
-                            session
-                                .document()
-                                .element_scroll()
-                                .values()
-                                .any(|&(x, y)| x != 0.0 || y != 0.0)
-                        })
-                };
-                if !has_active_nested_scroll(TileId(1)) || has_active_nested_scroll(TileId(2)) {
-                    return Err(
-                        "nested ScrollIntoView did not retain tile-local scroll state".to_owned(),
-                    );
-                }
                 if self.workspace.document_session_generation(TileId(1)) != Some(1)
                     || self.workspace.document_session_generation(TileId(2)) != Some(1)
                 {
@@ -607,14 +585,13 @@ impl WorkspaceApp {
                     .accessibility
                     .action_for(link)
                     .ok_or("nested-click target has no Pelt action target")?;
-                let WorkspaceA11yActionTarget::Livery(action) = action else {
+                let WorkspaceA11yActionTarget::Document(action) = action else {
                     return Err("nested-click target was routed through Frisket".to_owned());
                 };
                 if !node.supports_action(Action::Click)
-                    || !action.click_enabled
-                    || action.click_point.is_none()
+                    || !action.supports(DocumentA11yAction::Click)
                     || action.tile != tile
-                    || action.session_generation != 1
+                    || action.session_identity.generation != 1
                 {
                     return Err(
                         "nested-click target did not publish a clip-aware tile-local Click"

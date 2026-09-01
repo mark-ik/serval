@@ -26,6 +26,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::a11y::{
+    DocumentA11yActionRequest, DocumentA11yClickTarget, DocumentA11yNodeId, DocumentA11yProjection,
+};
 use crate::{A11yCapability, DocumentCapabilities, PageCaptureOutput, PageCaptureRequest};
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -870,6 +873,41 @@ pub trait DocumentSession<F>: Any {
         None
     }
 
+    /// Current renderer-neutral semantic snapshot of this retained document.
+    ///
+    /// The projection, when present, is the live truth about semantic
+    /// completeness and limitations. It replaces host-side guesses based on
+    /// concrete session type. Local IDs remain stable for the same semantic
+    /// object across revisions and must be namespaced by a host before entering
+    /// a global accessibility tree.
+    fn accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        None
+    }
+
+    /// Revalidate an advertised clickable node and return its current pointer
+    /// target. Hosts use the returned point with their ordinary `click_at`
+    /// path, keeping link routing and host navigation custody unchanged.
+    ///
+    /// A `None` result means the node is stale, no longer clickable, or its
+    /// geometry is unavailable. The returned revision must match the current
+    /// projection before the host acts on it.
+    fn accessibility_click_target(
+        &self,
+        _target: DocumentA11yNodeId,
+    ) -> Option<DocumentA11yClickTarget> {
+        None
+    }
+
+    /// Revalidate and dispatch a non-pointer accessibility action.
+    ///
+    /// Engines return `true` only after accepting a request whose revision and
+    /// target are current and whose action is advertised by that target.
+    /// `Click` intentionally returns `false`: it travels through
+    /// [`Self::accessibility_click_target`] and the ordinary pointer path.
+    fn dispatch_accessibility_action(&mut self, _request: &DocumentA11yActionRequest) -> bool {
+        false
+    }
+
     /// Lane-specific extras (a scripted lane's DOM stats, a static lane's
     /// content report) stay on the concrete type; hosts that need them
     /// downcast through here rather than the trait growing every lane's
@@ -1090,6 +1128,26 @@ mod tests {
             session.capture_page(PageCaptureRequest::viewport(PageCaptureRequestId::new(9))),
             Err(SessionError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn document_session_accessibility_defaults_to_an_honest_absence() {
+        let mut session = EchoSession {
+            address: "https://example.test".into(),
+            scroll: 0.0,
+            hidden: false,
+        };
+        let target = DocumentA11yNodeId::new(7);
+        assert_eq!(session.accessibility_projection(), None);
+        assert_eq!(session.accessibility_click_target(target), None);
+        assert!(
+            !session.dispatch_accessibility_action(&DocumentA11yActionRequest {
+                revision: 1,
+                target,
+                action: crate::DocumentA11yAction::Focus,
+                data: None,
+            })
+        );
     }
 
     #[test]

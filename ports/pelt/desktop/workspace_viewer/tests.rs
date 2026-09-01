@@ -1,5 +1,4 @@
 use super::*;
-use super::accessibility::DocumentA11ySource;
 use crate::FileAppearanceStore;
 #[cfg(feature = "reader")]
 use std::sync::Mutex;
@@ -1355,30 +1354,32 @@ fn accessibility_focus_and_click_route_through_the_retained_shell_separately() {
 }
 
 #[test]
-fn livery_child_accessibility_allocator_never_aliases_local_ids() {
+fn document_child_accessibility_allocator_never_aliases_local_ids() {
     let mut accessibility = WorkspaceAccessibility::new();
     let shell_ids = HashSet::from([AccessNodeId(1_u64 << 63)]);
     let local = AccessNodeId(41);
-    let first =
-        accessibility.child_global_id(TileId(1), DocumentA11ySource::Livery, 1, local, &shell_ids);
-    let same_session =
-        accessibility.child_global_id(TileId(1), DocumentA11ySource::Livery, 1, local, &shell_ids);
-    let sibling =
-        accessibility.child_global_id(TileId(2), DocumentA11ySource::Livery, 1, local, &shell_ids);
-    let replacement =
-        accessibility.child_global_id(TileId(1), DocumentA11ySource::Livery, 2, local, &shell_ids);
-    #[cfg(feature = "reader")]
-    let different_engine_same_generation =
-        accessibility.child_global_id(TileId(1), DocumentA11ySource::Reader, 2, local, &shell_ids);
+    let initial = PeltSessionIdentity {
+        instance_id: 1,
+        generation: 1,
+    };
+    let replacement = PeltSessionIdentity {
+        instance_id: 1,
+        generation: 2,
+    };
+    let reconstructed = PeltSessionIdentity {
+        instance_id: 2,
+        generation: 1,
+    };
+    let first = accessibility.child_global_id(TileId(1), initial, local, &shell_ids);
+    let same_session = accessibility.child_global_id(TileId(1), initial, local, &shell_ids);
+    let sibling = accessibility.child_global_id(TileId(2), initial, local, &shell_ids);
+    let replacement = accessibility.child_global_id(TileId(1), replacement, local, &shell_ids);
+    let reconstructed = accessibility.child_global_id(TileId(1), reconstructed, local, &shell_ids);
 
     assert_eq!(first, same_session);
     assert_ne!(first, sibling);
     assert_ne!(first, replacement);
-    #[cfg(feature = "reader")]
-    assert_ne!(
-        replacement, different_engine_same_generation,
-        "a replacement controller may restart its generation, so source identity also resets the namespace"
-    );
+    assert_ne!(replacement, reconstructed);
     assert!(!shell_ids.contains(&first));
     assert!(accessibility.child_id_is_reserved(first));
 }
@@ -1514,9 +1515,9 @@ fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
         .action_for(first_link)
         .expect("first Reader link has a Pelt action")
     {
-        WorkspaceA11yActionTarget::Reader(action) => action,
-        WorkspaceA11yActionTarget::Livery(_) | WorkspaceA11yActionTarget::Frisket(_) => {
-            panic!("first Reader link must retain Reader ownership")
+        WorkspaceA11yActionTarget::Document(action) => action,
+        WorkspaceA11yActionTarget::Frisket(_) => {
+            panic!("first Reader link must retain document ownership")
         },
     };
     let second_action = match app
@@ -1524,9 +1525,9 @@ fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
         .action_for(second_link)
         .expect("second Reader link has a Pelt action")
     {
-        WorkspaceA11yActionTarget::Reader(action) => action,
-        WorkspaceA11yActionTarget::Livery(_) | WorkspaceA11yActionTarget::Frisket(_) => {
-            panic!("second Reader link must retain Reader ownership")
+        WorkspaceA11yActionTarget::Document(action) => action,
+        WorkspaceA11yActionTarget::Frisket(_) => {
+            panic!("second Reader link must retain document ownership")
         },
     };
     assert_eq!(first_action.tile, TileId(1));
@@ -1535,7 +1536,10 @@ fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
         first_action.local_node, second_action.local_node,
         "the fixture deliberately collides Reader-local IDs across tile sessions"
     );
-    assert!(first_action.focus_enabled && second_action.focus_enabled);
+    assert!(
+        first_action.supports(DocumentA11yAction::Focus)
+            && second_action.supports(DocumentA11yAction::Focus)
+    );
     assert!(app.apply_accessibility_request(A11yActionRequest {
         action: Action::Focus,
         target_node: first_link,
@@ -1752,7 +1756,7 @@ fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
         .prepare_accessibility_tree()
         .expect("zoomed and scrolled composite tree");
     let root_one = child_root(&tree, aperture_one);
-    let (scroll, page_zoom) = {
+    let scroll = {
         let controller = app
             .workspace
             .controller(TileId(1))
@@ -1761,15 +1765,16 @@ fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
             .session_as_any_ref()
             .downcast_ref::<genet_documents::LiveryDocumentSession>()
             .expect("first child remains a Livery session");
-        (session.document().scroll(), session.page_zoom())
+        session.document().scroll()
     };
     assert!(
         scroll.1 > 0.0,
         "root scroll becomes part of the child transform"
     );
-    let expected_transform = Affine::translate((f64::from(content.x), f64::from(content.y)))
-        * Affine::scale(f64::from(page_zoom))
-        * Affine::translate((-f64::from(scroll.0), -f64::from(scroll.1)));
+    // The document session publishes final viewport-space bounds after page
+    // zoom and root scroll. Pelt contributes only the outer content-hole
+    // placement at the subtree root.
+    let expected_transform = Affine::translate((f64::from(content.x), f64::from(content.y)));
     let child_root_node = tree
         .nodes
         .iter()
@@ -1794,19 +1799,23 @@ fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
         .action_for(link)
         .expect("child link has a Pelt action target")
     {
-        WorkspaceA11yActionTarget::Livery(action) => action,
+        WorkspaceA11yActionTarget::Document(action) => action,
         WorkspaceA11yActionTarget::Frisket(_) => {
             panic!("child link must not use Frisket action routing")
         },
-        #[cfg(feature = "reader")]
-        WorkspaceA11yActionTarget::Reader(_) => {
-            panic!("child link must not use Reader action routing")
-        },
     };
     assert_eq!(action.tile, TileId(1));
-    assert_eq!(action.session_generation, 1);
-    let click_point = action
-        .click_point
+    assert_eq!(action.session_identity.generation, 1);
+    let click_point = app
+        .workspace
+        .controller(TileId(1))
+        .and_then(|controller| controller.accessibility_click_target(action.local_node))
+        .map(|point| {
+            (
+                action.content_rect.x + point.point.x,
+                action.content_rect.y + point.point.y,
+            )
+        })
         .expect("visible child link advertises a tile-local click");
     assert!(
         action.content_rect.contains(click_point.0, click_point.1),
@@ -1823,7 +1832,7 @@ fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
             .expect("first child remains a Livery session");
         (
             session
-                .accessible_pointer_target(action.local_node.0)
+                .accessible_pointer_target(action.local_node.get())
                 .expect("visible child link has a clip-aware CSS point"),
             session.page_zoom(),
         )
@@ -1868,7 +1877,7 @@ fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
             .expect("first child remains a Livery session after a wheel");
         (
             session
-                .accessible_pointer_target(action.local_node.0)
+                .accessible_pointer_target(action.local_node.get())
                 .expect("the still-visible child link has a fresh CSS point"),
             session.document().scroll(),
             session.page_zoom(),
@@ -1888,12 +1897,39 @@ fn livery_child_accessibility_is_namespaced_transformed_and_stale_safe() {
         "the fresh CSS point differs from the point published in the old tree"
     );
     assert!(
-        app.apply_accessibility_request(A11yActionRequest {
+        !app.apply_accessibility_request(A11yActionRequest {
             action: Action::Click,
             target_node: link,
             data: None,
         }),
-        "a queued Click re-queries live Livery geometry after the wheel"
+        "the projection revision makes a pre-scroll Click inert"
+    );
+    let refreshed = app
+        .prepare_accessibility_tree()
+        .expect("root-scroll geometry is reprojected before Click");
+    let refreshed_root = child_root(&refreshed, aperture_one);
+    let refreshed_subtree = subtree(&refreshed, refreshed_root);
+    let refreshed_link = refreshed
+        .nodes
+        .iter()
+        .find(|(id, node)| {
+            refreshed_subtree.contains(id)
+                && node.role() == Role::Link
+                && node.label() == Some("Open scrolled child destination")
+        })
+        .map(|(id, _)| *id)
+        .expect("current root-scroll projection retains the link");
+    assert_eq!(
+        refreshed_link, link,
+        "a semantic node keeps its global identity across projection revisions"
+    );
+    assert!(
+        app.apply_accessibility_request(A11yActionRequest {
+            action: Action::Click,
+            target_node: refreshed_link,
+            data: None,
+        }),
+        "the refreshed Click uses Livery's current clip-aware point"
     );
     let controller = app
         .workspace
@@ -2017,18 +2053,22 @@ fn livery_accessibility_click_waits_for_a_physical_pointer_capture() {
         .action_for(second_link)
         .expect("second tile link has a Pelt action")
     {
-        WorkspaceA11yActionTarget::Livery(action) => action,
+        WorkspaceA11yActionTarget::Document(action) => action,
         WorkspaceA11yActionTarget::Frisket(_) => {
             panic!("second tile link must use Livery routing")
         },
-        #[cfg(feature = "reader")]
-        WorkspaceA11yActionTarget::Reader(_) => {
-            panic!("second tile link must not use Reader routing")
-        },
     };
-    assert!(second_action.click_enabled);
-    let (x, y) = second_action
-        .click_point
+    assert!(second_action.supports(DocumentA11yAction::Click));
+    let (x, y) = app
+        .workspace
+        .controller(TileId(2))
+        .and_then(|controller| controller.accessibility_click_target(second_action.local_node))
+        .map(|point| {
+            (
+                second_action.content_rect.x + point.point.x,
+                second_action.content_rect.y + point.point.y,
+            )
+        })
         .expect("second tile link has a concrete pointer point");
     let held = app.workspace.input(SessionInput::PointerButton {
         x,
@@ -2220,11 +2260,11 @@ fn livery_child_accessibility_text_values_are_namespaced_stale_safe_and_submit_f
         .accessibility
         .action_for(changed_note)
         .expect("changed note has a Pelt action target");
-    let WorkspaceA11yActionTarget::Livery(action) = action else {
-        panic!("changed note must route through Pelt's Livery namespace");
+    let WorkspaceA11yActionTarget::Document(action) = action else {
+        panic!("changed note must route through Pelt's document namespace");
     };
     assert_eq!(action.tile, TileId(1));
-    assert_eq!(action.session_generation, 1);
+    assert_eq!(action.session_identity.generation, 1);
 
     let submit = node(
         &app,
@@ -2560,11 +2600,11 @@ fn livery_child_accessibility_scroll_into_view_is_namespaced_and_tile_local() {
         .accessibility
         .action_for(link)
         .expect("scrolled nested link has a Pelt action target");
-    let WorkspaceA11yActionTarget::Livery(target) = target else {
-        panic!("nested link must route through Pelt's Livery namespace");
+    let WorkspaceA11yActionTarget::Document(target) = target else {
+        panic!("nested link must route through Pelt's document namespace");
     };
     assert_eq!(target.tile, TileId(1));
-    assert_eq!(target.session_generation, 1);
+    assert_eq!(target.session_identity.generation, 1);
     assert!(app.apply_accessibility_request(A11yActionRequest {
         action: Action::ScrollIntoView,
         target_node: link,
@@ -2599,8 +2639,8 @@ fn livery_child_accessibility_scroll_into_view_is_namespaced_and_tile_local() {
     assert!(
         matches!(
             app.accessibility.action_for(revealed_link),
-            Some(WorkspaceA11yActionTarget::Livery(action))
-                if action.click_enabled && action.click_point.is_some()
+            Some(WorkspaceA11yActionTarget::Document(action))
+                if action.supports(DocumentA11yAction::Click)
         ),
         "a revealed nested target has a concrete tile-local pointer point"
     );

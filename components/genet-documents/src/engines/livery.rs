@@ -2,6 +2,7 @@
 //! HTML route, including its retained editable controls.
 
 use std::any::Any;
+use std::cell::{Cell, RefCell};
 
 use genet_document_resources::{
     ResolvedDocumentResources, ResolvedStylesheet, ResourceDelta, ResourceKind, ResourceLimits,
@@ -17,7 +18,10 @@ use inker::session_engine::{
     SessionIme, SessionKey, SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest,
     SessionTextTarget,
 };
-use inker::{DocumentCapabilities, DocumentCapabilityStatus};
+use inker::{
+    DocumentA11yAction, DocumentA11yActionRequest, DocumentA11yClickTarget, DocumentA11yNodeId,
+    DocumentA11yProjection, DocumentCapabilities, DocumentCapabilityStatus,
+};
 use layout_dom_api::{LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
 use netrender::Scene;
 use unicode_segmentation::UnicodeSegmentation;
@@ -181,6 +185,8 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
                 || navigation.element_fragment.is_some())
             .then_some(navigation),
             zoom: DocumentZoomState::clamped(1.0, LIVERY_PAGE_ZOOM_MIN, LIVERY_PAGE_ZOOM_MAX),
+            a11y_revision: Cell::new(0),
+            a11y_cache: RefCell::new(None),
         }))
     }
 }
@@ -203,6 +209,8 @@ pub struct LiveryDocumentSession {
     find_ranges: Vec<genet_livery::TextRange<genet_scripted_dom::NodeId>>,
     pending_fragment: Option<genet_livery::NavigationFragment>,
     zoom: DocumentZoomState,
+    a11y_revision: Cell<u64>,
+    a11y_cache: RefCell<Option<DocumentA11yProjection>>,
 }
 
 /// Livery's page-zoom bounds — engine policy, matching the range a Chromium
@@ -364,6 +372,94 @@ impl LiveryDocumentSession {
             ((width as f32 / zoom).round() as u32).max(1),
             ((height as f32 / zoom).round() as u32).max(1),
         )
+    }
+
+    /// Build the neutral projection from the last completed Livery layout,
+    /// then move its CSS geometry into this session's presentation viewport.
+    /// The projection helper owns semantic traversal; this adapter owns page
+    /// scroll and page-zoom transforms at the session boundary.
+    fn unrevisioned_accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        let fragments = self.doc.retained_layout()?;
+        let projection = genet_render::document_a11y_projection_with_scroll(
+            self.doc.dom(),
+            fragments,
+            self.focused_node,
+            0,
+            self.doc.element_scroll(),
+        );
+        let (scroll_x, scroll_y) = self.doc.scroll();
+        let zoom = self.zoom();
+        let nodes = projection
+            .nodes()
+            .iter()
+            .cloned()
+            .map(|mut node| {
+                let pointer_target = node
+                    .actions
+                    .iter()
+                    .any(|action| {
+                        matches!(
+                            action,
+                            DocumentA11yAction::Click | DocumentA11yAction::ScrollIntoView
+                        )
+                    })
+                    .then(|| {
+                        usize::try_from(node.id.get())
+                            .ok()
+                            .map(genet_scripted_dom::NodeId::from_raw)
+                            .filter(|node| self.doc.dom().is_live(*node))
+                            .and_then(|node| self.doc.accessible_pointer_target(node))
+                    })
+                    .flatten();
+                if node.state.disabled || node.state.hidden || pointer_target.is_none() {
+                    node.actions
+                        .retain(|action| *action != DocumentA11yAction::Click);
+                } else if node.actions.contains(&DocumentA11yAction::ScrollIntoView)
+                    && !node.actions.contains(&DocumentA11yAction::Click)
+                {
+                    // The canonical DOM walk stays conservative below an
+                    // active scrollport. Once Livery can supply a current,
+                    // clip-aware pointer target, the session may advertise
+                    // Click without making Pelt understand Livery geometry.
+                    node.actions.push(DocumentA11yAction::Click);
+                }
+                if let Some(bounds) = node.bounds.as_mut() {
+                    bounds.x = (bounds.x - scroll_x) * zoom;
+                    bounds.y = (bounds.y - scroll_y) * zoom;
+                    bounds.width *= zoom;
+                    bounds.height *= zoom;
+                }
+                node
+            })
+            .collect();
+        Some(DocumentA11yProjection::new(
+            0,
+            projection.support().clone(),
+            projection.root(),
+            nodes,
+        ))
+    }
+
+    fn current_accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        let fresh = self.unrevisioned_accessibility_projection()?;
+        let unchanged = self.a11y_cache.borrow().as_ref().is_some_and(|cached| {
+            cached.root() == fresh.root()
+                && cached.support() == fresh.support()
+                && cached.nodes() == fresh.nodes()
+        });
+        if unchanged {
+            return self.a11y_cache.borrow().clone();
+        }
+        let revision = self.a11y_revision.get().saturating_add(1).max(1);
+        let current = DocumentA11yProjection::new(
+            revision,
+            fresh.support().clone(),
+            fresh.root(),
+            fresh.nodes().to_vec(),
+        );
+        self.a11y_revision.set(revision);
+        *self.a11y_cache.borrow_mut() = Some(current.clone());
+        Some(current)
     }
 
     pub(crate) fn attribute(&self, node: genet_scripted_dom::NodeId, name: &str) -> Option<&str> {
@@ -1533,6 +1629,75 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     /// this lane".
     fn inspect(&self) -> Option<inker::ContentReport> {
         Some(content_report(self.doc.dom()))
+    }
+
+    fn accessibility_projection(&self) -> Option<DocumentA11yProjection> {
+        self.current_accessibility_projection()
+    }
+
+    fn accessibility_click_target(
+        &self,
+        target: DocumentA11yNodeId,
+    ) -> Option<DocumentA11yClickTarget> {
+        let projection = self.current_accessibility_projection()?;
+        let node = projection.node(target)?;
+        if !node.actions.contains(&DocumentA11yAction::Click) {
+            return None;
+        }
+        let raw_node_id = usize::try_from(target.get()).ok()?;
+        let dom_node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        let (x, y) = self.doc.accessible_pointer_target(dom_node)?;
+        Some(DocumentA11yClickTarget {
+            revision: projection.revision(),
+            point: inker::DocumentA11yPoint {
+                x: x * self.zoom(),
+                y: y * self.zoom(),
+            },
+        })
+    }
+
+    fn dispatch_accessibility_action(&mut self, request: &DocumentA11yActionRequest) -> bool {
+        let Some(projection) = self.current_accessibility_projection() else {
+            return false;
+        };
+        let Some(node) = projection.node(request.target) else {
+            return false;
+        };
+        if projection.revision() != request.revision || !node.actions.contains(&request.action) {
+            return false;
+        }
+        let Ok(raw_node_id) = usize::try_from(request.target.get()) else {
+            return false;
+        };
+        let dom_node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        if !self.doc.dom().is_live(dom_node) {
+            return false;
+        }
+        match request.action {
+            DocumentA11yAction::Click => false,
+            DocumentA11yAction::Focus => {
+                let Some([x, y, width, height]) = self.doc.fragment_rect(dom_node) else {
+                    return false;
+                };
+                self.activate_hit(x + width * 0.5, y + height * 0.5);
+                self.focused_node == Some(dom_node)
+                    || self
+                        .editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.node == dom_node)
+            },
+            DocumentA11yAction::SetValue => {
+                let Some(inker::DocumentA11yActionData::Value(value)) = request.data.as_ref()
+                else {
+                    return false;
+                };
+                self.replace_accessible_text_value(request.target.get(), value)
+            },
+            DocumentA11yAction::ScrollIntoView => {
+                self.scroll_accessible_node_into_view(request.target.get())
+            },
+            DocumentA11yAction::Increment | DocumentA11yAction::Decrement => false,
+        }
     }
 
     fn clip(&self) -> Option<DocumentClip> {

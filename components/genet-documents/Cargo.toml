@@ -15,7 +15,7 @@ default = []
 # Clean-room Livery implementation of the static HTML session lane.
 livery = [
     "dep:genet-livery", "dep:genet-scripted-dom", "dep:paint_list_render",
-    "dep:unicode-segmentation", "dep:url",
+    "dep:genet-render", "dep:unicode-segmentation", "dep:url",
 ]
 # Remote http(s) loading for LocalFetcher via the netfetcher engine.
 netfetch = ["dep:netfetcher", "dep:tokio", "dep:bytes", "dep:url"]
@@ -48,6 +48,7 @@ genet-static-dom = { path = "../genet-static-dom" }
 layout_dom_api = { workspace = true }
 serde_json = { workspace = true }
 genet-livery = { path = "../genet-livery", optional = true }
+genet-render = { path = "../genet-render", optional = true }
 genet-scripted-dom = { path = "../genet-scripted-dom", optional = true }
 paint_list_render = { workspace = true, optional = true }
 data-url = { workspace = true }

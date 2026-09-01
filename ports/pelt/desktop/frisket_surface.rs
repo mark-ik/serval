@@ -1891,7 +1891,7 @@ mod tests {
         surface.set_content_accessibility([FrisketContentA11y {
             tile: TileId(1),
             label: "Tile 1 content".to_owned(),
-            description: "The engine declares partial accessibility. Pelt does not compose its document semantics into this workspace tree yet.".to_owned(),
+            description: "The engine declares partial accessibility, but has not published a completed semantic projection.".to_owned(),
         }]);
         surface.frame(800, 600).expect("retained Frisket frame");
         let projection = surface

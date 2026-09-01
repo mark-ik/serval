@@ -58,7 +58,13 @@ pub mod sniff;
 /// graph-side apply lives in mere's `linked-data` crate (kernel-free split).
 pub mod statements;
 
-pub use a11y::A11yCapability;
+pub use a11y::{
+    A11yCapability, DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest,
+    DocumentA11yBounds, DocumentA11yClickTarget, DocumentA11yHasPopup, DocumentA11yLive,
+    DocumentA11yNode, DocumentA11yNodeId, DocumentA11yOrientation, DocumentA11yPoint,
+    DocumentA11yProjection, DocumentA11yRole, DocumentA11yState, DocumentA11ySupport,
+    DocumentA11ySupportError, DocumentA11yToggled,
+};
 pub use capabilities::{
     CapabilityStatus, DocumentCapabilities, DocumentCapabilityStatus, WebFeatureStatus,
 };

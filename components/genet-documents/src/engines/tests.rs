@@ -16,6 +16,10 @@ use inker::session_engine::{
     SessionIme, SessionKey, SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest,
     SessionTextTarget,
 };
+#[cfg(feature = "livery")]
+use inker::{
+    DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest, DocumentA11yNodeId,
+};
 use inker::{DocumentCapabilities, DocumentCapabilityStatus};
 #[cfg(feature = "livery")]
 use layout_dom_api::LayoutDom;
@@ -1181,6 +1185,191 @@ fn livery_session_projects_accessible_pointer_targets_in_css_space() {
         session.accessible_pointer_target(u64::MAX),
         None,
         "foreign local ids are inert"
+    );
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_accessibility_projection_revisions_follow_semantics_and_geometry() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r#"<html><body>
+                <a id="next" href="/next">Next page</a>
+                <input id="query" aria-label="Search" value="cedar">
+            </body></html>"#,
+        )
+        .with_viewport(400, 240);
+    let mut boxed = engine.spawn(&request).expect("Livery session spawns");
+    let _scene = boxed.frame(400, 240);
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+
+    let first = session
+        .accessibility_projection()
+        .expect("retained layout supplies an accessibility projection");
+    let next = livery_node_with_id(session, "next");
+    let next_id = DocumentA11yNodeId::new(session.document().dom().opaque_id(next));
+    let next_node = first.node(next_id).expect("link is projected");
+    assert_eq!(next_node.name.as_deref(), Some("Next page"));
+    assert!(next_node.actions.contains(&DocumentA11yAction::Click));
+
+    let unchanged = session
+        .accessibility_projection()
+        .expect("unchanged projection remains available");
+    assert_eq!(unchanged.revision(), first.revision());
+    assert_eq!(unchanged.nodes(), first.nodes());
+
+    session
+        .set_page_zoom(1.25)
+        .expect("Livery accepts page zoom");
+    let zoomed = session
+        .accessibility_projection()
+        .expect("zoomed projection remains available");
+    assert!(
+        zoomed.revision() > first.revision(),
+        "presentation geometry changes advance the projection revision"
+    );
+    let zoomed_node = zoomed.node(next_id).expect("link remains projected");
+    assert_ne!(zoomed_node.bounds, next_node.bounds);
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_accessibility_projection_uses_zoomed_bounds_and_click_targets() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                #target { display: block; width: 100px; height: 30px; }
+            </style></head><body><a id="target" href="/next">Open</a></body></html>"#,
+        )
+        .with_viewport(320, 160);
+    let mut boxed = engine.spawn(&request).expect("Livery session spawns");
+    boxed.set_page_zoom(1.25).expect("page zoom is supported");
+    let _scene = boxed.frame(320, 160);
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+    let target = livery_node_with_id(session, "target");
+    let target_id = DocumentA11yNodeId::new(session.document().dom().opaque_id(target));
+    let projection = session
+        .accessibility_projection()
+        .expect("retained layout supplies an accessibility projection");
+    let bounds = projection
+        .node(target_id)
+        .and_then(|node| node.bounds)
+        .expect("link bounds are projected");
+    let css_bounds = session
+        .document()
+        .fragment_rect(target)
+        .expect("link has retained CSS geometry");
+    assert_eq!(bounds.x, css_bounds[0] * 1.25);
+    assert_eq!(bounds.y, css_bounds[1] * 1.25);
+    assert_eq!(bounds.width, css_bounds[2] * 1.25);
+    assert_eq!(bounds.height, css_bounds[3] * 1.25);
+
+    let css_point = session
+        .document()
+        .accessible_pointer_target(target)
+        .expect("link has a current CSS click target");
+    let click = session
+        .accessibility_click_target(target_id)
+        .expect("projected link has a current click target");
+    assert_eq!(click.revision, projection.revision());
+    assert_eq!(click.point.x, css_point.0 * 1.25);
+    assert_eq!(click.point.y, css_point.1 * 1.25);
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn livery_accessibility_actions_reject_stale_revisions() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("fixtures/form/index.html")
+        .with_body(
+            r#"<html><head><style>
+                html, body { margin: 0; padding: 0; }
+                #scroller { width: 100px; height: 40px; overflow-y: auto; }
+                #before { height: 30px; }
+                #tail { height: 120px; }
+            </style></head><body><input id="query" aria-label="Search" value="cedar">
+                <div id="scroller"><div id="before"></div><div id="tail">tail</div></div>
+            </body></html>"#,
+        )
+        .with_viewport(400, 160);
+    let mut boxed = engine.spawn(&request).expect("Livery session spawns");
+    let _scene = boxed.frame(400, 160);
+    let session = boxed
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("Livery engine retains its concrete session");
+    let input = livery_node_with_id(session, "query");
+    let input_id = DocumentA11yNodeId::new(session.document().dom().opaque_id(input));
+    let first = session
+        .accessibility_projection()
+        .expect("retained layout supplies an accessibility projection");
+    let set_value = DocumentA11yActionRequest {
+        revision: first.revision(),
+        target: input_id,
+        action: DocumentA11yAction::SetValue,
+        data: Some(DocumentA11yActionData::Value("birch".to_owned())),
+    };
+    assert!(session.dispatch_accessibility_action(&set_value));
+    assert!(!session.dispatch_accessibility_action(&set_value));
+    assert_eq!(session.attribute(input, "value"), Some("birch"));
+
+    let tail = livery_node_with_id(session, "tail");
+    let target = DocumentA11yNodeId::new(session.document().dom().opaque_id(tail));
+    let scroller = livery_node_with_id(session, "scroller");
+    let _ = session.doc.scroll_at(5.0, 5.0, 0.0, 20.0);
+    let scrolled = session
+        .accessibility_projection()
+        .expect("scrolled projection remains available");
+    let scroll_revision = scrolled.revision();
+    let scroll_into_view = DocumentA11yActionRequest {
+        revision: scroll_revision,
+        target,
+        action: DocumentA11yAction::ScrollIntoView,
+        data: None,
+    };
+    assert!(
+        scrolled
+            .node(target)
+            .is_some_and(|node| node.actions.contains(&DocumentA11yAction::ScrollIntoView))
+    );
+    let _ = session.doc.scroll_at(5.0, 5.0, 0.0, 30.0);
+    assert!(
+        session
+            .doc
+            .element_scroll()
+            .get(&scroller)
+            .is_some_and(|&(_, y)| y > 0.0)
+    );
+    assert!(!session.dispatch_accessibility_action(&scroll_into_view));
+
+    let current = session
+        .accessibility_projection()
+        .expect("changed scroll publishes a current projection");
+    assert!(
+        session.dispatch_accessibility_action(&DocumentA11yActionRequest {
+            revision: current.revision(),
+            target,
+            action: DocumentA11yAction::ScrollIntoView,
+            data: None,
+        })
+    );
+    let revealed = session
+        .accessibility_projection()
+        .expect("revealed target republishes its actions");
+    assert!(
+        revealed
+            .node(target)
+            .is_some_and(|node| node.actions.contains(&DocumentA11yAction::Click)),
+        "a clip-aware Livery pointer target restores Click at the engine boundary"
     );
 }
 

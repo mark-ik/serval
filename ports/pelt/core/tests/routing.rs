@@ -703,11 +703,21 @@ fn source_artifact_is_held_across_a_live_route_switch() {
         || Box::new(TestClock),
     )
     .expect("source document opens");
+    let source_identity = workspace
+        .document_session_identity(TileId(1))
+        .expect("source controller identity");
 
     assert!(
         workspace
             .set_route_override(TileId(1), Some("fake.reader".to_owned()))
             .expect("reader route uses the retained source")
+    );
+    let reader_identity = workspace
+        .document_session_identity(TileId(1))
+        .expect("reader controller identity");
+    assert_ne!(
+        reader_identity, source_identity,
+        "a reconstructed controller receives a distinct session identity even at generation one"
     );
     let reader_request = reader_requests
         .lock()

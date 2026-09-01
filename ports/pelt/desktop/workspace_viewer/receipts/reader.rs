@@ -198,7 +198,7 @@ impl WorkspaceApp {
                     }
                 }
                 for (tile, link) in [(first_tile, first_link), (sibling_tile, sibling_link)] {
-                    let Some(WorkspaceA11yActionTarget::Reader(action)) =
+                    let Some(WorkspaceA11yActionTarget::Document(action)) =
                         self.accessibility.action_for(link)
                     else {
                         return Err(format!(
@@ -206,7 +206,7 @@ impl WorkspaceApp {
                             tile.0
                         ));
                     };
-                    if action.tile != tile || !action.focus_enabled {
+                    if action.tile != tile || !action.supports(DocumentA11yAction::Focus) {
                         return Err(format!(
                             "Reader accessibility receipt misrouted virtual Focus for tile {}",
                             tile.0
@@ -262,9 +262,7 @@ impl WorkspaceApp {
                         format!("Reader accessibility receipt lost route {}", tile.0)
                     })?;
                     if route.selected_engine() != inker::routing::ENGINE_GENET_READER
-                        || !controller
-                            .session_as_any_ref()
-                            .is::<genet_documents::ReaderDocumentSession>()
+                        || controller.accessibility_projection().is_none()
                     {
                         return Err(format!(
                             "Reader accessibility receipt replaced or rerouted tile {} after virtual Focus",

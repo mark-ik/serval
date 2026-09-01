@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use accesskit::{
-    Action, ActionData, Affine, Node as AccessNode, NodeId as AccessNodeId, Rect as AccessRect,
-    Role, TreeUpdate,
+    Action, ActionData, Affine, HasPopup, Live, Node as AccessNode, NodeId as AccessNodeId,
+    Orientation, Rect as AccessRect, Role, Toggled, TreeUpdate,
 };
 use genet_host_api::ResourceFetcher;
 use genet_host_api::settings::{SettingValue, SettingsProvider};
@@ -17,9 +17,11 @@ use genet_winit_host::{
     wheel_delta_from_winit,
 };
 use inker::{
-    A11yCapability, EngineProfileBinding, SessionButtonState, SessionCursor, SessionIme,
-    SessionInput, SessionKey, SessionModifiers, SessionNavigationCommand, SessionPointerButton,
-    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
+    A11yCapability, DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest,
+    DocumentA11yNodeId, DocumentA11yProjection, DocumentA11yRole, EngineProfileBinding,
+    SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey, SessionModifiers,
+    SessionNavigationCommand, SessionPointerButton, SessionRegistry, SessionScrollKey,
+    SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
 };
 #[cfg(target_os = "windows")]
 use inker::{FrameHandleOwnership, NativeTextureHandle};
@@ -27,8 +29,8 @@ use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{
     PeltController, PeltDocumentState, PeltHostEffect, PeltRegistries, PeltRouteSource,
-    PeltRouteState, PeltTileInspection, PeltTileRequest, PeltWorkspace, PeltWorkspaceFrame,
-    WorkspaceRect,
+    PeltRouteState, PeltSessionIdentity, PeltTileInspection, PeltTileRequest, PeltWorkspace,
+    PeltWorkspaceFrame, WorkspaceRect,
 };
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -2935,13 +2937,13 @@ fn livery_a11y_node_for_tile(
                 && node.label() == Some(label)
                 && matches!(
                     accessibility.action_for(*id),
-                    Some(WorkspaceA11yActionTarget::Livery(target)) if target.tile == tile
+                    Some(WorkspaceA11yActionTarget::Document(target)) if target.tile == tile
                 )
         })
         .map(|(id, _)| *id)
         .ok_or_else(|| {
             format!(
-                "accessibility tree has no Livery {role:?} named {label:?} in tile {}",
+                "accessibility tree has no document {role:?} named {label:?} in tile {}",
                 tile.0
             )
         })
@@ -2962,13 +2964,13 @@ fn reader_a11y_node_for_tile(
                 && node.label() == Some(label)
                 && matches!(
                     accessibility.action_for(*id),
-                    Some(WorkspaceA11yActionTarget::Reader(target)) if target.tile == tile
+                    Some(WorkspaceA11yActionTarget::Document(target)) if target.tile == tile
                 )
         })
         .map(|(id, _)| *id)
         .ok_or_else(|| {
             format!(
-                "accessibility tree has no Reader {role:?} named {label:?} in tile {}",
+                "accessibility tree has no document {role:?} named {label:?} in tile {}",
                 tile.0
             )
         })

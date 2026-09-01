@@ -1213,32 +1213,32 @@ reuse. When that lands, Reader earns its showcase slot back.
 
 ### P7: Livery child accessibility composition
 
-**Status:** complete 2026-08-28 for the retained Livery document lane. This
-supersedes P6's deliberately empty Livery content aperture only. Reader,
-Scripted, Smolweb, and native surface trees remain declared apertures until
-their own engine contracts and action routes exist.
+**Status:** complete 2026-08-28 for the retained Livery document lane. The
+2026-09-01 renderer-neutral projection follow-up below supersedes its original
+Livery-specific host seam. Reader now uses that same seam; Scripted, Smolweb,
+and native surfaces remain declared apertures until their engine adapters
+publish projections.
 
 The current Windows AccessKit bridge receives one root update and does not
 retain a child `target_tree` identity when an action returns. Pelt therefore
-flattens a completed Livery retained tree beneath its Frisket content aperture
-with host-owned IDs. Each ID is scoped by tile, installed session generation,
-and Livery's local node ID; retired IDs are never reused. A replacement session
-gets a fresh namespace, and an old platform action cannot become a new session
-or a newly rebuilt Frisket action.
+flattens a completed retained document tree beneath its Frisket content
+aperture with host-owned IDs. Each ID is scoped by tile, a process-unique
+controller instance plus its installed-session generation, and the engine's
+local node ID; retired IDs are never reused. Replacement and reconstructed
+controllers get fresh namespaces, so an old platform action cannot become a
+new session or a newly rebuilt Frisket action.
 
-The child root carries the content-hole origin, applied page zoom, and root
-document scroll transform. Livery adjusts its child bounds for active nested
-element scrolls before Pelt composes them. Pelt withholds Click for a child
-whose transformed centre is outside its own content hole, and Livery withholds
-Click below an active nested scroller. That leaves inner-scroll
-ScrollIntoView, nested-scroller action routing, and native accessibility grafts
-as explicit later work rather than publishing a wrong pointer target.
+The child root carries the Pelt content-hole origin. The document session
+publishes final viewport-space bounds after its own page zoom, root scroll, and
+nested-scroll transforms. Livery withholds Click below an active nested
+scroller. At activation Pelt requests a fresh engine-owned point and accepts it
+only inside the unchanged content hole.
 
 Focus stays virtual and does not activate or replace the document. A clickable
-Livery node re-enters Pelt through the ordinary content pointer path, checks
-its tile, session generation, content rect, and point before press, then
-checks the generation and rect again before release. The host keeps its Chrome
-and the other tiles throughout.
+document node re-enters Pelt through the ordinary content pointer path, checks
+its tile, full session identity, projection revision, content rect, and point
+before press, then checks the session identity and rect again before release.
+The host keeps its Chrome and the other tiles throughout.
 
 Native HTML anchors with an `href` project as AccessKit links in Livery; anchors
 without an `href` remain generic containers. P7's fixture intentionally uses
@@ -1288,9 +1288,10 @@ typed inputs have neither this value projection nor the action.
 The retained Livery session owns mutation policy. It validates its local node
 identity, accepts only the writable native text controls above, updates the
 retained editor, and applies that editor through the existing DOM and form
-model. Pelt owns the outer namespace and checks the tile session generation
-before reaching that typed session method, so a local node ID cannot address a
-sibling or a replaced document.
+model. Pelt owns the outer namespace and checks the tile's full session
+identity and projection revision before forwarding a neutral `SetValue`
+request through `DocumentSession`, so a local node ID cannot address a sibling,
+replacement, or reconstructed document.
 
 The named receipt is:
 
@@ -1323,8 +1324,8 @@ unchanged editable sibling in retained Chrome.
 #### P7 follow-up: retained Livery nested-scroll reveal
 
 **Status:** complete 2026-08-28 for active retained Livery nested scrollports.
-It does not add a generic child-engine reveal contract or widen pointer action
-routing for Reader, Scripted, Smolweb, or native surfaces.
+The 2026-09-01 neutral action contract can carry reveal requests, but Scripted,
+Smolweb, native surfaces, and Reader do not yet advertise this action.
 
 When a Livery descendant has a nonzero retained nested-scroll ancestor,
 `genet-render` advertises `ScrollIntoView` and continues to withhold `Click`
@@ -1334,9 +1335,10 @@ invalidates only its paint cache, and leaves the root viewport to its existing
 host path. A node with no laid fragment, no active retained scrollport, or an
 already satisfied reveal is inert.
 
-Pelt retains the global child ID, tile, and session generation. Its action map
-routes only `ScrollIntoView` to the typed Livery session after rechecking both
-generations; the session converts the local ID and rejects a non-live DOM node.
+Pelt retains the global child ID, tile, full session identity, and projection
+revision. Its action map routes only an advertised `ScrollIntoView` through
+the neutral document seam after rechecking that snapshot; Livery converts the
+local ID and rejects a non-live DOM node.
 The prior nested wheel route is deliberately part of the receipt: two identical
 tiles begin at the same document, Pelt scrolls only tile 1, and the retained
 action then reveals its link without replacing either session.
@@ -1379,8 +1381,8 @@ Livery's point is already viewport-relative, so Pelt applies only the
 page-zoom and content-hole origin, then requires the result to remain inside
 the focused tile. AccessKit bounds are descriptive and are not used as an
 activation oracle. The host sends the ordinary primary press first and sends
-release only when that press was handled; tile and session-generation checks
-run before both transitions. At dispatch Pelt re-queries the live Livery
+release only when that press was handled; tile and full session-identity checks
+run across both transitions. At dispatch Pelt re-queries the live document
 session after those guards, so a wheel scroll within the same session gets a
 fresh hit-tested point or is rejected rather than reusing old-tree coordinates.
 Pelt also rejects the semantic activation while any ordinary physical pointer
@@ -1398,9 +1400,9 @@ proves tile 2 remains on the source document, and waits for tile 1 to settle
 Livery owns `accessible_pointer_target`: it intersects the retained target with
 the viewport and every overflow clip, then accepts its interior CSS-space point
 only when Livery's scroll-aware hit test resolves to that node or a descendant.
-The concrete Livery session rejects a non-live local ID and preserves that CSS
-point unchanged. Pelt remains responsible for the presentation transform and
-the guarded ordinary press/release route.
+The Livery adapter rejects a non-live local ID and publishes the point in its
+final presentation viewport after page zoom. Pelt applies only its content-hole
+origin and owns the guarded ordinary press/release route.
 
 Recorded 2026-08-28: the focused Livery clip geometry test passed 1, the
 focused Livery session zoom-boundary test passed 1, the disabled nested-control
@@ -1516,22 +1518,24 @@ Fleece lineage in the retained inspector.
 
 #### Reader partial accessibility
 
-**Status:** complete 2026-08-28 for Reader's already-presented visible links.
-This is a bounded Reader child contract, not a generic `DocumentSession` or
+**Status:** complete 2026-08-28 for Reader's already-presented visible links;
+migrated 2026-09-01 to the renderer-neutral `DocumentSession` projection.
+This remains a bounded Reader projection rather than a complete
 document-canvas accessibility tree.
 
 `document-canvas` now retains an opaque semantic identity and arrow-free label
 for each logical link. The same identity covers every wrapped visual segment and
 survives geometry-only reflow. Reader publishes those currently visible links
-only after a completed frame, as a renderer-neutral snapshot with the current
-viewport-space rectangles. Neither Fleece nor Reader depends on AccessKit.
+only after a completed frame, as Inker's renderer-neutral projection with the
+current viewport-space rectangles. Neither Fleece nor Reader depends on
+AccessKit.
 
-Pelt adapts that snapshot below each Frisket content aperture. Its global node
-namespace includes the tile, engine source, and controller generation; an
-engine replacement resets the namespace even if the replacement controller
-restarts at generation one. A removed link retains its local mapping for the
-life of its Reader session, so a queued action cannot be reassigned to a later
-link after reflow.
+Pelt grafts that projection below each Frisket content aperture without
+recognizing Reader. Its global node namespace includes the tile, a
+process-unique controller instance, the installed-session generation, and the
+engine-local node ID. A removed link retains its local mapping for the life of
+its Reader session, so a queued action cannot be reassigned to a later link
+after reflow.
 
 The current action contract is deliberately Focus-only. A Reader link projects
 `Focus`, which changes Pelt's virtual tree focus without pointer capture,
@@ -1539,6 +1543,12 @@ navigation, or a session replacement. It does not project `Click`: Reader
 receives held source and is fetch-free, while ordinary Pelt navigation needs a
 new held destination body before it can construct the next Reader session.
 That host-source handoff and Reader link activation remain a separate lane.
+
+Reader's projection reports `Partial` with the live limitation `Visible Reader
+links are composed with virtual Focus; activation remains unavailable until
+the host holds the destination body.` Pelt derives the aperture description
+from this support record. It does not infer semantics from the selected engine
+or keep a separate Reader description.
 
 The named receipt is:
 
@@ -1565,6 +1575,48 @@ retained workspace nodes, completed in three redraws at 960x640, and captured
 both Reader routes. Its artifact is
 `C:\t\genet-pelt-reader-accessibility.png`, with digest
 `0cd5ab1ac8280a1d`.
+
+#### Renderer-neutral document accessibility projection
+
+**Status:** complete 2026-09-01 for the Inker contract and the Livery and Reader
+adapters.
+
+Inker now owns the document accessibility vocabulary: stable engine-local node
+IDs, ordered parent/child structure, revisioned snapshots, roles, names,
+values, bounds, states, advertised actions, click targets, and explicit support
+limitations. `DocumentSession` publishes that projection and receives neutral
+action requests. It does not mention AccessKit, Livery, Reader, DOM node types,
+or Pelt tile identities.
+
+Livery builds the canonical semantic walk from its retained DOM and completed
+layout, then its document-session adapter applies root scroll and page zoom to
+publish final viewport-space geometry. Its projection is currently `Partial`:
+laid-out element roles and states are present, while custom-leaf interiors,
+standalone text nodes, and the complete accessible-name algorithm remain open.
+Reader publishes its Focus-only visible-link subset through the same seam.
+Both retain stable local IDs and advance revisions when observable semantic or
+geometry state changes.
+
+Pelt now owns only host composition: tile/session namespacing, the Frisket
+graft, AccessKit lowering, virtual focus, stale-action checks, and ordinary
+pointer routing. Its accessibility path contains no Reader/Livery source
+discriminator or concrete session downcast. Aperture descriptions come from
+the live projection's support metadata. Scripted, Smolweb, and native surfaces
+can adopt the contract without adding another Pelt namespace or action type;
+their engine adapters remain open.
+
+Recorded 2026-09-01: Inker passed 109 tests; `genet-render` passed 25; the
+Reader-only `genet-documents` suite passed 8; the three focused Livery
+projection/action tests passed; `pelt-core` passed 6; the combined
+Livery/Reader `pelt-desktop` suite passed 53; and the Pelt receipt parser passed
+4. The full Livery-only `genet-documents` run was 25/27: the existing retained
+native-control geometry and form-outline assertions remained red and are not
+counted as green evidence for this lane. The headed Reader receipt installed
+AccessKit with 32 nodes, completed after 3 redraws at 960x640, and produced
+digest `16fbe63a694e00b1`. The headed clip-aware Livery Click receipt installed
+32 nodes, completed after 5 redraws at 960x640, and produced digest
+`092e230377b95559`. These are headed AccessKit receipts, not physical
+screen-reader input; physical AT verification remains open.
 
 ### Tabard consumer receipts
 
@@ -1629,9 +1681,12 @@ Fleece article and lineage in Pelt's retained inspector.
 P6's retained-shell receipts, P7's Livery child-tree receipt, the separate
 Reader-in-workspace receipt, and the two Tabard consumers are complete. The
 AccessKit tree now composes the retained Livery child tree and Reader's partial
-Focus-only visible-link tree. Scripted, Smolweb, and native child trees still
-need their own namespace and action contracts; Reader activation still needs a
-host-source handoff that can supply the destination body. Livery's native
+Focus-only visible-link tree through one renderer-neutral `DocumentSession`
+contract. Scripted, Smolweb, and native child trees still need engine adapters,
+but not new Pelt namespace or action contracts. Reader activation still needs
+a host-source handoff that can supply the destination body. Livery custom-leaf
+interiors, standalone text nodes, and the complete accessible-name algorithm
+remain outside its current partial projection. Livery's native
 text-control projection and mutation, nested-scroll ScrollIntoView routing,
 clip-aware nested link activation, and nested native textarea
 input-and-selection receipt are complete. `SetValue` remains withheld while a
