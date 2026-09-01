@@ -4,6 +4,12 @@
 **Status:** landed. `cambium::frisket` plus the Pelt retarget; Pelt's copy of the
 view is deleted. See [What landed](#what-landed).
 
+**Workspace-owner update (2026-09-01):** the later
+[Workbench component plan](../design_docs/2026-08-31_workbench_component_plan.md)
+supersedes this note's placement of the shared tile contract in
+`genet-host-api`. The contract now lives in the reusable `workbench` crate;
+Frisket remains its Cambium realization.
+
 The family currently spells "a tree of resizable panes" four times, in four
 repos. This ruling converges them on one implementation, named **frisket**,
 living as a module in Cambium. The name comes from turnstone's crate, which
