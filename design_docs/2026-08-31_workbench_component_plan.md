@@ -248,3 +248,15 @@ heterogeneous headed consumers.
   wasm/browser-headed evidence are captured. The native surface-producer
   limitation remains a Pelt follow-up, not a Workbench compatibility-removal
   gate.
+- 2026-09-01: the coordinated consumer-first remote landing completed.
+  Woodshed `main` is `1611201c903`, Turnstone `main` is `75af89070bb`, and
+  Hocket `main` is `bc98cc8ee83`. Mere's `main` advanced concurrently, so the
+  Workbench branch merged it without conflicts before landing as
+  `2f85051245f`; the incoming Djinn, Distillery, Pandect, and Castellan paths
+  had no changed-path intersection with the Platen or Projection Editor lane.
+  The earlier headed Graphshell browser receipt remains attached to feature
+  parent `49f9b99ed52`. A repeated post-merge focused test was stopped while
+  Cargo remained in workspace resolution before starting rustc, so it is not
+  an additional green receipt. Audits of all four remote consumer `main`
+  sources found no remaining `genet-host-api::tile` uses. Hocket's broader
+  retired Genet patch/layout port remains separate from this migration.
