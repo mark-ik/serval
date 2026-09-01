@@ -1331,7 +1331,14 @@ impl TextSystem {
 /// byte-identical and keep their existing registration path.
 fn normalized_font_bytes(bytes: Vec<u8>) -> Option<Vec<u8>> {
     if bytes.starts_with(b"wOF2") {
-        fontsan::process(&bytes).ok()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            fontsan::process(&bytes).ok()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     } else {
         Some(bytes)
     }
@@ -3774,6 +3781,12 @@ mod tests {
     #[test]
     fn malformed_woff2_is_rejected_before_font_registration() {
         assert!(normalized_font_bytes(b"wOF2not-a-font".to_vec()).is_none());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn wasm_rejects_woff2_without_native_sanitizer() {
+        assert!(normalized_font_bytes(b"wOF2opaque".to_vec()).is_none());
     }
 
     #[test]

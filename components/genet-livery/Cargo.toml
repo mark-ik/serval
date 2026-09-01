@@ -14,7 +14,6 @@ cssparser.workspace = true
 data-url = { workspace = true }
 genet-document-resources = { workspace = true }
 euclid.workspace = true
-fontsan.workspace = true
 image = { workspace = true }
 layout-dom-api = { version = "0.1.0", path = "../shared/layout-dom" }
 livery = { version = "0.0.3", path = "../livery" }
@@ -23,6 +22,9 @@ parley.workspace = true
 selectors = "0.39"
 serde.workspace = true
 taffy = { package = "genet-taffy", version = "0.14.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fontsan.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
