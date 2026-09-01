@@ -6896,3 +6896,61 @@ fn replaced_auto_width_is_intrinsic_in_flow_and_stretchable_in_flex_and_grid() {
         "border-box replaced elements are left to the measure path"
     );
 }
+
+#[test]
+fn inline_replaced_auto_width_is_intrinsic_whatever_its_display() {
+    let used_size = |css: &str| {
+        let dom = StaticDocument::parse(
+            "<div id=parent><canvas id=item width=\"100\" height=\"100\"></canvas></div>",
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[&format!("html, body {{ margin: 0; }} {css}")]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let mut text = TextSystem::new();
+        let (_, layout) = layout_with_text_system(
+            &dom,
+            &styles,
+            320.0,
+            240.0,
+            ViewportSizes::uniform(320.0, 240.0),
+            &mut text,
+            &HashMap::new(),
+        )
+        .expect("layout");
+        let rect = layout
+            .get(node_by_id(&dom, dom.document(), "item").expect("item"))
+            .expect("fragment")
+            .physical_rect();
+        (rect.width, rect.height)
+    };
+
+    // CSS 2.1 10.3.2 does not consult display: an inline replaced element with
+    // `width: auto` uses its intrinsic width. Before the atomic-root wrapper
+    // learned to skip replaced roots, only the first of these was right: an
+    // `inline-block` replaced root was wrapped in a viewport-sized containing
+    // block, formatted under MaxContent, and stretched to 320 with its height
+    // then taken from the natural ratio. `img` carries `display: inline-block`
+    // from the UA sheet, so every bare image took that path.
+    for display in ["inline", "inline-block", "block"] {
+        assert_eq!(
+            used_size(&format!("#parent {{ width: 200px; }} #item {{ display: {display}; }}")),
+            (100.0, 100.0),
+            "a replaced element with an auto width keeps its natural box as `display: {display}`"
+        );
+    }
+    // The other two conjuncts of the shrink-to-fit predicate, pinned so a
+    // change to either is a deliberate one rather than a silent regression.
+    assert_eq!(
+        used_size("#parent { width: 200px; } #item { display: inline-block; vertical-align: bottom; }"),
+        (100.0, 100.0),
+        "a non-baseline atomic root keeps its natural box"
+    );
+    assert_eq!(
+        used_size("#parent { width: 200px; } #item { display: inline-block; width: 40px; }"),
+        (40.0, 40.0),
+        "a definite width still wins over the intrinsic one"
+    );
+}

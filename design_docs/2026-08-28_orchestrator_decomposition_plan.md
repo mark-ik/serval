@@ -500,13 +500,30 @@ narrow-feature warnings driven from 3/11/15 to zero.
   min/max clamp of CSS 2.1 10.4 (`box-sizing-replaced-001..003`); the unit
   test pins the stretch so widening the rule is a deliberate change with
   those reftests watching.
-- An inline `<img>` whose natural size comes from host-resolved bytes lays
-  out at viewport width times its ratio instead of its natural box:
-  `tests/paint.rs::retained_replaced_img_uses_host_resolved_bytes_for_intrinsic_size`
-  expects 2x3 and gets 320x480. Fails identically at `a947c302f69`, before
-  any decomposition or sizing work. A probe through `layout_with_text_system`
-  on the same document shows the box as inline flow-root, `replaced: true`,
-  `replaced_intrinsic_size` returning `Some((2, 3))`, and the fragment still
-  320x480; an inline `<canvas>` on the same path lays out at its natural
-  size, so the fault is specific to the image branch of the inline
-  atomic-root path, not to replaced sizing in general.
+- **Landed 2026-09-01.** The inline replaced sizing bug is fixed, and it was
+  not about `<img>` versus `<canvas>` at all. `img` carries
+  `display: inline-block` from the UA sheet (`lib.rs` CAMBIUM_UA_DEFAULTS)
+  and `canvas` does not, so only `img` satisfied the shrink-to-fit predicate.
+  An atomic inline root that qualifies was wrapped in a viewport-sized
+  containing block, which the very next statement then formatted under
+  MaxContent; Buckram bailed on the indefinite inline size and Taffy
+  stretched the leaf to the wrapper, with the natural ratio turning 320 into
+  480. The wrapper now skips replaced roots: CSS 2.1 10.3.2 gives an inline
+  replaced element with `width: auto` its intrinsic width outright, so there
+  is no shrink-to-fit step needing a containing block to run in.
+  Confirmed by prediction *before* the fix, not after: an inline `<canvas>`
+  forced to `display: inline-block` reproduced the failure at 320x320, while
+  the plain-inline control and a `vertical-align: bottom` variant stayed
+  correct -- three probes of one predicate.
+
+  Two pre-existing bugs this un-masked. Both previously *passed* only because
+  their reference half rendered as wrongly as their test half:
+  - `css-sizing/grid-item-image-percentage-min-height-computes-as-0`: a
+    percentage `min-height` on a replaced grid item resolves to a stretch
+    rather than to zero, which is precisely what that test asserts. Proven by
+    probe: with the fix the reference half moves 320x320 -> 60x60 while the
+    test half stays 320x320.
+  - `CSS2/tables/table-anonymous-objects-211`: an `<img>` given
+    `display: table-cell` against one inside a cell `<div>`. Mechanism not
+    isolated. CSS2/tables is net-neutral across the change, 151 failures
+    either side, trading this test against `table-cell-001`.

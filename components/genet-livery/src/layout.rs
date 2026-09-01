@@ -2486,11 +2486,32 @@ where
                 .merge(std::mem::take(&mut state.table_shadow));
             continue;
         };
+        // An inline replaced root contributes its natural box to the line.
+        // Formatting it against the viewport first turns an auto canvas into
+        // a viewport-wide atomic fragment, and that stale rectangle is then
+        // also reused by flex-basis: content's max-content query.
+        let replaced_atomic_root = matches!(
+            boxes[box_id].origin,
+            BoxOrigin::Element(node) if is_replaced_element(dom, node)
+        );
         // An admitted atomic inline root needs a containing block so its
         // shrink-to-fit query runs as a child formatting context. Keep the
         // established direct-root path for the deferred cases, whose inline
         // placement may depend on unsupported vertical alignment behavior.
-        let root = if state.tree.uses_intrinsic_shrink_to_fit(atomic_root) {
+        //
+        // A replaced root is excluded. CSS 2.1 10.3.2 gives an inline replaced
+        // element with `width: auto` its intrinsic width outright; there is no
+        // shrink-to-fit step to run, so it needs no containing block to run one
+        // in. Wrapping it was actively harmful: the wrapper is viewport-sized,
+        // the very next statement formats it under MaxContent, and Buckram's
+        // block algorithm then bails with an indefinite inline size and hands
+        // the subtree to Taffy's generic block path, which stretches the leaf
+        // to the wrapper's width and derives its height from the natural ratio.
+        // A `display: inline-block` image therefore painted at viewport width
+        // times its ratio while `display: inline` on the same bytes was correct.
+        let root = if state.tree.uses_intrinsic_shrink_to_fit(atomic_root)
+            && !replaced_atomic_root
+        {
             state.tree.new_with_children_and_block_style(
                 AlgorithmKind::Block,
                 BlockStyle {
@@ -2521,14 +2542,6 @@ where
         }) {
             plane.intrinsic_inline.insert(box_id, intrinsic);
         }
-        // An inline replaced root contributes its natural box to the line.
-        // Formatting it against the viewport first turns an auto canvas into
-        // a viewport-wide atomic fragment, and that stale rectangle is then
-        // also reused by flex-basis: content's max-content query.
-        let replaced_atomic_root = matches!(
-            boxes[box_id].origin,
-            BoxOrigin::Element(node) if is_replaced_element(dom, node)
-        );
         let available = if replaced_atomic_root {
             AlgorithmSize::new(
                 AlgorithmAvailableSpace::MaxContent,
