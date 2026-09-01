@@ -1,11 +1,11 @@
 # Workbench Component Plan
 
 **Date**: 2026-08-31
-**Status (2026-08-31)**: W1 through W3 are implemented on coordinated Genet
-and Mere feature branches. W4 now has Graphshell authoring at Mere
-`f0fd0886` and a durable Woodshed open-lane consumer with full view and host
-receipts. It remains open for a composited native Pelt tearout receipt and the
-Graphshell wasm/browser-headed environment receipt.
+**Status (2026-09-01)**: W1 through W3 are implemented on coordinated Genet
+and Mere feature branches. W4 now has captured native Pelt acceptance and
+cancellation receipts, a headed Graphshell browser save/mutate/reload receipt,
+and a durable Woodshed open-lane consumer with full view and host receipts.
+Compatibility removal and pinned-consumer migration remain open.
 
 ## Ruling
 
@@ -186,11 +186,20 @@ heterogeneous headed consumers.
   follow-up: it never accepts custody without a shared-device import receipt.
   Secondary AccessKit remains a follow-up.
 
-  `--workspace-tearout-receipt` drives the live W4 path and only succeeds after
-  Winit reports native focus for the secondary and it presents a visible
-  composed destination frame, with stdout recording `tearout_receipt=true`.
-  The focused core custody test is green; the headed command is an available
-  receipt hook until its environmental run is captured.
+  The headed acceptance command was captured at exit 0:
+  `pelt.exe --workspace-tearout-receipt --size 960x640
+  ports/pelt/examples/workspace/p5-fallback/index.html`. Its stdout recorded
+  `window=true redraws=3 size=960x640 tiles=1 tearout_receipt=true
+  tearout_cancellation_receipt=false routes=2=genet.livery:document`.
+  The remaining primary tile is correctly tile 2 after transferred source
+  custody. The separate cancellation command with the same fixture exited 0
+  and recorded `window=true redraws=2 tiles=2 tearout_receipt=false
+  tearout_cancellation_receipt=true routes=1=genet.livery:document,2=genet.livery:document`.
+  It proves that the real hidden native preflight was declined before
+  `accept_tearout` and retained source custody. Computer Use separately
+  captured the live interactive `Pelt — Pelt fallback receipt` window with two
+  fallback tiles and splitter; its accessibility tree exposed both tab items,
+  content regions, and the separator.
 - 2026-08-31: Graphshell's authoring surface advanced after the initial
   `ProjectionEditor` boundary. Mere commits
   `7323c703bf3c989ce0fe8c240cd047a4bfbd2fcc` (headed editor surface),
@@ -198,11 +207,12 @@ heterogeneous headed consumers.
   `86eb4331f179862a4a5e8c02faea7f7b3af2e972` (keyboard guard) attach the
   editor to Graphshell's web entry point while retaining draft, save-sink, and
   endpoint authority in Graphshell. The earlier standalone cross-repo harness
-  remains the eight-test component receipt; these web commits are not a
-  browser-headed receipt. The `wasm32-unknown-unknown` build and a browser run
-  still need their environment/toolchain gate cleared and measured. The final
-  coordinated Mere head is `f0fd0886`; any host-side Graphshell check remains
-  a source/host check rather than headed browser evidence.
+  remains the eight-test component receipt. The headed browser receipt is now
+  green at Mere `49f9b99ed52e543c992a1a45e599dc6760d2ab41`: the stripped
+  `wasm32-unknown-unknown` bundle is 34,679,440 bytes with SHA-256
+  `A6A43EA0D1FB510E9EEF897B6C9232BB66F5D1F5927DF54DADE3463F55D3DB85`,
+  and the browser completed the full source/provenance save, mutate, and reload
+  loop.
 - 2026-08-31: Woodshed's final second-consumer branch
   `codex/workbench-consumer-20260831` is pushed at
   `a220aab0f037105f52facd9f578674e8bef5e945`, atop the initial consumer
@@ -224,8 +234,8 @@ heterogeneous headed consumers.
   --locked --offline -j1 --config …`, passed 1/1 after 15m16s. Formatting and
   diff checks passed. This closes the non-browser open-lane and Woodshed
   persistence evidence, but is not a Woodshed headed workspace receipt.
-- 2026-08-31: W4 still needs captured headed acceptance evidence and a
-  separate bounded cancellation receipt, Graphshell's wasm build and
-  browser-headed authoring proof, plus proof that pinned consumers have
-  migrated before compatibility removal can be considered. The native
-  surface-producer limitation is not a Workbench compatibility-removal gate.
+- 2026-09-01: W4's native acceptance/cancellation and Graphshell
+  wasm/browser-headed evidence are captured. Compatibility removal remains
+  blocked on proof that pinned consumers have migrated; retain the
+  `genet-host-api::tile` re-export until then. The native surface-producer
+  limitation is a Pelt follow-up, not a Workbench compatibility-removal gate.
