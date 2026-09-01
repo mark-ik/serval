@@ -14,14 +14,6 @@ use std::str::FromStr;
 pub mod navigation;
 pub mod settings;
 pub mod surface;
-/// Temporary compatibility path for the reusable workspace component.
-///
-/// New consumers should import from [`workbench`] directly. This re-export has
-/// no local vocabulary or reducer implementation, so old and new consumers
-/// share the same exact types until the remaining pinned users migrate.
-pub mod tile {
-    pub use workbench::*;
-}
 
 pub use navigation::resolve_href;
 pub use surface::{
@@ -118,7 +110,7 @@ impl ShellEngine for DeferredShellEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineProfile, tile};
+    use super::EngineProfile;
 
     #[test]
     fn legacy_profile_spellings_canonicalize_to_owned_engines() {
@@ -132,12 +124,6 @@ mod tests {
     fn retired_profiles_are_rejected() {
         assert!("browser".parse::<EngineProfile>().is_err());
         assert!("headless".parse::<EngineProfile>().is_err());
-    }
-
-    #[test]
-    fn tile_module_reexports_the_workbench_contract() {
-        let id: tile::TileId = workbench::TileId(7);
-        assert_eq!(id, workbench::TileId(7));
     }
 }
 

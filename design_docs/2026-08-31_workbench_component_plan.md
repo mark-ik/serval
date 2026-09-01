@@ -5,7 +5,9 @@
 and Mere feature branches. W4 now has captured native Pelt acceptance and
 cancellation receipts, a headed Graphshell browser save/mutate/reload receipt,
 and a durable Woodshed open-lane consumer with full view and host receipts.
-Compatibility removal and pinned-consumer migration remain open.
+The temporary `genet-host-api::tile` compatibility module is now removed.
+Pinned products that still need their own current-Genet port retain that work
+outside the shared component contract.
 
 ## Ruling
 
@@ -58,10 +60,9 @@ is renamed.
 | Graphshell Projection Editor | Projection draft, validation, preview, typed endpoint requests | Source authority and portable scene mutation |
 | Native/web host | Window creation, tearout acceptance, storage choice, process lifecycle | Reusable reducer semantics |
 
-`genet-host-api::tile` may temporarily re-export `workbench` so consumers can
-move without a flag day. It contains no second definition. The compatibility
-module is removed after the owned consumers and pinned external consumers use
-the new crate directly.
+`genet-host-api::tile` temporarily re-exported `workbench` during the migration
+without a second definition. It is now removed: Genet host contracts import the
+shared types directly, as do the audited migrated consumers.
 
 ## Phases
 
@@ -77,7 +78,7 @@ Validation:
 - Existing reducer tests move with the contract and remain green.
 - New tests prove that an existing tile produces a tearout request without a
   tree mutation and an unknown tile produces no request.
-- `genet-host-api::tile` re-exports the exact Workbench types.
+- `genet-host-api` imports shared Workbench types directly, without an alias.
 
 Done when there is one implementation of every tile type and reducer.
 
@@ -128,8 +129,9 @@ package called `workbench` in its dependency graph.
 
 Wire tearout acceptance in one native host and embed the Projection Editor in
 one headed Graphshell surface. Prove a second non-browser consumer, preferably
-Woodshed, can use Workbench with an open content lane. Remove
-`genet-host-api::tile` only after every pinned family consumer has migrated.
+Woodshed, can use Workbench with an open content lane. The temporary
+`genet-host-api::tile` alias is removed after an audit confirms its real users
+have imported `workbench` directly.
 
 Validation:
 
@@ -150,8 +152,9 @@ heterogeneous headed consumers.
   local/remote host. W1 and W2 started in an isolated Genet worktree because the
   shared checkout acquired concurrent edits during the review.
 - 2026-08-31: W1 moved the sole tile vocabulary and raw `TileTree` reducer into
-  published MPL-2.0 package `workbench`. `genet-host-api::tile` is now a real
-  dependency-backed compatibility re-export. The `Workbench` wrapper returns a
+  published MPL-2.0 package `workbench`. During migration,
+  `genet-host-api::tile` was a dependency-backed compatibility re-export. The
+  `Workbench` wrapper returns a
   typed `TearOut` effect for a valid outside drop without changing the tree, and
   treats an unknown tile as unchanged.
 - 2026-08-31: W2 migrated Cambium Frisket and Pelt core/desktop imports to
@@ -214,9 +217,7 @@ heterogeneous headed consumers.
   and the browser completed the full source/provenance save, mutate, and reload
   loop.
 - 2026-08-31: Woodshed's final second-consumer branch
-  `codex/workbench-consumer-20260831` is pushed at
-  `a220aab0f037105f52facd9f578674e8bef5e945`, atop the initial consumer
-  `c2ed2c993ac04d41513daf5422bbe5cbc2871462` and follow-up `7db4211`.
+  `codex/workbench-consumer-20260831` is at `1611201`.
   `woodshed-views` owns a four-panel stable-ID `ContentSource::Open` workspace
   over existing Practice, Set, Related, and Settings surfaces. Its active
   panel is host-global across split-local stacks; divider fractions are
@@ -227,15 +228,23 @@ heterogeneous headed consumers.
   Workbench `d25ef444d216cc71f6897d122c55a92530d5a6ca`, Parley Genet
   `583266`, and `wasm-bindgen` `0.2.127`.
 
-  The full owned view receipt,
+  The final locked view receipt,
   `cargo test -p woodshed-views --locked --offline -j1 --config …`, passed
-  41/41. The exact host restore receipt,
+  11/11. The exact host restore receipt,
   `cargo test -p woodshed-genet host_session_restores_the_workspace_policy
   --locked --offline -j1 --config …`, passed 1/1 after 15m16s. Formatting and
   diff checks passed. This closes the non-browser open-lane and Woodshed
   persistence evidence, but is not a Woodshed headed workspace receipt.
-- 2026-09-01: W4's native acceptance/cancellation and Graphshell
-  wasm/browser-headed evidence are captured. Compatibility removal remains
-  blocked on proof that pinned consumers have migrated; retain the
-  `genet-host-api::tile` re-export until then. The native surface-producer
-  limitation is a Pelt follow-up, not a Workbench compatibility-removal gate.
+- 2026-09-01: Turnstone's direct Workbench consumer migration landed at
+  `75af890`; its full offline `cargo check` is green. Hocket's direct import
+  migration landed at `bc98cc8`, but its focused compile remains blocked before
+  compilation by Hocket's pre-existing dependency on removed `genet-layout`.
+  That is a separate product port, not a Workbench alias use.
+- 2026-09-01: the remaining `genet-host-api::tile` compatibility module and its
+  re-export test were deleted after the Genet source audit found no real alias
+  consumers. `genet-host-api::settings` imports `workbench::SettingsRef`
+  directly and retains its real Workbench dependency. W4's native Pelt
+  acceptance/cancellation, Woodshed open-lane/persistence, and Graphshell
+  wasm/browser-headed evidence are captured. The native surface-producer
+  limitation remains a Pelt follow-up, not a Workbench compatibility-removal
+  gate.

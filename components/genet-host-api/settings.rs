@@ -9,7 +9,7 @@
 //! owns the typed value and storage; a provider adapts that owner to the
 //! projection surface.
 
-use crate::tile::SettingsRef;
+use workbench::SettingsRef;
 
 /// The thing whose behavior the setting configures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
