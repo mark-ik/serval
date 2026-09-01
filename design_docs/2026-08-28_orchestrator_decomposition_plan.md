@@ -494,6 +494,12 @@ narrow-feature warnings driven from 3/11/15 to zero.
   percentage basis. The width repair in `78f6bd3eafd` is the shape that fix
   takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,
   `length_percentage` and `length_percentage_auto` take the tagged path.
+- A block-level replaced element under `box-sizing: border-box` still
+  stretches to its container. `3cd0f5abb7b` leaves border-box on Taffy's
+  leaf measure on purpose, because a forced size bypasses the ratio-preserving
+  min/max clamp of CSS 2.1 10.4 (`box-sizing-replaced-001..003`); the unit
+  test pins the stretch so widening the rule is a deliberate change with
+  those reftests watching.
 - An inline `<img>` whose natural size comes from host-resolved bytes lays
   out at viewport width times its ratio instead of its natural box:
   `tests/paint.rs::retained_replaced_img_uses_host_resolved_bytes_for_intrinsic_size`
