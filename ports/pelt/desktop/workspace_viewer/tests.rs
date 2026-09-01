@@ -1,4 +1,5 @@
 use super::*;
+use super::accessibility::DocumentA11ySource;
 use crate::FileAppearanceStore;
 #[cfg(feature = "reader")]
 use std::sync::Mutex;
@@ -421,10 +422,10 @@ fn named_workspace_receipts_reject_the_older_receipt_drivers() {
     };
     let p3 = run_livery_workspace_viewer(fallback().with_interaction_receipt())
         .expect_err("P3 and P5 receipt drivers are mutually exclusive");
-    assert!(p3.contains("P3 or P4"));
+    assert!(p3.contains("P3, P4, or W4"));
     let p4 = run_livery_workspace_viewer(fallback().with_capability_receipt())
         .expect_err("P4 and P5 receipt drivers are mutually exclusive");
-    assert!(p4.contains("P3 or P4"));
+    assert!(p4.contains("P3, P4, or W4"));
 }
 
 #[cfg(feature = "reader")]

@@ -477,7 +477,16 @@ narrow-feature warnings driven from 3/11/15 to zero.
   reconciliation pass.
 - Promoting Pelt's accessibility *types* into
   `workspace_viewer/accessibility.rs` wants its own visibility pass; Phase 1
-  measured 150 private-field errors for it.
+  measured 150 private-field errors for it. **Landed 2026-09-01.** The pass
+  was cheaper than the first attempt suggested: 434 lines moved as one
+  contiguous band (eleven types, three impls and their one free helper),
+  `pub(super)` on every moved type, field and externally called method, and
+  the compiler then reported exactly one error, the projection's private
+  constructor. `pub(super)` is the ceiling because nothing outside
+  `workspace_viewer` names any of it; the receipt drivers and tests reach it
+  through the parent's glob as before. Parent 4,388 to 3,970 lines;
+  `accessibility.rs` 821 to 1,266. Verified by the 53-test suite name for
+  name against main and the four accessibility receipts driven headed.
 - Separating `genet-livery/layout.rs`'s central transaction stays
   deliberately undone. It needed the extracted helpers independently
   receipted first, which Phase 4 has now made possible.
