@@ -234,6 +234,101 @@ decomposition, which moves no logic. It is recorded here rather than dropped:
 a receipt that fails one run in ten is worth a bound or a retry, and a later
 phase should not rediscover it as a surprise.
 
+### 2026-09-02 — Assessment: unifying the two layout builders
+
+Written after the transaction split put `BuildState` and `InlineBuildState`
+side by side in `layout/build_block.rs` and `layout/build_inline.rs`. The
+question is whether two builders should exist at all. This is an
+assessment, not a plan: it ends in a recommendation and done-conditions,
+and changes no code.
+
+**What the two builders are.** Each projects a box subtree into one of
+Buckram's algorithm trees and then runs the table machinery over it:
+
+| | `BuildState` | `InlineBuildState` |
+|---|---|---|
+| tree | `AlgorithmTree<Style, TextMeasure, Option<BoxId>>` | `AlgorithmTree<Style, InlineMeasure, Vec<BoxId>>` |
+| methods | 11, 854 lines | 15, 976 lines |
+| own state | `text: &mut TextSystem` held on the struct | `atomic: &AtomicLayoutPlane`, `pending_table_handoff` |
+| only here | `measure_intrinsic_width` (31) | the five inline-group methods (199): `build_children`, `build_flow_children`, `build_positioned_inline_descendants`, `inline_group_is_blank`, `build_inline_group` |
+
+Ten method names are shared and account for 823 of the block builder's
+lines and 777 of the inline builder's. Measured body by body with a line
+sequence matcher, brace-accurate spans:
+
+| method | block | inline | similarity |
+|---|---:|---:|---:|
+| `size_wrapper_from_grid` | 32 | 32 | 1.00 |
+| `table_paint_plane` | 4 | 4 | 1.00 |
+| `verify_table_layout` | 14 | 13 | 0.96 |
+| `apply_buckram_table_rows` | 88 | 91 | 0.93 |
+| `apply_buckram_table_layout` | 67 | 70 | 0.88 |
+| `build_anonymous_table_grid` | 76 | 57 | 0.71 |
+| `collect_out_of_flow_table_parts` | 53 | 77 | 0.68 |
+| `build_box` | 439 | 299 | 0.67 |
+| `measure_caption_min` | 21 | 60 | 0.47 |
+| `measure_cell_intrinsics` | 29 | 74 | 0.31 |
+
+**The axis of variation is one thing, not many.** A unified diff of the
+five near-identical methods shows every difference is the measurer. The
+block builder measures a node from three numbers (`TextMeasure`: min
+width, max width, height) and needs nothing else; the inline builder
+measures through the text system, so every method that can reach a
+measurement takes `text: &mut TextSystem` and threads `dom`, `styles`,
+`boxes` and `atomic` into `measure_inline_context` or
+`measure_inline_algorithm_node`. `apply_buckram_table_layout` differs by
+that one parameter and two call sites; `apply_buckram_table_rows` by the
+parameter and the measure closure; `collect_out_of_flow_table_parts` by the
+closure and by calling `collect_inline_fragments` instead of
+`collect_fragments`. `size_wrapper_from_grid`, `table_paint_plane` and
+`verify_table_layout` are identical.
+
+The two measure methods at the bottom of the table are the genuine
+semantic difference, not duplication: an inline cell's intrinsic widths
+and a caption's minimum come from shaping text, which is why the inline
+versions are two to three times longer. They stay two under any option.
+`build_box` is the mixed case: its shared two thirds is the table and
+replaced-element handling; the divergent third is the inline builder
+deferring to `build_inline_group` where the block builder recurses.
+
+**Options.**
+
+1. *Leave it.* The duplication is now visible side by side in two files of
+   under a thousand lines each, and both are receipted. Cost is the
+   standing risk that a table fix lands in one builder and not the other,
+   which nothing in the tree would catch until a reftest did.
+2. *Factor the table band into free functions generic over the tree.* The
+   five near-identical methods become one copy each, taking
+   `&mut AlgorithmTree<Style, C, N>` and a measure closure, with the two
+   builders calling them. About 210 lines leave each builder; no trait, no
+   change to either struct, the block path keeps its three-number measure
+   and never sees `TextSystem`. `build_box` stays two. Verification is the
+   standing gate: reftests identical by name across the four corpora,
+   livery tests unchanged by name, `block_algorithm_counts` receipts
+   unchanged.
+3. *One generic builder over a measure policy.* `Builder<M>` with
+   `M::Context`, `M::Node` and `M::measure`, the inline-group methods on
+   `Builder<InlineMeasurePolicy>` only. Removes the remaining shared two
+   thirds of `build_box` too, but threads a policy through the block path
+   that does not need one, changes monomorphisation of the hot path, and
+   is a design change whose reftest-identical outcome is likely but not
+   certain. Its extra yield over option 2 is `build_box`'s shared portion,
+   roughly 250 lines by the matcher, against a much larger diff.
+
+**Recommendation.** Option 2 if the duplication is to be paid down at all;
+it removes the part that is provably the same code and leaves the part
+that is provably different. Option 3 is not justified by a 0.67-similar
+`build_box` whose divergence is the inline-group logic itself. Option 1 is
+acceptable now that both builders are receipted and adjacent.
+
+**Done-conditions if option 2 is adopted.** The five methods named above
+exist once, in a `layout/table_pass.rs` or beside the tables module; both
+builders call them; each builder's remaining method list is exactly its
+own list above plus `build_box` and the two measure methods; the four
+reftest corpora are identical to the pre-change captures by name; the
+livery test set is unchanged name for name; the flexbox receipt and
+`block_algorithm_counts` hold.
+
 ## Progress
 
 ### 2026-08-28 — Phase 1 implemented
