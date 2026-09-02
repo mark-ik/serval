@@ -3,7 +3,7 @@ use crate::FileAppearanceStore;
 use inker::SurfaceError;
 #[cfg(feature = "reader")]
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "reader")]
 #[derive(Clone)]
@@ -580,6 +580,23 @@ fn secondary_visible_startup_retries_until_presented() {
     assert!(secondary_redraw_needed(false, true, false));
     assert!(!secondary_redraw_needed(false, true, true));
     assert!(secondary_redraw_needed(true, true, true));
+}
+
+#[test]
+fn tearout_focus_retry_waits_for_event_and_interval() {
+    let now = Instant::now();
+    assert!(tearout_focus_retry_due(None, now, false));
+    assert!(!tearout_focus_retry_due(
+        Some(now),
+        now + TEAROUT_FOCUS_RETRY_INTERVAL - Duration::from_millis(1),
+        false,
+    ));
+    assert!(tearout_focus_retry_due(
+        Some(now),
+        now + TEAROUT_FOCUS_RETRY_INTERVAL,
+        false,
+    ));
+    assert!(!tearout_focus_retry_due(None, now, true));
 }
 
 #[test]

@@ -36,7 +36,7 @@ use pelt_core::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 use workbench::{
@@ -74,6 +74,7 @@ use accessibility::{
 
 const RECEIPT_STEPS: u8 = 8;
 const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
+const TEAROUT_FOCUS_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const MIXED_WORKSPACE_ASSERTION: &str =
     "Gemtext navigation rerouted only tile 1; Livery, scripted, and external neighbors held";
 const CHROME_WORKSPACE_ASSERTION: &str = "focused-tile chrome navigated history, bound an explicit engine choice menu, applied a per-tile override, and exposed truthful structural inspection while the mixed workspace held";
@@ -1137,6 +1138,10 @@ struct TearoutWindow {
     /// Recorded only after a source-owned preflight frame presented, the host
     /// requested visibility, and Winit delivered native focus to this window.
     native_focus_observed: bool,
+    /// Last host-owned focus request. Retries are rate-limited and remain
+    /// bounded by the explicit W4 receipt timeout; this never stands in for a
+    /// real `Focused(true)` event.
+    last_focus_request: Option<Instant>,
     visibility_requested: bool,
     visible_frame_presented: bool,
     close_requested: bool,
@@ -2702,8 +2707,12 @@ impl WorkspaceApp {
         match self.tearout_receipt_progress(tile)? {
             Some(true) => Ok(true),
             Some(false) => {
-                if let Some(accepted) = self.tearouts.values().find(|tearout| tearout.tile == tile)
+                if let Some(accepted) = self
+                    .tearouts
+                    .values_mut()
+                    .find(|tearout| tearout.tile == tile)
                 {
+                    accepted.request_focus_if_due();
                     accepted.window.request_redraw();
                 }
                 self.request_redraw();
@@ -2900,7 +2909,11 @@ impl WorkspaceApp {
         // This is an independent native window. Keep the OS frame until the
         // secondary host has its own CSD and accessibility bridge.
         let attributes = static_viewer::pelt_window_attributes(title, self.width, self.height)
-            .with_visible(false);
+            .with_visible(false)
+            // The destination is only a hidden composition preflight. Do not
+            // let its creation consume native activation before acceptance;
+            // focus is requested after ownership is registered below.
+            .with_active(false);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -3551,6 +3564,17 @@ fn secondary_redraw_needed(
     redraw || (visibility_requested && !visible_frame_presented)
 }
 
+fn tearout_focus_retry_due(
+    last_request: Option<Instant>,
+    now: Instant,
+    focus_observed: bool,
+) -> bool {
+    !focus_observed
+        && last_request.map_or(true, |last| {
+            now.duration_since(last) >= TEAROUT_FOCUS_RETRY_INTERVAL
+        })
+}
+
 fn restore_source_after_rehost_failure(error: &inker::SurfaceError) -> bool {
     !matches!(error, inker::SurfaceError::HostMigrationIndeterminate(_))
 }
@@ -3566,6 +3590,24 @@ enum TearoutDisposition {
 }
 
 impl TearoutWindow {
+    /// Ask the host to activate this accepted destination at a bounded pace.
+    /// The receipt still requires the real Winit `Focused(true)` event; this
+    /// request only gives the platform another opportunity to deliver it.
+    fn request_focus_if_due(&mut self) -> bool {
+        let now = Instant::now();
+        if tearout_focus_retry_due(self.last_focus_request, now, self.native_focus_observed) {
+            // The first show is intentionally `SW_SHOWNOACTIVATE` because
+            // preflight is hidden. Re-assert visibility before each bounded
+            // activation request so Winit can use its activating show path.
+            self.window.set_visible(true);
+            self.window.focus_window();
+            self.last_focus_request = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+
     fn logical_size(&self) -> (u32, u32) {
         (
             static_viewer::logical_extent(self.width, self.scale_factor),
@@ -4233,6 +4275,7 @@ impl WorkspaceApp {
             cursor: (0.0, 0.0),
             modifiers: SessionModifiers::default(),
             native_focus_observed: false,
+            last_focus_request: None,
             visibility_requested: false,
             visible_frame_presented: false,
             close_requested: false,
@@ -4264,8 +4307,8 @@ impl WorkspaceApp {
         // A shown native window can synchronously emit focus/redraw events.
         // Register its ownership before asking the platform to do either so
         // those events cannot be dropped as an unknown destination.
-        if let Some(tearout) = self.tearouts.get(&window_id) {
-            tearout.window.focus_window();
+        if let Some(tearout) = self.tearouts.get_mut(&window_id) {
+            tearout.request_focus_if_due();
             tearout.window.request_redraw();
         }
     }
@@ -4455,6 +4498,12 @@ impl WorkspaceApp {
                 );
             },
             TearoutEvent::Keep { redraw } => {
+                if self.config.tearout_receipt
+                    && !tearout.native_focus_observed
+                    && self.tearout_receipt_tile == Some(tearout.tile)
+                {
+                    tearout.request_focus_if_due();
+                }
                 if redraw {
                     tearout.window.request_redraw();
                 }
@@ -4612,9 +4661,36 @@ impl ApplicationHandler for WorkspaceApp {
         if self.accessibility.take_wake() {
             self.request_redraw();
         }
-        for tearout in self.tearouts.values() {
+        let mut focus_retry_wake = false;
+        for tearout in self.tearouts.values_mut() {
             if tearout.accessibility.take_wake() {
                 tearout.window.request_redraw();
+            }
+            if self.config.tearout_receipt
+                && !tearout.native_focus_observed
+                && self.tearout_receipt_tile == Some(tearout.tile)
+            {
+                if tearout.request_focus_if_due() {
+                    tearout.window.request_redraw();
+                    focus_retry_wake = true;
+                }
+            }
+        }
+        if focus_retry_wake {
+            self.request_redraw();
+        }
+        if self.config.tearout_receipt && !self.receipt_complete {
+            if let Some(error) = self.tearout_receipt_timeout_error() {
+                self.receipt_error = Some(error);
+                event_loop.exit();
+                return;
+            }
+            if self.tearouts.values().any(|tearout| {
+                self.tearout_receipt_tile == Some(tearout.tile) && !tearout.native_focus_observed
+            }) {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + TEAROUT_FOCUS_RETRY_INTERVAL,
+                ));
             }
         }
     }
