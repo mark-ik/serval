@@ -2589,6 +2589,20 @@ impl WorkspaceApp {
                     .workspace
                     .focused_tile()
                     .ok_or_else(|| "W4 tearout receipt needs a focused source tile".to_owned())?;
+                // A document controller can be preflighted on its first
+                // rendered frame. A native producer first has to hand its
+                // shared resource to the primary cache so the hidden
+                // destination can re-import that same-device resource before
+                // source custody changes.
+                #[cfg(target_os = "windows")]
+                if matches!(
+                    self.workspace.route(tile).map(|route| &route.state),
+                    Some(PeltRouteState::Surface)
+                ) && self.native_surfaces.view(tile).is_none()
+                {
+                    self.request_redraw();
+                    return Ok(false);
+                }
                 if !self.apply_tile_event(
                     TileEvent::Dragged {
                         tile,
@@ -2649,6 +2663,15 @@ impl WorkspaceApp {
                 let tile = self.workspace.focused_tile().ok_or_else(|| {
                     "W4 tearout cancellation receipt needs a focused source tile".to_owned()
                 })?;
+                #[cfg(target_os = "windows")]
+                if matches!(
+                    self.workspace.route(tile).map(|route| &route.state),
+                    Some(PeltRouteState::Surface)
+                ) && self.native_surfaces.view(tile).is_none()
+                {
+                    self.request_redraw();
+                    return Ok(false);
+                }
                 let outcome = self.workspace.apply_outcome(&TileEvent::Dragged {
                     tile,
                     to: DropTarget::Outside,
@@ -2700,9 +2723,14 @@ impl WorkspaceApp {
             self.request_redraw();
             return Ok(false);
         }
+        let source_retained = self.workspace.controller(tile).is_some()
+            || matches!(
+                self.workspace.route(tile).map(|route| &route.state),
+                Some(PeltRouteState::Surface)
+            );
         if self.workspace.focused_tile() != Some(tile)
             || self.workspace.tree().find(tile).is_none()
-            || self.workspace.controller(tile).is_none()
+            || !source_retained
         {
             return Err(
                 "W4 tearout cancellation receipt lost source tree, controller, or model focus"
@@ -2742,7 +2770,11 @@ impl WorkspaceApp {
         tile: TileId,
         disposition: TearoutDisposition,
     ) -> bool {
-        if self.workspace.controller(tile).is_none() {
+        let source_is_surface = matches!(
+            self.workspace.route(tile).map(|route| &route.state),
+            Some(PeltRouteState::Surface)
+        );
+        if self.workspace.controller(tile).is_none() && !source_is_surface {
             self.chrome_status = ChromeStatus::Message(format!(
                 "Tearout requested for tile {}; native surface composition is not available yet",
                 tile.0
