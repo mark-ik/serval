@@ -495,11 +495,16 @@ narrow-feature warnings driven from 3/11/15 to zero.
   takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,
   `length_percentage` and `length_percentage_auto` take the tagged path.
 - A block-level replaced element under `box-sizing: border-box` still
-  stretches to its container. `3cd0f5abb7b` leaves border-box on Taffy's
-  leaf measure on purpose, because a forced size bypasses the ratio-preserving
-  min/max clamp of CSS 2.1 10.4 (`box-sizing-replaced-001..003`); the unit
-  test pins the stretch so widening the rule is a deliberate change with
-  those reftests watching.
+  stretches to its container, and so does a border-box replaced grid item.
+  Two independent guards keep it that way, both earned by measurement rather
+  than chosen: `apply_replaced_intrinsic_style` withholds the explicit
+  intrinsic width from border-box boxes, and `item_is_replaced` is armed only
+  for content-box leaves. Widening either changes which path applies CSS 2.1
+  10.4's ratio-preserving min/max clamp, and `box-sizing-replaced-001..003`
+  fail when it does -- observed twice, on 2026-09-01 and again on 2026-09-02.
+  The natural size plus its edges would be (120, 120) for the unit case; the
+  assertion in `layout/tests.rs` pins the stretch instead, so recovering this
+  is a deliberate change with those three reftests watching.
 - **Landed 2026-09-01.** The inline replaced sizing bug is fixed, and it was
   not about `<img>` versus `<canvas>` at all. `img` carries
   `display: inline-block` from the UA sheet (`lib.rs` CAMBIUM_UA_DEFAULTS)
@@ -518,12 +523,18 @@ narrow-feature warnings driven from 3/11/15 to zero.
 
   Two pre-existing bugs this un-masked. Both previously *passed* only because
   their reference half rendered as wrongly as their test half:
-  - `css-sizing/grid-item-image-percentage-min-height-computes-as-0`: a
-    percentage `min-height` on a replaced grid item resolves to a stretch
-    rather than to zero, which is precisely what that test asserts. Proven by
-    probe: with the fix the reference half moves 320x320 -> 60x60 while the
-    test half stays 320x320.
+  - `css-sizing/grid-item-image-percentage-min-height-computes-as-0`:
+    **fixed 2026-09-02 in `0730e020c67`.** The engine had no `normal` to
+    distinguish from `stretch`, so a replaced grid item was stretched to its
+    area under default alignment. `normal` is now the initial value of the
+    items properties, reaches taffy unset, and resolves per item to `start`
+    for a compressible replaced element. Brought three css-grid tests with it.
   - `CSS2/tables/table-anonymous-objects-211`: an `<img>` given
-    `display: table-cell` against one inside a cell `<div>`. Mechanism not
-    isolated. CSS2/tables is net-neutral across the change, 151 failures
-    either side, trading this test against `table-cell-001`.
+    `display: table-cell` against one inside a cell `<div>`. **Partly
+    addressed, still failing.** `0730e020c67` demoted replaced elements out of
+    internal table roles per CSS 2.1 17.2.1, and made whitespace-only removal
+    between table parts read the content rather than whether the whitespace
+    collapses. Neither recovers the test: the reference row builds seven cells
+    against the demoted test row's five, so what remains is column alignment
+    in anonymous table object generation, not replacedness. CSS2/tables is
+    unchanged in aggregate at 151 failures.
