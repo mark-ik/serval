@@ -599,6 +599,26 @@ fn tearout_focus_retry_waits_for_event_and_interval() {
     assert!(!tearout_focus_retry_due(None, now, true));
 }
 
+#[test]
+fn tearout_receipt_progressed_includes_focus_identity_transition() {
+    assert!(tearout_receipt_progressed(
+        Some(TileId(1)),
+        TileId(1),
+        false,
+        true,
+        true,
+        true,
+    ));
+    assert!(!tearout_receipt_progressed(
+        Some(TileId(2)),
+        TileId(1),
+        false,
+        true,
+        true,
+        true,
+    ));
+}
+
 #[cfg(target_os = "windows")]
 #[test]
 fn native_focus_diagnostics_latch_independent_observations() {
