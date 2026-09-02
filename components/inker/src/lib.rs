@@ -101,13 +101,14 @@ pub use surface_engine::{
     DataTransferItem, DragDropCapabilities, DragEvent, DragOperationSet, DragPhase,
     EngineProfileBinding, FocusReason, FrameHandleOwnership, HttpAuthenticationAnswer,
     HttpAuthenticationChallenge, HttpCredentials, HttpProtectionSpace, KeyboardEvent,
-    KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, NativeTextureHandle,
-    NavigationEvent, PermissionAnswer, PermissionDescriptor, PermissionRequest, PermissionState,
-    PhysicalPosition, PointerButtons, PointerEvent, PointerInputCapabilities, PointerPhase,
-    PointerType, SameSite, ScriptCapabilities, SurfaceEngine, SurfaceEngineRegistry, SurfaceError,
-    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, SurfaceSyncHandle,
-    SurfaceTextureFormat, UserAgentRequestId, WebFrameTransportMode, WebMessage, WebSurface,
-    WebSurfaceCapabilities, WebSurfaceEvent,
+    KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, NativeSurfaceHost,
+    NativeTextureHandle, NavigationEvent, PermissionAnswer, PermissionDescriptor,
+    PermissionRequest, PermissionState, PhysicalPosition, PointerButtons, PointerEvent,
+    PointerInputCapabilities, PointerPhase, PointerType, SameSite, ScriptCapabilities,
+    SurfaceEngine, SurfaceEngineRegistry, SurfaceError, SurfaceFrame, SurfaceProducer,
+    SurfaceSettings, SurfaceSpawnRequest, SurfaceSyncHandle, SurfaceTextureFormat,
+    UserAgentRequestId, WebFrameTransportMode, WebMessage, WebSurface, WebSurfaceCapabilities,
+    WebSurfaceEvent,
 };
 
 /// Crate version.

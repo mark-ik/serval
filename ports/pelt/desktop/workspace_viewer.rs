@@ -19,9 +19,9 @@ use genet_winit_host::{
 use inker::{
     A11yCapability, DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest,
     DocumentA11yNodeId, DocumentA11yProjection, DocumentA11yRole, EngineProfileBinding,
-    SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey, SessionModifiers,
-    SessionNavigationCommand, SessionPointerButton, SessionRegistry, SessionScrollKey,
-    SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
+    NativeSurfaceHost, SessionButtonState, SessionCursor, SessionIme, SessionInput, SessionKey,
+    SessionModifiers, SessionNavigationCommand, SessionPointerButton, SessionRegistry,
+    SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
 };
 #[cfg(target_os = "windows")]
 use inker::{FrameHandleOwnership, NativeTextureHandle};
@@ -88,6 +88,18 @@ const ACCESSIBILITY_EDIT_WORKSPACE_ASSERTION: &str = "Pelt routed a Livery text 
 const ACCESSIBILITY_SCROLL_WORKSPACE_ASSERTION: &str = "Pelt routed Livery ScrollIntoView through the focused Livery nested scrollport and preserved the sibling tile";
 const ACCESSIBILITY_CLICK_WORKSPACE_ASSERTION: &str = "Pelt revealed a nested Livery target, routed its clip-aware Click through ordinary pointer input, and rejected stale tile actions";
 const ACCESSIBILITY_INPUT_WORKSPACE_ASSERTION: &str = "Pelt preserved a nested textarea action boundary and routed physical selection replacement, Text, and IME only to the focused tile";
+
+#[cfg(target_os = "windows")]
+fn native_surface_host(window: &Window) -> Result<NativeSurfaceHost, String> {
+    match window
+        .window_handle()
+        .map_err(|error| format!("could not inspect window handle: {error}"))?
+        .as_raw()
+    {
+        RawWindowHandle::Win32(handle) => Ok(NativeSurfaceHost::Win32 { hwnd: handle.hwnd }),
+        other => Err(format!("expected a Win32 window handle, got {other:?}")),
+    }
+}
 #[cfg(feature = "reader")]
 const READER_ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "Pelt composed partial Reader link trees with distinct tile namespaces, kept Focus virtual, and preserved the sibling Reader session";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "single fixed-height Chrome row shed its secondary controls and kept navigation, address, tab text, and close targets usable while loading and error documents held their content hole";
@@ -3516,11 +3528,8 @@ fn secondary_redraw_needed(
     redraw || (visibility_requested && !visible_frame_presented)
 }
 
-fn visible_preflight_presented(
-    preflight_presented: bool,
-    destination_visible: Option<bool>,
-) -> bool {
-    preflight_presented && destination_visible == Some(true)
+fn restore_source_after_rehost_failure(error: &inker::SurfaceError) -> bool {
+    !matches!(error, inker::SurfaceError::HostMigrationIndeterminate(_))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4140,13 +4149,47 @@ impl WorkspaceApp {
     /// through the shared render core. A failure before this call cannot remove
     /// the source tree, controller, or model focus.
     fn accept_composed_tearout(&mut self, window_id: WindowId, pending: PendingTearout) {
-        let Some(workspace) = self.workspace.accept_tearout(pending.tile) else {
-            self.chrome_status = ChromeStatus::Error(
-                "Tearout source changed before destination acceptance".to_owned(),
-            );
-            self.restore_source_after_preflight(pending.tile, pending.surface_import);
-            return;
+        #[cfg(target_os = "windows")]
+        let destination_host = if pending.surface_import.is_some() {
+            let destination_host = match native_surface_host(&pending.window) {
+                Ok(host) => host,
+                Err(error) => {
+                    self.chrome_status = ChromeStatus::Error(format!(
+                        "Tearout destination has no usable native host: {error}"
+                    ));
+                    self.restore_source_after_preflight(pending.tile, pending.surface_import);
+                    return;
+                },
+            };
+            Some(destination_host)
+        } else {
+            None
         };
+
+        #[cfg(target_os = "windows")]
+        let mut indeterminate_rehost = None;
+        #[cfg(target_os = "windows")]
+        if let Some(host) = destination_host {
+            // Rehost while the source producer is still source-owned. An
+            // ordinary failure leaves custody and the hidden destination
+            // intact; an indeterminate failure transfers custody below.
+            if let Err(error) = unsafe { self.workspace.rehost_surface(pending.tile, host) } {
+                if !restore_source_after_rehost_failure(&error) {
+                    indeterminate_rehost = Some(error);
+                } else {
+                    self.chrome_status = ChromeStatus::Error(format!(
+                        "Tearout surface could not move to its destination host: {error}"
+                    ));
+                    self.restore_source_after_preflight(pending.tile, pending.surface_import);
+                    return;
+                }
+            }
+        }
+
+        let workspace = self
+            .workspace
+            .accept_tearout(pending.tile)
+            .expect("accepted tearout source remains live after native rehost");
         let mut frisket = pending.frisket;
         frisket.set_tree(workspace.tree());
         let mut tearout = TearoutWindow {
@@ -4170,6 +4213,12 @@ impl WorkspaceApp {
             accessibility: WorkspaceAccessibility::new(),
         };
         tearout.refresh_tree();
+        #[cfg(target_os = "windows")]
+        if let Some(error) = indeterminate_rehost {
+            let message = format!("Native surface host migration is indeterminate: {error}");
+            tearout.enter_render_error(message.clone());
+            self.receipt_error = Some(message);
+        }
         if let Err(error) = tearout.install_accessibility_before_show() {
             eprintln!("[pelt-tearout] accessibility install failed: {error}");
         }
@@ -4182,8 +4231,6 @@ impl WorkspaceApp {
         self.chrome_status = ChromeStatus::Ready;
         tearout.window.set_visible(true);
         tearout.visibility_requested = true;
-        tearout.visible_frame_presented =
-            visible_preflight_presented(pending.preflight_presented, tearout.window.is_visible());
         self.tearouts.insert(window_id, tearout);
         // A shown native window can synchronously emit focus/redraw events.
         // Register its ownership before asking the platform to do either so
