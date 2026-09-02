@@ -6034,6 +6034,12 @@ where
             // its wrapper occupies line space as a unit.
             || style.display == CssDisplay::InlineTable
             || (style.display == CssDisplay::Inline && is_replaced_element(dom, id))
+            // CSS 2.1 17.2.1: a replaced element given an internal table
+            // display is demoted to inline by box generation, so it is an
+            // atomic inline here too. Reading the computed value alone would
+            // leave it laid out as an inline container and stretched.
+            || (is_replaced_element(dom, id)
+                && crate::box_tree::is_internal_table_display(style.display))
     })
 }
 

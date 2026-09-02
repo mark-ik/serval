@@ -6976,3 +6976,78 @@ fn inline_replaced_auto_width_is_intrinsic_whatever_its_display() {
         "a definite width still wins over the intrinsic one"
     );
 }
+
+#[test]
+fn replaced_element_as_table_cell_lays_out_like_a_cell_around_it() {
+    // CSS2/tables/table-anonymous-objects-211, byte for byte: row 1 wraps its
+    // images in cell <div>s; row 2 gives the first two images
+    // `display: table-cell` directly, under `white-space: pre`. CSS 2.1 17.2.1
+    // says a replaced element cannot be an internal table box -- it is treated
+    // as inline and an anonymous cell is generated around it and its
+    // surrounding whitespace -- so the two rows must lay out identically.
+    // Three things had to hold for that: the demotion itself, whitespace-only
+    // boxes between table parts being dropped on their content rather than
+    // on whether they collapse, and the demoted element still being admitted
+    // as an atomic inline when layout re-reads its computed display.
+    let html = "<div class=\"table\"><div class=\"row\" id=\"r1\">\n      <div class=\"table-cell\"> <canvas width=\"15\" height=\"15\"></canvas>\t <canvas width=\"15\" height=\"15\"></canvas>   </div>\n      <div class=\"table-cell\"><canvas width=\"15\" height=\"15\"></canvas></div>\t <div class=\"table-cell\"><canvas width=\"15\" height=\"15\"></canvas></div>\n    </div><div class=\"row\" id=\"r2\"> <canvas class=\"table-cell\" width=\"15\" height=\"15\"></canvas>\t <canvas class=\"table-cell\" width=\"15\" height=\"15\"></canvas>   <div class=\"table-cell\"><canvas width=\"15\" height=\"15\"></canvas></div>\t <div class=\"table-cell\"><canvas width=\"15\" height=\"15\"></canvas></div>\n    </div></div>";
+    let dom = StaticDocument::parse(html);
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&[
+            "html, body { margin: 0; } canvas { display: inline-block; } .table { display: table; white-space: pre; } .row { display: table-row; } .table-cell { display: table-cell; }",
+        ]),
+        &Device::screen(640.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let mut text = TextSystem::new();
+    let (_, layout) = layout_with_text_system(
+        &dom,
+        &styles,
+        640.0,
+        240.0,
+        ViewportSizes::uniform(640.0, 240.0),
+        &mut text,
+        &HashMap::new(),
+    )
+    .expect("layout");
+    fn canvases(
+        dom: &StaticDocument,
+        n: <StaticDocument as LayoutDom>::NodeId,
+        out: &mut Vec<<StaticDocument as LayoutDom>::NodeId>,
+    ) {
+        if dom
+            .element_name(n)
+            .is_some_and(|e| e.local.as_ref() == "canvas")
+        {
+            out.push(n);
+        }
+        for c in dom.dom_children(n) {
+            canvases(dom, c, out);
+        }
+    }
+    let row_shape = |rid: &str| {
+        let row = node_by_id(&dom, dom.document(), rid).expect(rid);
+        let rr = layout.get(row).expect("row").physical_rect();
+        let mut cs = Vec::new();
+        canvases(&dom, row, &mut cs);
+        let rects: Vec<(f32, f32, f32, f32)> = cs
+            .iter()
+            .map(|&c| {
+                let r = layout.get(c).expect("canvas").physical_rect();
+                (r.x, r.y - rr.y, r.width, r.height)
+            })
+            .collect();
+        (rr.width, rr.height, rects)
+    };
+    let r1 = row_shape("r1");
+    let r2 = row_shape("r2");
+    assert_eq!(r1.2.len(), 4, "row 1 has four images");
+    assert_eq!(
+        r1, r2,
+        "images that are cells lay out exactly like images inside cells"
+    );
+    assert!(
+        r1.2.iter().all(|r| r.2 == 15.0 && r.3 == 15.0),
+        "every image keeps its natural 15x15"
+    );
+}

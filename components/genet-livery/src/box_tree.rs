@@ -157,20 +157,9 @@ fn display_role(display: ComputedDisplay, replaced: bool) -> DisplayRole {
         ComputedDisplay::InlineTable => {
             normal(Some(DisplayOutside::Inline), Some(DisplayInside::Table))
         },
-        _ if replaced
-            && matches!(
-                display,
-                ComputedDisplay::TableRowGroup
-                    | ComputedDisplay::TableHeaderGroup
-                    | ComputedDisplay::TableFooterGroup
-                    | ComputedDisplay::TableRow
-                    | ComputedDisplay::TableCell
-                    | ComputedDisplay::TableColumnGroup
-                    | ComputedDisplay::TableColumn
-                    | ComputedDisplay::TableCaption
-            ) =>
-        {
-            normal(Some(DisplayOutside::Inline), Some(DisplayInside::Flow))
+        _ if replaced && is_internal_table_display(display) => {
+            // The same role a replaced `display: inline` element takes.
+            normal(Some(DisplayOutside::Inline), Some(DisplayInside::FlowRoot))
         },
         ComputedDisplay::TableRowGroup => internal(InternalTableRole::RowGroup),
         ComputedDisplay::TableHeaderGroup => internal(InternalTableRole::HeaderGroup),
@@ -181,6 +170,23 @@ fn display_role(display: ComputedDisplay, replaced: bool) -> DisplayRole {
         ComputedDisplay::TableColumn => internal(InternalTableRole::Column),
         ComputedDisplay::TableCaption => internal(InternalTableRole::Caption),
     }
+}
+
+/// The internal table display values. A replaced element cannot take any
+/// of them (CSS 2.1 17.2.1); box generation demotes it to inline and the
+/// atomic-inline admission in layout must agree, so both read this.
+pub(crate) fn is_internal_table_display(display: ComputedDisplay) -> bool {
+    matches!(
+        display,
+        ComputedDisplay::TableRowGroup
+            | ComputedDisplay::TableHeaderGroup
+            | ComputedDisplay::TableFooterGroup
+            | ComputedDisplay::TableRow
+            | ComputedDisplay::TableCell
+            | ComputedDisplay::TableColumnGroup
+            | ComputedDisplay::TableColumn
+            | ComputedDisplay::TableCaption
+    )
 }
 
 fn positioning_scheme(position: ComputedPosition) -> PositioningScheme {
