@@ -296,3 +296,17 @@ heterogeneous headed consumers.
   symbols. Repeating the identical seven Projection Editor tests with
   `CARGO_INCREMENTAL=0` and `--config profile.test.debug=0` reduced that
   archive to 347,000,108 bytes; the executable linked and all 7/7 tests passed.
+- 2026-09-02: the surface-producer and secondary-accessibility branches were
+  merged as Genet `7092898fc02`. A cold isolated `cargo test -p pelt-desktop
+  --lib --offline -j 1` passed 54/54. The combined headed tearout command also
+  exited 0, installing independent AccessKit trees with 20 primary nodes and
+  18 secondary nodes before reporting `window=true redraws=3 size=960x640
+  tiles=1 tearout_receipt=true routes=2=genet.livery:document`.
+- 2026-09-02: Hocket's separate current-Genet product port landed on Hocket
+  `main` as `e8b4b137583`. It now uses `cambium-genet-winit-host`; Hocket keeps
+  state, Firewheel ticking, workers, custom leaves, scenario capture, and
+  update policy while the shared host owns lifecycle, layout, paint, input,
+  and accessibility. The focused check passed, as did 55/55 tests after
+  excluding `identity::tests::every_home_says_which_situation_the_user_is_in`.
+  That assertion still fails because it requires the word `DPAPI`; its
+  `identity.rs` is unchanged from Hocket's preceding `origin/main`.
