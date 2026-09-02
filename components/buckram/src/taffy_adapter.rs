@@ -605,7 +605,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     pub fn positioned_intrinsic_inline_sizes<Measure>(
         &mut self,
         id: AlgorithmNodeId,
-        measure: Measure,
+        mut measure: Measure,
     ) -> Option<IntrinsicSizes>
     where
         S: AlgorithmStyle,
@@ -642,7 +642,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
 
         let mut run = AlgorithmRun {
             tree: self,
-            measure,
+            measure: &mut measure,
             line_constraints: None,
             nested_float_state: None,
             resolved_shrink_to_fit: None,
@@ -935,7 +935,7 @@ where
         &mut self,
         root: AlgorithmNodeId,
         available: AlgorithmSize<AlgorithmAvailableSpace>,
-        measure: Measure,
+        mut measure: Measure,
     ) where
         Measure: FnMut(
             AlgorithmSize<Option<f32>>,
@@ -951,7 +951,7 @@ where
         };
         let mut run = AlgorithmRun {
             tree: self,
-            measure,
+            measure: &mut measure,
             line_constraints: None,
             nested_float_state: None,
             resolved_shrink_to_fit: None,

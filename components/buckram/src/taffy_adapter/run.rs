@@ -7,9 +7,26 @@
 
 use super::*;
 
-pub(in crate::taffy_adapter) struct AlgorithmRun<'a, S, Context, Source, Measure> {
+/// The leaf measure callback, type-erased.
+///
+/// Erased on purpose (2026-09-02). Taken by value as a type parameter, every
+/// call site's closure made its own `AlgorithmRun` type, and every one of
+/// Taffy's tree traits — the whole algorithm — was instantiated once per
+/// closure: fourteen copies in graphshell-web alone, ~44k functions, and the
+/// DWARF that crashed the wasm linker. Behind `dyn` there is one copy per
+/// `(Context, Source)` pair, for an indirect call per leaf measure.
+pub(in crate::taffy_adapter) type MeasureFn<'m, Context> = dyn FnMut(
+        AlgorithmSize<Option<f32>>,
+        AlgorithmSize<AlgorithmAvailableSpace>,
+        AlgorithmNodeId,
+        Option<&mut Context>,
+        Option<&FloatLineConstraints>,
+    ) -> AlgorithmSize<f32>
+    + 'm;
+
+pub(in crate::taffy_adapter) struct AlgorithmRun<'a, S, Context, Source> {
     pub(in crate::taffy_adapter) tree: &'a mut AlgorithmTree<S, Context, Source>,
-    pub(in crate::taffy_adapter) measure: Measure,
+    pub(in crate::taffy_adapter) measure: &'a mut MeasureFn<'a, Context>,
     pub(in crate::taffy_adapter) line_constraints: Option<FloatLineConstraints>,
     pub(in crate::taffy_adapter) nested_float_state: Option<FloatContextState>,
     pub(in crate::taffy_adapter) resolved_shrink_to_fit: Option<AlgorithmNodeId>,
@@ -42,16 +59,9 @@ pub(in crate::taffy_adapter) struct PendingBlockChildLayout {
     static_position: bool,
 }
 
-impl<S, Context, Source, Measure> AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
-    Measure: FnMut(
-        AlgorithmSize<Option<f32>>,
-        AlgorithmSize<AlgorithmAvailableSpace>,
-        AlgorithmNodeId,
-        Option<&mut Context>,
-        Option<&FloatLineConstraints>,
-    ) -> AlgorithmSize<f32>,
 {
     fn style(&self, id: NodeId) -> &Style {
         sealed::AlgorithmStyle::as_taffy_style(
@@ -1944,8 +1954,7 @@ pub(in crate::taffy_adapter) fn intrinsic_definite_inline_content_size(
     Ok(Some(content_size))
 }
 
-impl<S, Context, Source, Measure> TraversePartialTree
-    for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> TraversePartialTree for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
 {
@@ -1974,22 +1983,14 @@ where
     }
 }
 
-impl<S, Context, Source, Measure> TraverseTree for AlgorithmRun<'_, S, Context, Source, Measure> where
+impl<S, Context, Source> TraverseTree for AlgorithmRun<'_, S, Context, Source> where
     S: AlgorithmStyle
 {
 }
 
-impl<S, Context, Source, Measure> LayoutPartialTree
-    for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> LayoutPartialTree for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
-    Measure: FnMut(
-        AlgorithmSize<Option<f32>>,
-        AlgorithmSize<AlgorithmAvailableSpace>,
-        AlgorithmNodeId,
-        Option<&mut Context>,
-        Option<&FloatLineConstraints>,
-    ) -> AlgorithmSize<f32>,
 {
     type CoreContainerStyle<'a>
         = &'a Style
@@ -2016,7 +2017,7 @@ where
     }
 }
 
-impl<S, Context, Source, Measure> CacheTree for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> CacheTree for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
 {
@@ -2039,17 +2040,9 @@ where
     }
 }
 
-impl<S, Context, Source, Measure> LayoutBlockContainer
-    for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> LayoutBlockContainer for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
-    Measure: FnMut(
-        AlgorithmSize<Option<f32>>,
-        AlgorithmSize<AlgorithmAvailableSpace>,
-        AlgorithmNodeId,
-        Option<&mut Context>,
-        Option<&FloatLineConstraints>,
-    ) -> AlgorithmSize<f32>,
 {
     type BlockContainerStyle<'a>
         = &'a Style
@@ -2078,17 +2071,9 @@ where
     }
 }
 
-impl<S, Context, Source, Measure> LayoutFlexboxContainer
-    for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> LayoutFlexboxContainer for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
-    Measure: FnMut(
-        AlgorithmSize<Option<f32>>,
-        AlgorithmSize<AlgorithmAvailableSpace>,
-        AlgorithmNodeId,
-        Option<&mut Context>,
-        Option<&FloatLineConstraints>,
-    ) -> AlgorithmSize<f32>,
 {
     type FlexboxContainerStyle<'a>
         = &'a Style
@@ -2108,17 +2093,9 @@ where
     }
 }
 
-impl<S, Context, Source, Measure> LayoutGridContainer
-    for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> LayoutGridContainer for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
-    Measure: FnMut(
-        AlgorithmSize<Option<f32>>,
-        AlgorithmSize<AlgorithmAvailableSpace>,
-        AlgorithmNodeId,
-        Option<&mut Context>,
-        Option<&FloatLineConstraints>,
-    ) -> AlgorithmSize<f32>,
 {
     type GridContainerStyle<'a>
         = &'a Style
@@ -2226,7 +2203,7 @@ where
     }
 }
 
-impl<S, Context, Source, Measure> RoundTree for AlgorithmRun<'_, S, Context, Source, Measure>
+impl<S, Context, Source> RoundTree for AlgorithmRun<'_, S, Context, Source>
 where
     S: AlgorithmStyle,
 {
