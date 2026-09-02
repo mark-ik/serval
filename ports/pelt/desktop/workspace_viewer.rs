@@ -4679,19 +4679,24 @@ impl ApplicationHandler for WorkspaceApp {
         if focus_retry_wake {
             self.request_redraw();
         }
+        let awaiting_focus = self.config.tearout_receipt
+            && !self.receipt_complete
+            && self.tearouts.values().any(|tearout| {
+                self.tearout_receipt_tile == Some(tearout.tile) && !tearout.native_focus_observed
+            });
         if self.config.tearout_receipt && !self.receipt_complete {
             if let Some(error) = self.tearout_receipt_timeout_error() {
                 self.receipt_error = Some(error);
                 event_loop.exit();
                 return;
             }
-            if self.tearouts.values().any(|tearout| {
-                self.tearout_receipt_tile == Some(tearout.tile) && !tearout.native_focus_observed
-            }) {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + TEAROUT_FOCUS_RETRY_INTERVAL,
-                ));
-            }
+        }
+        if awaiting_focus {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + TEAROUT_FOCUS_RETRY_INTERVAL,
+            ));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 
