@@ -210,6 +210,15 @@ same whether shown as a card or a focused tile.
   assumption. The card lane needs the same feed: nematic engines emit
   `DocumentTrustState::Unknown` unconditionally (see the §1 correction), so WS2's
   transport descriptor must reach the `EngineInput`/lowering side too.
+  *Re-checked 2026-09-02, with the knot evaluation/export plan's open question
+  rehomed here:* meerkat is gone (deleted 2026-07-18), so the hosts to check
+  are Turnstone and mere. `genet-documents` installs an `InMemoryTofu`; mere's
+  `fetch` exposes `install_smolweb_tofu` for a host-owned store; **no durable
+  `TofuStore` exists anywhere in the workspace** (smolweb ships only the
+  in-memory and permissive ones). The location question the knot plan left
+  open — a file beside the profile, or eidetic engrams — is therefore still
+  open and belongs to this workstream: start file-backed, migrate when
+  persona/keys land fully.
 
 ---
 

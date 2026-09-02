@@ -257,5 +257,5 @@ Built so each phase stands alone and the early ones are genet-local and small.
 - djot editor + knot nodes plan (`mere/design_docs/archive_docs/2026-08-06_completed_plans/2026-06-24_djot_editor_knot_nodes_plan.md`) — owns the document-family block→view mapper (Phase D); its 2026-06-27 reframe set the direct-to-genet-views render path this plan shares.
 - illume text lexer plan (`mere/design_docs/mere_docs/implementation_strategy/2026-06-26_illume_text_lexer_plan.md`) — the portable-core + tinct + genet-renderer + host-bridge pattern this mirrors; the entity pass reused inside gemtext prose.
 - [polyglot knot design](2026-05-08_polyglot_knot_design.md) — the knot format the capture path lowers into; `knot/expand.rs` shares the smolweb parse functions.
-- [knot evaluation + export plan](2026-06-12_knot_evaluation_export_plan.md) — the `to_gemtext` / gophermap exporters on the capture/round-trip side of `Block`.
+- [knot evaluation + export plan](../../archive_docs/2026-09-02/2026-06-12_knot_evaluation_export_plan.md) — the `to_gemtext` / gophermap exporters on the capture/round-trip side of `Block`.
 - errand (sibling repo `mark-ik/errand`) — the shared smolweb transport Phase A wires into pelt.

@@ -76,14 +76,6 @@ repatriated here from mere.
   extends the `nematic.knot` note format from frontmatter-plus-markdown to a
   polyglot composition where every other `nematic.*` protocol's blocks embed
   fenced-code-block-style and round-trip back to the source protocol's syntax.)
-- [knot_evaluation_export_plan](nematic_docs/implementation_strategy/2026-06-12_knot_evaluation_export_plan.md)
-  (**reconciled and complete for the first production capability set,
-  2026-07-27**: `include` transclusion fences over errand's smolweb transports,
-  `lua eval` / `rhai eval` script fences via the `BlockEvaluator` slice,
-  `to_gemtext` and gophermap exporters, the Knot production effect bridge,
-  Turnstone consent, and the sealed attributable resolve cache. The production
-  Knot adapter supplies anonymous HTTP(S) plus read-only Gemini, Gopher,
-  Finger, Spartan, Nex and Guppy; Titan stays excluded.)
 - [polyglot_block_resolver_plan](nematic_docs/implementation_strategy/2026-06-13_polyglot_block_resolver_plan.md)
   (**planned**: collapse the three separate passes — `expand_fenced_blocks`,
   `resolve_transclusions`, `evaluate_blocks`, each with its own dispatch and
@@ -149,6 +141,15 @@ same session; links out of it are rewritten for its new depth.
   Fragment projection; 0.3 hardened JSON-LD syntax harvesting and HTML
   Microdata; 0.4 added ordered Open Graph grouping, DOM document links, and
   semantic HTML table grids and header associations. No open points carried.)
+- [2026-09-02/knot_evaluation_export_plan](archive_docs/2026-09-02/2026-06-12_knot_evaluation_export_plan.md)
+  (**reconciled and complete for the first production capability set
+  2026-07-27, archived 2026-09-02**; `include` closed, TOFU location rehomed to
+  the fidelity plan, badge default carried by the block resolver plan. `include` transclusion fences over errand's smolweb transports,
+  `lua eval` / `rhai eval` script fences via the `BlockEvaluator` slice,
+  `to_gemtext` and gophermap exporters, the Knot production effect bridge,
+  Turnstone consent, and the sealed attributable resolve cache. The production
+  Knot adapter supplies anonymous HTTP(S) plus read-only Gemini, Gopher,
+  Finger, Spartan, Nex and Guppy; Titan stays excluded.)
 
 ## Working principles
 
@@ -172,6 +173,6 @@ same session; links out of it are rewritten for its new depth.
 ## Status
 
 Founded 2026-08-24; audited against the tree 2026-09-02. The active index
-covers four flat plans plus eight documents in three area roots, with one
-completed plan in `archive_docs/`. The engine corpus in `docs/` is not indexed here
+covers four flat plans plus seven documents in three area roots, with two
+completed plans in `archive_docs/`. The engine corpus in `docs/` is not indexed here
 and is not governed by the policy yet.
