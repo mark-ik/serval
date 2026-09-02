@@ -599,6 +599,39 @@ fn tearout_focus_retry_waits_for_event_and_interval() {
     assert!(!tearout_focus_retry_due(None, now, true));
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn native_focus_diagnostics_latch_independent_observations() {
+    let initial = NativeFocusObservation::default();
+    let foreground_only = merge_native_focus_observation(
+        initial,
+        NativeFocusObservation {
+            foreground: true,
+            descendant_focus: false,
+        },
+    );
+    assert_eq!(
+        foreground_only,
+        NativeFocusObservation {
+            foreground: true,
+            descendant_focus: false,
+        }
+    );
+    assert_eq!(
+        merge_native_focus_observation(
+            foreground_only,
+            NativeFocusObservation {
+                foreground: false,
+                descendant_focus: true,
+            },
+        ),
+        NativeFocusObservation {
+            foreground: true,
+            descendant_focus: true,
+        }
+    );
+}
+
 #[test]
 fn indeterminate_rehost_enters_destination_terminal_state() {
     assert!(restore_source_after_rehost_failure(

@@ -101,6 +101,45 @@ fn native_surface_host(window: &Window) -> Result<NativeSurfaceHost, String> {
         other => Err(format!("expected a Win32 window handle, got {other:?}")),
     }
 }
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NativeFocusObservation {
+    foreground: bool,
+    descendant_focus: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn observe_native_focus(window: &Window) -> NativeFocusObservation {
+    let Ok(handle) = window.window_handle() else {
+        return NativeFocusObservation::default();
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return NativeFocusObservation::default();
+    };
+    let hwnd = handle.hwnd.get() as *mut std::ffi::c_void;
+    let foreground =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd };
+    let focused = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
+    let descendant_focus = !focused.is_null()
+        && (focused == hwnd
+            || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsChild(hwnd, focused) != 0 });
+    NativeFocusObservation {
+        foreground,
+        descendant_focus,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn merge_native_focus_observation(
+    previous: NativeFocusObservation,
+    sample: NativeFocusObservation,
+) -> NativeFocusObservation {
+    NativeFocusObservation {
+        foreground: previous.foreground || sample.foreground,
+        descendant_focus: previous.descendant_focus || sample.descendant_focus,
+    }
+}
 #[cfg(feature = "reader")]
 const READER_ACCESSIBILITY_WORKSPACE_ASSERTION: &str = "Pelt composed partial Reader link trees with distinct tile namespaces, kept Focus virtual, and preserved the sibling Reader session";
 const NARROW_CHROME_WORKSPACE_ASSERTION: &str = "single fixed-height Chrome row shed its secondary controls and kept navigation, address, tab text, and close targets usable while loading and error documents held their content hole";
@@ -1138,6 +1177,14 @@ struct TearoutWindow {
     /// Recorded only after a source-owned preflight frame presented, the host
     /// requested visibility, and Winit delivered native focus to this window.
     native_focus_observed: bool,
+    #[cfg(target_os = "windows")]
+    /// Latched observation that this destination was the Win32 foreground
+    /// window. This is diagnostic only and does not satisfy W4 focus proof.
+    native_foreground_observed: bool,
+    #[cfg(target_os = "windows")]
+    /// Latched observation that Win32 keyboard focus was this window or one
+    /// of its descendants. This remains separate from Winit focus delivery.
+    native_descendant_focus_observed: bool,
     /// Last host-owned focus request. Retries are rate-limited and remain
     /// bounded by the explicit W4 receipt timeout; this never stands in for a
     /// real `Focused(true)` event.
@@ -2849,16 +2896,28 @@ impl WorkspaceApp {
         let accepted = tracked_tile
             .and_then(|tile| self.tearouts.values().find(|tearout| tearout.tile == tile));
         let native_focus_observed = accepted.is_some_and(|tearout| tearout.native_focus_observed);
+        #[cfg(target_os = "windows")]
+        let native_foreground_observed =
+            accepted.is_some_and(|tearout| tearout.native_foreground_observed);
+        #[cfg(target_os = "windows")]
+        let native_descendant_focus_observed =
+            accepted.is_some_and(|tearout| tearout.native_descendant_focus_observed);
+        #[cfg(not(target_os = "windows"))]
+        let native_foreground_observed = false;
+        #[cfg(not(target_os = "windows"))]
+        let native_descendant_focus_observed = false;
         let visible_frame_presented =
             accepted.is_some_and(|tearout| tearout.visible_frame_presented);
         Some(format!(
-            "W4 {kind} receipt timed out after {}s at {}x{} (pending={} accepted={} focus_observed={} visible_frame_presented={})",
+            "W4 {kind} receipt timed out after {}s at {}x{} (pending={} accepted={} focus_observed={} foreground_observed={} descendant_focus_observed={} visible_frame_presented={})",
             self.config.workspace_receipt_stage_timeout.as_secs_f32(),
             self.width,
             self.height,
             self.pending_tearouts.len(),
             self.tearouts.len(),
             native_focus_observed,
+            native_foreground_observed,
+            native_descendant_focus_observed,
             visible_frame_presented,
         ))
     }
@@ -3590,6 +3649,20 @@ enum TearoutDisposition {
 }
 
 impl TearoutWindow {
+    #[cfg(target_os = "windows")]
+    fn sample_native_focus(&mut self) {
+        let sample = observe_native_focus(&self.window);
+        let merged = merge_native_focus_observation(
+            NativeFocusObservation {
+                foreground: self.native_foreground_observed,
+                descendant_focus: self.native_descendant_focus_observed,
+            },
+            sample,
+        );
+        self.native_foreground_observed = merged.foreground;
+        self.native_descendant_focus_observed = merged.descendant_focus;
+    }
+
     /// Ask the host to activate this accepted destination at a bounded pace.
     /// The receipt still requires the real Winit `Focused(true)` event; this
     /// request only gives the platform another opportunity to deliver it.
@@ -4275,6 +4348,10 @@ impl WorkspaceApp {
             cursor: (0.0, 0.0),
             modifiers: SessionModifiers::default(),
             native_focus_observed: false,
+            #[cfg(target_os = "windows")]
+            native_foreground_observed: false,
+            #[cfg(target_os = "windows")]
+            native_descendant_focus_observed: false,
             last_focus_request: None,
             visibility_requested: false,
             visible_frame_presented: false,
@@ -4487,6 +4564,10 @@ impl WorkspaceApp {
         let Some(mut tearout) = self.tearouts.remove(&window_id) else {
             return false;
         };
+        #[cfg(target_os = "windows")]
+        if self.config.tearout_receipt && self.tearout_receipt_tile == Some(tearout.tile) {
+            tearout.sample_native_focus();
+        }
         let native_focus_observed = tearout.native_focus_observed;
         let visible_frame_presented = tearout.visible_frame_presented;
         match tearout.window_event(event) {
@@ -4663,6 +4744,10 @@ impl ApplicationHandler for WorkspaceApp {
         }
         let mut focus_retry_wake = false;
         for tearout in self.tearouts.values_mut() {
+            #[cfg(target_os = "windows")]
+            if self.config.tearout_receipt && self.tearout_receipt_tile == Some(tearout.tile) {
+                tearout.sample_native_focus();
+            }
             if tearout.accessibility.take_wake() {
                 tearout.window.request_redraw();
             }
