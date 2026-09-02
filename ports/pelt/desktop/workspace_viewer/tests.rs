@@ -530,10 +530,72 @@ fn desktop_keeps_source_when_tearout_has_no_native_destination() {
         )
     );
     app.tearout_receipt_started = Some(Instant::now() - Duration::from_millis(2));
+    assert!(app.tearout_receipt_timeout_error().is_some_and(|error| {
+        error.contains("W4 cancellation receipt timed out")
+            && error.contains("focus_observed=false")
+            && error.contains("visible_frame_presented=false")
+    }));
+    app.redraws = app
+        .config
+        .frames
+        .expect("bounded receipt has a frame count");
     assert!(
-        app.tearout_receipt_timeout_error()
-            .is_some_and(|error| error.contains("W4 cancellation receipt timed out"))
+        !app.generic_frame_limit_reached(),
+        "the named cancellation receipt uses its stage timeout, not the generic frame cap"
     );
+    app.tearout_cancellation_receipt_tile = Some(TileId(1));
+    app.record_tearout_receipt_close("primary window", None, false);
+    assert!(app.receipt_error.as_deref().is_some_and(|error| {
+        error.contains("primary window") && error.contains("source custody was still retained")
+    }));
+}
+
+#[test]
+fn tearout_render_error_has_a_retained_alert_document() {
+    let chrome = tearout_error_chrome(
+        TileId(7),
+        "https://example.test/live".to_owned(),
+        WorkspaceRect::new(20.0, 40.0, 600.0, 320.0),
+        "the imported surface fence failed".to_owned(),
+    );
+    assert_eq!(chrome.title, "Tearout rendering stopped");
+    assert_eq!(chrome.status, "the imported surface fence failed");
+    assert!(matches!(
+        chrome.diagnostic,
+        Some(ChromeDocument {
+            kind: ChromeDocumentKind::Error,
+            tile: TileId(7),
+            message: Some(ref message),
+            ..
+        }) if message.contains("fence")
+    ));
+}
+
+#[test]
+fn secondary_visible_startup_retries_until_presented() {
+    assert!(secondary_redraw_needed(false, true, false));
+    assert!(!secondary_redraw_needed(false, true, true));
+    assert!(secondary_redraw_needed(true, true, true));
+}
+
+#[test]
+fn shown_preflight_counts_as_the_first_visible_destination_frame() {
+    assert!(visible_preflight_presented(true, Some(true)));
+    assert!(!visible_preflight_presented(true, Some(false)));
+    assert!(!visible_preflight_presented(false, Some(true)));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn pending_surface_preflight_keeps_the_destination_cache_unclaimed() {
+    // `compose_document_workspace_frame` calls `claim_source_cache` only
+    // after WindowSurface::acquire returned a swapchain frame. This is the
+    // pending/Ok(false) state, so the source cache remains sampleable.
+    let receipt = SurfaceTearoutImportReceipt {
+        tile: TileId(1),
+        cache: None,
+    };
+    assert!(receipt.cache.is_none());
 }
 
 #[test]

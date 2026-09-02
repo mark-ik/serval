@@ -1098,6 +1098,10 @@ struct PendingTearout {
     width: u32,
     height: u32,
     scale_factor: f32,
+    /// The hidden destination presented a complete source-owned composition.
+    /// Showing that image makes it the first visible frame even if a
+    /// just-shown surface temporarily cannot acquire another image.
+    preflight_presented: bool,
     disposition: TearoutDisposition,
 }
 
@@ -1124,6 +1128,10 @@ struct TearoutWindow {
     visibility_requested: bool,
     visible_frame_presented: bool,
     close_requested: bool,
+    /// A terminal host-composition failure after custody moved. The tile stays
+    /// owned by this window, but its retained shell replaces the failed frame
+    /// with an alert instead of leaving a silent frozen surface behind.
+    render_error: Option<String>,
     /// Every accepted native window owns its own OS adapter and action map.
     /// The adapter is dropped with this window, so secondary actions cannot
     /// leak into the primary tree after close.
@@ -1140,7 +1148,7 @@ struct TearoutWindow {
 struct SurfaceTearoutImportReceipt {
     tile: TileId,
     #[cfg(target_os = "windows")]
-    cache: Dx12SurfaceCache,
+    cache: Option<Dx12SurfaceCache>,
 }
 
 impl SurfaceTearoutImportReceipt {
@@ -1162,53 +1170,12 @@ impl SurfaceTearoutImportReceipt {
 
         #[cfg(target_os = "windows")]
         {
-            // A long-lived producer can advertise a resource epoch with no
-            // handle after the primary cache imported its first frame. Move
-            // that same-device import provisionally so `None` remains valid.
-            let mut cache = source_cache
-                .take_tile_for_tearout(tile)
-                .unwrap_or_else(Dx12SurfaceCache::new);
+            let mut receipt = Self { tile, cache: None };
             for layer in &mut frame.surfaces {
                 let incoming = std::mem::replace(&mut layer.frame, Ok(None));
-                match incoming {
-                    Ok(Some(surface_frame)) => {
-                        if let Err(error) = cache.accept_frame(tile, surface_frame, core.device()) {
-                            if cache.view(tile).is_some() {
-                                source_cache.restore_tile_from_tearout(tile, cache);
-                            }
-                            return Err(format!(
-                                "native surface tearout for tile {} could not import: {error}",
-                                tile.0
-                            ));
-                        }
-                    },
-                    Ok(None) => {
-                        if cache.view(tile).is_some() {
-                            continue;
-                        }
-                        return Err(format!(
-                            "native surface tearout for tile {} did not produce an importable frame",
-                            tile.0
-                        ));
-                    },
-                    Err(error) => {
-                        if cache.view(tile).is_some() {
-                            source_cache.restore_tile_from_tearout(tile, cache);
-                        }
-                        return Err(format!(
-                            "native surface tearout for tile {} failed before import: {error}",
-                            tile.0
-                        ));
-                    },
-                }
+                receipt.refresh_source_cache(incoming, source_cache, core)?;
             }
-            if cache.view(tile).is_none() {
-                return Err(format!(
-                    "native surface tearout for tile {} produced no imported view",
-                    tile.0
-                ));
-            }
-            Ok(Some(Self { tile, cache }))
+            Ok(Some(receipt))
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -1229,9 +1196,24 @@ impl SurfaceTearoutImportReceipt {
         &mut self,
         frame: &mut PeltWorkspaceFrame<Scene>,
         core: &RenderCore,
+        #[cfg(target_os = "windows")] source_cache: Option<&mut Dx12SurfaceCache>,
     ) -> Result<(), String> {
         if frame.surfaces.iter().any(|layer| layer.tile != self.tile) {
             return Err("tearout surface receipt no longer matches its tile".to_owned());
+        }
+        #[cfg(target_os = "windows")]
+        if self.cache.is_none() {
+            let source_cache = source_cache.ok_or_else(|| {
+                "pending native tearout lost its source cache before acceptance".to_owned()
+            })?;
+            for layer in &mut frame.surfaces {
+                self.refresh_source_cache(
+                    std::mem::replace(&mut layer.frame, Ok(None)),
+                    source_cache,
+                    core,
+                )?;
+            }
+            return Ok(());
         }
         #[cfg(target_os = "windows")]
         for layer in &mut frame.surfaces {
@@ -1239,6 +1221,8 @@ impl SurfaceTearoutImportReceipt {
             match incoming {
                 Ok(Some(surface_frame)) => self
                     .cache
+                    .as_mut()
+                    .expect("accepted tearout receipt has a cache")
                     .accept_frame(self.tile, surface_frame, core.device())
                     .map_err(|error| {
                         format!(
@@ -1265,6 +1249,61 @@ impl SurfaceTearoutImportReceipt {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    fn refresh_source_cache(
+        &mut self,
+        incoming: Result<Option<SurfaceFrame>, String>,
+        source_cache: &mut Dx12SurfaceCache,
+        core: &RenderCore,
+    ) -> Result<(), String> {
+        match incoming {
+            Ok(Some(frame)) => source_cache
+                .accept_frame(self.tile, frame, core.device())
+                .map_err(|error| {
+                    format!(
+                        "native surface tearout for tile {} could not refresh its source import: {error}",
+                        self.tile.0
+                    )
+                }),
+            Ok(None) if source_cache.view(self.tile).is_some() => Ok(()),
+            Ok(None) => Err(format!(
+                "native surface tearout for tile {} did not produce an importable source frame",
+                self.tile.0
+            )),
+            Err(error) => Err(format!(
+                "native surface tearout for tile {} failed before import: {error}",
+                self.tile.0
+            )),
+        }
+    }
+
+    /// Claim the source cache only after `WindowSurface::acquire` succeeded.
+    /// A hidden destination that cannot yet present leaves the primary cache
+    /// untouched, so the source tile keeps sampling until the retry succeeds.
+    #[cfg(target_os = "windows")]
+    fn claim_source_cache(
+        &mut self,
+        source_cache: Option<&mut Dx12SurfaceCache>,
+    ) -> Result<(), String> {
+        if self.cache.is_some() {
+            return Ok(());
+        }
+        let Some(source_cache) = source_cache else {
+            return Err("native tearout lost its source cache before acceptance".to_owned());
+        };
+        let cache = source_cache
+            .take_tile_for_tearout(self.tile)
+            .unwrap_or_else(Dx12SurfaceCache::new);
+        if cache.view(self.tile).is_none() {
+            return Err(format!(
+                "native surface tearout for tile {} did not produce an importable frame",
+                self.tile.0
+            ));
+        }
+        self.cache = Some(cache);
+        Ok(())
+    }
+
     fn compose(
         &mut self,
         core: &RenderCore,
@@ -1278,12 +1317,17 @@ impl SurfaceTearoutImportReceipt {
         #[cfg(target_os = "windows")]
         {
             self.cache
+                .as_mut()
+                .ok_or_else(|| "native tearout has not claimed its source cache".to_owned())?
                 .stage_wait(self.tile, core.queue())
                 .map_err(|error| {
                     format!("native tearout surface synchronization failed: {error}")
                 })?;
-            let view = self
+            let cache = self
                 .cache
+                .as_ref()
+                .expect("staged native tearout cache remains available");
+            let view = cache
                 .view(self.tile)
                 .ok_or_else(|| "native tearout import receipt lost its view".to_owned())?;
             core.renderer().compose_external_texture(
@@ -1295,9 +1339,14 @@ impl SurfaceTearoutImportReceipt {
                 placement(rect, scale_factor),
             );
             self.cache
+                .as_ref()
+                .expect("composed native tearout cache remains available")
                 .return_to_common(self.tile, core.device(), core.queue())
                 .map_err(|error| format!("native tearout surface release failed: {error}"))?;
-            self.cache.mark_composed();
+            self.cache
+                .as_mut()
+                .expect("composed native tearout cache remains available")
+                .mark_composed();
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1318,7 +1367,9 @@ impl SurfaceTearoutImportReceipt {
     /// Return a preflight-only same-device transfer to its source cache.
     fn restore_to_source(self, #[cfg(target_os = "windows")] source_cache: &mut Dx12SurfaceCache) {
         #[cfg(target_os = "windows")]
-        source_cache.restore_tile_from_tearout(self.tile, self.cache);
+        if let Some(cache) = self.cache {
+            source_cache.restore_tile_from_tearout(self.tile, cache);
+        }
         #[cfg(not(target_os = "windows"))]
         let _ = self;
     }
@@ -2488,9 +2539,7 @@ impl WorkspaceApp {
             || (self.receipt_complete
                 && !self.config.capability_receipt
                 && self.config.workspace_receipt.is_none())
-            || self.config.frames.is_some_and(|limit| {
-                self.config.workspace_receipt.is_none() && self.redraws >= limit
-            })
+            || self.generic_frame_limit_reached()
         {
             event_loop.exit();
         } else if self.config.interaction_receipt
@@ -2506,6 +2555,18 @@ impl WorkspaceApp {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
+    }
+
+    /// Named tearout receipts may wait for a native producer and a second
+    /// swapchain. Their explicit stage timeout is authoritative; the generic
+    /// frame cap is only for ordinary bounded viewers.
+    fn generic_frame_limit_reached(&self) -> bool {
+        self.config.frames.is_some_and(|limit| {
+            self.config.workspace_receipt.is_none()
+                && !self.config.tearout_receipt
+                && !self.config.tearout_cancellation_receipt
+                && self.redraws >= limit
+        })
     }
 
     fn apply_effect(&mut self, effect: PeltHostEffect) {
@@ -2751,13 +2812,23 @@ impl WorkspaceApp {
         } else {
             "acceptance"
         };
+        let tracked_tile = self
+            .tearout_receipt_tile
+            .or(self.tearout_cancellation_receipt_tile);
+        let accepted = tracked_tile
+            .and_then(|tile| self.tearouts.values().find(|tearout| tearout.tile == tile));
+        let native_focus_observed = accepted.is_some_and(|tearout| tearout.native_focus_observed);
+        let visible_frame_presented =
+            accepted.is_some_and(|tearout| tearout.visible_frame_presented);
         Some(format!(
-            "W4 {kind} receipt timed out after {}s at {}x{} (pending={} accepted={})",
+            "W4 {kind} receipt timed out after {}s at {}x{} (pending={} accepted={} focus_observed={} visible_frame_presented={})",
             self.config.workspace_receipt_stage_timeout.as_secs_f32(),
             self.width,
             self.height,
             self.pending_tearouts.len(),
             self.tearouts.len(),
+            native_focus_observed,
+            visible_frame_presented,
         ))
     }
 
@@ -2871,6 +2942,7 @@ impl WorkspaceApp {
             width,
             height,
             scale_factor,
+            preflight_presented: false,
             disposition,
         };
         self.chrome_status =
@@ -2895,11 +2967,16 @@ impl WorkspaceApp {
             &pending.pane_scene,
             &pending.frame,
             pending.surface_import.as_mut(),
+            #[cfg(target_os = "windows")]
+            Some(&mut self.native_surfaces),
             pending.width,
             pending.height,
             pending.scale_factor,
         ) {
-            Ok(true) => self.finish_composed_tearout(id, pending),
+            Ok(true) => {
+                pending.preflight_presented = true;
+                self.finish_composed_tearout(id, pending);
+            },
             Ok(false) => {
                 self.pending_tearouts.insert(id, pending);
                 window.request_redraw();
@@ -3258,7 +3335,8 @@ fn compose_document_workspace_frame(
     surface: &WindowSurface,
     pane_scene: &Scene,
     frame: &PeltWorkspaceFrame<Scene>,
-    surface_import: Option<&mut SurfaceTearoutImportReceipt>,
+    mut surface_import: Option<&mut SurfaceTearoutImportReceipt>,
+    #[cfg(target_os = "windows")] source_cache: Option<&mut Dx12SurfaceCache>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -3302,6 +3380,15 @@ fn compose_document_workspace_frame(
     let Some(swap) = surface.acquire(core) else {
         return Ok(false);
     };
+    if let Some(receipt) = surface_import.as_deref_mut() {
+        #[cfg(target_os = "windows")]
+        receipt.claim_source_cache(source_cache)?;
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = core;
+            return Err("native tearout surface reached a host without an importer".to_owned());
+        }
+    }
     let target = swap
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
@@ -3342,9 +3429,98 @@ fn compose_document_workspace_frame(
     Ok(true)
 }
 
+/// Present only the retained shell. Used after an accepted secondary has a
+/// terminal composition failure: its host-owned alert stays visible without
+/// polling or sampling the moved document/native producer again.
+fn compose_tearout_shell_frame(
+    core: &RenderCore,
+    surface: &WindowSurface,
+    pane_scene: &Scene,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+) -> Result<bool, String> {
+    let (_texture, pane_view) = core.rasterize_scaled(
+        pane_scene,
+        width,
+        height,
+        ColorLoad::Clear(wgpu::Color {
+            r: 0.10,
+            g: 0.10,
+            b: 0.12,
+            a: 1.0,
+        }),
+        scale_factor,
+    );
+    let Some(swap) = surface.acquire(core) else {
+        return Ok(false);
+    };
+    let target = swap
+        .texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    core.renderer().compose_external_texture(
+        &pane_view,
+        &target,
+        surface.format(),
+        width,
+        height,
+        ExternalTexturePlacement::new([0.0, 0.0, width as f32, height as f32]),
+    );
+    core.queue().present(swap);
+    Ok(true)
+}
+
+fn tearout_error_chrome(
+    tile: TileId,
+    address: String,
+    rect: WorkspaceRect,
+    message: String,
+) -> WorkspaceChrome {
+    WorkspaceChrome {
+        title: "Tearout rendering stopped".to_owned(),
+        address: address.clone(),
+        route: "Host composition error".to_owned(),
+        status: message.clone(),
+        theme: AppearanceTheme::Dark,
+        address_focused: false,
+        can_go_back: false,
+        can_go_forward: false,
+        engine_label: "Unavailable".to_owned(),
+        engine_menu_open: false,
+        engine_selected: None,
+        engine_choices: Vec::new(),
+        inspector: None,
+        appearance: None,
+        diagnostic: Some(ChromeDocument {
+            kind: ChromeDocumentKind::Error,
+            tile,
+            rect,
+            address,
+            message: Some(message),
+        }),
+        window_controls: false,
+        maximized: false,
+    }
+}
+
 enum TearoutEvent {
     Keep { redraw: bool },
     Close,
+}
+
+fn secondary_redraw_needed(
+    redraw: bool,
+    visibility_requested: bool,
+    visible_frame_presented: bool,
+) -> bool {
+    redraw || (visibility_requested && !visible_frame_presented)
+}
+
+fn visible_preflight_presented(
+    preflight_presented: bool,
+    destination_visible: Option<bool>,
+) -> bool {
+    preflight_presented && destination_visible == Some(true)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3362,6 +3538,16 @@ impl TearoutWindow {
     }
 
     fn refresh_accessibility_content_regions(&mut self) {
+        if let Some(error) = self.render_error.as_ref() {
+            self.frisket.set_content_accessibility([FrisketContentA11y {
+                tile: self.tile,
+                label: "Tearout error".to_owned(),
+                description: format!(
+                    "This tearout could not render its current frame: {error}. Close this window when you are finished."
+                ),
+            }]);
+            return;
+        }
         let Some(tile) = self.workspace.tree().tiles().into_iter().next() else {
             self.frisket.set_content_accessibility(Vec::new());
             return;
@@ -3642,6 +3828,9 @@ impl TearoutWindow {
     }
 
     fn render(&mut self) -> Result<bool, String> {
+        if self.render_error.is_some() {
+            return self.render_error_frame();
+        }
         let (logical_width, logical_height) = self.logical_size();
         self.refresh_accessibility_content_regions();
         let pane = self.frisket.frame(logical_width, logical_height)?;
@@ -3651,7 +3840,12 @@ impl TearoutWindow {
         let more = self.workspace.pump();
         let mut frame = self.workspace.frame();
         if let Some(receipt) = self.surface_import.as_mut() {
-            receipt.refresh(&mut frame, self.core.as_ref())?;
+            receipt.refresh(
+                &mut frame,
+                self.core.as_ref(),
+                #[cfg(target_os = "windows")]
+                None,
+            )?;
         }
         let composed = compose_document_workspace_frame(
             self.core.as_ref(),
@@ -3659,6 +3853,8 @@ impl TearoutWindow {
             &pane.scene,
             &frame,
             self.surface_import.as_mut(),
+            #[cfg(target_os = "windows")]
+            None,
             self.width,
             self.height,
             self.scale_factor,
@@ -3671,6 +3867,55 @@ impl TearoutWindow {
         }
         let accessibility_redraw = self.sync_accessibility();
         Ok((composed && more) || accessibility_redraw)
+    }
+
+    fn enter_render_error(&mut self, error: String) {
+        if self.render_error.is_some() {
+            return;
+        }
+        self.render_error = Some(error);
+        self.window.set_title("Pelt tearout error");
+    }
+
+    fn render_error_frame(&mut self) -> Result<bool, String> {
+        let (logical_width, logical_height) = self.logical_size();
+        // Lay out once to obtain the live content aperture, then rebuild the
+        // shell with a host-owned alert over that aperture. The moved
+        // controller and imported surface remain owned by this window.
+        let initial = self.frisket.frame(logical_width, logical_height)?;
+        let rect = initial
+            .content_rects
+            .iter()
+            .find(|(tile, _)| *tile == self.tile)
+            .map(|(_, rect)| *rect)
+            .ok_or_else(|| "tearout error state has no content aperture".to_owned())?;
+        let message = self
+            .render_error
+            .as_deref()
+            .unwrap_or("tearout rendering stopped")
+            .to_owned();
+        let address = self
+            .workspace
+            .controller(self.tile)
+            .map(|controller| controller.address().to_owned())
+            .unwrap_or_default();
+        self.frisket.set_chrome(Some(tearout_error_chrome(
+            self.tile, address, rect, message,
+        )));
+        self.refresh_accessibility_content_regions();
+        let pane = self.frisket.frame(logical_width, logical_height)?;
+        self.workspace
+            .set_content_rects(pane.content_rects.iter().copied());
+        let composed = compose_tearout_shell_frame(
+            self.core.as_ref(),
+            &self.surface,
+            &pane.scene,
+            self.width,
+            self.height,
+            self.scale_factor,
+        )?;
+        let accessibility_redraw = self.sync_accessibility();
+        Ok(composed || accessibility_redraw)
     }
 
     fn window_event(&mut self, event: WindowEvent) -> TearoutEvent {
@@ -3807,10 +4052,20 @@ impl TearoutWindow {
             },
             WindowEvent::RedrawRequested => match self.render() {
                 Ok(_redraw) if self.close_requested => TearoutEvent::Close,
-                Ok(redraw) => TearoutEvent::Keep { redraw },
+                Ok(redraw) => TearoutEvent::Keep {
+                    // Winit can deliver the first redraw while the just-shown
+                    // window still has no swapchain image. Keep retrying this
+                    // window until one visible frame has actually presented.
+                    redraw: secondary_redraw_needed(
+                        redraw,
+                        self.visibility_requested,
+                        self.visible_frame_presented,
+                    ),
+                },
                 Err(error) => {
                     eprintln!("[pelt-tearout] destination render failed: {error}");
-                    TearoutEvent::Keep { redraw: false }
+                    self.enter_render_error(error);
+                    TearoutEvent::Keep { redraw: true }
                 },
             },
             _ => TearoutEvent::Keep { redraw: false },
@@ -3819,6 +4074,37 @@ impl TearoutWindow {
 }
 
 impl WorkspaceApp {
+    fn record_tearout_receipt_close(
+        &mut self,
+        window: &str,
+        tile: Option<TileId>,
+        accepted_custody: bool,
+    ) {
+        if self.receipt_complete
+            || !(self.config.tearout_receipt || self.config.tearout_cancellation_receipt)
+        {
+            return;
+        }
+        let requested = self
+            .tearout_receipt_tile
+            .or(self.tearout_cancellation_receipt_tile);
+        if requested.is_some() && tile.is_some() && requested != tile {
+            return;
+        }
+        let custody = if accepted_custody {
+            "destination already owned the tile"
+        } else {
+            "source custody was still retained"
+        };
+        if self.receipt_error.is_none() {
+            let pending = self.pending_tearouts.len();
+            let accepted = self.tearouts.len();
+            self.receipt_error = Some(format!(
+                "W4 tearout receipt {window} closed before completion ({custody}; tile={tile:?}; pending={pending}; accepted={accepted})"
+            ));
+        }
+    }
+
     /// A document frame updates its controller viewport. On a rejected
     /// preflight, restore the source geometry before its next visible frame;
     /// custody, tree membership, controller identity, and model focus have
@@ -3880,6 +4166,7 @@ impl WorkspaceApp {
             visibility_requested: false,
             visible_frame_presented: false,
             close_requested: false,
+            render_error: None,
             accessibility: WorkspaceAccessibility::new(),
         };
         tearout.refresh_tree();
@@ -3895,9 +4182,16 @@ impl WorkspaceApp {
         self.chrome_status = ChromeStatus::Ready;
         tearout.window.set_visible(true);
         tearout.visibility_requested = true;
-        tearout.window.focus_window();
-        tearout.window.request_redraw();
+        tearout.visible_frame_presented =
+            visible_preflight_presented(pending.preflight_presented, tearout.window.is_visible());
         self.tearouts.insert(window_id, tearout);
+        // A shown native window can synchronously emit focus/redraw events.
+        // Register its ownership before asking the platform to do either so
+        // those events cannot be dropped as an unknown destination.
+        if let Some(tearout) = self.tearouts.get(&window_id) {
+            tearout.window.focus_window();
+            tearout.window.request_redraw();
+        }
     }
 
     /// A headed receipt host decline after a real hidden native presentation.
@@ -3935,7 +4229,12 @@ impl WorkspaceApp {
             .ok_or_else(|| "tearout source no longer owns a live document controller".to_owned())?;
         let mut frame = frame;
         if let Some(receipt) = pending.surface_import.as_mut() {
-            receipt.refresh(&mut frame, pending.core.as_ref())?;
+            receipt.refresh(
+                &mut frame,
+                pending.core.as_ref(),
+                #[cfg(target_os = "windows")]
+                Some(&mut self.native_surfaces),
+            )?;
         }
         pending.pane_scene = pane.scene;
         pending.frame = frame;
@@ -4036,6 +4335,8 @@ impl WorkspaceApp {
                         &pending.pane_scene,
                         &pending.frame,
                         pending.surface_import.as_mut(),
+                        #[cfg(target_os = "windows")]
+                        Some(&mut self.native_surfaces),
                         pending.width,
                         pending.height,
                         pending.scale_factor,
@@ -4052,7 +4353,10 @@ impl WorkspaceApp {
                                 format!("Tearout composition failed before acceptance: {error}"),
                             );
                         },
-                        Ok(true) => self.finish_composed_tearout(window_id, pending),
+                        Ok(true) => {
+                            pending.preflight_presented = true;
+                            self.finish_composed_tearout(window_id, pending);
+                        },
                     }
                 },
                 _ => {
@@ -4067,7 +4371,13 @@ impl WorkspaceApp {
         let native_focus_observed = tearout.native_focus_observed;
         let visible_frame_presented = tearout.visible_frame_presented;
         match tearout.window_event(event) {
-            TearoutEvent::Close => {},
+            TearoutEvent::Close => {
+                self.record_tearout_receipt_close(
+                    "accepted secondary window",
+                    Some(tearout.tile),
+                    true,
+                );
+            },
             TearoutEvent::Keep { redraw } => {
                 if redraw {
                     tearout.window.request_redraw();
@@ -4238,7 +4548,10 @@ impl ApplicationHandler for WorkspaceApp {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.record_tearout_receipt_close("primary window", None, false);
+                event_loop.exit();
+            },
             WindowEvent::Resized(size) => {
                 self.width = size.width.max(1);
                 self.height = size.height.max(1);
