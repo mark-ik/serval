@@ -512,8 +512,15 @@ narrow-feature warnings driven from 3/11/15 to zero.
   `layout_inline_groups`, `layout_retained_formatting_root`, about 1,000
   lines) over two builders, `BuildState` (858) and `InlineBuildState` (989),
   which share ten method names and, where measured, near-identical bodies.
-  The receipts the guard asks for stand at positioned 7, tables 2,
-  hit_testing 0, taffy_style 0 tests naming the module directly.
+  The receipts the guard asks for, counted by tests naming the function
+  directly, stood at positioned 7, tables 2, hit_testing `hit_test` only and
+  taffy_style `to_taffy_style` only. **Receipted 2026-09-02.** Seven tests
+  now name the rest: `hit_test_with_scroll`, `z_index_stacking_level`,
+  `order_modified_children` and `stacking_paint_children`; the dimension,
+  margin, gap and math-length converters with their calc() slot and its
+  reset; the border, line-height, alignment and overflow tables; and the
+  container-alignment `normal`/`stretch` distinction, driven from parsed
+  CSS. The guard's precondition is met; the transaction split follows.
 - Margins, paddings, insets and flex-basis still flatten `calc()` at a zero
   percentage basis. The width repair in `78f6bd3eafd` is the shape that fix
   takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,

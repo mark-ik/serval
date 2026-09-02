@@ -7468,3 +7468,340 @@ fn replaced_min_max_follows_css21_10_4_for_every_box_sizing_replaced_case() {
         );
     }
 }
+
+// Receipts for `layout/hit_testing.rs`. Each names one function of the module
+// and states its contract directly, so the module can be judged on its own
+// rather than through whichever layout test happens to route a pointer
+// through it.
+
+#[test]
+fn hit_test_with_scroll_shifts_the_descendants_of_a_scrolled_container() {
+    let dom =
+        StaticDocument::parse("<div id=scroller><div id=spacer></div><div id=target></div></div>");
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&["html, body, div { margin: 0; padding: 0; } \
+             #scroller { width: 100px; height: 100px; overflow: hidden; } \
+             #spacer { height: 150px; } \
+             #target { height: 50px; }"]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let layout = layout(&dom, &styles, 320.0, 240.0).expect("layout");
+    let node = |id| node_by_id(&dom, dom.document(), id).expect(id);
+
+    // Unscrolled, the target sits below the container's clip and the spacer
+    // owns the visible area.
+    assert_eq!(
+        hit_test(&dom, &styles, &layout, 10.0, 10.0),
+        Some(node("spacer"))
+    );
+    assert_ne!(
+        hit_test(&dom, &styles, &layout, 10.0, 160.0),
+        Some(node("target"))
+    );
+
+    // Scrolled by the spacer's height, the target's visible fragment starts
+    // at the container's top edge; the container itself does not move.
+    let mut offsets = HashMap::new();
+    offsets.insert(node("scroller"), (0.0, 150.0));
+    assert_eq!(
+        hit_test_with_scroll(&dom, &styles, &layout, &offsets, 10.0, 10.0),
+        Some(node("target"))
+    );
+    assert_eq!(
+        hit_test_with_scroll(&dom, &styles, &layout, &offsets, 10.0, 60.0),
+        Some(node("scroller")),
+        "below the scrolled target only the container remains"
+    );
+}
+
+#[test]
+fn z_index_stacking_level_exists_only_where_css_lets_z_index_establish_a_context() {
+    let dom = StaticDocument::parse(
+        "<div id=static_block></div><div id=relative></div><div id=relative_auto></div>\
+         <div id=flex><div id=flex_item></div></div>",
+    );
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&["#static_block { z-index: 3; } \
+             #relative { position: relative; z-index: 3; } \
+             #relative_auto { position: relative; z-index: auto; } \
+             #flex { display: flex; } #flex_item { z-index: 2; }"]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let level = |id| {
+        z_index_stacking_level(
+            &dom,
+            &styles,
+            node_by_id(&dom, dom.document(), id).expect(id),
+        )
+    };
+
+    assert_eq!(
+        level("static_block"),
+        None,
+        "a static block keeps normal paint order"
+    );
+    assert_eq!(level("relative"), Some(3));
+    assert_eq!(
+        level("relative_auto"),
+        None,
+        "z-index: auto establishes nothing"
+    );
+    assert_eq!(
+        level("flex_item"),
+        Some(2),
+        "a direct flex item may carry a level while static"
+    );
+}
+
+#[test]
+fn order_modified_children_reorders_only_flex_and_grid_containers() {
+    let dom = StaticDocument::parse(
+        "<div id=block><div id=b_second></div><div id=b_first></div></div>\
+         <div id=flex><div id=f_late></div><div id=f_early></div><div id=f_late_too></div></div>",
+    );
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&["#b_second { order: 2; } #b_first { order: 1; } \
+             #flex { display: flex; } \
+             #f_late { order: 1; } #f_early { order: -1; } #f_late_too { order: 1; }"]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let node = |id| node_by_id(&dom, dom.document(), id).expect(id);
+
+    assert_eq!(
+        order_modified_children(&dom, &styles, node("block")),
+        vec![node("b_second"), node("b_first")],
+        "a block container ignores `order`"
+    );
+    assert_eq!(
+        order_modified_children(&dom, &styles, node("flex")),
+        vec![node("f_early"), node("f_late"), node("f_late_too")],
+        "a flex container sorts by `order`, stably for equal values"
+    );
+}
+
+#[test]
+fn stacking_paint_children_applies_order_first_and_stacking_level_second() {
+    let dom = StaticDocument::parse(
+        "<div id=flex><div id=a></div><div id=b></div><div id=c></div></div>",
+    );
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&["#flex { display: flex; } \
+             #a { order: 1; } \
+             #b { order: 0; position: relative; z-index: 5; } \
+             #c { order: 0; }"]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let node = |id| node_by_id(&dom, dom.document(), id).expect(id);
+
+    // `order` yields b, c, a; the stable sort by stacking level then lifts b
+    // (level 5) past the two level-0 items without reordering them.
+    assert_eq!(
+        hit_testing::stacking_paint_children(&dom, &styles, node("flex")),
+        vec![node("c"), node("a"), node("b")]
+    );
+}
+
+// Receipts for `layout/taffy_style.rs`: the value converters, stated against
+// parsed CSS so the shapes they receive are the ones the cascade produces.
+
+#[test]
+fn dimension_converters_tag_percentage_bearing_calc_for_the_basis_and_pass_the_rest_through() {
+    let dom = StaticDocument::parse("<div id=box></div>");
+    let computed_for = |css: &str| {
+        resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[&format!("#box {{ {css} }}")]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        )
+    };
+    let node = node_by_id(&dom, dom.document(), "box").expect("box");
+    reset_calc_scratch();
+
+    let styles = computed_for(
+        "width: calc(50% - 10px); min-width: min(100% - 48px, 960px); max-width: 30px; \
+         height: 50%; margin-left: calc(25% + 4px); margin-top: auto; column-gap: 10%;",
+    );
+    let computed = styles.get(node).expect("box style");
+
+    // A calc() mixing a percentage with lengths becomes a tagged slot whose
+    // resolution waits for the real basis.
+    let width = dimension(computed.width, 16.0).into_raw();
+    assert!(
+        width.is_calc(),
+        "calc(50% - 10px) must not flatten at a zero basis"
+    );
+    assert_eq!(resolve_taffy_calc(width.calc_value(), 200.0), 90.0);
+
+    // Plain values keep their native Taffy forms.
+    assert_eq!(dimension(computed.max_width, 16.0), Dimension::length(30.0));
+    assert_eq!(dimension(computed.height, 16.0), Dimension::percent(0.5));
+    assert_eq!(dimension(CssSize::Auto, 16.0), Dimension::auto());
+
+    // With a definite basis a math length resolves; without one it is auto,
+    // never a value resolved against zero.
+    assert_eq!(
+        dimension_with_basis(computed.min_width, 16.0, Some(500.0)),
+        Dimension::length(452.0)
+    );
+    assert_eq!(
+        dimension_with_basis(computed.min_width, 16.0, None),
+        Dimension::auto()
+    );
+    assert_eq!(resolved_explicit_size(computed.width, 16.0, None), None);
+    assert_eq!(
+        resolved_explicit_size(computed.width, 16.0, Some(200.0)),
+        Some(90.0)
+    );
+    assert_eq!(
+        resolved_explicit_size(computed.max_width, 16.0, None),
+        Some(30.0)
+    );
+
+    // Margins and gaps take the same three paths.
+    let margin_left = margin(computed.margin_left, 16.0).into_raw();
+    assert!(margin_left.is_calc());
+    assert_eq!(resolve_taffy_calc(margin_left.calc_value(), 200.0), 54.0);
+    assert_eq!(
+        margin(computed.margin_top, 16.0),
+        LengthPercentageAuto::auto()
+    );
+    assert_eq!(
+        gap(computed.column_gap, 16.0),
+        LengthPercentage::percent(0.1)
+    );
+
+    // A tag is scoped to its pass: after the reset it resolves to nothing.
+    reset_calc_scratch();
+    assert_eq!(resolve_taffy_calc(width.calc_value(), 200.0), 0.0);
+}
+
+#[test]
+fn border_line_height_alignment_and_overflow_converters_follow_their_css_tables() {
+    assert_eq!(
+        border_width_px(BorderStyle::None, BorderWidth::Thick, 16.0),
+        0.0
+    );
+    assert_eq!(
+        border_width_px(BorderStyle::Hidden, BorderWidth::Thick, 16.0),
+        0.0
+    );
+    assert_eq!(
+        border_width_px(BorderStyle::Solid, BorderWidth::Thin, 16.0),
+        1.0
+    );
+    assert_eq!(
+        border_width_px(BorderStyle::Solid, BorderWidth::Medium, 16.0),
+        3.0
+    );
+    assert_eq!(
+        border_width_px(BorderStyle::Solid, BorderWidth::Thick, 16.0),
+        5.0
+    );
+    assert_eq!(
+        border_width_px(
+            BorderStyle::Solid,
+            BorderWidth::Length(Length::px(2.5)),
+            16.0
+        ),
+        2.5
+    );
+
+    assert_eq!(line_height_px(&LineHeight::Normal, 20.0), 24.0);
+    assert_eq!(line_height_px(&LineHeight::Number(1.5), 20.0), 30.0);
+    assert_eq!(
+        line_height_px(
+            &LineHeight::Value(CssLengthPercentage::Percentage(1.5)),
+            20.0
+        ),
+        30.0
+    );
+    assert_eq!(
+        line_height_px(
+            &LineHeight::Value(CssLengthPercentage::Length(Length::px(18.0))),
+            20.0
+        ),
+        18.0
+    );
+
+    // `auto` self-alignment defers to the container unless a content-keyword
+    // size has already defeated stretch.
+    assert_eq!(self_alignment(CssAlignment::Auto, CssSize::Auto), None);
+    assert_eq!(
+        self_alignment(CssAlignment::Auto, CssSize::MinContent).map(|a| a.keyword),
+        Some(AlignItemsKeyword::Start)
+    );
+    assert_eq!(
+        self_alignment(CssAlignment::Center, CssSize::Auto).map(|a| a.keyword),
+        Some(AlignItemsKeyword::Center)
+    );
+    assert_eq!(
+        align_content(CssAlignment::SpaceEvenly).keyword,
+        AlignContentKeyword::SpaceEvenly
+    );
+    assert_eq!(
+        align_content(CssAlignment::Normal).keyword,
+        AlignContentKeyword::Stretch
+    );
+
+    assert_eq!(overflow(CssOverflow::Visible), Overflow::Visible);
+    assert_eq!(overflow(CssOverflow::Hidden), Overflow::Hidden);
+    assert_eq!(overflow(CssOverflow::Clip), Overflow::Clip);
+    assert_eq!(overflow(CssOverflow::Auto), Overflow::Scroll);
+    assert_eq!(overflow(CssOverflow::Scroll), Overflow::Scroll);
+
+    assert_eq!(flex_basis(CssFlexBasis::Auto, 16.0), TaffyFlexBasis::auto());
+    assert_eq!(
+        flex_basis(CssFlexBasis::Content, 16.0),
+        TaffyFlexBasis::content()
+    );
+    assert_eq!(
+        flex_basis(CssFlexBasis::MinContent, 16.0),
+        TaffyFlexBasis::auto()
+    );
+}
+
+#[test]
+fn container_alignment_normal_reaches_taffy_as_unset_and_every_other_keyword_passes_through() {
+    let dom = StaticDocument::parse("<div id=box></div>");
+    let node = node_by_id(&dom, dom.document(), "box").expect("box");
+    let projected = |css: &str| {
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&[&format!("#box {{ display: grid; {css} }}")]),
+            &Device::screen(320.0, 240.0),
+            &InteractionStates::default(),
+        );
+        let style = to_taffy_style(styles.get(node).expect("box style"), 16.0);
+        (
+            style.align_items.map(|a| a.keyword),
+            style.justify_items.map(|a| a.keyword),
+        )
+    };
+
+    assert_eq!(
+        projected(""),
+        (None, None),
+        "the initial `normal` is unset for Taffy"
+    );
+    assert_eq!(
+        projected("align-items: stretch; justify-items: center;"),
+        (
+            Some(AlignItemsKeyword::Stretch),
+            Some(AlignItemsKeyword::Center)
+        ),
+        "an explicit stretch is a real keyword, not `normal`"
+    );
+    assert_eq!(
+        projected("align-items: normal; justify-items: end;"),
+        (None, Some(AlignItemsKeyword::End))
+    );
+}
