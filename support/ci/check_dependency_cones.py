@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -69,6 +70,7 @@ def cargo_metadata() -> dict:
         ["cargo", "metadata", "--format-version", "1", "--no-deps"],
         cwd=ROOT,
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -126,11 +128,100 @@ def assert_ports_depend_inward(metadata: dict) -> None:
         fail(f"Pelt package manifests are {rendered}, expected {expected_pelt}")
 
 
+# Genet resolves without Mere (platform boundary plan, mere
+# design_docs/mere_docs/implementation_strategy/
+# 2026-09-02_platform_boundary_and_repository_topology_plan.md, invariant 1).
+# Three ways a Mere source can enter the graph, each checked: a git source at
+# Mere's repository, a path dependency that leaves this repository for a `mere`
+# checkout, and a registry crate that Mere publishes. The name list is the
+# unprefixed publishable members of Mere's workspace on 2026-09-02; prefixed
+# families are matched by prefix. Extend it when Mere publishes a new family.
+MERE_GIT_SOURCE = re.compile(r"merely-made/mere(?:\.git)?(?:[?#/]|$)")
+MERE_CRATE_PREFIXES = ("mere-", "graphshell", "sceno", "register-")
+MERE_CRATES = {
+    "mere", "scenograph", "armillary", "chartulary", "codicil", "muniment",
+    "scholia", "tulpa", "personae", "dramatis", "gaz", "gazette", "servitor",
+    "vates", "sibylla", "conatus", "numen", "quint", "seiche", "murm",
+    "moothold", "mooting", "gemot", "castellan", "chatelaine", "chirograph",
+    "distillery", "djinn", "esp", "graphlets", "incipit", "insigne", "luggage",
+    "mien", "nisus", "notochord", "pandect", "pictograph", "platen",
+    "stickleback", "titulus", "ux-events", "uxtree", "script-rhai",
+}
+
+
+def is_mere_crate(name: str) -> bool:
+    return name in MERE_CRATES or name.startswith(MERE_CRATE_PREFIXES)
+
+
+def cargo_metadata_resolved() -> dict:
+    """The full resolved graph: transitive sources are what the invariant is about."""
+    result = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"cargo metadata (resolved) failed:\n{result.stderr}")
+    return json.loads(result.stdout)
+
+
+def mere_sources(metadata: dict) -> list[str]:
+    """Every package in the resolved graph that comes from Mere, as messages."""
+    found = []
+    for package in metadata["packages"]:
+        name = package["name"]
+        source = package.get("source") or ""
+        manifest = pathlib.Path(package["manifest_path"])
+        if MERE_GIT_SOURCE.search(source):
+            found.append(f"{name} resolves from Mere's repository: {source}")
+        elif not source and not is_beneath(manifest, ROOT):
+            if "mere" in {part.lower() for part in manifest.parts}:
+                found.append(f"{name} is a path dependency into a mere checkout: {manifest}")
+        elif source.startswith("registry+") and is_mere_crate(name):
+            found.append(f"{name} is a Mere-published crate pulled from the registry ({package['version']})")
+    return found
+
+
+def assert_no_mere_source(metadata: dict) -> None:
+    found = mere_sources(metadata)
+    if found:
+        fail("Genet's graph reaches Mere:\n  " + "\n  ".join(found))
+
+
+def self_test_mere_witness() -> None:
+    """Positive control: the witness must catch each of the three entry routes."""
+    fake = {"packages": [
+        {"name": "sceno", "version": "0.0.3", "source": "registry+https://github.com/rust-lang/crates.io-index",
+         "manifest_path": str(ROOT / "x" / "Cargo.toml")},
+        {"name": "anything", "version": "0.1.0",
+         "source": "git+https://github.com/merely-made/mere.git?rev=abc#abc",
+         "manifest_path": str(ROOT / "y" / "Cargo.toml")},
+        {"name": "moothold", "version": "0.1.0", "source": None,
+         "manifest_path": str(ROOT.parent / "mere" / "crates" / "moothold" / "Cargo.toml")},
+        {"name": "netrender", "version": "0.1.0",
+         "source": "git+https://github.com/merely-made/netrender.git?rev=abc#abc",
+         "manifest_path": str(ROOT / "z" / "Cargo.toml")},
+        {"name": "mer3ly-ish", "version": "0.1.0",
+         "source": "git+https://github.com/merely-made/mer3ly.git?rev=abc#abc",
+         "manifest_path": str(ROOT / "w" / "Cargo.toml")},
+    ]}
+    found = mere_sources(fake)
+    if len(found) != 3 or not any("registry" in f for f in found) or not any("repository" in f for f in found) \
+            or not any("checkout" in f for f in found):
+        fail(f"mere witness self-test expected exactly the three Mere routes, got {found}")
+
+
 def main() -> None:
     assert_fleece_cone()
     metadata = cargo_metadata()
     assert_cargo_metadata_sees_fleece(metadata)
     assert_ports_depend_inward(metadata)
+    self_test_mere_witness()
+    assert_no_mere_source(cargo_metadata_resolved())
     print("dependency-cone witnesses passed")
 
 
