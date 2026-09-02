@@ -186,9 +186,10 @@ heterogeneous headed consumers.
   and focus input, and closes independently. Pre-accept cancellation,
   configure/present failure, and the rare acceptance race preserve source tree
   membership, controller custody, and model focus, then restore its primary
-  geometry/DPI. Native surface-producer import is an explicitly deferred Pelt
-  follow-up: it never accepts custody without a shared-device import receipt.
-  Secondary AccessKit remains a follow-up.
+  geometry/DPI. Native surface-producer import is a Pelt-owned follow-up: it
+  now accepts custody only after a typed shared-device import or cache-transfer
+  receipt has composed the hidden destination. Secondary AccessKit remains a
+  separate follow-up.
 
   The headed acceptance command was captured at exit 0:
   `pelt.exe --workspace-tearout-receipt --size 960x640
@@ -247,8 +248,7 @@ heterogeneous headed consumers.
   directly and retains its real Workbench dependency. W4's native Pelt
   acceptance/cancellation, Woodshed open-lane/persistence, and Graphshell
   wasm/browser-headed evidence are captured. The native surface-producer
-  limitation remains a Pelt follow-up, not a Workbench compatibility-removal
-  gate.
+  follow-up remains Pelt-owned and does not change the Workbench contract.
 - 2026-09-01: the coordinated consumer-first remote landing completed.
   Woodshed `main` is `1611201c903`, Turnstone `main` is `75af89070bb`, and
   Hocket `main` is `bc98cc8ee83`. Mere's `main` advanced concurrently, so the
@@ -261,3 +261,17 @@ heterogeneous headed consumers.
   an additional green receipt. Audits of all four remote consumer `main`
   sources found no remaining `genet-host-api::tile` uses. Hocket's broader
   retired Genet patch/layout port remains separate from this migration.
+- 2026-09-02: Pelt's native surface-producer tearout follow-up is implemented
+  on Genet branch `codex/pelt-surface-producer-20260902`. A destination-owned
+  `SurfaceTearoutImportReceipt` either imports the first D3D12 shared frame on
+  the existing `RenderCore` device or provisionally transfers the source's
+  already-imported cache for a reused resource epoch. The receipt waits,
+  composes, and returns the resource to `COMMON` before `accept_tearout`; every
+  cancelled, import-failed, configure-failed, or pre-accept close path restores
+  the source cache, viewport, tree membership, controller/surface custody, and
+  model focus. Later destination frames refresh the same receipt. The isolated
+  Windows gate `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=C:\\t\\genet-pelt-surface-producer-target cargo test -p pelt-desktop --lib -j 1 --message-format=short`
+  passed 53/53, including the D3D12 importer tests and retained-source tearout
+  test; `git diff --check` passed. This is a native unit/compile receipt, not a
+  new headed Scrying surface-tearout receipt. Secondary AccessKit remains out
+  of this lane.

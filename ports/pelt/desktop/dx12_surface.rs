@@ -258,6 +258,36 @@ impl Dx12SurfaceCache {
         self.textures.retain(|tile, _| keep(*tile));
     }
 
+    /// Move one already-imported resource into a pending native destination.
+    ///
+    /// A producer may emit a handle only for a new resource epoch. A pending
+    /// tearout therefore cannot always import a second handle: it transfers
+    /// this same-device cache provisionally, composes it in the hidden
+    /// destination, and either keeps it there after acceptance or restores it
+    /// to the source cache on every rejected preflight path.
+    pub(crate) fn take_tile_for_tearout(&mut self, tile: TileId) -> Option<Self> {
+        let surface = self.textures.remove(&tile)?;
+        let mut textures = HashMap::new();
+        textures.insert(tile, surface);
+        Some(Self {
+            textures,
+            frames: 0,
+            imports: 0,
+            waits: 0,
+            compositions: 0,
+        })
+    }
+
+    /// Restore a provisionally transferred surface to its source host.
+    pub(crate) fn restore_tile_from_tearout(&mut self, tile: TileId, mut transferred: Self) {
+        let Some(surface) = transferred.textures.remove(&tile) else {
+            debug_assert!(false, "tearout cache did not retain its source tile");
+            return;
+        };
+        debug_assert!(transferred.textures.is_empty());
+        self.textures.insert(tile, surface);
+    }
+
     pub(crate) fn mark_composed(&mut self) {
         self.compositions = self.compositions.saturating_add(1);
     }

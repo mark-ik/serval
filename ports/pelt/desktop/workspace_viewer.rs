@@ -1091,6 +1091,7 @@ struct PendingTearout {
     frisket: FrisketSurface,
     pane_scene: Scene,
     frame: PeltWorkspaceFrame<Scene>,
+    surface_import: Option<SurfaceTearoutImportReceipt>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -1106,6 +1107,9 @@ struct TearoutWindow {
     surface: WindowSurface,
     workspace: PeltWorkspace<Scene>,
     frisket: FrisketSurface,
+    /// A destination-owned proof that every native layer was imported through
+    /// this window's shared RenderCore before source custody changed.
+    surface_import: Option<SurfaceTearoutImportReceipt>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -1116,6 +1120,200 @@ struct TearoutWindow {
     native_focus_observed: bool,
     visibility_requested: bool,
     visible_frame_presented: bool,
+}
+
+/// Typed custody proof for one native surface-producer tearout.
+///
+/// The receipt is created only after the source-owned frame has opened on the
+/// destination's shared wgpu device. It then owns the imported view and its
+/// D3D12 synchronization state for the lifetime of the destination window.
+/// A surface producer cannot reach `PeltWorkspace::accept_tearout` without
+/// this receipt.
+struct SurfaceTearoutImportReceipt {
+    tile: TileId,
+    #[cfg(target_os = "windows")]
+    cache: Dx12SurfaceCache,
+}
+
+impl SurfaceTearoutImportReceipt {
+    /// Import the initial source-owned surface frame before a native tearout
+    /// mutates workspace membership. `Ok(None)` is reserved for document-only
+    /// frames; surface frames must return an actual imported receipt.
+    fn import_preflight(
+        tile: TileId,
+        frame: &mut PeltWorkspaceFrame<Scene>,
+        core: &RenderCore,
+        #[cfg(target_os = "windows")] source_cache: &mut Dx12SurfaceCache,
+    ) -> Result<Option<Self>, String> {
+        if frame.surfaces.is_empty() {
+            return Ok(None);
+        }
+        if frame.surfaces.iter().any(|layer| layer.tile != tile) {
+            return Err("tearout preflight received a surface frame for another tile".to_owned());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // A long-lived producer can advertise a resource epoch with no
+            // handle after the primary cache imported its first frame. Move
+            // that same-device import provisionally so `None` remains valid.
+            let mut cache = source_cache
+                .take_tile_for_tearout(tile)
+                .unwrap_or_else(Dx12SurfaceCache::new);
+            for layer in &mut frame.surfaces {
+                let incoming = std::mem::replace(&mut layer.frame, Ok(None));
+                match incoming {
+                    Ok(Some(surface_frame)) => {
+                        if let Err(error) = cache.accept_frame(tile, surface_frame, core.device()) {
+                            if cache.view(tile).is_some() {
+                                source_cache.restore_tile_from_tearout(tile, cache);
+                            }
+                            return Err(format!(
+                                "native surface tearout for tile {} could not import: {error}",
+                                tile.0
+                            ));
+                        }
+                    },
+                    Ok(None) => {
+                        if cache.view(tile).is_some() {
+                            continue;
+                        }
+                        return Err(format!(
+                            "native surface tearout for tile {} did not produce an importable frame",
+                            tile.0
+                        ));
+                    },
+                    Err(error) => {
+                        if cache.view(tile).is_some() {
+                            source_cache.restore_tile_from_tearout(tile, cache);
+                        }
+                        return Err(format!(
+                            "native surface tearout for tile {} failed before import: {error}",
+                            tile.0
+                        ));
+                    },
+                }
+            }
+            if cache.view(tile).is_none() {
+                return Err(format!(
+                    "native surface tearout for tile {} produced no imported view",
+                    tile.0
+                ));
+            }
+            Ok(Some(Self { tile, cache }))
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            for layer in &mut frame.surfaces {
+                if let Ok(Some(surface_frame)) = std::mem::replace(&mut layer.frame, Ok(None)) {
+                    discard_unimported_surface_frame(surface_frame);
+                }
+            }
+            let _ = core;
+            Err("native surface tearout needs a shared-device importer on this platform".to_owned())
+        }
+    }
+
+    /// Refresh the imported resource after destination custody is established.
+    /// A producer may reuse its imported resource epoch and report `None`.
+    fn refresh(
+        &mut self,
+        frame: &mut PeltWorkspaceFrame<Scene>,
+        core: &RenderCore,
+    ) -> Result<(), String> {
+        if frame.surfaces.iter().any(|layer| layer.tile != self.tile) {
+            return Err("tearout surface receipt no longer matches its tile".to_owned());
+        }
+        #[cfg(target_os = "windows")]
+        for layer in &mut frame.surfaces {
+            let incoming = std::mem::replace(&mut layer.frame, Ok(None));
+            match incoming {
+                Ok(Some(surface_frame)) => self
+                    .cache
+                    .accept_frame(self.tile, surface_frame, core.device())
+                    .map_err(|error| {
+                        format!(
+                            "native tearout surface for tile {} could not refresh its import: {error}",
+                            self.tile.0
+                        )
+                    })?,
+                Ok(None) => {},
+                Err(error) => {
+                    return Err(format!(
+                        "native tearout surface for tile {} failed: {error}",
+                        self.tile.0
+                    ));
+                },
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = core;
+            if !frame.surfaces.is_empty() {
+                return Err("native tearout surface reached a host without an importer".to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    fn compose(
+        &mut self,
+        core: &RenderCore,
+        target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        rect: WorkspaceRect,
+        scale_factor: f32,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            self.cache
+                .stage_wait(self.tile, core.queue())
+                .map_err(|error| {
+                    format!("native tearout surface synchronization failed: {error}")
+                })?;
+            let view = self
+                .cache
+                .view(self.tile)
+                .ok_or_else(|| "native tearout import receipt lost its view".to_owned())?;
+            core.renderer().compose_external_texture(
+                view,
+                target,
+                target_format,
+                width,
+                height,
+                placement(rect, scale_factor),
+            );
+            self.cache
+                .return_to_common(self.tile, core.device(), core.queue())
+                .map_err(|error| format!("native tearout surface release failed: {error}"))?;
+            self.cache.mark_composed();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (
+                core,
+                target,
+                target_format,
+                width,
+                height,
+                rect,
+                scale_factor,
+            );
+            return Err("native tearout surface reached a host without an importer".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Return a preflight-only same-device transfer to its source cache.
+    fn restore_to_source(self, #[cfg(target_os = "windows")] source_cache: &mut Dx12SurfaceCache) {
+        #[cfg(target_os = "windows")]
+        source_cache.restore_tile_from_tearout(self.tile, self.cache);
+        #[cfg(not(target_os = "windows"))]
+        let _ = self;
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2598,14 +2796,30 @@ impl WorkspaceApp {
             return true;
         };
         self.workspace.set_surface_scale_factor(scale_factor);
-        let Some(frame) = self.workspace.frame_tile(tile, *rect) else {
+        let Some(mut frame) = self.workspace.frame_tile(tile, *rect) else {
             self.chrome_status = ChromeStatus::Error(
                 "Tearout source no longer owns a live document controller".to_owned(),
             );
             return true;
         };
+        let surface_import = match SurfaceTearoutImportReceipt::import_preflight(
+            tile,
+            &mut frame,
+            core.as_ref(),
+            #[cfg(target_os = "windows")]
+            &mut self.native_surfaces,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.chrome_status = ChromeStatus::Error(format!(
+                    "Tearout native surface import failed before acceptance: {error}"
+                ));
+                self.restore_source_after_preflight(tile, None);
+                return true;
+            },
+        };
         let id = window.id();
-        let pending = PendingTearout {
+        let mut pending = PendingTearout {
             tile,
             window: Arc::clone(&window),
             core,
@@ -2613,6 +2827,7 @@ impl WorkspaceApp {
             frisket,
             pane_scene: pane.scene,
             frame,
+            surface_import,
             width,
             height,
             scale_factor,
@@ -2626,7 +2841,7 @@ impl WorkspaceApp {
                 let error =
                     "W4 cancellation destination became visible before its preflight".to_owned();
                 self.chrome_status = ChromeStatus::Error(error.clone());
-                self.restore_source_after_preflight(tile);
+                self.restore_source_after_preflight(tile, pending.surface_import);
                 self.receipt_error = Some(error);
                 return true;
             }
@@ -2639,6 +2854,7 @@ impl WorkspaceApp {
             &pending.surface,
             &pending.pane_scene,
             &pending.frame,
+            pending.surface_import.as_mut(),
             pending.width,
             pending.height,
             pending.scale_factor,
@@ -2652,7 +2868,7 @@ impl WorkspaceApp {
                 self.chrome_status = ChromeStatus::Error(format!(
                     "Tearout composition failed before acceptance: {error}"
                 ));
-                self.restore_source_after_preflight(tile);
+                self.restore_source_after_preflight(tile, pending.surface_import);
             },
         }
         true
@@ -2994,21 +3210,22 @@ fn discard_unimported_surface_frame(frame: SurfaceFrame) {
     let _ = frame;
 }
 
-/// Compose a document-only workspace frame through one surface of a shared
-/// render core. Native surface producers deliberately stay with the source
-/// until this host has a tested multi-surface import path.
+/// Compose a preflight workspace frame through one surface of a shared render
+/// core. Native surface layers are admitted only through their typed import
+/// receipt, so this function cannot make source custody visible prematurely.
 fn compose_document_workspace_frame(
     core: &RenderCore,
     surface: &WindowSurface,
     pane_scene: &Scene,
     frame: &PeltWorkspaceFrame<Scene>,
+    surface_import: Option<&mut SurfaceTearoutImportReceipt>,
     width: u32,
     height: u32,
     scale_factor: f32,
 ) -> Result<bool, String> {
-    if !frame.surfaces.is_empty() {
+    if frame.surfaces.is_empty() != surface_import.is_none() {
         return Err(
-            "native surface tearout needs a shared-device import receipt before acceptance"
+            "native surface tearout needs a matching shared-device import receipt before acceptance"
                 .to_owned(),
         );
     }
@@ -3065,6 +3282,21 @@ fn compose_document_workspace_frame(
             height,
             placement(*rect, scale_factor),
         );
+    }
+    if let Some(receipt) = surface_import {
+        let layer = frame
+            .surfaces
+            .first()
+            .expect("surface receipt requires one native surface layer");
+        receipt.compose(
+            core,
+            &target,
+            surface.format(),
+            width,
+            height,
+            layer.rect,
+            scale_factor,
+        )?;
     }
     core.queue().present(swap);
     Ok(true)
@@ -3127,12 +3359,16 @@ impl TearoutWindow {
             .set_content_rects(pane.content_rects.iter().copied());
         self.workspace.set_surface_scale_factor(self.scale_factor);
         let more = self.workspace.pump();
-        let frame = self.workspace.frame();
+        let mut frame = self.workspace.frame();
+        if let Some(receipt) = self.surface_import.as_mut() {
+            receipt.refresh(&mut frame, self.core.as_ref())?;
+        }
         let composed = compose_document_workspace_frame(
             self.core.as_ref(),
             &self.surface,
             &pane.scene,
             &frame,
+            self.surface_import.as_mut(),
             self.width,
             self.height,
             self.scale_factor,
@@ -3294,7 +3530,17 @@ impl WorkspaceApp {
     /// preflight, restore the source geometry before its next visible frame;
     /// custody, tree membership, controller identity, and model focus have
     /// remained source-owned throughout.
-    fn restore_source_after_preflight(&mut self, tile: TileId) {
+    fn restore_source_after_preflight(
+        &mut self,
+        tile: TileId,
+        surface_import: Option<SurfaceTearoutImportReceipt>,
+    ) {
+        if let Some(receipt) = surface_import {
+            receipt.restore_to_source(
+                #[cfg(target_os = "windows")]
+                &mut self.native_surfaces,
+            );
+        }
         self.workspace.set_surface_scale_factor(self.scale_factor);
         if let Some(rect) = self.workspace.content_rect(tile) {
             let _ = self.workspace.frame_tile(tile, rect);
@@ -3319,7 +3565,7 @@ impl WorkspaceApp {
             self.chrome_status = ChromeStatus::Error(
                 "Tearout source changed before destination acceptance".to_owned(),
             );
-            self.restore_source_after_preflight(pending.tile);
+            self.restore_source_after_preflight(pending.tile, pending.surface_import);
             return;
         };
         let mut frisket = pending.frisket;
@@ -3331,6 +3577,7 @@ impl WorkspaceApp {
             surface: pending.surface,
             workspace,
             frisket,
+            surface_import: pending.surface_import,
             width: pending.width,
             height: pending.height,
             scale_factor: pending.scale_factor,
@@ -3367,7 +3614,7 @@ impl WorkspaceApp {
             "Tearout for tile {} was declined after hidden native preflight",
             tile.0
         ));
-        self.restore_source_after_preflight(tile);
+        self.restore_source_after_preflight(tile, pending.surface_import);
     }
 
     fn refresh_pending_tearout(&mut self, pending: &mut PendingTearout) -> Result<(), String> {
@@ -3388,6 +3635,10 @@ impl WorkspaceApp {
             .workspace
             .frame_tile(pending.tile, *rect)
             .ok_or_else(|| "tearout source no longer owns a live document controller".to_owned())?;
+        let mut frame = frame;
+        if let Some(receipt) = pending.surface_import.as_mut() {
+            receipt.refresh(&mut frame, pending.core.as_ref())?;
+        }
         pending.pane_scene = pane.scene;
         pending.frame = frame;
         Ok(())
@@ -3397,10 +3648,11 @@ impl WorkspaceApp {
         &mut self,
         tile: TileId,
         disposition: TearoutDisposition,
+        surface_import: Option<SurfaceTearoutImportReceipt>,
         error: String,
     ) {
         self.chrome_status = ChromeStatus::Error(error.clone());
-        self.restore_source_after_preflight(tile);
+        self.restore_source_after_preflight(tile, surface_import);
         let is_receipt = match disposition {
             TearoutDisposition::Accept => {
                 self.config.tearout_receipt && self.tearout_receipt_tile == Some(tile)
@@ -3428,6 +3680,7 @@ impl WorkspaceApp {
                     self.fail_pending_tearout(
                         pending.tile,
                         pending.disposition,
+                        pending.surface_import,
                         format!(
                             "Tearout for tile {} was closed before composition",
                             pending.tile.0
@@ -3446,7 +3699,12 @@ impl WorkspaceApp {
                             self.pending_tearouts.insert(window_id, pending);
                         },
                         Err(error) => {
-                            self.fail_pending_tearout(pending.tile, pending.disposition, error);
+                            self.fail_pending_tearout(
+                                pending.tile,
+                                pending.disposition,
+                                pending.surface_import,
+                                error,
+                            );
                         },
                     }
                 },
@@ -3464,7 +3722,12 @@ impl WorkspaceApp {
                             self.pending_tearouts.insert(window_id, pending);
                         },
                         Err(error) => {
-                            self.fail_pending_tearout(pending.tile, pending.disposition, error);
+                            self.fail_pending_tearout(
+                                pending.tile,
+                                pending.disposition,
+                                pending.surface_import,
+                                error,
+                            );
                         },
                     }
                 },
@@ -3474,6 +3737,7 @@ impl WorkspaceApp {
                         &pending.surface,
                         &pending.pane_scene,
                         &pending.frame,
+                        pending.surface_import.as_mut(),
                         pending.width,
                         pending.height,
                         pending.scale_factor,
@@ -3486,6 +3750,7 @@ impl WorkspaceApp {
                             self.fail_pending_tearout(
                                 pending.tile,
                                 pending.disposition,
+                                pending.surface_import,
                                 format!("Tearout composition failed before acceptance: {error}"),
                             );
                         },
