@@ -521,6 +521,23 @@ narrow-feature warnings driven from 3/11/15 to zero.
   reset; the border, line-height, alignment and overflow tables; and the
   container-alignment `normal`/`stretch` distinction, driven from parsed
   CSS. The guard's precondition is met; the transaction split follows.
+  **Split landed 2026-09-02.** The transaction went the way the helpers went,
+  verbatim ranges one module per seam: `layout/transaction.rs` (the public
+  entries and the pass, `layout_impl` through `layout_inline_groups`),
+  `layout/retained.rs` (retained-root formatting and its predicates),
+  `layout/build_block.rs` (`BuildState` and its impl) and
+  `layout/build_inline.rs` (`InlineBuildState` and its impl). Phase 4's
+  visibility rule extended one level -- private items, fields and methods
+  take `pub(in crate::layout)`, the scope they already had -- and the five
+  crate and public entries are re-exported from the parent at their own
+  visibility, so no caller changed. layout.rs 5,752 to 2,456; what
+  remains is shared vocabulary, container-query resolution, block-style
+  projection, fragment collection and replaced sizing, each a further seam
+  if wanted. Reftests per test against the border-box captures: css-sizing, css-flexbox, css-grid and CSS2 each identical by name, zero newly failing, zero newly passing; genet-livery 245 tests green. Whether the two builders should be one at all
+  is assessed in the Findings entry of 2026-09-02: ten shared method names,
+  five of them the same code parameterised by the measurer, two genuinely
+  different; the recommendation is to factor the table band into free
+  functions over the tree, not a generic builder.
 - Margins, paddings, insets and flex-basis still flatten `calc()` at a zero
   percentage basis. The width repair in `78f6bd3eafd` is the shape that fix
   takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,
