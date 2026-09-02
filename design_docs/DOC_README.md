@@ -7,6 +7,13 @@ Founded 2026-08-24, when the canonical policy core was distributed across the
 workspace and the component documents for inker, nematic and verso-tile were
 repatriated here from mere.
 
+> **Planned boundary correction, 2026-09-02:** Cambium and Genet's upper
+> application components are planned to move to Mere under
+> `mere/design_docs/mere_docs/implementation_strategy/2026-09-02_platform_boundary_and_repository_topology_plan.md`.
+> Their documents remain indexed here while their code remains in Genet, then
+> move with the code. Genet retains web-platform implementation, observable
+> behavior, raw host contracts, WPT, and a minimal engine host.
+
 > **Read the policy's "Two doc homes" section first.** This repository also has
 > a flat `docs/` directory of ~163 older engine documents that this index does
 > **not** cover and that no index covers. That split is deliberate and
