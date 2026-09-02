@@ -619,6 +619,13 @@ fn tearout_receipt_progressed_includes_focus_identity_transition() {
     ));
 }
 
+#[test]
+fn secondary_receipt_completion_requests_direct_exit_only_for_acceptance() {
+    assert!(exit_after_secondary_tearout_receipt(true, true));
+    assert!(!exit_after_secondary_tearout_receipt(true, false));
+    assert!(!exit_after_secondary_tearout_receipt(false, true));
+}
+
 #[cfg(target_os = "windows")]
 #[test]
 fn native_focus_diagnostics_latch_independent_observations() {
