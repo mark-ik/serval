@@ -23,11 +23,16 @@ pub use render::{
     ExternalTextureDraw, LaidOutDocument, RenderedFrame, TextCursor, caret_byte_at,
     caret_position_at, caret_screen_rect, caret_screen_rect_for_position,
     fragments_from_scripted_dom, hit_test_node, paint_list_from_scripted_dom,
-    paint_list_from_session, range_rects_from_scripted_dom, scene_from_layout_dom,
-    scene_from_scripted_dom, scene_from_session, scene_from_session_dom,
+    paint_list_from_scripted_dom_with_text_system, paint_list_from_session,
+    range_rects_from_scripted_dom, scene_from_layout_dom, scene_from_scripted_dom,
+    scene_from_scripted_dom_with_text_system, scene_from_session, scene_from_session_dom,
     scene_from_session_dom_with_scrollbars, soft_wrap_caret_byte,
     translated_frame_from_session_dom,
 };
+/// The retained text system a host hands to the `_with_text_system` entries,
+/// re-exported so a consumer that ships its own font need not depend on
+/// genet-livery directly.
+pub use genet_livery::TextSystem;
 pub use render::{
     ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection, translate_frame,
 };

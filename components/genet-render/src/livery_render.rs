@@ -5,9 +5,9 @@ use std::hash::Hash;
 
 use genet_livery::{
     Device, InteractionStates, LayoutError, LiveryDocument, LiveryLayout, LiveryPaintList,
-    StylePlane, StyleSet, TextRange, TextRect, TextSystem,
+    StylePlane, StyleSet, TextRange, TextRect, TextSystem, ViewportSizes,
     emit_paint_list_with_text_system_scrolled_with_images, hit_test_with_scroll, layout,
-    resolve_styles,
+    layout_with_text_system, resolve_styles,
 };
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::LayoutDom;
@@ -284,6 +284,78 @@ pub fn scene_from_scripted_dom(
         scroll_offsets,
     )?)
     .scene)
+}
+
+/// [`scene_from_scripted_dom`] through a caller-owned text system.
+///
+/// The one-shot path builds a fresh `TextSystem` per call, which is fine
+/// wherever fontique can discover system fonts. On `wasm32` there are none:
+/// a host that ships its own font registers it once
+/// (`TextSystem::register_font_bytes`) on a text system it keeps, and lays
+/// out through here — otherwise every text run shapes against an empty
+/// collection and paints nothing. Shaping scratch space then also survives
+/// between frames, as it does for retained sessions.
+pub fn scene_from_scripted_dom_with_text_system(
+    dom: &ScriptedDom,
+    stylesheets: &[&str],
+    width: u32,
+    height: u32,
+    cursor: Option<TextCursor>,
+    scroll_offsets: &ScrollOffsets<NodeId>,
+    text: &mut TextSystem,
+) -> Result<netrender::Scene, LayoutError> {
+    Ok(translate_frame(&paint_list_from_scripted_dom_with_text_system(
+        dom,
+        stylesheets,
+        width,
+        height,
+        cursor,
+        scroll_offsets,
+        text,
+    )?)
+    .scene)
+}
+
+/// [`paint_list_from_scripted_dom`] through a caller-owned text system; see
+/// [`scene_from_scripted_dom_with_text_system`] for when that matters.
+pub fn paint_list_from_scripted_dom_with_text_system(
+    dom: &ScriptedDom,
+    stylesheets: &[&str],
+    width: u32,
+    height: u32,
+    cursor: Option<TextCursor>,
+    scroll_offsets: &ScrollOffsets<NodeId>,
+    text: &mut TextSystem,
+) -> Result<LiveryPaintList, LayoutError> {
+    let styles = resolve_styles(
+        dom,
+        &StyleSet::cambium(stylesheets),
+        &Device::screen(width as f32, height as f32),
+        &InteractionStates::default(),
+    );
+    let (styles, fragments) = layout_with_text_system(
+        dom,
+        &styles,
+        width as f32,
+        height as f32,
+        ViewportSizes::uniform(width as f32, height as f32),
+        text,
+        &HashMap::new(),
+    )?;
+    let mut list = emit_paint_list_with_text_system_scrolled_with_images(
+        dom,
+        &styles,
+        &fragments,
+        DeviceIntSize::new(width as i32, height as i32),
+        0,
+        text,
+        scroll_offsets,
+        &HashMap::new(),
+    );
+    if let Some(cursor) = cursor {
+        append_cursor(&mut list, dom, &fragments, cursor, scroll_offsets);
+    }
+    Ok(list)
 }
 
 /// Render any neutral Genet DOM through the owned Livery and Buckram pair.
