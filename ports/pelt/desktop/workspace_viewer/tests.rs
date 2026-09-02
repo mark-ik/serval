@@ -531,11 +531,14 @@ fn desktop_keeps_source_when_tearout_has_no_native_destination() {
         )
     );
     app.tearout_receipt_started = Some(Instant::now() - Duration::from_millis(2));
-    assert!(app.tearout_receipt_timeout_error().is_some_and(|error| {
-        error.contains("W4 cancellation receipt timed out")
-            && error.contains("focus_observed=false")
-            && error.contains("visible_frame_presented=false")
-    }));
+    let timeout = app
+        .tearout_receipt_timeout_error()
+        .expect("receipt timed out");
+    assert!(timeout.contains("W4 cancellation receipt timed out"));
+    assert!(app.fail_expired_tearout_receipt());
+    assert_eq!(app.receipt_error.take().as_deref(), Some(timeout.as_str()));
+    assert!(timeout.contains("focus_observed=false"));
+    assert!(timeout.contains("visible_frame_presented=false"));
     app.redraws = app
         .config
         .frames
