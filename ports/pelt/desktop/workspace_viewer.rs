@@ -2699,11 +2699,24 @@ impl WorkspaceApp {
             self.request_redraw();
             return Ok(false);
         }
-        let accepted = self
-            .tearouts
-            .values()
-            .find(|tearout| tearout.tile == tile)
-            .ok_or_else(|| "W4 tearout receipt had no accepted destination window".to_owned())?;
+        match self.tearout_receipt_progress(tile)? {
+            Some(true) => Ok(true),
+            Some(false) => {
+                if let Some(accepted) = self.tearouts.values().find(|tearout| tearout.tile == tile)
+                {
+                    accepted.window.request_redraw();
+                }
+                self.request_redraw();
+                Ok(false)
+            },
+            None => Err("W4 tearout receipt had no accepted destination window".to_owned()),
+        }
+    }
+
+    fn tearout_receipt_progress(&self, tile: TileId) -> Result<Option<bool>, String> {
+        let Some(accepted) = self.tearouts.values().find(|tearout| tearout.tile == tile) else {
+            return Ok(None);
+        };
         if accepted.workspace.focused_tile() != Some(tile)
             || accepted.workspace.tree().find(tile).is_none()
             || self.workspace.tree().find(tile).is_some()
@@ -2714,12 +2727,9 @@ impl WorkspaceApp {
                     .to_owned(),
             );
         }
-        if !accepted.native_focus_observed || !accepted.visible_frame_presented {
-            accepted.window.request_redraw();
-            self.request_redraw();
-            return Ok(false);
-        }
-        Ok(true)
+        Ok(Some(
+            accepted.native_focus_observed && accepted.visible_frame_presented,
+        ))
     }
 
     /// Deterministic headed W4 cancellation hook. It creates and presents the
@@ -2842,6 +2852,19 @@ impl WorkspaceApp {
             native_focus_observed,
             visible_frame_presented,
         ))
+    }
+
+    /// Secondary redraws can continue while the primary window is not being
+    /// scheduled. Keep the bounded W4 receipt authoritative on that path too.
+    fn fail_expired_tearout_receipt(&mut self) -> bool {
+        if self.receipt_error.is_some() {
+            return true;
+        }
+        if let Some(error) = self.tearout_receipt_timeout_error() {
+            self.receipt_error = Some(error);
+            return true;
+        }
+        false
     }
 
     /// Create and preflight a hidden destination surface without moving the
@@ -4438,7 +4461,18 @@ impl WorkspaceApp {
                 let receipt_progressed = self.tearout_receipt_tile == Some(tearout.tile)
                     && (tearout.native_focus_observed != native_focus_observed
                         || tearout.visible_frame_presented != visible_frame_presented);
+                let tearout_tile = tearout.tile;
                 self.tearouts.insert(window_id, tearout);
+                if self.config.tearout_receipt
+                    && !self.receipt_complete
+                    && self.tearout_receipt_tile == Some(tearout_tile)
+                {
+                    match self.tearout_receipt_progress(tearout_tile) {
+                        Ok(Some(true)) => self.receipt_complete = true,
+                        Ok(Some(false) | None) => {},
+                        Err(error) => self.receipt_error = Some(error),
+                    }
+                }
                 if receipt_progressed {
                     // The receipt driver runs from the primary render. A
                     // secondary focus or visible presentation therefore must
@@ -4593,6 +4627,7 @@ impl ApplicationHandler for WorkspaceApp {
     ) {
         if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
             if self.secondary_window_event(window_id, event) {
+                self.fail_expired_tearout_receipt();
                 if self.receipt_error.is_some() {
                     event_loop.exit();
                 }
