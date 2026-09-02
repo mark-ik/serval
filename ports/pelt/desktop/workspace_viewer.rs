@@ -3532,6 +3532,10 @@ fn restore_source_after_rehost_failure(error: &inker::SurfaceError) -> bool {
     !matches!(error, inker::SurfaceError::HostMigrationIndeterminate(_))
 }
 
+fn fail_receipt_for_indeterminate_rehost(config: &WorkspaceViewerConfig) -> bool {
+    config.tearout_receipt
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TearoutDisposition {
     Accept,
@@ -4217,7 +4221,9 @@ impl WorkspaceApp {
         if let Some(error) = indeterminate_rehost {
             let message = format!("Native surface host migration is indeterminate: {error}");
             tearout.enter_render_error(message.clone());
-            self.receipt_error = Some(message);
+            if fail_receipt_for_indeterminate_rehost(&self.config) {
+                self.receipt_error = Some(message);
+            }
         }
         if let Err(error) = tearout.install_accessibility_before_show() {
             eprintln!("[pelt-tearout] accessibility install failed: {error}");
