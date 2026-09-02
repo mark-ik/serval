@@ -495,16 +495,23 @@ narrow-feature warnings driven from 3/11/15 to zero.
   takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,
   `length_percentage` and `length_percentage_auto` take the tagged path.
 - A block-level replaced element under `box-sizing: border-box` still
-  stretches to its container, and so does a border-box replaced grid item.
-  Two independent guards keep it that way, both earned by measurement rather
-  than chosen: `apply_replaced_intrinsic_style` withholds the explicit
-  intrinsic width from border-box boxes, and `item_is_replaced` is armed only
-  for content-box leaves. Widening either changes which path applies CSS 2.1
-  10.4's ratio-preserving min/max clamp, and `box-sizing-replaced-001..003`
-  fail when it does -- observed twice, on 2026-09-01 and again on 2026-09-02.
-  The natural size plus its edges would be (120, 120) for the unit case; the
-  assertion in `layout/tests.rs` pins the stretch instead, so recovering this
-  is a deliberate change with those three reftests watching.
+  stretched to its container, and so did a border-box replaced grid item.
+  **Closed 2026-09-02.** Two guards had kept it that way, each earned by
+  watching `box-sizing-replaced-001..003` fail when widened: the explicit
+  intrinsic-width rule withheld itself from border-box, and `item_is_replaced`
+  was armed only for content-box leaves. The reason both failed is that
+  Taffy's leaf path is not CSS 2.1 10.4 -- it clamps, then transfers height
+  from width -- and forcing any single axis routed those sixty images around
+  the one path that happened to get them right. The box now resolves 10.4
+  itself: `replaced_min_max` is the spec's table in content space, border-box
+  constraints are converted by subtracting the edges, and both axes go to
+  Taffy definite with the natural ratio cleared. Proven before porting
+  against all sixty images from the tests' own bytes, in Python and in the
+  Rust that entered the tree. With Taffy's block path no longer reading the
+  flag, arming it for border-box leaves reaches only grid, so the grid half
+  closed in the same change. Named boundary: percentage min/max on a
+  replaced element stay with Taffy's clamp, since `definite_size` leaves
+  them indefinite; the three tests use px only. Reftests: all four corpora identical to baseline by name; the three guarding tests stay green.
 - **Landed 2026-09-01.** The inline replaced sizing bug is fixed, and it was
   not about `<img>` versus `<canvas>` at all. `img` carries
   `display: inline-block` from the UA sheet (`lib.rs` CAMBIUM_UA_DEFAULTS)

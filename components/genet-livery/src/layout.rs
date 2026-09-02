@@ -3175,6 +3175,8 @@ where
                         self.boxes[box_id].display.outside,
                         Some(buckram::DisplayOutside::Block)
                     ) && !stretched_by_ancestor_context(self.boxes, box_id),
+                    // Percentage padding against an indefinite basis is zero.
+                    containing_size.0.unwrap_or(0.0),
                 );
                 // Taffy exempts a compressible replaced element from block
                 // stretch-sizing (CSS 2.1 10.3.4) and from grid `normal`
@@ -3191,9 +3193,11 @@ where
                 // -002 and -003 fail when it does. The cost is named: a
                 // border-box replaced element still stretches, in a block
                 // container and as a grid item alike.
-                taffy_style.item_is_replaced = replaced_size.is_some()
-                    && children.is_empty()
-                    && matches!(computed.box_sizing, CssBoxSizing::ContentBox);
+                // Since taffy's block path stopped reading this flag, arming it
+                // reaches only the grid `normal` exemption, so border-box leaves
+                // are safe to include: a border-box replaced grid item no longer
+                // stretches either.
+                taffy_style.item_is_replaced = replaced_size.is_some() && children.is_empty();
                 let block_style =
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
@@ -4631,6 +4635,8 @@ where
                         self.boxes[box_id].display.outside,
                         Some(buckram::DisplayOutside::Block)
                     ) && !stretched_by_ancestor_context(self.boxes, box_id),
+                    // Percentage padding against an indefinite basis is zero.
+                    containing_size.0.unwrap_or(0.0),
                 );
                 // Taffy exempts a compressible replaced element from block
                 // stretch-sizing (CSS 2.1 10.3.4) and from grid `normal`
@@ -4647,9 +4653,11 @@ where
                 // -002 and -003 fail when it does. The cost is named: a
                 // border-box replaced element still stretches, in a block
                 // container and as a grid item alike.
-                taffy_style.item_is_replaced = replaced_size.is_some()
-                    && children.is_empty()
-                    && matches!(computed.box_sizing, CssBoxSizing::ContentBox);
+                // Since taffy's block path stopped reading this flag, arming it
+                // reaches only the grid `normal` exemption, so border-box leaves
+                // are safe to include: a border-box replaced grid item no longer
+                // stretches either.
+                taffy_style.item_is_replaced = replaced_size.is_some() && children.is_empty();
                 let block_style =
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
@@ -6102,6 +6110,58 @@ where
     false
 }
 
+// CSS 2.1 10.4: the used size of a replaced element with an intrinsic size
+// and ratio whose width and height are both `auto`, once min/max constraints
+// apply. Inputs and outputs are CONTENT-BOX lengths; the caller converts a
+// border-box constraint by subtracting the box's edges first and adds them
+// back to the result.
+//
+// The table is the spec's, row for row. Verified against all sixty images of
+// css-sizing/box-sizing-replaced-001..003 (border-box with padding,
+// border-box with padding and border, content-box), every one resolving to
+// the 75x75 content its reference expects, before this was ported.
+pub(in crate::layout) fn replaced_min_max(
+    natural: (f32, f32),
+    min_width: Option<f32>,
+    max_width: Option<f32>,
+    min_height: Option<f32>,
+    max_height: Option<f32>,
+) -> (f32, f32) {
+    let (w, h) = natural;
+    let min_w = min_width.unwrap_or(0.0);
+    let min_h = min_height.unwrap_or(0.0);
+    // A max below its min is treated as that min.
+    let max_w = max_width.unwrap_or(f32::INFINITY).max(min_w);
+    let max_h = max_height.unwrap_or(f32::INFINITY).max(min_h);
+    if w <= 0.0 || h <= 0.0 {
+        return (w.clamp(min_w, max_w), h.clamp(min_h, max_h));
+    }
+    let ratio = w / h;
+    match (w > max_w, w < min_w, h > max_h, h < min_h) {
+        (true, _, true, _) => {
+            if max_w / w <= max_h / h {
+                (max_w, (max_w / ratio).max(min_h))
+            } else {
+                ((max_h * ratio).max(min_w), max_h)
+            }
+        },
+        (_, true, _, true) => {
+            if min_w / w <= min_h / h {
+                ((min_h * ratio).min(max_w), min_h)
+            } else {
+                (min_w, (min_w / ratio).min(max_h))
+            }
+        },
+        (_, true, true, _) => (min_w, max_h),
+        (true, _, _, true) => (max_w, min_h),
+        (true, _, _, _) => (max_w, (max_w / ratio).max(min_h)),
+        (_, true, _, _) => (min_w, (min_w / ratio).min(max_h)),
+        (_, _, true, _) => ((max_h * ratio).max(min_w), max_h),
+        (_, _, _, true) => ((min_h * ratio).min(max_w), min_h),
+        _ => (w, h),
+    }
+}
+
 fn apply_replaced_intrinsic_style<D>(
     style: &mut Style,
     dom: &D,
@@ -6110,6 +6170,7 @@ fn apply_replaced_intrinsic_style<D>(
     image_sources: &ImageSources,
     font_size: f32,
     block_level_flow: bool,
+    containing_width: f32,
 ) -> Option<(f32, f32)>
 where
     D: LayoutDom,
@@ -6178,6 +6239,64 @@ where
         if height_auto && natural_ratio.is_none() && natural_height > 0.0 {
             style.size.height = Dimension::length(natural_height);
         }
+    }
+
+    // Under `box-sizing: border-box` the box takes the full CSS 2.1 10.4 route
+    // here, with both axes resolved and handed to Taffy as definite border-box
+    // lengths. Taffy's leaf path is not 10.4: it clamps, then transfers height
+    // from width, and forcing only the width bypassed even that -- which is how
+    // box-sizing-replaced-001..003 failed twice. Resolving the whole table in
+    // content space and adding the edges back keeps every min/max interaction
+    // ratio-preserving. The natural ratio is cleared so leaf.rs cannot re-derive
+    // a height over a resolved one. Percentage min/max stay with Taffy, as
+    // `definite_size` leaves them indefinite; the three reftests use px only.
+    if let Some(natural) = intrinsic.filter(|(w, h)| {
+        block_level_flow
+            && !author_ratio
+            && !content_box
+            && width_auto
+            && height_auto
+            && *w > 0.0
+            && *h > 0.0
+    }) {
+        let px = |value: CssLengthPercentage| {
+            absolute_length_percentage(value, font_size, 16.0, containing_width)
+        };
+        let edge_x = px(computed.padding_left.0)
+            + px(computed.padding_right.0)
+            + border_width_px(
+                computed.border_left_style,
+                computed.border_left_width,
+                font_size,
+            )
+            + border_width_px(
+                computed.border_right_style,
+                computed.border_right_width,
+                font_size,
+            );
+        let edge_y = px(computed.padding_top.0)
+            + px(computed.padding_bottom.0)
+            + border_width_px(
+                computed.border_top_style,
+                computed.border_top_width,
+                font_size,
+            )
+            + border_width_px(
+                computed.border_bottom_style,
+                computed.border_bottom_width,
+                font_size,
+            );
+        let content = |size: CssSize, edge: f32| definite_size(size, font_size).map(|v| v - edge);
+        let (used_width, used_height) = replaced_min_max(
+            natural,
+            content(computed.min_width, edge_x),
+            content(computed.max_width, edge_x),
+            content(computed.min_height, edge_y),
+            content(computed.max_height, edge_y),
+        );
+        style.size.width = Dimension::length(used_width + edge_x);
+        style.size.height = Dimension::length(used_height + edge_y);
+        style.aspect_ratio = None;
     }
     intrinsic
 }

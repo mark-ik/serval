@@ -6900,18 +6900,17 @@ fn replaced_auto_width_is_intrinsic_in_flow_and_stretchable_in_flex_and_grid() {
         (100.0, 50.0),
         "an author aspect-ratio owns the transfer, not the natural size"
     );
-    // border-box is deliberately left out of both the explicit-width rule and
-    // taffy's `item_is_replaced` exemption, so it still stretches. Arming either
-    // for it changes which path applies CSS 2.1 10.4's ratio-preserving min/max
-    // clamp, and box-sizing-replaced-001..003 fail when it does. The natural
-    // size plus its edges would be (120, 120); recovering that is its own change,
-    // with those three reftests watching.
+    // Under border-box the box resolves CSS 2.1 10.4 itself and hands Taffy
+    // both axes as definite border-box lengths: the natural 100 plus 10px of
+    // padding each side. Forcing only a width had bypassed the
+    // ratio-preserving min/max clamp and failed box-sizing-replaced-001..003
+    // twice; resolving the whole table in content space keeps them green.
     assert_eq!(
         used_size(
             "#parent { width: 200px; } #item { display: block; padding: 10px; box-sizing: border-box; }"
         ),
-        (200.0, 200.0),
-        "a border-box replaced element is left to the measure path and stretches"
+        (120.0, 120.0),
+        "a border-box replaced element measures its natural size plus its edges"
     );
 }
 
@@ -7050,4 +7049,422 @@ fn replaced_element_as_table_cell_lays_out_like_a_cell_around_it() {
         r1.2.iter().all(|r| r.2 == 15.0 && r.3 == 15.0),
         "every image keeps its natural 15x15"
     );
+}
+
+#[test]
+fn replaced_min_max_follows_css21_10_4_for_every_box_sizing_replaced_case() {
+    // The sixty cases of css-sizing/box-sizing-replaced-001..003, reduced to
+    // content-box inputs. Each test's images share one edge rule:
+    // 001 `.with-padding` (5px padding, border-box) = 10px of edges,
+    // 002 `.with-borderpadding` (5px padding + 5px border, border-box) = 20px,
+    // 003 `.content-box` = none. The reference for all three is a 75x75 image.
+    // (natural w, natural h, [min-w, max-w, min-h, max-h] in border-box px)
+    let cases: &[(&str, f32, f32, f32, [Option<f32>; 4])] = &[
+        // test, natural w, natural h, edges, constraints
+        ("001", 75.0, 75.0, 10.0, [None, None, None, None]),
+        (
+            "001",
+            75.0,
+            75.0,
+            10.0,
+            [Some(70.0), Some(115.0), Some(55.0), Some(130.0)],
+        ),
+        (
+            "001",
+            150.0,
+            150.0,
+            10.0,
+            [None, Some(85.0), Some(70.0), None],
+        ),
+        (
+            "001",
+            300.0,
+            150.0,
+            10.0,
+            [None, Some(85.0), Some(85.0), None],
+        ),
+        (
+            "001",
+            25.0,
+            25.0,
+            10.0,
+            [Some(85.0), None, None, Some(110.0)],
+        ),
+        (
+            "001",
+            25.0,
+            50.0,
+            10.0,
+            [Some(85.0), None, None, Some(85.0)],
+        ),
+        (
+            "001",
+            150.0,
+            150.0,
+            10.0,
+            [Some(70.0), None, None, Some(85.0)],
+        ),
+        (
+            "001",
+            150.0,
+            300.0,
+            10.0,
+            [Some(85.0), None, None, Some(85.0)],
+        ),
+        (
+            "001",
+            25.0,
+            25.0,
+            10.0,
+            [None, Some(110.0), Some(85.0), None],
+        ),
+        (
+            "001",
+            50.0,
+            25.0,
+            10.0,
+            [None, Some(85.0), Some(85.0), None],
+        ),
+        (
+            "001",
+            300.0,
+            375.0,
+            10.0,
+            [Some(85.0), Some(160.0), None, Some(85.0)],
+        ),
+        (
+            "001",
+            250.0,
+            250.0,
+            10.0,
+            [Some(35.0), Some(235.0), None, Some(85.0)],
+        ),
+        (
+            "001",
+            375.0,
+            300.0,
+            10.0,
+            [None, Some(85.0), Some(85.0), Some(160.0)],
+        ),
+        (
+            "001",
+            250.0,
+            250.0,
+            10.0,
+            [None, Some(85.0), Some(35.0), Some(235.0)],
+        ),
+        (
+            "001",
+            25.0,
+            25.0,
+            10.0,
+            [Some(60.0), Some(110.0), Some(85.0), None],
+        ),
+        (
+            "001",
+            50.0,
+            25.0,
+            10.0,
+            [Some(65.0), Some(85.0), Some(85.0), None],
+        ),
+        (
+            "001",
+            25.0,
+            25.0,
+            10.0,
+            [Some(85.0), None, Some(60.0), Some(110.0)],
+        ),
+        (
+            "001",
+            25.0,
+            50.0,
+            10.0,
+            [Some(85.0), None, Some(65.0), Some(85.0)],
+        ),
+        (
+            "001",
+            50.0,
+            100.0,
+            10.0,
+            [Some(85.0), None, None, Some(85.0)],
+        ),
+        (
+            "001",
+            100.0,
+            50.0,
+            10.0,
+            [None, Some(85.0), Some(85.0), None],
+        ),
+        ("002", 75.0, 75.0, 20.0, [None, None, None, None]),
+        (
+            "002",
+            75.0,
+            75.0,
+            20.0,
+            [Some(80.0), Some(125.0), Some(65.0), Some(140.0)],
+        ),
+        (
+            "002",
+            150.0,
+            150.0,
+            20.0,
+            [None, Some(95.0), Some(80.0), None],
+        ),
+        (
+            "002",
+            300.0,
+            150.0,
+            20.0,
+            [None, Some(95.0), Some(95.0), None],
+        ),
+        (
+            "002",
+            25.0,
+            25.0,
+            20.0,
+            [Some(95.0), None, None, Some(120.0)],
+        ),
+        (
+            "002",
+            25.0,
+            50.0,
+            20.0,
+            [Some(95.0), None, None, Some(95.0)],
+        ),
+        (
+            "002",
+            150.0,
+            150.0,
+            20.0,
+            [Some(80.0), None, None, Some(95.0)],
+        ),
+        (
+            "002",
+            150.0,
+            300.0,
+            20.0,
+            [Some(95.0), None, None, Some(95.0)],
+        ),
+        (
+            "002",
+            25.0,
+            25.0,
+            20.0,
+            [None, Some(120.0), Some(95.0), None],
+        ),
+        (
+            "002",
+            50.0,
+            25.0,
+            20.0,
+            [None, Some(95.0), Some(95.0), None],
+        ),
+        (
+            "002",
+            300.0,
+            375.0,
+            20.0,
+            [Some(95.0), Some(170.0), None, Some(95.0)],
+        ),
+        (
+            "002",
+            250.0,
+            250.0,
+            20.0,
+            [Some(45.0), Some(245.0), None, Some(95.0)],
+        ),
+        (
+            "002",
+            375.0,
+            300.0,
+            20.0,
+            [None, Some(95.0), Some(95.0), Some(170.0)],
+        ),
+        (
+            "002",
+            250.0,
+            250.0,
+            20.0,
+            [None, Some(95.0), Some(45.0), Some(245.0)],
+        ),
+        (
+            "002",
+            25.0,
+            25.0,
+            20.0,
+            [Some(70.0), Some(120.0), Some(95.0), None],
+        ),
+        (
+            "002",
+            50.0,
+            25.0,
+            20.0,
+            [Some(75.0), Some(95.0), Some(95.0), None],
+        ),
+        (
+            "002",
+            25.0,
+            25.0,
+            20.0,
+            [Some(95.0), None, Some(70.0), Some(120.0)],
+        ),
+        (
+            "002",
+            25.0,
+            50.0,
+            20.0,
+            [Some(95.0), None, Some(75.0), Some(95.0)],
+        ),
+        (
+            "002",
+            50.0,
+            100.0,
+            20.0,
+            [Some(95.0), None, None, Some(95.0)],
+        ),
+        (
+            "002",
+            100.0,
+            50.0,
+            20.0,
+            [None, Some(95.0), Some(95.0), None],
+        ),
+        ("003", 75.0, 75.0, 0.0, [None, None, None, None]),
+        (
+            "003",
+            75.0,
+            75.0,
+            0.0,
+            [Some(60.0), Some(125.0), Some(45.0), Some(120.0)],
+        ),
+        (
+            "003",
+            150.0,
+            150.0,
+            0.0,
+            [None, Some(75.0), Some(60.0), None],
+        ),
+        (
+            "003",
+            300.0,
+            150.0,
+            0.0,
+            [None, Some(75.0), Some(75.0), None],
+        ),
+        (
+            "003",
+            25.0,
+            25.0,
+            0.0,
+            [Some(75.0), None, None, Some(100.0)],
+        ),
+        ("003", 25.0, 50.0, 0.0, [Some(75.0), None, None, Some(75.0)]),
+        (
+            "003",
+            150.0,
+            150.0,
+            0.0,
+            [Some(60.0), None, None, Some(75.0)],
+        ),
+        (
+            "003",
+            150.0,
+            300.0,
+            0.0,
+            [Some(75.0), None, None, Some(75.0)],
+        ),
+        (
+            "003",
+            25.0,
+            25.0,
+            0.0,
+            [None, Some(100.0), Some(75.0), None],
+        ),
+        ("003", 50.0, 25.0, 0.0, [None, Some(75.0), Some(75.0), None]),
+        (
+            "003",
+            300.0,
+            375.0,
+            0.0,
+            [Some(75.0), Some(150.0), None, Some(75.0)],
+        ),
+        (
+            "003",
+            250.0,
+            250.0,
+            0.0,
+            [Some(25.0), Some(225.0), None, Some(75.0)],
+        ),
+        (
+            "003",
+            375.0,
+            300.0,
+            0.0,
+            [None, Some(75.0), Some(75.0), Some(150.0)],
+        ),
+        (
+            "003",
+            250.0,
+            250.0,
+            0.0,
+            [None, Some(75.0), Some(25.0), Some(225.0)],
+        ),
+        (
+            "003",
+            25.0,
+            25.0,
+            0.0,
+            [Some(50.0), Some(100.0), Some(75.0), None],
+        ),
+        (
+            "003",
+            50.0,
+            25.0,
+            0.0,
+            [Some(55.0), Some(75.0), Some(75.0), None],
+        ),
+        (
+            "003",
+            25.0,
+            25.0,
+            0.0,
+            [Some(75.0), None, Some(50.0), Some(100.0)],
+        ),
+        (
+            "003",
+            25.0,
+            50.0,
+            0.0,
+            [Some(75.0), None, Some(55.0), Some(75.0)],
+        ),
+        (
+            "003",
+            50.0,
+            100.0,
+            0.0,
+            [Some(75.0), None, None, Some(75.0)],
+        ),
+        (
+            "003",
+            100.0,
+            50.0,
+            0.0,
+            [None, Some(75.0), Some(75.0), None],
+        ),
+    ];
+    for (test, w, h, edges, [min_w, max_w, min_h, max_h]) in cases {
+        let content = |v: Option<f32>| v.map(|v| v - edges);
+        let got = replaced_min_max(
+            (*w, *h),
+            content(*min_w),
+            content(*max_w),
+            content(*min_h),
+            content(*max_h),
+        );
+        assert!(
+            (got.0 - 75.0).abs() < 1e-3 && (got.1 - 75.0).abs() < 1e-3,
+            "box-sizing-replaced-{test}: {w}x{h} with {:?} resolved to {got:?}, expected 75x75 content",
+            [min_w, max_w, min_h, max_h]
+        );
+    }
 }
