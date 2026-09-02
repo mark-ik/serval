@@ -496,6 +496,24 @@ narrow-feature warnings driven from 3/11/15 to zero.
 - Separating `genet-livery/layout.rs`'s central transaction stays
   deliberately undone. It needed the extracted helpers independently
   receipted first, which Phase 4 has now made possible.
+  **Query plane moved 2026-09-02.** The one seam the guard does not cover
+  went first: `impl<Id> LiveryLayout`, 679 lines that read a finished
+  layout rather than build one -- fragment and rect lookup, caret, selection
+  and text-range geometry, the table paint queries, identifier
+  reconciliation and positioned-subtree replacement -- is now
+  `layout/query.rs`, moved verbatim under `use super::*` with `new` taking
+  `pub(in crate::layout)`. Proven by construction against HEAD: one
+  differing line in the block, the parent equal to the old file minus the
+  block plus the module line. layout.rs 6,431 to 5,752. Reftests per test against the border-box captures: css-sizing,
+  css-flexbox, css-grid and CSS2 each identical by name, zero newly failing,
+  zero newly passing.
+  What remains is the transaction proper: five phase functions
+  (`layout_with_text_system`, `layout_impl`, `layout_atomic_subtrees`,
+  `layout_inline_groups`, `layout_retained_formatting_root`, about 1,000
+  lines) over two builders, `BuildState` (858) and `InlineBuildState` (989),
+  which share ten method names and, where measured, near-identical bodies.
+  The receipts the guard asks for stand at positioned 7, tables 2,
+  hit_testing 0, taffy_style 0 tests naming the module directly.
 - Margins, paddings, insets and flex-basis still flatten `calc()` at a zero
   percentage basis. The width repair in `78f6bd3eafd` is the shape that fix
   takes. **Landed 2026-09-01 in `9df392f42d8`**: `flex_basis`,
