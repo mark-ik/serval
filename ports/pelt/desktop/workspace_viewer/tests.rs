@@ -584,9 +584,39 @@ fn indeterminate_rehost_enters_destination_terminal_state() {
     assert!(restore_source_after_rehost_failure(
         &SurfaceError::Unsupported("controller rejected destination".to_owned(),)
     ));
-    assert!(!restore_source_after_rehost_failure(
-        &SurfaceError::HostMigrationIndeterminate("parent is unknown".to_owned())
+    let indeterminate = SurfaceError::HostMigrationIndeterminate("parent is unknown".to_owned());
+    assert!(!restore_source_after_rehost_failure(&indeterminate));
+    let chrome = tearout_error_chrome(
+        TileId(7),
+        "https://example.test/live".to_owned(),
+        WorkspaceRect::new(20.0, 40.0, 600.0, 320.0),
+        indeterminate.to_string(),
+    );
+    assert_eq!(chrome.title, "Tearout rendering stopped");
+    assert!(matches!(
+        chrome.diagnostic,
+        Some(ChromeDocument {
+            kind: ChromeDocumentKind::Error,
+            message: Some(_),
+            ..
+        })
     ));
+
+    let normal = WorkspaceViewerConfig::new(
+        vec!["source.html".to_owned(), "sibling.html".to_owned()],
+        WindowingMode::Headed,
+    );
+    assert!(!fail_receipt_for_indeterminate_rehost(&normal));
+    assert!(restore_source_after_rehost_failure(
+        &SurfaceError::Unsupported("controller rejected destination".to_owned(),)
+    ));
+
+    let receipt = WorkspaceViewerConfig::new(
+        vec!["source.html".to_owned(), "sibling.html".to_owned()],
+        WindowingMode::Headed,
+    )
+    .with_tearout_receipt();
+    assert!(fail_receipt_for_indeterminate_rehost(&receipt));
 }
 
 #[cfg(target_os = "windows")]
