@@ -1,5 +1,9 @@
 # Knot Evaluation + Export Plan — live blocks in, any protocol out
 
+> **Paths note, 2026-09-02.** Paths in this document are as of its last
+> reconciliation (2026-07-27). `crates/meerkat/` was deleted 2026-07-18;
+> `crates/script/lua` and `crates/probes/knot-lua` no longer exist (mere keeps
+> `crates/script/rhai`); `src/fetch.rs` has moved. Read them as history.
 **Date**: 2026-06-12
 **Status**: reconciled and complete for the first production capability set
 2026-07-27. K5, K1's pure resolve pass, K2's evaluation seam, the Knot

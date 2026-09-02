@@ -1,5 +1,10 @@
 # Verso — the compatibility-view charter
 
+> **Consolidation note, 2026-09-02.** The crates this document names —
+> `verso`, `verso-api`, `verso-scry`, `verso-genet` — were consolidated into
+> the single `components/verso-tile` crate on 2026-07-09 (its `api`, `flip`
+> and `scry` modules, plus the `genet-donor` feature). The paths below are
+> as of writing; the design they record is unchanged.
 **Date**: 2026-06-10
 **Status**: Charter decision (Mark, 2026-06-10 conversation). Pre-implementation;
 nothing consumes this yet, and nothing should until the sequencing gate below.

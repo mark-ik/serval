@@ -91,7 +91,7 @@ and markdown does not: gemtext has no inline cascade, markdown does, and the map
 already speaks inline.
 
 **Prerequisite — `Block::Table`**: the block enum
-([crates/inker/src/document.rs](../../../components/inker/src/document.rs)) has no
+([components/inker/src/document.rs](../../../components/inker/src/document.rs)) has no
 table variant (Heading/Paragraph/CodeBlock/Quote/List/Image/Preformatted/Rule/
 Feed\*/MetadataRow/Badge/Link/breaks). Both djot and markdown have tables, and both
 ride the same mapper, so `Block::Table` is a shared prerequisite of the

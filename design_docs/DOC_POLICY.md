@@ -137,7 +137,7 @@ here rather than left to be discovered:
 | Directory | What is in it | Governed by this policy? |
 |---|---|---|
 | `design_docs/` | the component areas below, and everything written from 2026-08-24 onward | **yes** |
-| `docs/` | ~163 dated notes, plans, audits and studies on the engine itself — layout, styling, scripting, WPT conformance, the servo-stack lift | **not yet** |
+| `docs/` | ~166 dated notes, plans, audits and studies on the engine itself — layout, styling, scripting, WPT conformance, the servo-stack lift | **not yet** |
 
 The boundary is **date and governance, not subject matter**. `docs/` is the
 older flat corpus; it predates any policy here, has no `DOC_README.md`, and is
@@ -146,9 +146,15 @@ unindexed. `design_docs/` is the policy-governed tree.
 **New documents go in `design_docs/`.** Do not add to `docs/` — that only
 deepens the split.
 
+**One recorded exception.** Four `2026-08-25_buckram_*_reconciliation.md`
+files entered `docs/` in `e4d14718` the day after this rule was written. They
+stay where they are, recorded here rather than moved, until the migration
+below takes the whole corpus; nothing after them has gone to `docs/`.
+
 **Migrating `docs/` is open work and is not scheduled.** It is the obvious
-end state and it is genuinely expensive: 163 files, plus **49 references to
-`genet/docs/` across the workspace from 32 files outside this repository**,
+end state and it is genuinely expensive: 166 files, plus **53 references to
+`genet/docs/` across the workspace from 34 files outside this repository**
+(counts re-taken 2026-09-02; they were 163, 49 and 32 at founding),
 each of which would need repair under core §5. It was deferred rather than
 attempted because doing it badly is worse than the current split. Until it
 happens, core §6's "sole canonical index" claim is true of `design_docs/` and

@@ -32,7 +32,8 @@ but Workbench itself stays reusable workspace furniture.
 
 ### 2026-08-31: the reusable core already exists under the wrong owner
 
-`components/genet-host-api/tile.rs` is a zero-dependency split/tab tree with a
+`components/genet-host-api/tile.rs` — since moved to
+`components/workbench/lib.rs`, the shim removed — was a zero-dependency split/tab tree with a
 shared reducer. Its documentation already says that Pelt owns its local tree
 while Mere projects Forme onto it. `DropTarget::Outside` already identifies the
 tearout boundary and deliberately leaves the tree unchanged for the embedding

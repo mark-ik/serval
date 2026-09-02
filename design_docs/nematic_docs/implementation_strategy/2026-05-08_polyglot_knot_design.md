@@ -1,5 +1,8 @@
 # Polyglot Knot Design — Protocol-Faithful Clip Composition
 
+> **Paths note, 2026-09-02.** `crates/middlenet-core/` is the pre-rename home
+> of what is now nematic; the path is kept as written because this document is
+> retained as rationale and format spec, not as a map of the tree.
 **Date**: 2026-05-08
 **Status**: Implemented 2026-05-08 / 2026-05-09. Doc retained as the design rationale + format spec; consult [`../../../components/nematic/src/knot/expand.rs`](../../../components/nematic/src/knot/expand.rs) and [`../../../components/inker/src/document/render.rs`](../../../components/inker/src/document/render.rs) for the live behavior, `../../mere_docs/implementation_strategy/2026-05-09_post_engine_layer_priorities.md` (`mere/design_docs/mere_docs/implementation_strategy/2026-05-09_post_engine_layer_priorities.md`) §2.4 for follow-ups.
 **Scope**: Extend the [`nematic.knot`](https://crates.io/crates/nematic) note format from "frontmatter + markdown body" to a polyglot composition where every other `nematic.*` protocol's blocks can embed inside a knot, fenced-code-block-style, and round-trip back to the source protocol's native syntax.

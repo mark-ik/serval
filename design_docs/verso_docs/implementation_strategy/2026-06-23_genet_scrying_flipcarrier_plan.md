@@ -1,5 +1,10 @@
 # Genet ↔ Scrying FlipCarrier — first-flip plan
 
+> **Consolidation note, 2026-09-02.** The crates this document names —
+> `verso`, `verso-api`, `verso-scry`, `verso-genet` — were consolidated into
+> the single `components/verso-tile` crate on 2026-07-09 (its `api`, `flip`
+> and `scry` modules, plus the `genet-donor` feature). The paths below are
+> as of writing; the design they record is unchanged.
 **Date**: 2026-06-23
 **Status**: Design resolved; `verso-api` + genet donor primitives shipped (2026-06-23).
 Both charter prerequisites are **done** (verified in code 2026-06-23): P4 (the scry

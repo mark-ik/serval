@@ -33,7 +33,7 @@ into a navigator, fetcher, store, annotation service, or product shell.
   fragment handling can scroll to an element ID.
 - `components/genet-extract` is a pure wildcard re-export. The only live source
   call found across Genet, Mere, and Turnstone is Mere
-  `crates/import/src/web_clip.rs`, which calls
+  `mere/crates/import/src/web_clip.rs`, which calls
   `genet_extract::extract_main_text`.
 - Genet's dependency-cone CI currently asserts that `genet-extract` remains a
   workspace package. That guard now preserves the migration shim rather than

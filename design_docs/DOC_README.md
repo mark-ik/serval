@@ -46,12 +46,15 @@ repatriated here from mere.
   to Taffy. The exact 1,358-file flexbox map records 115 gains, three assigned
   downstream false-pass losses, and the numeric-basis parser repair forced by
   the first candidate. The current eight-input Taffy seam is published and
-  consumed as `genet-taffy 0.13.1`.)
+  consumed as `genet-taffy 0.14.0`, published and tagged
+  `genet-taffy-v0.14.0` at the Row 18 closure; 0.13.1 was the eight-input
+  seam before it.)
 
 ## workspace composition
 
 - [workbench_component_plan](2026-08-31_workbench_component_plan.md)
-  (**in progress 2026-08-31**: establishes Workbench as the reusable Genet
+  (**W1–W3 implemented, W4 receipts captured, 2026-09-01**; the temporary
+  `genet-host-api::tile` shim is removed. Establishes Workbench as the reusable Genet
   split/tab/tearout component, moves the existing `TileTree` reducer out of
   `genet-host-api`, makes Pelt and Cambium direct consumers, and defines the
   coordinated Mere/Graphshell Projection Editor adoption without transferring
@@ -64,8 +67,9 @@ repatriated here from mere.
   user-facing engine **picker** as an inker affordance, distinct from verso's
   flip; the three-level pluggability model (in-build / registered-but-off /
   active via `is_available = contains && enabled`), a global default with
-  per-session override, no-handler fallback, local-file ingestion, and the two
-  content tiers as the two registries — glass/black-box, wasm/native.
+  per-session override, and the two content tiers as the two registries —
+  glass/black-box, wasm/native. No-handler fallback and local-file ingestion
+  are in scope but not yet shipped (Phase 4).
   **Remaining**: Phase 4 (no-handler and local files), Phase 2b (per-host and
   per-session), Phase 5 (the verso flip). **Page capture P1 landed 2026-08-30**:
   Inker defines correlated viewport-only capture requests/results, but no
@@ -119,19 +123,23 @@ repatriated here from mere.
   the one-hop invariant, minted at the first genet→scrying flip.)
 - [genet_scrying_flipcarrier_plan](verso_docs/implementation_strategy/2026-06-23_genet_scrying_flipcarrier_plan.md)
   (**design resolved; `verso-api` plus the genet donor primitives shipped
-  2026-06-23**: the first flip. Crate layering is `verso-api` plus per-engine
-  `verso-genet`/`verso-scry`/`verso-weld`/`verso-graft` adapters plus a `verso`
-  orchestrator, host-wired and feature-gated with no engine stacking;
+  2026-06-23**: the first flip. The plan's crate layering — `verso-api` plus
+  per-engine `verso-genet`/`verso-scry`/`verso-weld`/`verso-graft` adapters
+  plus a `verso` orchestrator — was **consolidated into the single
+  `components/verso-tile` crate on 2026-07-09** (modules `api`, `flip`,
+  `scry`, and the `genet-donor` feature); read the plan's crate names as that
+  crate's modules. Host-wired and feature-gated with no engine stacking;
   `FlipDonor`/`FlipBack`/`FlipReceiver` encode no-chain in the types. Gated on
   the inker picker's Phase 4.)
 
 ## codebase structure
 
 - [orchestrator_decomposition_plan](2026-08-28_orchestrator_decomposition_plan.md)
-  (**Phase 1 landed 2026-08-28; Phases 2–7 planned**: the measured inventory of
-  first-party files over 600 lines, and the order the large orchestrators come
-  apart in. Phase 1 split Pelt's `workspace_viewer.rs` 10,066 → 3,217 lines into
-  an accessibility module, four receipt modules and a test module, as pure code
+  (**complete 2026-08-29, all seven phases landed**: the measured inventory of
+  first-party files over 600 lines, and the order the large orchestrators came
+  apart in. Pelt's `workspace_viewer.rs` went 10,066 → 3,217 lines (3,960 by
+  2026-09-01, grown by the accessibility work since), `genet-livery/layout.rs`
+  15,382 → 6,165, `buckram/taffy_adapter.rs` 7,014 → 1,223, all as pure code
   motion. Records two constraints any later phase inherits: module privacy runs
   parent-to-child only, so relocating shared types forces a visibility rewrite;
   and moved inherent methods must have their original scope named explicitly.)
@@ -157,6 +165,6 @@ repatriated here from mere.
 
 ## Status
 
-Founded 2026-08-24. The active index now covers four flat plans plus eight
-documents in three area roots. The engine corpus in `docs/` is not indexed here
+Founded 2026-08-24; audited against the tree 2026-09-02. The active index
+covers five flat plans plus eight documents in three area roots. The engine corpus in `docs/` is not indexed here
 and is not governed by the policy yet.
