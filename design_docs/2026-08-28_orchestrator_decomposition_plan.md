@@ -475,6 +475,12 @@ narrow-feature warnings driven from 3/11/15 to zero.
   that lives in child modules, and weave resolves entities within a file
   rather than following one to another file, so that lane needs a manual
   reconciliation pass.
+  **Resolved 2026-09-01.** All five `recovery/*` branches were deleted after
+  every added line of each was checked against main exhaustively, not by
+  sample: the remaining differences were rewrites (`WorkspaceReceipt::X` to
+  `Self::X`), the `fixtures/` to `examples/` rename, and one interim scroll
+  correction that main had since superseded correctly. SHAs were recorded
+  before deletion; the branches were local-only.
 - Promoting Pelt's accessibility *types* into
   `workspace_viewer/accessibility.rs` wants its own visibility pass; Phase 1
   measured 150 private-field errors for it. **Landed 2026-09-01.** The pass
