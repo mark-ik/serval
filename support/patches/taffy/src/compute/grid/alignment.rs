@@ -152,15 +152,25 @@ pub(super) fn align_and_position_item(
     // and the then height is calculated from the width according the aspect ratio
     // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
     let alignment_styles = InBothAbsAxis {
+        // css-grid-1 6.2: a replaced item with a natural size in the axis takes
+        // `start` under `normal`, so it keeps that natural size instead of
+        // filling its area. The inline axis deliberately does not consult
+        // `aspect_ratio` -- a non-replaced box carrying only an author ratio is
+        // stretched in the inline axis and derives its height from that width,
+        // which is what the note above describes and what grid-aspect-ratio-014
+        // pins. Replacedness is the discriminator, not the ratio.
         horizontal: justify_self.or(container_alignment_styles.horizontal).unwrap_or_else(|| {
-            if inherent_size.width.is_some() {
+            if inherent_size.width.is_some() || style.is_compressible_replaced() {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH
             }
         }),
         vertical: align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-            if inherent_size.height.is_some() || aspect_ratio.is_some() {
+            if inherent_size.height.is_some()
+                || aspect_ratio.is_some()
+                || style.is_compressible_replaced()
+            {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH

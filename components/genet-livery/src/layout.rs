@@ -2509,8 +2509,7 @@ where
         // to the wrapper's width and derives its height from the natural ratio.
         // A `display: inline-block` image therefore painted at viewport width
         // times its ratio while `display: inline` on the same bytes was correct.
-        let root = if state.tree.uses_intrinsic_shrink_to_fit(atomic_root)
-            && !replaced_atomic_root
+        let root = if state.tree.uses_intrinsic_shrink_to_fit(atomic_root) && !replaced_atomic_root
         {
             state.tree.new_with_children_and_block_style(
                 AlgorithmKind::Block,
@@ -3172,9 +3171,29 @@ where
                     &computed,
                     self.image_sources,
                     font_size,
-                    matches!(self.boxes[box_id].display.outside, Some(buckram::DisplayOutside::Block))
-                        && !stretched_by_ancestor_context(self.boxes, box_id),
+                    matches!(
+                        self.boxes[box_id].display.outside,
+                        Some(buckram::DisplayOutside::Block)
+                    ) && !stretched_by_ancestor_context(self.boxes, box_id),
                 );
+                // Taffy exempts a compressible replaced element from block
+                // stretch-sizing (CSS 2.1 10.3.4) and from grid `normal`
+                // stretching (css-grid-1 6.2). Two conditions narrow it.
+                //
+                // It is armed only for a box that actually becomes a measured
+                // leaf: a `<canvas>` with fallback content is a block container,
+                // and arming it there would let Taffy shrink-wrap the fallback
+                // instead of laying it out.
+                //
+                // And only under `content-box`. Arming it for a border-box
+                // replaced element changes which path applies CSS 2.1 10.4's
+                // ratio-preserving min/max clamp, and box-sizing-replaced-001,
+                // -002 and -003 fail when it does. The cost is named: a
+                // border-box replaced element still stretches, in a block
+                // container and as a grid item alike.
+                taffy_style.item_is_replaced = replaced_size.is_some()
+                    && children.is_empty()
+                    && matches!(computed.box_sizing, CssBoxSizing::ContentBox);
                 let block_style =
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());
@@ -4608,9 +4627,29 @@ where
                     &computed,
                     self.image_sources,
                     font_size,
-                    matches!(self.boxes[box_id].display.outside, Some(buckram::DisplayOutside::Block))
-                        && !stretched_by_ancestor_context(self.boxes, box_id),
+                    matches!(
+                        self.boxes[box_id].display.outside,
+                        Some(buckram::DisplayOutside::Block)
+                    ) && !stretched_by_ancestor_context(self.boxes, box_id),
                 );
+                // Taffy exempts a compressible replaced element from block
+                // stretch-sizing (CSS 2.1 10.3.4) and from grid `normal`
+                // stretching (css-grid-1 6.2). Two conditions narrow it.
+                //
+                // It is armed only for a box that actually becomes a measured
+                // leaf: a `<canvas>` with fallback content is a block container,
+                // and arming it there would let Taffy shrink-wrap the fallback
+                // instead of laying it out.
+                //
+                // And only under `content-box`. Arming it for a border-box
+                // replaced element changes which path applies CSS 2.1 10.4's
+                // ratio-preserving min/max clamp, and box-sizing-replaced-001,
+                // -002 and -003 fail when it does. The cost is named: a
+                // border-box replaced element still stretches, in a block
+                // container and as a grid item alike.
+                taffy_style.item_is_replaced = replaced_size.is_some()
+                    && children.is_empty()
+                    && matches!(computed.box_sizing, CssBoxSizing::ContentBox);
                 let block_style =
                     to_block_style(self.boxes, self.styles, box_id, &computed, font_size);
                 let kind = algorithm_kind(&self.boxes[box_id], children.is_empty());

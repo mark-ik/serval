@@ -70,7 +70,7 @@ where
                     output.push(
                         BoxTreeInput::new(
                             BoxOrigin::Element(node),
-                            display_role(computed.display),
+                            display_role(computed.display, is_replaced_element(dom, node)),
                             flow_axes(&computed),
                             positioning_scheme(computed.position),
                             is_replaced_element(dom, node),
@@ -89,15 +89,16 @@ where
                             WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces
                         )
                     });
-                    let collapsible_whitespace = !preserves_whitespace
-                        && dom.text(node).is_none_or(|text| {
-                            text.chars()
-                                .all(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}'))
-                        });
+                    let whitespace_only = dom.text(node).is_none_or(|text| {
+                        text.chars()
+                            .all(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}'))
+                    });
+                    let collapsible_whitespace = !preserves_whitespace && whitespace_only;
                     output.push(BoxTreeInput::text(
                         BoxOrigin::Text(node),
                         inherited.map(flow_axes).unwrap_or_default(),
                         collapsible_whitespace,
+                        whitespace_only,
                     ));
                 },
                 _ => {},
@@ -116,7 +117,11 @@ where
     }
 }
 
-fn display_role(display: ComputedDisplay) -> DisplayRole {
+/// CSS 2.1 17.2.1 and css-display-3: a replaced element cannot become an
+/// internal table box. `display: table-cell` on an `<img>` is treated as
+/// `inline`, and the anonymous cell is generated around the element and its
+/// surrounding whitespace exactly as if it had been inline all along.
+fn display_role(display: ComputedDisplay, replaced: bool) -> DisplayRole {
     let normal = |outside, inside| DisplayRole {
         generation: BoxGeneration::Normal,
         outside,
@@ -151,6 +156,21 @@ fn display_role(display: ComputedDisplay) -> DisplayRole {
         ComputedDisplay::Table => normal(Some(DisplayOutside::Block), Some(DisplayInside::Table)),
         ComputedDisplay::InlineTable => {
             normal(Some(DisplayOutside::Inline), Some(DisplayInside::Table))
+        },
+        _ if replaced
+            && matches!(
+                display,
+                ComputedDisplay::TableRowGroup
+                    | ComputedDisplay::TableHeaderGroup
+                    | ComputedDisplay::TableFooterGroup
+                    | ComputedDisplay::TableRow
+                    | ComputedDisplay::TableCell
+                    | ComputedDisplay::TableColumnGroup
+                    | ComputedDisplay::TableColumn
+                    | ComputedDisplay::TableCaption
+            ) =>
+        {
+            normal(Some(DisplayOutside::Inline), Some(DisplayInside::Flow))
         },
         ComputedDisplay::TableRowGroup => internal(InternalTableRole::RowGroup),
         ComputedDisplay::TableHeaderGroup => internal(InternalTableRole::HeaderGroup),
@@ -394,7 +414,7 @@ mod tests {
     #[test]
     fn table_display_vocabulary_and_html_ua_roles_reach_buckram() {
         assert_eq!(
-            display_role(ComputedDisplay::InlineTable).outside,
+            display_role(ComputedDisplay::InlineTable, false).outside,
             Some(DisplayOutside::Inline)
         );
         for (display, role) in [
@@ -412,7 +432,13 @@ mod tests {
             ),
             (ComputedDisplay::TableColumn, InternalTableRole::Column),
         ] {
-            assert_eq!(display_role(display).internal_table, Some(role));
+            assert_eq!(display_role(display, false).internal_table, Some(role));
+            // A replaced element never becomes an internal table box
+            // (CSS 2.1 17.2.1); it is treated as inline and an anonymous
+            // box is generated around it.
+            let demoted = display_role(display, true);
+            assert_eq!(demoted.internal_table, None);
+            assert_eq!(demoted.outside, Some(DisplayOutside::Inline));
         }
 
         let dom = StaticDocument::parse(

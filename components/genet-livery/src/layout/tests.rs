@@ -6851,10 +6851,23 @@ fn replaced_auto_width_is_intrinsic_in_flow_and_stretchable_in_flex_and_grid() {
     );
     // Grid: justify-self and align-self default to stretch for a non-ratio'd
     // auto size, and a replaced item must not be exempted by its natural width.
+    // css-grid-1 6.2: `normal` behaves as `start`, not `stretch`, for a replaced
+    // item with a natural size in the axis. WPT states it outright in
+    // css-grid/alignment/grid-align-stretching-replaced-items.html: "default
+    // alignment is resolved as 'start' for replaced elements so it prevents
+    // stretching to be applied". An explicit `stretch` still stretches, which
+    // the next assertion pins.
     assert_eq!(
         used_size("#parent { display: grid; width: 200px; height: 200px; }"),
+        (100.0, 100.0),
+        "a replaced grid item is start-aligned under `normal`, not stretched"
+    );
+    assert_eq!(
+        used_size(
+            "#parent { display: grid; width: 200px; height: 200px; align-items: stretch; justify-items: stretch; }"
+        ),
         (200.0, 200.0),
-        "a grid item still stretches its area"
+        "an explicit stretch still stretches a replaced grid item"
     );
 
     // An inline replaced element is 10.3.2 and is already right through the
@@ -6874,26 +6887,31 @@ fn replaced_auto_width_is_intrinsic_in_flow_and_stretchable_in_flex_and_grid() {
         "a definite height transfers to the width through the natural ratio"
     );
     assert_eq!(
-        used_size("#parent { width: 200px; } #item { display: block; width: max-content; height: 50px; }"),
+        used_size(
+            "#parent { width: 200px; } #item { display: block; width: max-content; height: 50px; }"
+        ),
         (50.0, 50.0),
         "an intrinsic keyword is not `auto` and keeps its ratio-transferred size"
     );
     assert_eq!(
-        used_size("#parent { width: 200px; } #item { display: block; aspect-ratio: 2; height: 50px; }"),
+        used_size(
+            "#parent { width: 200px; } #item { display: block; aspect-ratio: 2; height: 50px; }"
+        ),
         (100.0, 50.0),
         "an author aspect-ratio owns the transfer, not the natural size"
     );
-    // Deliberately excluded: border-box stays on Taffy's leaf measure so the
-    // ratio-preserving min/max clamp of CSS 2.1 10.4 keeps working
-    // (box-sizing-replaced-001..003). The cost is that this case still
-    // stretches. Widening the rule to cover it is a change to make on
-    // purpose, with those reftests watching.
+    // border-box is deliberately left out of both the explicit-width rule and
+    // taffy's `item_is_replaced` exemption, so it still stretches. Arming either
+    // for it changes which path applies CSS 2.1 10.4's ratio-preserving min/max
+    // clamp, and box-sizing-replaced-001..003 fail when it does. The natural
+    // size plus its edges would be (120, 120); recovering that is its own change,
+    // with those three reftests watching.
     assert_eq!(
         used_size(
             "#parent { width: 200px; } #item { display: block; padding: 10px; box-sizing: border-box; }"
         ),
         (200.0, 200.0),
-        "border-box replaced elements are left to the measure path"
+        "a border-box replaced element is left to the measure path and stretches"
     );
 }
 
@@ -6936,7 +6954,9 @@ fn inline_replaced_auto_width_is_intrinsic_whatever_its_display() {
     // from the UA sheet, so every bare image took that path.
     for display in ["inline", "inline-block", "block"] {
         assert_eq!(
-            used_size(&format!("#parent {{ width: 200px; }} #item {{ display: {display}; }}")),
+            used_size(&format!(
+                "#parent {{ width: 200px; }} #item {{ display: {display}; }}"
+            )),
             (100.0, 100.0),
             "a replaced element with an auto width keeps its natural box as `display: {display}`"
         );
@@ -6944,7 +6964,9 @@ fn inline_replaced_auto_width_is_intrinsic_whatever_its_display() {
     // The other two conjuncts of the shrink-to-fit predicate, pinned so a
     // change to either is a deliberate one rather than a silent regression.
     assert_eq!(
-        used_size("#parent { width: 200px; } #item { display: inline-block; vertical-align: bottom; }"),
+        used_size(
+            "#parent { width: 200px; } #item { display: inline-block; vertical-align: bottom; }"
+        ),
         (100.0, 100.0),
         "a non-baseline atomic root keeps its natural box"
     );

@@ -239,8 +239,17 @@ where
     else {
         return false;
     };
-    let stretch =
-        |alignment: CssAlignment| matches!(alignment, CssAlignment::Auto | CssAlignment::Stretch);
+    // `normal` is the initial value of the items properties and behaves as
+    // `stretch` in flex, so a flex item under a default container still gets a
+    // definite cross size. Grid is where `normal` and `stretch` diverge, and
+    // only for a replaced item with a natural size; that divergence is resolved
+    // inside the grid algorithm rather than here.
+    let stretch = |alignment: CssAlignment| {
+        matches!(
+            alignment,
+            CssAlignment::Auto | CssAlignment::Normal | CssAlignment::Stretch
+        )
+    };
     match container.display {
         CssDisplay::Grid => stretch(computed.align_self),
         CssDisplay::Flex => {
@@ -251,7 +260,7 @@ where
             cross_axis_is_block
                 && match computed.align_self {
                     CssAlignment::Auto => stretch(container.align_items),
-                    alignment => alignment == CssAlignment::Stretch,
+                    alignment => stretch(alignment),
                 }
         },
         _ => false,

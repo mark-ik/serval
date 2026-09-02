@@ -806,7 +806,14 @@ fn generate_item_list(
 
             let is_block = child_style.is_block();
             let is_table = child_style.is_table();
-            let is_replaced = child_style.is_compressible_replaced();
+            // genet applies CSS 2.1 10.3.4 itself, in
+            // `apply_replaced_intrinsic_style`, where it can see box-sizing and
+            // the containing formatting context. Consulting the flag here too
+            // double-applies it and changes which path runs 10.4's
+            // ratio-preserving min/max clamp, which regresses
+            // css-sizing/box-sizing-replaced-001..003. The flag stays armed for
+            // the grid `normal` exemption, which has no other signal available.
+            let is_replaced = false;
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
 
             let is_in_same_bfc: bool =

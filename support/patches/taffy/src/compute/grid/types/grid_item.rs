@@ -98,8 +98,8 @@ impl GridItem {
         col_span: Line<OriginZeroLine>,
         row_span: Line<OriginZeroLine>,
         style: S,
-        parent_align_items: AlignItems,
-        parent_justify_items: AlignItems,
+        parent_align_items: Option<AlignItems>,
+        parent_justify_items: Option<AlignItems>,
         source_order: u16,
     ) -> Self {
         GridItem {
@@ -117,8 +117,27 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_align_items),
-            justify_self: style.justify_self().unwrap_or(parent_justify_items),
+            // css-grid-1 6.2: `normal` behaves as `start` for a replaced item
+            // that has a natural size in the axis, and as `stretch` otherwise.
+            // An explicit `stretch` on either the item or the container is
+            // honoured, which is why the container value stays an Option this
+            // far down rather than collapsing to STRETCH at placement time.
+            align_self: style
+                .align_self()
+                .or(parent_align_items)
+                .unwrap_or(if style.is_compressible_replaced() {
+                    AlignItems::START
+                } else {
+                    AlignItems::STRETCH
+                }),
+            justify_self: style
+                .justify_self()
+                .or(parent_justify_items)
+                .unwrap_or(if style.is_compressible_replaced() {
+                    AlignItems::START
+                } else {
+                    AlignItems::STRETCH
+                }),
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later

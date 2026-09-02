@@ -124,18 +124,24 @@ pub(in crate::layout) fn to_taffy_style(computed: &ComputedValues, font_size: f3
             ),
         },
         gap: physical_flex_gap(computed, font_size, flex_flow),
-        align_items: Some(align_items(physical_flex_cross_alignment(
-            computed,
-            computed.align_items,
-            computed.flex_direction,
-            flex_direction,
-            flex_flow,
-        ))),
+        // `normal` is not `stretch`. It reaches taffy as an unset value so a
+        // grid can resolve it per item: a replaced item with a natural size
+        // takes `start`, everything else still stretches. An explicit
+        // `stretch` keeps stretching either way.
+        align_items: container_alignment(computed.align_items).map(|value| {
+            align_items(physical_flex_cross_alignment(
+                computed,
+                value,
+                computed.flex_direction,
+                flex_direction,
+                flex_flow,
+            ))
+        }),
         // `auto` on the self properties defers to the parent's items value,
         // which is taffy's `None`. A content-keyword size in that axis
         // additionally suppresses stretch (see `suppresses_stretch`).
         align_self: self_alignment(computed.align_self, computed.height),
-        justify_items: Some(align_items(computed.justify_items)),
+        justify_items: container_alignment(computed.justify_items).map(align_items),
         justify_self: self_alignment(computed.justify_self, computed.width),
         align_content: Some(align_content(physical_flex_cross_alignment(
             computed,
@@ -746,6 +752,12 @@ pub(in crate::layout) fn align_items(value: CssAlignment) -> AlignItems {
         },
         safety: taffy::style::AlignmentSafety::Unsafe,
     }
+}
+
+/// `normal` behaves as an unset container alignment, which taffy models as
+/// `None`. Every other keyword, `stretch` included, is passed through.
+fn container_alignment(value: CssAlignment) -> Option<CssAlignment> {
+    (value != CssAlignment::Normal).then_some(value)
 }
 
 pub(in crate::layout) fn align_content(value: CssAlignment) -> AlignContent {

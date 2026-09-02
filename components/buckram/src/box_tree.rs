@@ -323,6 +323,10 @@ pub struct BoxTreeInput<Id> {
     pub float: FloatSide,
     pub replaced: bool,
     pub collapsible_whitespace: bool,
+    /// Text that is entirely white space, whether or not it collapses.
+    /// CSS 2.1 17.2.1 drops such a box between two table parts on its
+    /// content alone, so `white-space: pre` does not preserve it there.
+    pub whitespace_only: bool,
     pub children: Vec<Self>,
 }
 
@@ -350,6 +354,7 @@ impl<Id> BoxTreeInput<Id> {
             float: FloatSide::None,
             replaced,
             collapsible_whitespace: false,
+            whitespace_only: false,
             children,
         }
     }
@@ -367,7 +372,12 @@ impl<Id> BoxTreeInput<Id> {
         self
     }
 
-    pub fn text(origin: BoxOrigin<Id>, flow: FlowAxes, collapsible_whitespace: bool) -> Self {
+    pub fn text(
+        origin: BoxOrigin<Id>,
+        flow: FlowAxes,
+        collapsible_whitespace: bool,
+        whitespace_only: bool,
+    ) -> Self {
         Self {
             origin,
             display: DisplayRole::INLINE_FLOW,
@@ -377,6 +387,7 @@ impl<Id> BoxTreeInput<Id> {
             float: FloatSide::None,
             replaced: false,
             collapsible_whitespace,
+            whitespace_only,
             children: Vec::new(),
         }
     }
@@ -393,6 +404,7 @@ struct ProtoBox<Id> {
     float_context: FloatContextProvenance,
     replaced: bool,
     collapsible_whitespace: bool,
+    whitespace_only: bool,
     principal: bool,
     formatting_context: Option<FormattingContextKind>,
     children: Vec<Self>,
@@ -420,6 +432,7 @@ impl<Id: Copy> ProtoBox<Id> {
             float_context,
             replaced: input.replaced,
             collapsible_whitespace: input.collapsible_whitespace,
+            whitespace_only: input.whitespace_only,
             principal: !matches!(
                 input.origin,
                 BoxOrigin::Text(_) | BoxOrigin::Pseudo { .. } | BoxOrigin::Anonymous { .. }
@@ -444,6 +457,14 @@ impl<Id: Copy> ProtoBox<Id> {
             && self.float == FloatSide::None
             && (self.display.outside == Some(DisplayOutside::Inline)
                 || matches!(self.origin, BoxOrigin::Text(_)))
+    }
+
+    /// White space by content, regardless of whether it would collapse. CSS
+    /// 2.1 17.2.1 removes such a box when it sits between two proper table
+    /// parts, and that rule reads the content, not the `white-space` value.
+    fn is_only_whitespace(&self) -> bool {
+        self.whitespace_only
+            || (!self.children.is_empty() && self.children.iter().all(Self::is_only_whitespace))
     }
 
     fn is_only_collapsible_whitespace(&self) -> bool {
@@ -717,7 +738,7 @@ where
 {
     let whitespace = children
         .iter()
-        .map(ProtoBox::is_only_collapsible_whitespace)
+        .map(ProtoBox::is_only_whitespace)
         .collect::<Vec<_>>();
     let part_or_edge = |index: Option<usize>| match index {
         Some(index) => is_in_flow_table_part(&children[index]),
@@ -1011,6 +1032,7 @@ where
         float_context: FloatContextProvenance::Block,
         replaced: false,
         collapsible_whitespace: false,
+        whitespace_only: false,
         principal: false,
         formatting_context: None,
         children: Vec::new(),
@@ -1036,6 +1058,7 @@ where
         float_context: FloatContextProvenance::Block,
         replaced: false,
         collapsible_whitespace: false,
+        whitespace_only: false,
         principal: false,
         formatting_context: Some(FormattingContextKind::Inline),
         children,
@@ -1074,6 +1097,7 @@ where
         float_context: FloatContextProvenance::Block,
         replaced: false,
         collapsible_whitespace: false,
+        whitespace_only: false,
         principal: false,
         formatting_context: Some(FormattingContextKind::Table),
         children,
@@ -1132,6 +1156,7 @@ where
         float_context,
         replaced: false,
         collapsible_whitespace: false,
+        whitespace_only: false,
         principal: false,
         formatting_context: Some(FormattingContextKind::Block),
         children: captions,
@@ -1481,7 +1506,12 @@ mod tests {
     }
 
     fn text(node: u8, whitespace: bool) -> BoxTreeInput<u8> {
-        BoxTreeInput::text(BoxOrigin::Text(node), FlowAxes::HORIZONTAL_LTR, whitespace)
+        BoxTreeInput::text(
+            BoxOrigin::Text(node),
+            FlowAxes::HORIZONTAL_LTR,
+            whitespace,
+            whitespace,
+        )
     }
 
     fn box_for(
