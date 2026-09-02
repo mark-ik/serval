@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use inker::{
-    Cookie, FocusReason, KeyboardEvent, MouseEvent, PointerEvent, SurfaceEngine, SurfaceError,
-    SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, WebSurface,
+    Cookie, FocusReason, KeyboardEvent, MouseEvent, NativeSurfaceHost, PointerEvent, SurfaceEngine,
+    SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings, SurfaceSpawnRequest, WebSurface,
     WebSurfaceCapabilities, WebSurfaceEvent,
 };
 use scrying_engine::scrying::{PlatformWebSurfaceConfig, PlatformWebSurfaceProducer};
@@ -174,6 +174,10 @@ impl SurfaceProducer for PeltScryingProducer {
         self.ensure()?.move_focus(reason)
     }
 
+    unsafe fn rehost(&mut self, host: NativeSurfaceHost) -> Result<(), SurfaceError> {
+        unsafe { self.ensure()?.rehost(host) }
+    }
+
     fn poll_cursor_shape(&mut self) -> Option<inker::CursorShape> {
         self.ensure().ok()?.poll_cursor_shape()
     }
@@ -237,5 +241,32 @@ impl WebSurface for PeltScryingProducer {
 
     fn poll_web_event(&mut self) -> Option<WebSurfaceEvent> {
         self.ensure().ok()?.poll_web_event()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lazy_receipt_producer_forwards_rehost_to_inner() {
+        let mut producer = PeltScryingProducer {
+            host: ScryingReceiptHost::new(),
+            url: "receipt.html".to_owned(),
+            profile: "receipt-profile".to_owned(),
+            size: (960, 640),
+            offset: (0, 0),
+            inner: None,
+        };
+        let result = unsafe {
+            producer.rehost(NativeSurfaceHost::Win32 {
+                hwnd: std::num::NonZeroIsize::new(1).unwrap(),
+            })
+        };
+        assert!(matches!(
+            result,
+            Err(SurfaceError::FrameAcquisitionFailed(reason))
+                if reason.contains("not ready")
+        ));
     }
 }
