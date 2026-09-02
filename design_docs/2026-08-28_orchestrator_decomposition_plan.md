@@ -529,12 +529,12 @@ narrow-feature warnings driven from 3/11/15 to zero.
     area under default alignment. `normal` is now the initial value of the
     items properties, reaches taffy unset, and resolves per item to `start`
     for a compressible replaced element. Brought three css-grid tests with it.
-  - `CSS2/tables/table-anonymous-objects-211`: an `<img>` given
-    `display: table-cell` against one inside a cell `<div>`. **Partly
-    addressed, still failing.** `0730e020c67` demoted replaced elements out of
-    internal table roles per CSS 2.1 17.2.1, and made whitespace-only removal
-    between table parts read the content rather than whether the whitespace
-    collapses. Neither recovers the test: the reference row builds seven cells
-    against the demoted test row's five, so what remains is column alignment
-    in anonymous table object generation, not replacedness. CSS2/tables is
-    unchanged in aggregate at 151 failures.
+  - `CSS2/tables/table-anonymous-objects-211`: **fixed.** The first two
+    thirds landed in `0730e020c67` (demotion out of internal table roles,
+    whitespace-only removal on content); the last was in layout, where
+    `is_atomic_inline_box` re-read the computed display and never admitted
+    the demoted image, leaving it laid out as an inline container and
+    stretched. One predicate now serves box generation and layout both.
+    Diagnosed against the test's own bytes: a tidier probe reported an
+    image line sitting a row low and a widened first column, both artefacts
+    of a leading newline the test does not have under `white-space: pre`.
