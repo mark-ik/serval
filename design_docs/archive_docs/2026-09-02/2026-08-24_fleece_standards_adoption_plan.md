@@ -1,15 +1,15 @@
 # Plan: fleece standards-shaped extraction
 
 **Date:** 2026-08-24
-**Status:** Complete 2026-08-25. Fleece 0.4 metadata/link and table semantics
+**Status:** Complete 2026-08-25. Archived 2026-09-02; no open points were carried out of it. Fleece 0.4 metadata/link and table semantics
 landed on Genet `main` through `dcb5c4ab4c3`; Phases E-F are complete. The
 Fleece 0.2 selector release and Knot consumer receipt, H0 module split, and
 Fleece 0.3 structured-data release remain green. The completed 0.1
 reader/extraction work remains recorded in the
-[original scope and receipt](../docs/2026-08-22_fleece_reader_extraction_scope.md).
+[original scope and receipt](../../../docs/2026-08-22_fleece_reader_extraction_scope.md).
 Shim retirement, host-side Text Directive activation, and real downstream
 consumer wiring are deliberately separate follow-through work in the
-[2026-08-26 plan](2026-08-26_fleece_followthrough_plan.md).
+[2026-08-26 plan](../../2026-08-26_fleece_followthrough_plan.md).
 
 ## Purpose
 
@@ -427,22 +427,22 @@ or worktree remains.
 
 - Fleece 0.1.0 has one normal dependency, `layout_dom_api`; structured JSON is
   parsed by a local value/parser pair to keep extraction render-free
-  ([manifest](../components/fleece/Cargo.toml),
-  [structured value](../components/fleece/src/lib.rs#L70)).
+  ([manifest](../../../components/fleece/Cargo.toml),
+  [structured value](../../../components/fleece/src/lib.rs#L70)).
 - `PageExtract.text` is the full Fleece-visible, whitespace-collapsed page
   string, while `Article.blocks` currently carries no source coordinates
-  ([public extract](../components/fleece/src/lib.rs#L193)).
+  ([public extract](../../../components/fleece/src/lib.rs#L193)).
 - `StructuredData.kind` retains one shortened type name. JSON-LD collection
   selects the first type and Microdata selects the first `itemtype`; `itemid`
   and `itemref` are absent
-  ([structured harvest](../components/fleece/src/lib.rs#L1131)).
+  ([structured harvest](../../../components/fleece/src/lib.rs#L1131)).
 - `TableCell` records only a `header` boolean and inline runs; table extraction
   therefore does not yet carry HTML header association or spanning semantics
-  ([table types](../components/fleece/src/lib.rs#L132),
-  [table walk](../components/fleece/src/lib.rs#L1090)).
+  ([table types](../../../components/fleece/src/lib.rs#L132),
+  [table walk](../../../components/fleece/src/lib.rs#L1090)).
 - Ordered Open Graph pairs are already a sound raw carrier because order is
   retained. Grouping can be added without discarding source evidence
-  ([metadata](../components/fleece/src/lib.rs#L58)).
+  ([metadata](../../../components/fleece/src/lib.rs#L58)).
 - W3C Web Annotation requires Unicode code-point positions in logical order and
   recommends avoiding grapheme-cluster splits. Its multiple-selector rule, not
   `refinedBy`, supplies the fast position path and robust quote alternative.

@@ -22,13 +22,6 @@ repatriated here from mere.
 
 ## fleece — reader extraction
 
-- [fleece_standards_adoption_plan](2026-08-24_fleece_standards_adoption_plan.md)
-  (**complete 2026-08-25**: Fleece 0.2 shipped canonical DOM-text coordinates,
-  W3C Text Quote and Text Position selectors, and a Text Fragment projection;
-  0.3 hardened JSON-LD syntax harvesting and HTML Microdata; 0.4 added ordered
-  Open Graph grouping, DOM document links, and semantic HTML table grids and
-  header associations. The releases preserve Fleece's render-free, raw-URL,
-  source-identity, and caller-owned annotation boundaries.)
 - [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
   (**complete 2026-08-26**: the
   `genet-extract` shim is retired; retained static/scripted hosts activate
@@ -144,6 +137,19 @@ repatriated here from mere.
   parent-to-child only, so relocating shared types forces a visibility rewrite;
   and moved inherent methods must have their original scope named explicitly.)
 
+## archive_docs/ — completed plans
+
+Per policy §4 and §8: a plan moves here once complete and once its open
+points have a home elsewhere. Links into a moved plan are repaired in the
+same session; links out of it are rewritten for its new depth.
+
+- [2026-09-02/fleece_standards_adoption_plan](archive_docs/2026-09-02/2026-08-24_fleece_standards_adoption_plan.md)
+  (**complete 2026-08-25, archived 2026-09-02**: Fleece 0.2 shipped canonical
+  DOM-text coordinates, W3C Text Quote and Text Position selectors, and a Text
+  Fragment projection; 0.3 hardened JSON-LD syntax harvesting and HTML
+  Microdata; 0.4 added ordered Open Graph grouping, DOM document links, and
+  semantic HTML table grids and header associations. No open points carried.)
+
 ## Working principles
 
 - **New docs go in `design_docs/`, never `docs/`.** See the policy's two-homes
@@ -166,5 +172,6 @@ repatriated here from mere.
 ## Status
 
 Founded 2026-08-24; audited against the tree 2026-09-02. The active index
-covers five flat plans plus eight documents in three area roots. The engine corpus in `docs/` is not indexed here
+covers four flat plans plus eight documents in three area roots, with one
+completed plan in `archive_docs/`. The engine corpus in `docs/` is not indexed here
 and is not governed by the policy yet.
