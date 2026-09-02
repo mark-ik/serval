@@ -157,8 +157,13 @@ pub enum SurfaceError {
     NavigationFailed(String),
     InputFailed(String),
     FrameAcquisitionFailed(String),
-    Busy { operation: String },
+    Busy {
+        operation: String,
+    },
     Unsupported(String),
+    /// A native host move failed after the producer could not establish which
+    /// HWND is authoritative. Source custody must not be resumed in this state.
+    HostMigrationIndeterminate(String),
 }
 
 impl fmt::Display for SurfaceError {
@@ -171,11 +176,26 @@ impl fmt::Display for SurfaceError {
             Self::FrameAcquisitionFailed(reason) => write!(f, "frame acquisition: {reason}"),
             Self::Busy { operation } => write!(f, "busy: {operation}"),
             Self::Unsupported(reason) => write!(f, "unsupported: {reason}"),
+            Self::HostMigrationIndeterminate(reason) => {
+                write!(f, "host migration indeterminate: {reason}")
+            },
         }
     }
 }
 
 impl std::error::Error for SurfaceError {}
+
+/// A live native host to which a long-lived surface producer may be moved.
+///
+/// This is an ephemeral platform handle, not a durable window identifier. The
+/// caller must keep the native host alive and ensure the rehost operation runs
+/// on the producer's owning thread.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativeSurfaceHost {
+    /// Windows top-level or child window handle.
+    Win32 { hwnd: std::num::NonZeroIsize },
+}
 
 // ── Spawn request ──────────────────────────────────────────────────────────
 
@@ -875,6 +895,20 @@ pub trait SurfaceProducer {
     fn send_keyboard_input(&mut self, ev: KeyboardEvent) -> Result<(), SurfaceError>;
     fn move_focus(&mut self, reason: FocusReason) -> Result<(), SurfaceError>;
 
+    /// Move the producer's native embedding to another host window.
+    ///
+    /// This is unsafe because the host handle is borrowed by convention and
+    /// the producer may retain it after this call. Implementations must either
+    /// complete the move atomically or leave the producer attached to its
+    /// previous host. `HostMigrationIndeterminate` is the terminal exception:
+    /// the native owner could not establish either host, so the caller must
+    /// retain the destination and must not resume ordinary source presentation.
+    unsafe fn rehost(&mut self, _host: NativeSurfaceHost) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Unsupported(
+            "surface producer rehosting is not wired for this surface".into(),
+        ))
+    }
+
     // ── Events ───────────────────────────────────────────────────────────────
     fn poll_cursor_shape(&mut self) -> Option<CursorShape>;
 
@@ -1231,6 +1265,19 @@ mod tests {
         let reg = SurfaceEngineRegistry::new();
         let result = reg.spawn(&decision("absent.engine"), &stub_request());
         assert!(matches!(result, Err(SurfaceError::EngineNotFound(_))));
+    }
+
+    #[test]
+    fn surface_producers_default_to_unsupported_rehosting() {
+        let mut producer = StubProducer;
+        let result = unsafe {
+            producer.rehost(NativeSurfaceHost::Win32 {
+                hwnd: std::num::NonZeroIsize::new(1).unwrap(),
+            })
+        };
+        assert!(
+            matches!(result, Err(SurfaceError::Unsupported(reason)) if reason.contains("rehosting"))
+        );
     }
 
     #[test]

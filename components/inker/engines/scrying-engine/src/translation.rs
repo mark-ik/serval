@@ -43,6 +43,9 @@ use scrying::{
 pub fn map_error(err: WebSurfaceError) -> SurfaceError {
     match err {
         WebSurfaceError::Unsupported(s) => SurfaceError::Unsupported(s.to_string()),
+        WebSurfaceError::HostMigrationIndeterminate(s) => {
+            SurfaceError::HostMigrationIndeterminate(s.to_string())
+        },
         WebSurfaceError::NotReady(s) => SurfaceError::FrameAcquisitionFailed(s.to_string()),
         WebSurfaceError::Interop(e) => SurfaceError::FrameAcquisitionFailed(format!("{e}")),
         WebSurfaceError::Platform(s) => SurfaceError::SpawnFailed(s),
@@ -668,6 +671,18 @@ mod tests {
         assert_eq!(second.pointer_id, 3);
         assert_eq!(first.device, ScryingPointerDevice::Touch);
         assert_eq!(first.pressure, 0.5);
+    }
+
+    #[test]
+    fn indeterminate_host_migration_keeps_its_dedicated_error() {
+        let error = map_error(WebSurfaceError::HostMigrationIndeterminate(
+            "controller parent could not be queried".into(),
+        ));
+        assert!(matches!(
+            error,
+            SurfaceError::HostMigrationIndeterminate(reason)
+                if reason.contains("could not be queried")
+        ));
     }
 
     #[test]

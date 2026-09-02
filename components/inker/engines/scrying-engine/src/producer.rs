@@ -12,9 +12,9 @@
 use std::time::Duration;
 
 use inker::{
-    Cookie, CursorShape, FocusReason, KeyboardEvent, MouseEvent, PointerEvent, SurfaceError,
-    SurfaceFrame, SurfaceProducer, SurfaceSettings, WebSurface, WebSurfaceCapabilities,
-    WebSurfaceEvent,
+    Cookie, CursorShape, FocusReason, KeyboardEvent, MouseEvent, NativeSurfaceHost, PointerEvent,
+    SurfaceError, SurfaceFrame, SurfaceProducer, SurfaceSettings, WebSurface,
+    WebSurfaceCapabilities, WebSurfaceEvent,
 };
 use scrying::WebSurfaceProducer;
 
@@ -102,6 +102,19 @@ impl SurfaceProducer for ScryingProducer {
         self.inner
             .move_focus(map_focus_reason(reason))
             .map_err(map_error)
+    }
+
+    unsafe fn rehost(&mut self, host: NativeSurfaceHost) -> Result<(), SurfaceError> {
+        match host {
+            NativeSurfaceHost::Win32 { hwnd } => unsafe {
+                self.inner
+                    .reparent_to_hwnd(hwnd.get() as *mut std::ffi::c_void)
+                    .map_err(map_error)
+            },
+            _ => Err(SurfaceError::Unsupported(
+                "surface producer does not support this native host".into(),
+            )),
+        }
     }
 
     fn poll_cursor_shape(&mut self) -> Option<CursorShape> {

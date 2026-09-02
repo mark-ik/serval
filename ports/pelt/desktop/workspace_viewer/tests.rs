@@ -1,5 +1,6 @@
 use super::*;
 use crate::FileAppearanceStore;
+use inker::SurfaceError;
 #[cfg(feature = "reader")]
 use std::sync::Mutex;
 use std::time::Duration;
@@ -579,10 +580,13 @@ fn secondary_visible_startup_retries_until_presented() {
 }
 
 #[test]
-fn shown_preflight_counts_as_the_first_visible_destination_frame() {
-    assert!(visible_preflight_presented(true, Some(true)));
-    assert!(!visible_preflight_presented(true, Some(false)));
-    assert!(!visible_preflight_presented(false, Some(true)));
+fn indeterminate_rehost_enters_destination_terminal_state() {
+    assert!(restore_source_after_rehost_failure(
+        &SurfaceError::Unsupported("controller rejected destination".to_owned(),)
+    ));
+    assert!(!restore_source_after_rehost_failure(
+        &SurfaceError::HostMigrationIndeterminate("parent is unknown".to_owned())
+    ));
 }
 
 #[cfg(target_os = "windows")]

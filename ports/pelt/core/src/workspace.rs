@@ -7,10 +7,10 @@ use inker::routing::{
 };
 use inker::{
     A11yCapability, ContentReport, DocumentClipArtifactRole, EngineProfileBinding, FocusReason,
-    KeyboardEvent, KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, PhysicalPosition,
-    SessionButtonState, SessionInput, SessionKey, SessionNavigationCommand, SessionPointerButton,
-    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry, SurfaceFrame,
-    SurfaceProducer, SurfaceSpawnRequest,
+    KeyboardEvent, KeyboardModifiers, MouseButton, MouseEvent, MouseEventKind, NativeSurfaceHost,
+    PhysicalPosition, SessionButtonState, SessionInput, SessionKey, SessionNavigationCommand,
+    SessionPointerButton, SessionRegistry, SessionScrollKey, SessionSpawnRequest,
+    SurfaceEngineRegistry, SurfaceFrame, SurfaceProducer, SurfaceSpawnRequest,
 };
 use workbench::{
     ContentSource, Tile, TileEvent, TileId, TileTree, Workbench, WorkbenchEffect, WorkbenchOutcome,
@@ -500,6 +500,25 @@ impl<F: 'static> PeltWorkspace<F> {
 
     pub fn controller_mut(&mut self, tile: TileId) -> Option<&mut PeltController<F>> {
         self.controllers.get_mut(&tile)
+    }
+
+    /// Move a live composited surface producer to another native host while
+    /// retaining its session and producer identity. Ordinary producer failures
+    /// leave the prior host in place. `HostMigrationIndeterminate` is terminal:
+    /// the host must transfer custody to the destination and keep its visual
+    /// shell alive rather than resuming source presentation.
+    pub unsafe fn rehost_surface(
+        &mut self,
+        tile: TileId,
+        host: NativeSurfaceHost,
+    ) -> Result<(), inker::SurfaceError> {
+        let surface = self.surfaces.get_mut(&tile).ok_or_else(|| {
+            inker::SurfaceError::Unsupported(format!(
+                "tile {} has no live surface producer",
+                tile.0
+            ))
+        })?;
+        unsafe { surface.producer.rehost(host) }
     }
 
     /// Identity generation of a tile's current successfully opened document
