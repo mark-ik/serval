@@ -119,10 +119,36 @@ fn observe_native_focus(window: &Window) -> NativeFocusObservation {
         return NativeFocusObservation::default();
     };
     let hwnd = handle.hwnd.get() as *mut std::ffi::c_void;
-    let foreground =
+    let foreground_before =
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd };
-    let focused = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
-    let descendant_focus = !focused.is_null()
+    let foreground_window =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    let mut process_id = 0;
+    let foreground_thread = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            foreground_window,
+            &mut process_id,
+        )
+    };
+    let mut gui = windows_sys::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
+        cbSize: std::mem::size_of::<windows_sys::Win32::UI::WindowsAndMessaging::GUITHREADINFO>()
+            as u32,
+        ..Default::default()
+    };
+    let gui_available = foreground_thread != 0
+        && unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetGUIThreadInfo(
+                foreground_thread,
+                &mut gui,
+            ) != 0
+        };
+    let focused = gui.hwndFocus;
+    let foreground_after =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd };
+    let foreground = foreground_before && foreground_after;
+    let descendant_focus = foreground
+        && gui_available
+        && !focused.is_null()
         && (focused == hwnd
             || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsChild(hwnd, focused) != 0 });
     NativeFocusObservation {
@@ -3657,6 +3683,17 @@ fn tearout_focus_retry_due(
         })
 }
 
+fn tearout_receipt_progressed(
+    tracked_tile: Option<TileId>,
+    tile: TileId,
+    focus_before: bool,
+    focus_after: bool,
+    visible_before: bool,
+    visible_after: bool,
+) -> bool {
+    tracked_tile == Some(tile) && (focus_before != focus_after || visible_before != visible_after)
+}
+
 fn restore_source_after_rehost_failure(error: &inker::SurfaceError) -> bool {
     !matches!(error, inker::SurfaceError::HostMigrationIndeterminate(_))
 }
@@ -4609,7 +4646,7 @@ impl WorkspaceApp {
         if self.config.tearout_receipt && self.tearout_receipt_tile == Some(tearout.tile) {
             tearout.sample_native_focus();
         }
-        let native_focus_observed = tearout.native_focus_observed;
+        let focus_identity_observed = tearout.focus_identity_observed();
         let visible_frame_presented = tearout.visible_frame_presented;
         match tearout.window_event(event) {
             TearoutEvent::Close => {
@@ -4629,9 +4666,14 @@ impl WorkspaceApp {
                 if redraw {
                     tearout.window.request_redraw();
                 }
-                let receipt_progressed = self.tearout_receipt_tile == Some(tearout.tile)
-                    && (tearout.native_focus_observed != native_focus_observed
-                        || tearout.visible_frame_presented != visible_frame_presented);
+                let receipt_progressed = tearout_receipt_progressed(
+                    self.tearout_receipt_tile,
+                    tearout.tile,
+                    focus_identity_observed,
+                    tearout.focus_identity_observed(),
+                    visible_frame_presented,
+                    tearout.visible_frame_presented,
+                );
                 let tearout_tile = tearout.tile;
                 self.tearouts.insert(window_id, tearout);
                 if self.config.tearout_receipt
