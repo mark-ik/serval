@@ -3694,6 +3694,10 @@ fn tearout_receipt_progressed(
     tracked_tile == Some(tile) && (focus_before != focus_after || visible_before != visible_after)
 }
 
+fn exit_after_secondary_tearout_receipt(tearout_receipt: bool, receipt_complete: bool) -> bool {
+    tearout_receipt && receipt_complete
+}
+
 fn restore_source_after_rehost_failure(error: &inker::SurfaceError) -> bool {
     !matches!(error, inker::SurfaceError::HostMigrationIndeterminate(_))
 }
@@ -4880,7 +4884,12 @@ impl ApplicationHandler for WorkspaceApp {
         if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
             if self.secondary_window_event(window_id, event) {
                 self.fail_expired_tearout_receipt();
-                if self.receipt_error.is_some() {
+                if self.receipt_error.is_some()
+                    || exit_after_secondary_tearout_receipt(
+                        self.config.tearout_receipt,
+                        self.receipt_complete,
+                    )
+                {
                     event_loop.exit();
                 }
                 return;
