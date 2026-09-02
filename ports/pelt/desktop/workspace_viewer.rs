@@ -1229,8 +1229,8 @@ struct TearoutWindow {
     /// the same native sample. This is the Windows receipt identity signal.
     native_focus_identity_observed: bool,
     /// Last host-owned focus request. Retries are rate-limited and remain
-    /// bounded by the explicit W4 receipt timeout; this never stands in for a
-    /// real `Focused(true)` event.
+    /// bounded by the explicit W4 receipt timeout; this never stands in for an
+    /// observed Winit or native focus identity.
     last_focus_request: Option<Instant>,
     visibility_requested: bool,
     visible_frame_presented: bool,
@@ -3744,8 +3744,8 @@ impl TearoutWindow {
     }
 
     /// Ask the host to activate this accepted destination at a bounded pace.
-    /// The receipt still requires the real Winit `Focused(true)` event; this
-    /// request only gives the platform another opportunity to deliver it.
+    /// The receipt still requires an observed Winit or native focus identity;
+    /// this request only gives the platform another opportunity to deliver it.
     fn request_focus_if_due(&mut self) -> bool {
         let now = Instant::now();
         if tearout_focus_retry_due(self.last_focus_request, now, self.focus_identity_observed()) {

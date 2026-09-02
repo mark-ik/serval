@@ -1,10 +1,11 @@
 # Workbench Component Plan
 
 **Date**: 2026-08-31
-**Status (2026-09-01)**: W1 through W3 are implemented on coordinated Genet
-and Mere feature branches. W4 now has captured native Pelt acceptance and
-cancellation receipts, a headed Graphshell browser save/mutate/reload receipt,
-and a durable Woodshed open-lane consumer with full view and host receipts.
+**Status (2026-09-02)**: W1 through W4 are implemented and landed through
+coordinated Genet, Mere, and product branches. W4 has captured native Pelt
+acceptance and cancellation receipts, a headed Graphshell browser
+save/mutate/reload receipt, and a durable Woodshed open-lane consumer with full
+view and host receipts.
 The temporary `genet-host-api::tile` compatibility module is now removed.
 Pinned products that still need their own current-Genet port retain that work
 outside the shared component contract.
@@ -310,3 +311,37 @@ heterogeneous headed consumers.
   excluding `identity::tests::every_home_says_which_situation_the_user_is_in`.
   That assertion still fails because it requires the word `DPAPI`; its
   `identity.rs` is unchanged from Hocket's preceding `origin/main`.
+- 2026-09-02: W4's surface-producer follow-up is complete on the final Genet
+  integration at code parent `532f09c6f0d`, with Scrying pinned to completed
+  upstream host-migration revision `5a8688476091`. The transfer rehosts the
+  same producer only after destination preflight, preserves or restores the
+  source cache on every ordinary failure, retains destination custody with a
+  terminal diagnostic when the native migration result is indeterminate, and
+  completes receipt state from secondary-window events. Accepted windows keep
+  independent AccessKit projections and action routing.
+
+  Windows focus evidence now distinguishes Winit top-level focus from the
+  actual native focus identity used by a composition surface. W4 accepts a
+  real Winit `Focused(true)` event, or one stable native sample in which the
+  destination is the foreground HWND and the foreground GUI thread's keyboard
+  focus is that HWND or its descendant. It still separately requires the
+  transferred tile's destination tree, model focus, removed source custody,
+  and a composed visible destination frame. Independent observations cannot be
+  combined into a false pass, retries are bounded, and receipt-only completion
+  exits directly from the secondary event path.
+
+  `cargo test -p pelt-desktop --lib --offline -j 1` passed 64/64; the focused
+  formatting and diff gates passed. The exact live Scrying acceptance command
+  passed three consecutive headed runs at exit 0, each recording
+  `window=true redraws=4 size=960x640 tiles=1 tearout_receipt=true
+  routes=2=genet.livery:document`, with 20 primary and 10 destination AccessKit
+  nodes. The matching Scrying cancellation command exited 0 with
+  `redraws=4 tiles=2 tearout_cancellation_receipt=true` and retained route 1 as
+  `scrying.web:surface:CompositedTexture`. The ordinary Livery acceptance also
+  exited 0 with 20 primary and 18 destination nodes. Physical inspection has
+  already shown two independent HWND accessibility trees and keyboard focus;
+  a captured Narrator spoken-announcement receipt remains manual and open.
+- 2026-09-02: This closes the Workbench plan's W4 requirement on Genet `main`
+  and therefore satisfies the explicit pre-P2 prerequisite in the platform
+  boundary and repository topology plan. These follow-ups do not touch that
+  plan's four P1 mixed seams.
