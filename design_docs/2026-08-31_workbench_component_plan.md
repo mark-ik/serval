@@ -188,8 +188,7 @@ heterogeneous headed consumers.
   membership, controller custody, and model focus, then restore its primary
   geometry/DPI. Native surface-producer import is a Pelt-owned follow-up: it
   now accepts custody only after a typed shared-device import or cache-transfer
-  receipt has composed the hidden destination. Secondary AccessKit remains a
-  separate follow-up.
+  receipt has composed the hidden destination. Secondary-window AccessKit is recorded below.
 
   The headed acceptance command was captured at exit 0:
   `pelt.exe --workspace-tearout-receipt --size 960x640
@@ -273,5 +272,27 @@ heterogeneous headed consumers.
   Windows gate `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=C:\\t\\genet-pelt-surface-producer-target cargo test -p pelt-desktop --lib -j 1 --message-format=short`
   passed 53/53, including the D3D12 importer tests and retained-source tearout
   test; `git diff --check` passed. This is a native unit/compile receipt, not a
-  new headed Scrying surface-tearout receipt. Secondary AccessKit remains out
-  of this lane.
+  new headed Scrying surface-tearout receipt. Secondary-window AccessKit was
+  implemented in the parallel lane recorded next.
+
+- 2026-09-02: Pelt's deferred secondary-window accessibility slice is
+  implemented on branch `codex/pelt-secondary-accesskit-20260902`. Each
+  accepted tearout owns a fresh `WorkspaceAccessibility` bridge, high-range
+  child namespace, virtual focus state, and action map. The hidden preflight
+  installs the adapter before reveal; every secondary redraw reprojects its
+  stable tile/content aperture and document subtree, AccessKit wakes only that
+  window, and closing the tearout drops its adapter with the window entry.
+  Controller actions continue through Pelt's ordinary input and document
+  session seams; Workbench remains unaware of OS accessibility. The focused
+  Pelt suite passed 27/27. The headed workspace-tearout command exited 0 and
+  logged independent `accessibility Installed` events with 20 primary nodes
+  and 18 secondary nodes, followed by `window=true redraws=3 size=960x640
+  tiles=1 tearout_receipt=true routes=2=genet.livery:document`. Physical
+  screen-reader verification remains open.
+- 2026-09-02: the deferred Graphshell post-merge test is closed on current Mere
+  `main` `4d68c465e58`. The first native test link exposed a Windows archive
+  limit: debug-heavy `libcanvas.rlib` was 4,266,610,132 bytes, MSVC rejected it
+  with `LNK4003`, and the resulting link reported 94 unresolved Canvas
+  symbols. Repeating the identical seven Projection Editor tests with
+  `CARGO_INCREMENTAL=0` and `--config profile.test.debug=0` reduced that
+  archive to 347,000,108 bytes; the executable linked and all 7/7 tests passed.

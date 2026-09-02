@@ -67,7 +67,10 @@ mod tests;
 // The accessibility vocabulary lives with its projection. The parent names
 // these three directly; the receipt drivers and tests reach them through
 // this module's glob as before, and the rest is internal to the projection.
-use accessibility::{WorkspaceA11yActionTarget, WorkspaceA11yFocus, WorkspaceAccessibility};
+use accessibility::{
+    DocumentA11yActionTarget, WorkspaceA11yActionTarget, WorkspaceA11yFocus,
+    WorkspaceAccessibility, secondary_accessibility_projection,
+};
 
 const RECEIPT_STEPS: u8 = 8;
 const WORKSPACE_RECEIPT_STAGE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -1120,6 +1123,11 @@ struct TearoutWindow {
     native_focus_observed: bool,
     visibility_requested: bool,
     visible_frame_presented: bool,
+    close_requested: bool,
+    /// Every accepted native window owns its own OS adapter and action map.
+    /// The adapter is dropped with this window, so secondary actions cannot
+    /// leak into the primary tree after close.
+    accessibility: WorkspaceAccessibility,
 }
 
 /// Typed custody proof for one native surface-producer tearout.
@@ -3321,6 +3329,255 @@ impl TearoutWindow {
         )
     }
 
+    fn refresh_accessibility_content_regions(&mut self) {
+        let Some(tile) = self.workspace.tree().tiles().into_iter().next() else {
+            self.frisket.set_content_accessibility(Vec::new());
+            return;
+        };
+        let description = match self
+            .workspace
+            .controller(tile.id)
+            .and_then(PeltController::accessibility_projection)
+        {
+            Some(projection) => {
+                let support = projection.support();
+                let limitations = support.limitations().join(" ");
+                match support.capability() {
+                    A11yCapability::Partial => format!(
+                        "The engine composes partial accessibility into this tearout tree. {limitations}"
+                    ),
+                    A11yCapability::Full => {
+                        "The engine composes its full semantic tree into this tearout tree."
+                            .to_owned()
+                    }
+                    A11yCapability::Opaque => {
+                        "The engine supplied an opaque accessibility projection.".to_owned()
+                    }
+                }
+            }
+            None => match self
+                .workspace
+                .controller(tile.id)
+                .map(PeltController::a11y_capability)
+            {
+                Some(A11yCapability::Opaque) => {
+                    "The engine declares opaque accessibility. Pelt cannot inspect this tearout content's semantics.".to_owned()
+                }
+                Some(A11yCapability::Partial) => {
+                    "The engine declares partial accessibility, but has not published a completed semantic projection.".to_owned()
+                }
+                Some(A11yCapability::Full) => {
+                    "The engine declares a full semantic tree, but has not published a completed projection.".to_owned()
+                }
+                None => {
+                    "Pelt has not received an accessibility declaration for this tearout content.".to_owned()
+                }
+            },
+        };
+        self.frisket.set_content_accessibility([FrisketContentA11y {
+            tile: tile.id,
+            label: format!("{} content", tile.title),
+            description,
+        }]);
+    }
+
+    fn accessibility_layout(&mut self) -> Result<(), String> {
+        self.refresh_accessibility_content_regions();
+        let (width, height) = self.logical_size();
+        let pane = self.frisket.frame(width, height)?;
+        self.workspace
+            .set_content_rects(pane.content_rects.iter().copied());
+        Ok(())
+    }
+
+    fn install_accessibility_before_show(&mut self) -> Result<(), String> {
+        self.accessibility_layout()?;
+        let projection = secondary_accessibility_projection(
+            &mut self.accessibility,
+            &self.frisket,
+            &self.workspace,
+        )?;
+        let _ = self
+            .accessibility
+            .sync(&self.window, projection, self.scale_factor as f64);
+        Ok(())
+    }
+
+    fn sync_accessibility(&mut self) -> bool {
+        self.refresh_accessibility_content_regions();
+        let Ok(projection) = secondary_accessibility_projection(
+            &mut self.accessibility,
+            &self.frisket,
+            &self.workspace,
+        ) else {
+            return false;
+        };
+        self.accessibility
+            .sync(&self.window, projection, self.scale_factor as f64)
+            .into_iter()
+            .fold(false, |redraw, request| {
+                self.apply_accessibility_request(request) || redraw
+            })
+    }
+
+    fn document_action_is_current(
+        &self,
+        target: DocumentA11yActionTarget,
+        action: DocumentA11yAction,
+    ) -> bool {
+        let Some(controller) = self.workspace.controller(target.tile) else {
+            return false;
+        };
+        if self.workspace.document_session_identity(target.tile) != Some(target.session_identity)
+            || self.workspace.content_rect(target.tile) != Some(target.content_rect)
+            || !target.supports(action)
+        {
+            return false;
+        }
+        let Some(projection) = controller.accessibility_projection() else {
+            return false;
+        };
+        projection.revision() == target.revision
+            && projection.node(target.local_node).is_some_and(|node| {
+                node.actions.contains(&action) && !node.state.disabled && !node.state.hidden
+            })
+    }
+
+    fn apply_accessibility_request(&mut self, request: A11yActionRequest) -> bool {
+        let Some(target) = self.accessibility.action_for(request.target_node) else {
+            return false;
+        };
+        match (request.action, target) {
+            (Action::Focus, WorkspaceA11yActionTarget::Frisket(node)) => self
+                .frisket
+                .accessibility_target(node)
+                .is_some_and(|target| {
+                    self.accessibility
+                        .set_focus(WorkspaceA11yFocus::Frisket(target))
+                }),
+            (Action::Click, WorkspaceA11yActionTarget::Frisket(node)) => {
+                match self.frisket.accessibility_target(node) {
+                    Some(FrisketA11yTarget::Close(tile)) => {
+                        let changed = self.workspace.apply(&TileEvent::Closed(tile));
+                        if changed && self.workspace.tree().tiles().is_empty() {
+                            self.close_requested = true;
+                            return true;
+                        }
+                        if changed {
+                            self.refresh_tree();
+                        }
+                        changed
+                    },
+                    Some(FrisketA11yTarget::Tab(tile)) => {
+                        let changed = self.workspace.apply(&TileEvent::Activated(tile));
+                        if changed {
+                            self.refresh_tree();
+                        }
+                        changed
+                    },
+                    _ => false,
+                }
+            },
+            (Action::Focus, WorkspaceA11yActionTarget::Document(target)) => self
+                .document_action_is_current(target, DocumentA11yAction::Focus)
+                .then(|| {
+                    self.accessibility
+                        .set_focus(WorkspaceA11yFocus::Document(request.target_node))
+                })
+                .unwrap_or(false),
+            (Action::Click, WorkspaceA11yActionTarget::Document(target)) => {
+                if !self.document_action_is_current(target, DocumentA11yAction::Click)
+                    || self.workspace.has_active_pointer_capture()
+                {
+                    return false;
+                }
+                let Some(controller) = self.workspace.controller(target.tile) else {
+                    return false;
+                };
+                let Some(point) = controller.accessibility_click_target(target.local_node) else {
+                    return false;
+                };
+                if point.revision != target.revision {
+                    return false;
+                }
+                let x = target.content_rect.x + point.point.x;
+                let y = target.content_rect.y + point.point.y;
+                if !target.content_rect.contains(x, y) {
+                    return false;
+                }
+                self.route_accessibility_pointer_click(target, x, y)
+            },
+            (Action::SetValue, WorkspaceA11yActionTarget::Document(target)) => {
+                let Some(ActionData::Value(value)) = request.data else {
+                    return false;
+                };
+                if !self.document_action_is_current(target, DocumentA11yAction::SetValue) {
+                    return false;
+                }
+                let Some(controller) = self.workspace.controller_mut(target.tile) else {
+                    return false;
+                };
+                controller.dispatch_accessibility_action(&DocumentA11yActionRequest {
+                    revision: target.revision,
+                    target: target.local_node,
+                    action: DocumentA11yAction::SetValue,
+                    data: Some(DocumentA11yActionData::Value(value.into())),
+                })
+            },
+            (action, WorkspaceA11yActionTarget::Document(target)) => {
+                let action = match action {
+                    Action::ScrollIntoView => DocumentA11yAction::ScrollIntoView,
+                    Action::Increment => DocumentA11yAction::Increment,
+                    Action::Decrement => DocumentA11yAction::Decrement,
+                    _ => return false,
+                };
+                if !self.document_action_is_current(target, action) {
+                    return false;
+                }
+                let Some(controller) = self.workspace.controller_mut(target.tile) else {
+                    return false;
+                };
+                controller.dispatch_accessibility_action(&DocumentA11yActionRequest {
+                    revision: target.revision,
+                    target: target.local_node,
+                    action,
+                    data: None,
+                })
+            },
+            _ => false,
+        }
+    }
+
+    fn route_accessibility_pointer_click(
+        &mut self,
+        target: DocumentA11yActionTarget,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        let pressed = self.workspace.input(SessionInput::PointerButton {
+            x,
+            y,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Pressed,
+            modifiers: self.modifiers,
+        });
+        let mut redraw = self.apply_effect(pressed);
+        if self.workspace.document_session_identity(target.tile) != Some(target.session_identity)
+            || self.workspace.content_rect(target.tile) != Some(target.content_rect)
+        {
+            return redraw;
+        }
+        let released = self.workspace.input(SessionInput::PointerButton {
+            x,
+            y,
+            button: SessionPointerButton::Primary,
+            state: SessionButtonState::Released,
+            modifiers: self.modifiers,
+        });
+        redraw |= self.apply_effect(released);
+        redraw
+    }
+
     fn refresh_tree(&mut self) {
         debug_assert_eq!(self.workspace.focused_tile(), Some(self.tile));
         self.frisket.set_tree(self.workspace.tree());
@@ -3354,6 +3611,7 @@ impl TearoutWindow {
 
     fn render(&mut self) -> Result<bool, String> {
         let (logical_width, logical_height) = self.logical_size();
+        self.refresh_accessibility_content_regions();
         let pane = self.frisket.frame(logical_width, logical_height)?;
         self.workspace
             .set_content_rects(pane.content_rects.iter().copied());
@@ -3379,7 +3637,8 @@ impl TearoutWindow {
                 self.visible_frame_presented = true;
             }
         }
-        Ok(composed && more)
+        let accessibility_redraw = self.sync_accessibility();
+        Ok((composed && more) || accessibility_redraw)
     }
 
     fn window_event(&mut self, event: WindowEvent) -> TearoutEvent {
@@ -3508,12 +3767,14 @@ impl TearoutWindow {
             },
             WindowEvent::Focused(focused) => {
                 self.native_focus_observed |= focused;
+                self.accessibility.update_window_focus(focused);
                 let effect = self.workspace.input(SessionInput::Focus(focused));
                 TearoutEvent::Keep {
                     redraw: self.apply_effect(effect),
                 }
             },
             WindowEvent::RedrawRequested => match self.render() {
+                Ok(_redraw) if self.close_requested => TearoutEvent::Close,
                 Ok(redraw) => TearoutEvent::Keep { redraw },
                 Err(error) => {
                     eprintln!("[pelt-tearout] destination render failed: {error}");
@@ -3586,8 +3847,13 @@ impl WorkspaceApp {
             native_focus_observed: false,
             visibility_requested: false,
             visible_frame_presented: false,
+            close_requested: false,
+            accessibility: WorkspaceAccessibility::new(),
         };
         tearout.refresh_tree();
+        if let Err(error) = tearout.install_accessibility_before_show() {
+            eprintln!("[pelt-tearout] accessibility install failed: {error}");
+        }
         self.workspace.set_surface_scale_factor(self.scale_factor);
         self.frisket.set_tree(self.workspace.tree());
         if let Some(window) = &self.window {
@@ -3916,6 +4182,11 @@ impl ApplicationHandler for WorkspaceApp {
         }
         if self.accessibility.take_wake() {
             self.request_redraw();
+        }
+        for tearout in self.tearouts.values() {
+            if tearout.accessibility.take_wake() {
+                tearout.window.request_redraw();
+            }
         }
     }
 
