@@ -261,3 +261,20 @@ heterogeneous headed consumers.
   an additional green receipt. Audits of all four remote consumer `main`
   sources found no remaining `genet-host-api::tile` uses. Hocket's broader
   retired Genet patch/layout port remains separate from this migration.
+- 2026-09-02: Pelt's deferred secondary-window accessibility slice landed on
+  the current Genet `origin/main` line. Each accepted tearout now owns a fresh
+  `WorkspaceAccessibility` bridge, high-range child namespace, virtual focus
+  state, and action map. The hidden preflight installs the adapter before
+  reveal; every secondary redraw reprojects its stable tile/content aperture
+  and document subtree, AccessKit wakes only that window, and closing the
+  tearout drops its adapter with the window entry. Controller actions continue
+  through Pelt's ordinary input and document-session seams; Workbench remains
+  unaware of OS accessibility. The inspectable projection test passed as part
+  of the focused Pelt suite (27/27). The headed command
+  `cargo run --manifest-path ports/pelt/Cargo.toml --bin pelt --offline -j 1 --
+  --workspace-tearout-receipt --size 960x640
+  ports/pelt/examples/workspace/p5-fallback/index.html` exited 0 and logged
+  two independent `accessibility Installed` events (20 primary nodes, 18
+  secondary nodes), followed by `window=true redraws=3 size=960x640 tiles=1
+  tearout_receipt=true routes=2=genet.livery:document`. This is an inspectable
+  native receipt; physical screen-reader verification remains open.

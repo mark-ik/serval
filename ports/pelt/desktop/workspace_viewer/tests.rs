@@ -1384,6 +1384,96 @@ fn document_child_accessibility_allocator_never_aliases_local_ids() {
     assert!(accessibility.child_id_is_reserved(first));
 }
 
+#[test]
+fn secondary_accessibility_projection_keeps_tile_namespace_and_virtual_focus() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("pelt desktop has a parent")
+        .join("examples/workspace/p6-accessibility/index.html")
+        .to_string_lossy()
+        .into_owned();
+    let tree = tree_from_urls(std::slice::from_ref(&fixture));
+    #[cfg(target_os = "windows")]
+    let registries = workspace_registries(None);
+    #[cfg(not(target_os = "windows"))]
+    let registries = workspace_registries();
+    let mut workspace = PeltWorkspace::try_routed(
+        tree,
+        registries,
+        |tile| {
+            let ContentSource::Document(DocumentRef(address)) = &tile.content else {
+                unreachable!("secondary accessibility fixture contains a document tile");
+            };
+            Ok(PeltTileRequest::new(address, (960, 640)))
+        },
+        || Box::new(WorkspaceClock(Instant::now())),
+    )
+    .expect("secondary accessibility fixture opens its document");
+    let mut frisket = FrisketSurface::new(workspace.tree());
+    frisket.set_content_accessibility([FrisketContentA11y {
+        tile: TileId(1),
+        label: "Tile 1 content".to_owned(),
+        description: "Secondary content".to_owned(),
+    }]);
+    let pane = frisket.frame(960, 640).expect("secondary Frisket frame");
+    workspace.set_content_rects(pane.content_rects.iter().copied());
+    let _ = workspace.pump();
+    let _ = workspace.frame();
+    workspace.mark_visible_documents_presented();
+    let mut accessibility = WorkspaceAccessibility::new();
+    let first = secondary_accessibility_projection(&mut accessibility, &frisket, &workspace)
+        .expect("secondary composite accessibility projection");
+    let aperture = first
+        .tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Region && node.label() == Some("Tile 1 content"))
+        .map(|(id, node)| (*id, node.children().to_vec()))
+        .expect("secondary tile content aperture");
+    assert_eq!(
+        aperture.1.len(),
+        1,
+        "document root is attached below the tile"
+    );
+    let child_id = aperture.1[0];
+    assert!(
+        child_id.0 >= 1_u64 << 63,
+        "child IDs stay out of shell range"
+    );
+    let (action_id, target) = first
+        .actions
+        .iter()
+        .find_map(|(id, target)| {
+            let WorkspaceA11yActionTarget::Frisket(target) = target else {
+                return None;
+            };
+            let supports_focus = first
+                .tree
+                .nodes
+                .iter()
+                .find(|(candidate, _)| candidate == id)
+                .is_some_and(|(_, node)| node.supports_action(Action::Focus));
+            supports_focus
+                .then(|| frisket.accessibility_target(*target))
+                .flatten()
+                .map(|target| (*id, target))
+        })
+        .expect("secondary shell has a typed action target");
+
+    assert!(accessibility.set_focus(WorkspaceA11yFocus::Frisket(target)));
+    let second = secondary_accessibility_projection(&mut accessibility, &frisket, &workspace)
+        .expect("secondary projection after virtual focus");
+    assert_eq!(second.tree.nodes.len(), first.tree.nodes.len());
+    let prepared = accessibility.prepare(second, 1.0);
+    assert_eq!(prepared.focus, action_id);
+    let second_aperture = prepared
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == aperture.0)
+        .expect("secondary aperture remains stable");
+    assert_eq!(second_aperture.1.children(), &[child_id]);
+}
+
 #[cfg(feature = "reader")]
 #[test]
 fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {

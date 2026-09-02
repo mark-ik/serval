@@ -349,7 +349,7 @@ impl WorkspaceAccessibility {
         tree
     }
 
-    fn sync(
+    pub(super) fn sync(
         &mut self,
         window: &Window,
         projection: WorkspaceA11yProjection,
@@ -390,7 +390,7 @@ impl WorkspaceAccessibility {
         self.action_map.get(&id).cloned()
     }
 
-    fn set_focus(&mut self, target: WorkspaceA11yFocus) -> bool {
+    pub(super) fn set_focus(&mut self, target: WorkspaceA11yFocus) -> bool {
         if self.focus.as_ref() == Some(&target) {
             return false;
         }
@@ -492,6 +492,234 @@ impl WorkspaceAccessibility {
     pub(super) fn take_wake(&self) -> bool {
         self.wake.swap(false, Ordering::AcqRel)
     }
+}
+
+/// Append one engine-owned document projection beneath its Pelt content
+/// aperture. This is shared by the primary composite workspace and accepted
+/// tearout windows. The engine supplies semantic truth; each Pelt window owns
+/// its own namespace, action snapshot, focus, and platform bridge.
+fn append_document_child(
+    accessibility: &mut WorkspaceAccessibility,
+    tree: &mut TreeUpdate,
+    actions: &mut HashMap<AccessNodeId, WorkspaceA11yActionTarget>,
+    shell_ids: &HashSet<AccessNodeId>,
+    child: DocumentA11yChild,
+) {
+    let DocumentA11yChild {
+        tile,
+        session_identity,
+        aperture,
+        projection,
+        content_rect,
+    } = child;
+    let local_ids = projection
+        .nodes()
+        .iter()
+        .map(|node| {
+            let local = AccessNodeId(node.id.get());
+            let global = accessibility.child_global_id(tile, session_identity, local, shell_ids);
+            (node.id, global)
+        })
+        .collect::<HashMap<_, _>>();
+    let Some(&child_root) = local_ids.get(&projection.root()) else {
+        return;
+    };
+    let Some((_, aperture_node)) = tree.nodes.iter_mut().find(|(id, _)| *id == aperture) else {
+        return;
+    };
+    aperture_node.set_children([child_root]);
+    for semantic in projection.nodes() {
+        let Some(&global_id) = local_ids.get(&semantic.id) else {
+            continue;
+        };
+        let mut node = AccessNode::new(WorkspaceApp::accesskit_role(semantic.role));
+        if let DocumentA11yRole::Heading { level } = semantic.role
+            && level > 0
+        {
+            node.set_level(usize::from(level));
+        }
+        if let Some(name) = &semantic.name {
+            node.set_label(name.clone());
+        }
+        if let Some(value) = &semantic.value {
+            node.set_value(value.clone());
+        }
+        if semantic.state.disabled {
+            node.set_disabled();
+        }
+        if semantic.state.hidden {
+            node.set_hidden();
+        }
+        if semantic.state.read_only {
+            node.set_read_only();
+        }
+        if semantic.state.required {
+            node.set_required();
+        }
+        if let Some(selected) = semantic.state.selected {
+            node.set_selected(selected);
+        }
+        if let Some(expanded) = semantic.state.expanded {
+            node.set_expanded(expanded);
+        }
+        if let Some(toggled) = semantic.state.toggled {
+            node.set_toggled(match toggled {
+                inker::DocumentA11yToggled::On => Toggled::True,
+                inker::DocumentA11yToggled::Off => Toggled::False,
+                inker::DocumentA11yToggled::Mixed => Toggled::Mixed,
+            });
+        } else if let Some(checked) = semantic.state.checked {
+            node.set_toggled(if checked {
+                Toggled::True
+            } else {
+                Toggled::False
+            });
+        }
+        if let Some(live) = semantic.state.live {
+            node.set_live(match live {
+                inker::DocumentA11yLive::Off => Live::Off,
+                inker::DocumentA11yLive::Polite => Live::Polite,
+                inker::DocumentA11yLive::Assertive => Live::Assertive,
+            });
+        }
+        if let Some(orientation) = semantic.state.orientation {
+            node.set_orientation(match orientation {
+                inker::DocumentA11yOrientation::Horizontal => Orientation::Horizontal,
+                inker::DocumentA11yOrientation::Vertical => Orientation::Vertical,
+            });
+        }
+        if let Some(has_popup) = semantic.state.has_popup {
+            node.set_has_popup(match has_popup {
+                inker::DocumentA11yHasPopup::Menu => HasPopup::Menu,
+                inker::DocumentA11yHasPopup::ListBox => HasPopup::Listbox,
+                inker::DocumentA11yHasPopup::Tree => HasPopup::Tree,
+                inker::DocumentA11yHasPopup::Grid => HasPopup::Grid,
+                inker::DocumentA11yHasPopup::Dialog => HasPopup::Dialog,
+            });
+        }
+        if let Some(value) = semantic.numeric_value {
+            node.set_numeric_value(value);
+        }
+        if let Some(value) = semantic.numeric_minimum {
+            node.set_min_numeric_value(value);
+        }
+        if let Some(value) = semantic.numeric_maximum {
+            node.set_max_numeric_value(value);
+        }
+        if let Some(bounds) = semantic.bounds {
+            node.set_bounds(AccessRect::new(
+                f64::from(bounds.x),
+                f64::from(bounds.y),
+                f64::from(bounds.x + bounds.width),
+                f64::from(bounds.y + bounds.height),
+            ));
+        }
+        let descendants = semantic
+            .children
+            .iter()
+            .filter_map(|child| local_ids.get(child).copied())
+            .collect::<Vec<_>>();
+        node.set_children(descendants);
+        if semantic.id == projection.root() {
+            node.set_transform(Affine::translate((
+                f64::from(content_rect.x),
+                f64::from(content_rect.y),
+            )));
+        }
+        WorkspaceApp::accesskit_actions(&semantic.actions, &mut node);
+        if semantic.state.focused {
+            tree.focus = global_id;
+        }
+        let action_bits = DocumentA11yActionTarget::from_actions(&semantic.actions);
+        if action_bits != 0 {
+            actions.insert(
+                global_id,
+                WorkspaceA11yActionTarget::Document(DocumentA11yActionTarget {
+                    tile,
+                    session_identity,
+                    revision: projection.revision(),
+                    local_node: semantic.id,
+                    content_rect,
+                    actions: action_bits,
+                }),
+            );
+        }
+        tree.nodes.push((global_id, node));
+    }
+}
+
+/// Build a composite tree for an already-laid-out tearout. The returned
+/// action map is local to this window and cannot route into the primary lane.
+pub(super) fn secondary_accessibility_projection(
+    accessibility: &mut WorkspaceAccessibility,
+    frisket: &FrisketSurface,
+    workspace: &PeltWorkspace<Scene>,
+) -> Result<WorkspaceA11yProjection, String> {
+    let shell = frisket
+        .accessibility_projection(accessibility.frisket_focus())
+        .ok_or_else(|| "tearout Frisket has no completed retained layout".to_owned())?;
+    let live_sessions = workspace
+        .tree()
+        .tiles()
+        .into_iter()
+        .filter_map(|tile| {
+            let controller = workspace.controller(tile.id)?;
+            Some((
+                tile.id,
+                DocumentA11ySession {
+                    identity: controller.session_identity(),
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+    accessibility.retain_document_namespaces(&live_sessions);
+    let shell_ids = shell
+        .tree
+        .nodes
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<HashSet<_>>();
+    let FrisketA11yProjection {
+        mut tree,
+        root,
+        nodes,
+        content_nodes,
+    } = shell;
+    let mut actions = nodes
+        .into_iter()
+        .filter(|(id, _)| !accessibility.child_id_is_reserved(*id))
+        .map(|(id, node)| (id, WorkspaceA11yActionTarget::Frisket(node)))
+        .collect::<HashMap<_, _>>();
+    for (tile, aperture) in content_nodes {
+        let Some(controller) = workspace.controller(tile) else {
+            continue;
+        };
+        let Some(projection) = controller.accessibility_projection() else {
+            continue;
+        };
+        let Some(content_rect) = workspace.content_rect(tile) else {
+            continue;
+        };
+        append_document_child(
+            accessibility,
+            &mut tree,
+            &mut actions,
+            &shell_ids,
+            DocumentA11yChild {
+                tile,
+                session_identity: controller.session_identity(),
+                aperture,
+                projection,
+                content_rect,
+            },
+        );
+    }
+    accessibility.clear_stale_document_focus(&actions);
+    Ok(WorkspaceA11yProjection {
+        tree,
+        root,
+        actions,
+    })
 }
 
 impl WorkspaceApp {
