@@ -608,6 +608,7 @@ fn native_focus_diagnostics_latch_independent_observations() {
         NativeFocusObservation {
             foreground: true,
             descendant_focus: false,
+            identity: false,
         },
     );
     assert_eq!(
@@ -615,6 +616,7 @@ fn native_focus_diagnostics_latch_independent_observations() {
         NativeFocusObservation {
             foreground: true,
             descendant_focus: false,
+            identity: false,
         }
     );
     assert_eq!(
@@ -623,13 +625,23 @@ fn native_focus_diagnostics_latch_independent_observations() {
             NativeFocusObservation {
                 foreground: false,
                 descendant_focus: true,
+                identity: false,
             },
         ),
         NativeFocusObservation {
             foreground: true,
             descendant_focus: true,
+            identity: false,
         }
     );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn tearout_focus_identity_accepts_winit_or_native_pair_only() {
+    assert!(tearout_focus_identity_observed(true, false));
+    assert!(tearout_focus_identity_observed(false, true));
+    assert!(!tearout_focus_identity_observed(false, false));
 }
 
 #[test]
