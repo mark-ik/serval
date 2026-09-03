@@ -345,3 +345,33 @@ preference as the user's offset on it.
   fails identically on clean HEAD (`got 0`), so that drift predates the
   secondary-press, clip-scope, stacker, wheel and zoom work. The worktree
   was removed afterwards.
+- **2026-09-03, the zoom-1.0 receipt corrected, and the instrument with it.**
+  The Z4 claim rested on two headed frames agreeing byte for byte, once
+  between the two zoom-1.0 runs and once against a clean HEAD worktree. That
+  comparison is not decisive: **the capture is not deterministic.** Three
+  runs of one unchanged binary return the `busy` frame under two digests
+  (`c0d00467bf8493b3`, `27c01a961612a3ba`) differing by a single channel of a
+  single pixel by one, and a netrender pass reproduced the flip six times and
+  pinned it by building a control with the old arithmetic, which returned the
+  other digest. The frames that agreed agreed by luck. A single-run digest
+  comparison cannot settle a claim at one-pixel precision, and no future
+  receipt in this plan should use one.
+  What carries Z4 instead is mechanism, which held all along: at zoom 1.0
+  `ui_zoom()` is exactly `1.0f32`, `layout_scale()` is then bit-for-bit
+  `scale_factor()`, the harness test `zoom_one_is_the_identity` asserts it,
+  and a temporary diagnostic logging every rasterize call whose derived size
+  differed from its target emitted nothing across a full zoom-1.0 scenario.
+  A note carrying this correction is attached to `86019ea`, whose message
+  makes the overstated claim and which was already pushed.
+- **2026-09-03, "integer scales are already exact" was wrong, and netrender
+  had the truncation.** Exactness needs the scale to *divide the target*, not
+  merely to be an integer: an 801-pixel surface at device scale 2, or 64 at
+  3, lost a row with no zoom involved. `render_scaled_with` rebuilt the render
+  size as `round(scene.viewport * scale)` from a viewport the host had already
+  truncated when it divided physical by scale, so 800 over 1.8 laid out at 444
+  and rendered 799 rows of an 800-row texture. It now reads the size off the
+  target view's own texture and leaves `scale` to the root affine. The zoom
+  0.9 `resized` frame goes from **1120 transparent pixels to 0**. One site
+  only; the compositor path is scale-free and cannot honour a layout scale at
+  all, which is a separate gap recorded in netrender's verification record
+  §11.37.
