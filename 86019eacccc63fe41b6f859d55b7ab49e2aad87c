@@ -1,0 +1,24 @@
+Correction, 2026-09-03: this message overstates the zoom-1.0 receipt.
+
+"the host smoke frames are pixel-identical against a clean HEAD worktree, 0
+differing pixels" is a true measurement of two runs, but it is not the proof
+the sentence claims, because the instrument is not deterministic. Three runs
+of one unchanged binary return the `busy` frame under two digests
+(c0d00467bf8493b3 and 27c01a961612a3ba) differing by one channel of one pixel
+by one; a netrender pass the same afternoon reproduced the same flip six times
+and pinned it by building a control with the old arithmetic, which returned
+the other digest. So the two frames that agreed agreed by luck, and a
+comparison of single runs cannot settle a claim at that precision.
+
+What does carry the claim, and did all along: `ui_zoom()` at zoom 1.0 is
+exactly 1.0f32 and `layout_scale()` is then bit-for-bit `scale_factor()`, so
+the numbers reaching layout and vello are the same numbers; the harness test
+`zoom_one_is_the_identity` asserts it; and a temporary diagnostic logging
+every rasterize call where the derived size differed from the target emitted
+nothing across a full zoom-1.0 scenario. The mechanism is the receipt. The
+plan's Z4 Findings carry the same correction.
+
+Also corrected there: "integer scales are already exact" is wrong. Exactness
+needs the scale to divide the target, not merely to be an integer, so an
+801-pixel surface at device scale 2 lost a row too. That was one truncation in
+netrender's render_scaled_with, repaired separately.
