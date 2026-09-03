@@ -61,22 +61,10 @@ repatriated here from mere.
 
 ## cambium — the desktop host
 
-- [host_ui_zoom_plan](2026-09-03_host_ui_zoom_plan.md) (**plan, 2026-09-03**:
-  one effective layout scale, device scale times zoom, inside
-  cambium-rootstock; `HostOptions::ui_zoom` and `fit_design`, a runtime
-  setter, the browser zoom ladder on Ctrl chords with app veto, persistence
-  left to the settings contract's existing `ui_zoom` axis. Isometry's board
-  keeps integer device multiples behind a default-on toggle. Gates Z0-Z5.)
-
-## workspace composition
-
-- [workbench_component_plan](2026-08-31_workbench_component_plan.md)
-  (**W1–W3 implemented, W4 receipts captured, 2026-09-01**; the temporary
-  `genet-host-api::tile` shim is removed. Establishes Workbench as the reusable Genet
-  split/tab/tearout component, moves the existing `TileTree` reducer out of
-  `genet-host-api`, makes Pelt and Cambium direct consumers, and defines the
-  coordinated Mere/Graphshell Projection Editor adoption without transferring
-  graph, browser-session, or window authority into the component.)
+- Cambium, Workbench and `mere-surface-api` left genet for mere on 2026-09-03
+  under the platform boundary plan; the `host_ui_zoom_plan` and the
+  `workbench_component_plan` travelled with them and are now in mere's
+  `design_docs/`.
 
 ## inker_docs/ — the engine controller
 

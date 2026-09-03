@@ -45,8 +45,6 @@ members = [
     # static/scripted/smolweb retained documents, promoted out of pelt.
     "components/genet-documents",
     "components/genet-host-api",
-    "components/mere-surface-api",
-    "components/workbench",
     "components/genet-render-host",
     "components/genet-winit-host",
     "components/genet-render",
@@ -61,23 +59,6 @@ members = [
     "components/script-engine-nova",
     "components/script-engine-piccolo",
     "components/script-runtime-api",
-    # The reactive UI toolkit, adopted 2026-07-23 (the repo consolidation plan in
-    # mere's design docs): cambium and its winit/nematic adapters, the meristem
-    # diff core, and the sprigging custom-paint leaves. They keep their published
-    # names, versions, and licenses (meristem Apache-2.0, sprigging MIT/Apache,
-    # the rest MPL-2.0), so they spell out their package metadata rather than
-    # inheriting this workspace's Servo-shaped defaults. Absorbing them retired
-    # three [patch.crates-io] entries cambium needed only because path patches do
-    # not transit to git consumers.
-    "components/cambium/cambium",
-    "components/cambium/cambium-rootstock",
-    "components/cambium/cambium-genet-web-host",
-    "components/cambium/cambium-genet-winit-host",
-    "components/cambium/cambium-nematic",
-    "components/cambium/cambium-winit",
-    "components/cambium/cambium-winit-a11y",
-    "components/cambium/meristem",
-    "components/cambium/sprigging",
     # Livery carries three Parley 0.10 extensions that downstream hosts must
     # resolve from the same source. Keeping the fork as a workspace package
     # lets git consumers name it in their own root `[patch.crates-io]`; root
@@ -93,6 +74,15 @@ members = [
     # design_docs/mere_docs/implementation_strategy/
     # 2026-09-02_platform_boundary_and_repository_topology_plan.md). Ortet is
     # genet's headed host from here on.
+    # The Cambium family (cambium, cambium-rootstock, cambium-winit,
+    # cambium-winit-a11y, cambium-genet-winit-host, cambium-genet-web-host,
+    # cambium-nematic, meristem, sprigging), workbench and mere-surface-api
+    # followed on 2026-09-03, under the same plan: they are application
+    # composition and a reusable UI surface, not web-platform behavior. They
+    # keep their published names, versions, and licenses, and speak genet's
+    # DOM, host, layout, paint, accessibility and input contracts from mere
+    # through downward-facing adapters. No member that stays depended on any
+    # of the eleven, so they left in one commit.
     # The raw engine host: one window, one document, no Mere crate in its cone
     # (design_docs/2026-09-03_ortet_founding_plan.md).
     "ports/ortet",
@@ -280,8 +270,6 @@ scrying-engine = { version = "=0.2.0", path = "components/inker/engines/scrying-
 graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engine" }
 weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
 genet-host-api = { version = "=0.2.0", path = "components/genet-host-api" }
-mere-surface-api = { version = "=0.1.0", path = "components/mere-surface-api" }
-workbench = { version = "=0.1.0", path = "components/workbench" }
 genet-render-host = { path = "components/genet-render-host" }
 netrender = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
 netrender_device = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }

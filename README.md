@@ -29,9 +29,11 @@ Active prototype. A development monorepo of ~50 crates, all `publish = false`.
   single-document adapter. Its next lane rebuilds the embeddable, tiled,
   tiered reference host around those engines; see
   `docs/2026-08-22_pelt_host_reconstruction_execution_plan.md`.
-- `components/cambium/` is the reactive UI toolkit, including the shared
-  desktop host (`cambium-genet-winit-host`) that sibling apps build on.
-  Client-side window decorations landed on that host 2026-08-10.
+- The Cambium family — the reactive UI toolkit and the shared desktop host
+  (`cambium-genet-winit-host`) that sibling apps build on — moved to the mere
+  repository on 2026-09-03, with Workbench and `mere-surface-api`, under the
+  platform boundary plan. It consumes genet's DOM, host, layout, paint,
+  accessibility and input contracts from there; the direction stays one-way.
 - Consumed one-way as the engine layer by the mere platform workspace and
   the turnstone, isometry, woodshed, and hocket apps. Rendering lowers into
   the sibling [netrender](https://github.com/merely-made/netrender) repo.
@@ -71,9 +73,10 @@ cargo run -p genet-wpt -- run <subset> # WPT crash-smoke, e.g. css/CSS2/floats
 genet is a derivative of Servo and is MPL-2.0 throughout: every file Mark
 wrote carries Exhibit A, and Servo's files keep Servo's. Third-party code
 retained under its own terms (the vendored patches, `hyper_serde`,
-`malloc_size_of`, the WPT and Blink corpora) and the one derivative that keeps
-an upstream notice (`meristem`, from Xilem) are listed in
-[LICENSES.md](LICENSES.md). Published crate versions keep the grant they
+`malloc_size_of`, the WPT and Blink corpora) are listed in
+[LICENSES.md](LICENSES.md). The one derivative that kept an upstream notice,
+`meristem` from Xilem, left with Cambium on 2026-09-03; its notice obligation
+travelled with it. Published crate versions keep the grant they
 shipped with; MPL-2.0 ships at each crate's next functional bump.
 
 ---

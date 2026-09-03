@@ -254,13 +254,14 @@ def assert_netfetcher_semantics_cone() -> None:
 
 
 # genet-host-api's authority split (platform boundary plan P1): the raw engine
-# host half keeps the name and depends on nothing in the workspace; the
-# application half, mere-surface-api, may depend on workbench and nothing
-# else here, since both move to Mere together.
+# host half keeps the name and depends on nothing in the workspace. The
+# application half, mere-surface-api, left for mere on 2026-09-03 with
+# workbench and the Cambium family, so it is no longer a member to check here;
+# its cone is mere's to witness.
 def assert_host_api_cone(metadata: dict) -> None:
     members = {package["name"] for package in metadata["packages"]}
     by_name = {package["name"]: package for package in metadata["packages"]}
-    for name, allowed in (("genet-host-api", set()), ("mere-surface-api", {"workbench"}),
+    for name, allowed in (("genet-host-api", set()),
                           # inker's engine-facing contract half (P1): a leaf.
                           ("document-session-api", set())):
         package = by_name.get(name)
@@ -364,9 +365,15 @@ def assert_ortet_cone(metadata: dict) -> None:
     # clean cone.
     # Two controls, because pelt-desktop's cone used to exercise both halves of
     # `is_ortet_forbidden` at once: an exact name (`inker`) and a prefix
-    # (`cambium`, `mere-`). No single remaining member reaches both, so the
-    # controls are split rather than weakened.
-    controls = (("document-canvas", "inker"), ("cambium-genet-winit-host", "cambium"))
+    # (`cambium`, `mere-`, `pelt`). `document-canvas` still carries the exact
+    # half over a live cone. The prefix half was carried by
+    # `cambium-genet-winit-host` until the Cambium family left for mere on
+    # 2026-09-03; with no member left that matches a forbidden prefix, it is
+    # asserted directly on the predicate instead of through a crate. That is
+    # weaker than a cone walk -- it proves the rule, not the walk -- so it is
+    # deliberately paired with the live `document-canvas` control rather than
+    # replacing it.
+    controls = (("document-canvas", "inker"),)
     reported = {}
     for control_package, must_report in controls:
         control = resolved_cone(metadata, control_package)
@@ -378,10 +385,27 @@ def assert_ortet_cone(metadata: dict) -> None:
                 f"(reported {control_hits})"
             )
         reported[control_package] = control_hits
+
+    # The prefix half of the predicate, asserted directly.
+    for accepted in ("cambium-anything", "mere-anything", "pelt-anything"):
+        if not is_ortet_forbidden(accepted):
+            fail(
+                "cone witness positive control failed: is_ortet_forbidden "
+                f"does not forbid {accepted}, so the prefix half of the rule "
+                "is not in force"
+            )
+    # ...and the matching negative, so the predicate is not simply always true.
+    if is_ortet_forbidden("genet-livery"):
+        fail(
+            "cone witness control failed: is_ortet_forbidden forbids "
+            "genet-livery, an engine crate ortet is built on"
+        )
+
     rendered = "; ".join(f"{name} reports {hits}" for name, hits in reported.items())
     print(
         f"ortet cone: {len(cone)} packages, none forbidden; "
-        f"positive controls: {rendered}"
+        f"positive controls: {rendered}; prefix rule forbids "
+        "cambium-/mere-/pelt-anything and admits genet-livery"
     )
 
     reclassed = sorted(name for name in cone if name in ORTET_RECLASSED)

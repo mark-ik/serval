@@ -61,7 +61,14 @@ line, and every upstream copyright line above it is kept verbatim. Apply with
 
 | Path | Upstream | Notices kept |
 |---|---|---|
-| `components/cambium/meristem` | [linebender/xilem](https://github.com/linebender/xilem), Apache-2.0 | `Copyright 2022 the Xilem Authors` (and its year variants); the Apache-2.0 text stays at `components/cambium/meristem/LICENSE` as the upstream notice file |
+| _(none in genet as of 2026-09-03)_ | — | — |
+
+`meristem` was the one entry in this table. It left for mere with the rest of
+the Cambium family on 2026-09-03 under the platform boundary plan, and its
+Xilem notice obligation — the `Copyright 2022 the Xilem Authors` lines and the
+Apache-2.0 text kept beside them as the upstream notice file — travelled with
+the crate. The ruling below is retained because it is the precedent the sweep
+was decided on, not because genet still carries the files.
 
 Ruled 2026-08-27 in mere's ledger, on the brief's substantial-derivative
 precedent: cambium and meristem go MPL-2.0 with the Apache notice retained.
