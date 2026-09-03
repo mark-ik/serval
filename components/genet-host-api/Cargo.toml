@@ -1,18 +1,15 @@
 [package]
 name = "genet-host-api"
-version = "0.1.1"
+version = "0.2.0"
 repository = "https://github.com/merely-made/genet"
 publish = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Product-neutral host contracts for Genet: engine profiles, capabilities, resource fetching, and the pane-frame (tile) vocabulary."
-keywords = ["genet", "host", "tile", "pane", "contract"]
+description = "Raw engine host contracts for Genet: engine profiles, capabilities, resource fetching, and href resolution."
+keywords = ["genet", "host", "engine", "contract"]
 categories = ["gui", "api-bindings"]
-
-[dependencies]
-workbench = { workspace = true }
 
 [lib]
 name = "genet_host_api"

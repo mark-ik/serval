@@ -16,7 +16,7 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
-use genet_host_api::settings::{
+use mere_surface_api::settings::{
     SettingControl, SettingMovement, SettingMutability, SettingOption, SettingScope,
     SettingSecurity, SettingSpec, SettingValue, SettingsError, SettingsProvider,
 };

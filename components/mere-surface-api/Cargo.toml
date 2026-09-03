@@ -1,0 +1,23 @@
+[package]
+name = "mere-surface-api"
+version = "0.1.0"
+repository = "https://github.com/merely-made/genet"
+publish = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Application host contracts above Genet: the settings projection and product surface admission vocabulary. Mere's half of the former genet-host-api, homed here until the platform boundary plan moves it."
+keywords = ["mere", "host", "settings", "surface", "contract"]
+categories = ["gui", "api-bindings"]
+
+[dependencies]
+workbench = { workspace = true }
+
+[lib]
+name = "mere_surface_api"
+path = "lib.rs"
+bench = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }

@@ -2,24 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Product-neutral host contracts for Genet.
+//! Raw engine host contracts for Genet.
 //!
 //! Hosts keep browser chrome, platform integration, protocol UI, and automation
-//! routing distinct from whichever Genet engine profile they embed. Pelt is the
-//! reference host, while Mere and Turnstone consume the same tile vocabulary.
+//! routing distinct from whichever Genet engine profile they embed. What lives
+//! here is what an engine host must supply or may read: the engine profile
+//! and its capabilities, the resource-fetch seam, and href resolution. The
+//! application half, settings projection and surface admission, is
+//! `mere-surface-api`, split out under the platform boundary plan (P1) so
+//! this crate depends on nothing in the workspace and Genet never names an
+//! application type.
 
 use std::fmt;
 use std::str::FromStr;
 
 pub mod navigation;
-pub mod settings;
-pub mod surface;
 
 pub use navigation::resolve_href;
-pub use surface::{
-    ProviderId, SourceKindId, SurfaceAvailability, SurfaceDescriptor, SurfaceId,
-    SurfaceSourceShape, SurfaceUnavailableReason,
-};
 
 /// Coarse engine selection for diagnostic hosts such as standalone Pelt.
 ///

@@ -43,6 +43,7 @@ members = [
     # static/scripted/smolweb retained documents, promoted out of pelt.
     "components/genet-documents",
     "components/genet-host-api",
+    "components/mere-surface-api",
     "components/workbench",
     "components/genet-render-host",
     "components/genet-winit-host",
@@ -272,7 +273,8 @@ knot-editor-host = { version = "=0.1.0", path = "components/inker/knot-editor-ho
 scrying-engine = { version = "=0.2.0", path = "components/inker/engines/scrying-engine" }
 graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engine" }
 weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
-genet-host-api = { version = "=0.1.1", path = "components/genet-host-api" }
+genet-host-api = { version = "=0.2.0", path = "components/genet-host-api" }
+mere-surface-api = { version = "=0.1.0", path = "components/mere-surface-api" }
 workbench = { version = "=0.1.0", path = "components/workbench" }
 genet-render-host = { path = "components/genet-render-host" }
 pelt-core = { version = "=0.2.0", path = "ports/pelt/core" }

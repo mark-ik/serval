@@ -11,7 +11,6 @@ use accesskit::{
     Orientation, Rect as AccessRect, Role, Toggled, TreeUpdate,
 };
 use genet_host_api::ResourceFetcher;
-use genet_host_api::settings::{SettingValue, SettingsProvider};
 use genet_winit_host::{
     A11yActionRequest, AccessKitBridge, BridgeStatus, RenderCore, SurfaceHost, WindowSurface,
     wheel_delta_from_winit,
@@ -25,6 +24,7 @@ use inker::{
 };
 #[cfg(target_os = "windows")]
 use inker::{FrameHandleOwnership, NativeTextureHandle};
+use mere_surface_api::settings::{SettingValue, SettingsProvider};
 use netrender::external_texture::ExternalTexturePlacement;
 use netrender::{ColorLoad, NetrenderOptions, Scene};
 use pelt_core::{

@@ -16,7 +16,7 @@
 //! the row is memoized on its props and a local edit marks the component
 //! dirty rather than changing the spec.
 
-use genet_host_api::settings::{SettingControl, SettingOption, SettingSpec, SettingValue};
+use mere_surface_api::settings::{SettingControl, SettingOption, SettingSpec, SettingValue};
 use meristem::{MessageResult, View, lens, map_message_result};
 
 use crate::component::{ComponentView, component};

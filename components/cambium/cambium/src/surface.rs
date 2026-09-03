@@ -15,8 +15,8 @@
 //! scene conversion, scrolling policy, accessibility hosting, or lifetime
 //! management for the host.
 
-use genet_host_api::{SurfaceAvailability, SurfaceDescriptor};
 use genet_scripted_dom::NodeId;
+use mere_surface_api::{SurfaceAvailability, SurfaceDescriptor};
 use meristem::View;
 
 use crate::{
@@ -230,11 +230,11 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use genet_host_api::{
-        ProviderId, SourceKindId, SurfaceId, SurfaceSourceShape, SurfaceUnavailableReason,
-    };
     use genet_scripted_dom::{NodeId, ScriptedDom};
     use layout_dom_api::{LayoutDom, NodeKind};
+    use mere_surface_api::{
+        ProviderId, SourceKindId, SurfaceId, SurfaceSourceShape, SurfaceUnavailableReason,
+    };
 
     use crate::{DomHandle, El, GenetAppRunner, OnClick, PointerClick, el, on_click};
 

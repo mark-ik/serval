@@ -17,7 +17,7 @@ sprigging = { version = "0.2.0", path = "../sprigging" }
 genet-scripted-dom = { version = "0.1.0", path = "../../genet-scripted-dom" }
 # Cambium also renders host settings and surface descriptors, which remain
 # product-neutral Genet host contracts rather than workspace vocabulary.
-genet-host-api = { version = "0.1.0", path = "../../genet-host-api" }
+mere-surface-api = { workspace = true }
 # The pane-frame contract Frisket renders. Its host effects remain for the
 # embedding shell to interpret, while the component owns one vocabulary.
 workbench = { workspace = true }

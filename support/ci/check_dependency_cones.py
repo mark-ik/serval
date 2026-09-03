@@ -246,11 +246,28 @@ def assert_netfetcher_semantics_cone() -> None:
         fail(f"netfetcher's semantics-only build reaches transport crates: {reached}")
 
 
+# genet-host-api's authority split (platform boundary plan P1): the raw engine
+# host half keeps the name and depends on nothing in the workspace; the
+# application half, mere-surface-api, may depend on workbench and nothing
+# else here, since both move to Mere together.
+def assert_host_api_cone(metadata: dict) -> None:
+    members = {package["name"] for package in metadata["packages"]}
+    by_name = {package["name"]: package for package in metadata["packages"]}
+    for name, allowed in (("genet-host-api", set()), ("mere-surface-api", {"workbench"})):
+        package = by_name.get(name)
+        if package is None:
+            fail(f"{name} is not a workspace member")
+        deps = {d["name"] for d in package["dependencies"] if d["name"] in members}
+        if deps - allowed:
+            fail(f"{name} depends on workspace crates {sorted(deps - allowed)}; allowed {sorted(allowed)}")
+
+
 def main() -> None:
     assert_fleece_cone()
     metadata = cargo_metadata()
     assert_cargo_metadata_sees_fleece(metadata)
     assert_ports_depend_inward(metadata)
+    assert_host_api_cone(metadata)
     self_test_mere_witness()
     assert_no_mere_source(cargo_metadata_resolved())
     assert_netfetcher_semantics_cone()
