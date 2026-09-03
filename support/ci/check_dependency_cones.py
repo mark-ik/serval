@@ -273,7 +273,9 @@ def assert_host_api_cone(metadata: dict) -> None:
     # Engine crates the plan keeps never depend on crates it moves. genet-render
     # reaches inker's contracts through the contract crate; genet-documents,
     # split by authority, keeps only the Livery and Scripted lanes and links no
-    # controller, content lane or transport.
+    # controller, content lane or transport. Both subjects are members that
+    # stay; the banned names on the right left genet in P3 on 2026-09-03 and
+    # are kept, like ORTET_FORBIDDEN, as names the edge may never carry again.
     forbidden = {
         "genet-render": {"inker"},
         "genet-documents": {"inker", "nematic", "errand", "document-canvas", "netfetcher"},
@@ -287,10 +289,13 @@ def assert_host_api_cone(metadata: dict) -> None:
 # Ortet's cone (2026-09-03 ortet founding plan, O0). Ortet is the one headed
 # host that proves the engine runs without Mere, so its resolved cone must
 # contain no crate the platform boundary plan moves to Mere, and no other port.
-# `tabard`, `knot-editor-host` and the `pelt` prefix name crates that left genet
-# on 2026-09-03. They stay in the list: it is a set of names the cone may not
-# reach, not a set of workspace members, so keeping them fails loudly if any of
-# them ever arrives back from mere as a git or registry source.
+# Every name below is now a crate that has left genet: `tabard`,
+# `knot-editor-host` and the `pelt` prefix on 2026-09-03; the `cambium` and
+# `mere-` prefixes and `workbench` the same day; `inker`, `nematic`, `errand`
+# and `document-canvas` with the engine-management layer in P3. They stay in
+# the list: it is a set of names the cone may not reach, not a set of workspace
+# members, so keeping them fails loudly if any of them ever arrives back from
+# mere as a git or registry source.
 ORTET_FORBIDDEN = {
     "inker", "workbench", "nematic", "errand", "document-canvas",
     "tabard", "knot-editor-host",
@@ -358,35 +363,32 @@ def assert_ortet_cone(metadata: dict) -> None:
             f"Mere: {breached}"
         )
 
-    # Positive controls, in the same function and over the same walk: the check
-    # must be able to SEE what it forbids. The control was pelt-desktop until
-    # Pelt left for mere on 2026-09-03. A walk that reports nothing on a cone
-    # that is known to contain forbidden crates is a broken instrument, not a
-    # clean cone.
-    # Two controls, because pelt-desktop's cone used to exercise both halves of
-    # `is_ortet_forbidden` at once: an exact name (`inker`) and a prefix
-    # (`cambium`, `mere-`, `pelt`). `document-canvas` still carries the exact
-    # half over a live cone. The prefix half was carried by
-    # `cambium-genet-winit-host` until the Cambium family left for mere on
-    # 2026-09-03; with no member left that matches a forbidden prefix, it is
-    # asserted directly on the predicate instead of through a crate. That is
-    # weaker than a cone walk -- it proves the rule, not the walk -- so it is
-    # deliberately paired with the live `document-canvas` control rather than
-    # replacing it.
-    controls = (("document-canvas", "inker"),)
+    # Positive controls: the check must be able to SEE what it forbids. A walk
+    # that reports nothing on a cone known to contain forbidden crates is a
+    # broken instrument, not a clean cone.
+    #
+    # THE LIVE CONTROL RETIRED WITH P3. It was pelt-desktop, whose cone
+    # exercised both halves of `is_ortet_forbidden` at once -- an exact name
+    # (`inker`) and a prefix (`cambium`, `mere-`, `pelt`) -- until Pelt left
+    # for mere on 2026-09-03. The prefix half then moved to
+    # `cambium-genet-winit-host`, which left with the Cambium family the same
+    # day, and the exact half to `document-canvas`, which left with the
+    # engine-management layer in P3. No member remains whose cone reaches any
+    # forbidden name, so there is no crate left to carry a live walk, and one
+    # cannot be invented without reintroducing what the boundary removed.
+    # What is left is the direct assertion on the predicate below: it proves
+    # the rule rather than the walk, which is weaker, and is recorded as such
+    # rather than dressed up. The walk itself is still exercised every run by
+    # the ortet cone above, which must reach genet-documents and netrender.
     reported = {}
-    for control_package, must_report in controls:
-        control = resolved_cone(metadata, control_package)
-        control_hits = sorted(name for name in control if is_ortet_forbidden(name))
-        if must_report not in control_hits:
-            fail(
-                "cone witness positive control failed: the same check over "
-                f"{control_package} did not report {must_report} "
-                f"(reported {control_hits})"
-            )
-        reported[control_package] = control_hits
 
-    # The prefix half of the predicate, asserted directly.
+    # The exact-name and prefix halves of the predicate, asserted directly.
+    for forbidden_name in sorted(ORTET_FORBIDDEN):
+        if not is_ortet_forbidden(forbidden_name):
+            fail(
+                "cone witness positive control failed: is_ortet_forbidden "
+                f"does not forbid {forbidden_name}, which is in ORTET_FORBIDDEN"
+            )
     for accepted in ("cambium-anything", "mere-anything", "pelt-anything"):
         if not is_ortet_forbidden(accepted):
             fail(
@@ -404,8 +406,9 @@ def assert_ortet_cone(metadata: dict) -> None:
     rendered = "; ".join(f"{name} reports {hits}" for name, hits in reported.items())
     print(
         f"ortet cone: {len(cone)} packages, none forbidden; "
-        f"positive controls: {rendered}; prefix rule forbids "
-        "cambium-/mere-/pelt-anything and admits genet-livery"
+        f"live positive control: {rendered or 'none (retired with P3)'}; "
+        f"predicate control: forbids all {len(ORTET_FORBIDDEN)} exact names, "
+        "forbids cambium-/mere-/pelt-anything, admits genet-livery"
     )
 
     reclassed = sorted(name for name in cone if name in ORTET_RECLASSED)

@@ -25,7 +25,9 @@ repatriated here from mere.
 1. The root [`README.md`](../README.md) — what genet is.
 2. [`DOC_POLICY.md`](DOC_POLICY.md) — the shared core plus this repo's addendum,
    including the `docs/` boundary and the smolweb split.
-3. The area root you are working in, below.
+3. The section you are working in, below. genet has no topic area root left:
+   the last three moved to mere with their code on 2026-09-03, and active
+   plans sit flat in `design_docs/`.
 
 ## ortet — the raw host
 
@@ -66,69 +68,13 @@ repatriated here from mere.
   `workbench_component_plan` travelled with them and are now in mere's
   `design_docs/`.
 
-## inker_docs/ — the engine controller
+## inker_docs/, nematic_docs/, verso_docs/ — moved to mere
 
-- [engine_picker_and_pluggability_plan](inker_docs/implementation_strategy/2026-06-15_engine_picker_and_pluggability_plan.md)
-  (**Phases 0–3 shipped + verified** — route → activate → manage → pick. The
-  user-facing engine **picker** as an inker affordance, distinct from verso's
-  flip; the three-level pluggability model (in-build / registered-but-off /
-  active via `is_available = contains && enabled`), a global default with
-  per-session override, and the two content tiers as the two registries —
-  glass/black-box, wasm/native. No-handler fallback and local-file ingestion
-  are in scope but not yet shipped (Phase 4).
-  **Remaining**: Phase 4 (no-handler and local files), Phase 2b (per-host and
-  per-session), Phase 5 (the verso flip). **Page capture P1 landed 2026-08-30**:
-  Inker defines correlated viewport-only capture requests/results, but no
-  engine yet claims support. Its progress log names meerkat, which was deleted
-  2026-07-18; read those as the Turnstone/mere hosts.)
-
-## nematic_docs/ — the smolweb engine and knot composition
-
-- [polyglot_knot_design](nematic_docs/implementation_strategy/2026-05-08_polyglot_knot_design.md)
-  (**implemented 2026-05-08/09**, retained as design rationale and format spec:
-  extends the `nematic.knot` note format from frontmatter-plus-markdown to a
-  polyglot composition where every other `nematic.*` protocol's blocks embed
-  fenced-code-block-style and round-trip back to the source protocol's syntax.)
-- [polyglot_block_resolver_plan](nematic_docs/implementation_strategy/2026-06-13_polyglot_block_resolver_plan.md)
-  (**planned**: collapse the three separate passes — `expand_fenced_blocks`,
-  `resolve_transclusions`, `evaluate_blocks`, each with its own dispatch and
-  trust handling — into one registry that resolves *any* fenced block by its
-  tag, and the new resolver kinds that makes pluggable: graph/eidetic query
-  blocks, diagram DSLs, sandboxed wasm blocks.)
-- [native_smolweb_rendering_plan](nematic_docs/implementation_strategy/2026-06-27_native_smolweb_rendering_plan.md)
-  (**planning (with Mark)**: render every smolweb format natively and
-  idiomatically rather than flattening it into one model. The **two-family
-  model** — document family (djot/markdown/reader-HTML, native `Block`) versus
-  smolweb family (gemtext/gopher/feed/scroll/misfin, a per-format AST, views
-  shared with the host because they avoid `Block`). Its §5 crate-home diagram
-  is superseded by the smolweb home decision; crate homes read through that.)
-- [smolweb_fidelity_plan](nematic_docs/implementation_strategy/2026-07-01_smolweb_fidelity_plan.md)
-  (**planning (with Mark)**: recovers the spec-faithfulness the flavour-neutral
-  pipeline collapses. Key code-verified finding — **the losses are at the parse
-  ASTs, not the box rendering**, so the fix is richer ASTs rather than a
-  different render regime. Three workstreams: enrich the parse ASTs; produce
-  trust at the transport and carry it through the native lane, which currently
-  drops `DocumentTrustState`; and bespoke rendering only where the line model
-  is not box-shaped, gopher's fixed-width typed column being the clear case.
-  **WS1's enrichment lands wherever the grammar lives at the time** — if a
-  grammar has moved to a smolweb crate, the enrichment goes there.)
-
-## verso_docs/ — rendering surfaces and the engine flip
-
-- [compatibility_view_charter](verso_docs/technical_architecture/2026-06-10_compatibility_view_charter.md)
-  (**charter decision (Mark, 2026-06-10)**, pre-implementation: verso reborn as
-  the engine-flip / compatibility-view seam — portable view-state carriers and
-  the one-hop invariant, minted at the first genet→scrying flip.)
-- [genet_scrying_flipcarrier_plan](verso_docs/implementation_strategy/2026-06-23_genet_scrying_flipcarrier_plan.md)
-  (**design resolved; `verso-api` plus the genet donor primitives shipped
-  2026-06-23**: the first flip. The plan's crate layering — `verso-api` plus
-  per-engine `verso-genet`/`verso-scry`/`verso-weld`/`verso-graft` adapters
-  plus a `verso` orchestrator — was **consolidated into the single
-  `components/verso-tile` crate on 2026-07-09** (modules `api`, `flip`,
-  `scry`, and the `genet-donor` feature); read the plan's crate names as that
-  crate's modules. Host-wired and feature-gated with no engine stacking;
-  `FlipDonor`/`FlipBack`/`FlipReceiver` encode no-chain in the types. Gated on
-  the inker picker's Phase 4.)
+- The engine-management layer left genet for mere on 2026-09-03 under the
+  platform boundary plan: `inker`, `document-canvas`, the scrying/graft/weld
+  engine adapters, `verso-tile`, `nematic`, `illume`, `errand` and `tinct`.
+  These three area roots travelled with their code and are now in mere's
+  `design_docs/`.
 
 ## codebase structure
 

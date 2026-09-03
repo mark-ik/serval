@@ -20,7 +20,7 @@ supplies anonymous HTTP(S) plus read-only Gemini, Gopher, Finger, Spartan, Nex,
 and Guppy fetches; Titan remains excluded because navigation is still a
 zero-byte upload.
 **What this is**: the effectful half the
-[polyglot knot design](../../nematic_docs/implementation_strategy/2026-05-08_polyglot_knot_design.md) deliberately left
+[polyglot knot design](../../../../mere/design_docs/nematic_docs/implementation_strategy/2026-05-08_polyglot_knot_design.md) deliberately left
 host-side, plus the export dual it promised. Knots (CommonMark and djot
 bodies alike) already render protocol-tagged fences inline through the real
 engines (`expand_fenced_blocks`, shipped, recursive). This plan adds:
@@ -321,7 +321,7 @@ received knot's script fences render as inert source.
   shipping decision stands, and Rhai-for-*policy* stays superseded by
   declarative data. Rune remains gated on its own trigger (1.0 + sandbox
   warranty). The broader "how polyglot" question spun out a dedicated plan:
-  [polyglot block resolver](../../nematic_docs/implementation_strategy/2026-06-13_polyglot_block_resolver_plan.md)
+  [polyglot block resolver](../../../../mere/design_docs/nematic_docs/implementation_strategy/2026-06-13_polyglot_block_resolver_plan.md)
   (one registry; query / diagram / wasm block kinds beyond more languages).
 
 ## K4 — HTML clippings, two fidelity tiers
@@ -493,7 +493,7 @@ K-lanes read its trust state, nothing more).
 
 ## Alignment — smolweb fidelity plan (2026-07-01)
 
-Two touchpoints with the [smolweb fidelity plan](../../nematic_docs/implementation_strategy/2026-07-01_smolweb_fidelity_plan.md).
+Two touchpoints with the [smolweb fidelity plan](../../../../mere/design_docs/nematic_docs/implementation_strategy/2026-07-01_smolweb_fidelity_plan.md).
 
 - **Round-trip fidelity.** The `to_gemtext` / gophermap / `to_knot` exporters are only
   as faithful as the parse ASTs feeding them. That plan's Workstream 1 enriches those

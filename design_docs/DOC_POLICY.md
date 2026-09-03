@@ -167,13 +167,12 @@ a loophole.
 genet/design_docs/
 ├── DOC_README.md              ← canonical index (§6)
 ├── DOC_POLICY.md              ← this file
-├── inker_docs/                ← the engine controller
-├── nematic_docs/              ← the smolweb engine and knot composition
-└── verso_docs/                ← rendering-surface management, the engine flip
+└── archive_docs/              ← superseded documents, dated on retirement
 ```
 
-These three mirror `components/{inker,nematic,verso-tile}`. They came from
-mere's `design_docs/` and kept their structure through the move.
+`inker_docs/`, `nematic_docs/` and `verso_docs/` moved to mere on 2026-09-03
+with the code they mirror, under the platform boundary plan. No topic area
+root remains; genet's dated plans sit directly under `design_docs/`.
 
 ### What belongs here rather than in smolweb
 

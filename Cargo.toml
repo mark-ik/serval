@@ -18,27 +18,6 @@ members = [
     "components/genet-scripted-dom",
     "components/genet-scripted",
     "components/genet-scripted-worker",
-    "components/verso-tile",
-    # The engine-management layer, adopted from mere 2026-07-10
-    # (docs/2026-07-09_inker_genet_adoption_plan.md): inker (contracts +
-    # document/surface registries) with its surface adapters + document-canvas
-    # nested, and nematic promoted to a top-level component. knot-editor-host
-    # left for mere on 2026-09-03 under the platform boundary plan's
-    # consumers-first order.
-    "components/inker",
-    "components/inker/document-canvas",
-    "components/inker/engines/scrying-engine",
-    "components/inker/engines/graft-engine",
-    "components/inker/engines/weld-engine",
-    "components/nematic",
-    # The smolweb client integration, adopted 2026-07-10 (same plan): transport +
-    # parse. Its spec-faithful protocol crates moved to the smolweb workspace on
-    # 2026-07-23 and are consumed from crates.io.
-    "components/errand",
-    # The text/editing column's portable pair, adopted 2026-07-10 (same plan):
-    # illume (lexer/highlighter spans) + tinct (OKLCH palette derivation).
-    "components/illume",
-    "components/tinct",
     # Render-free live-document extraction and structured reader shapes.
     "components/fleece",
     # The content lanes as session engines (2026-07-10 session-engines plan):
@@ -83,6 +62,15 @@ members = [
     # DOM, host, layout, paint, accessibility and input contracts from mere
     # through downward-facing adapters. No member that stays depended on any
     # of the eleven, so they left in one commit.
+    # The engine-management layer followed on 2026-09-03, under the same plan
+    # and for the same reason: inker (the application-facing controller),
+    # document-canvas, the scrying/graft/weld engine adapters, verso-tile,
+    # nematic, illume, errand and tinct. Ten packages in one commit; every
+    # reverse dependency of each was itself one of the ten, so the set was a
+    # leaf. inker's engine-facing contract half stays as
+    # components/shared/document-session-api (P1), which is how genet-render
+    # and genet-documents reach the document contracts now. Their three doc
+    # area roots (design_docs/{inker,nematic,verso}_docs) travelled with them.
     # The raw engine host: one window, one document, no Mere crate in its cone
     # (design_docs/2026-09-03_ortet_founding_plan.md).
     "ports/ortet",
@@ -236,39 +224,31 @@ p384 = { version = "0.13", features = ["ecdh"] }
 p521 = { version = "0.13", features = ["ecdh"] }
 parking_lot = { version = "0.12", features = ["serde"] }
 parley = { version = "0.10.0", default-features = true }
-# The engine-management family, adopted from mere 2026-07-10 (inker-adoption
-# plan). inker + nematic publish (0.1.0); the rest inherit publish = false.
-# errand (the smolweb wire layer) + its protocol members adopted the same day,
-# all published crates keeping their identities.
-errand = { version = "=0.3.4", path = "components/errand" }
+# The engine-management family (inker, nematic, document-canvas, the three
+# engine adapters, errand, illume, tinct, verso-tile) left for mere on
+# 2026-09-03 under the platform boundary plan, with the doc areas that
+# describe it. The smolweb protocol crates below were errand's wire layer and
+# have no consumer in genet now; they are left declared rather than deleted,
+# because pruning workspace dependencies outside the moving set is a
+# resolution decision of its own.
 # The three spec crates moved to the smolweb workspace on 2026-07-23 (the repo
 # consolidation plan in mere's design docs): their names belong to the protocols'
-# communities, not to the engine that speaks them. genet keeps errand (the client
-# integration) and nematic (the document engine) and consumes the wire layer from
-# crates.io, exactly as it already does for misfin.
+# communities, not to the engine that speaks them.
 nex-protocol = { version = "=0.1.1" }
 spartan-protocol = { version = "=0.1.1" }
 guppy-protocol = { version = "=0.1.1" }
 # gopher + finger followed the same way on 2026-08-03 (the smolweb home
 # decision in mere's design docs): the spec is theirs, the client integration
-# is ours. gopher-protocol carries the Gopher+ successor; finger-protocol
-# carries WebFinger, which errand does not want because it is HTTP, so errand
-# takes the classic wire protocol alone.
+# is ours.
 gopher-protocol = { version = "=0.1.1" }
 gemini-protocol = { version = "=0.1.7" }
 scroll-protocol = { version = "=0.1.0" }
 finger-protocol = { version = "=0.1.1", default-features = false, features = [
     "client",
 ] }
-inker = { version = "=0.1.1", path = "components/inker" }
 document-session-api = { version = "=0.1.0", path = "components/shared/document-session-api" }
 genet-documents = { version = "=0.1.0", path = "components/genet-documents", default-features = false }
 genet-document-resources = { version = "=0.2.0", path = "components/genet-document-resources" }
-nematic = { version = "=0.1.1", path = "components/nematic" }
-document-canvas = { version = "=0.1.0", path = "components/inker/document-canvas" }
-scrying-engine = { version = "=0.2.0", path = "components/inker/engines/scrying-engine" }
-graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engine" }
-weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
 genet-host-api = { version = "=0.2.0", path = "components/genet-host-api" }
 genet-render-host = { path = "components/genet-render-host" }
 netrender = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
@@ -332,16 +312,6 @@ tracing-subscriber = "0.3.23"
 tungstenite = "0.29"
 unicode-bidi = "0.3.18"
 unicode_categories = "0.1.1"
-# Highlighted-text stack used by Cambium's optional highlighted editing: illume
-# (portable lexer: djot structure + code injection + prose entities) and tinct
-# (perceptual seed-to-palette, with the syntax-role palette). Both remain
-# standalone Genet components; Cambium owns their UI assembly.
-# Adopted as components 2026-07-10 (inker-adoption plan, companion rehomes):
-# the text/editing column consolidates here — illume spans, tinct palettes,
-# knot-editor-host editor model, Cambium text surfaces. Both keep
-# MIT/Apache per-crate and their published identities.
-illume = { version = "=0.0.2", path = "components/illume" }
-tinct = { version = "=0.1.2", path = "components/tinct" }
 unicode-properties = { version = "0.1.4", features = ["emoji"] }
 unicode-script = "0.5"
 unicode-segmentation = "1.13.2"
@@ -398,7 +368,7 @@ paint_api = { package = "servo-paint-api", version = "=0.2.0", path = "component
 # (extraction plan 2026-05-20). genet is now a consumer, not the owner.
 paint_list_api = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
 # The PaintCmd -> netrender::Scene translator; also lives in the netrender
-# workspace so any engine (genet, nematic, inker) can reuse the lowering.
+# workspace so any engine can reuse the lowering.
 paint_list_render = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
 paint_types = { package = "genet-paint-types", version = "=0.1.0", path = "components/shared/paint-types" }
 pixels = { package = "servo-pixels", version = "=0.2.0", path = "components/pixels" }
