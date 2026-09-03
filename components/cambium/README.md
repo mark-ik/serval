@@ -15,13 +15,13 @@ remain for source compatibility during consumer migration.
 - `cambium-nematic`: reactive views and themes over Errand's smolweb ASTs
 - `sprigging`: engine-neutral custom leaves and arrangement geometry
 
-The crates use their own appropriate licenses: Cambium is MPL-2.0, Meristem is
-Apache-2.0, and Sprigging is MIT OR Apache-2.0.
+Every crate is MPL-2.0 (see the repository `LICENSE`); Meristem, a Xilem
+derivative, keeps the Xilem Authors' Apache-2.0 notice in each derived file.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the ownership rule and
-[docs/upstream-xilem.md](docs/upstream-xilem.md) for provenance. The mixed
-inherited license layout is recorded in [LICENSES.md](LICENSES.md), and the
-claimed package names in [docs/namespace-claims.md](docs/namespace-claims.md).
+[docs/upstream-xilem.md](docs/upstream-xilem.md) for provenance. Licenses are
+recorded in the repository [LICENSES.md](../../LICENSES.md), and the claimed
+package names in [docs/namespace-claims.md](docs/namespace-claims.md).
 Standalone and sibling-checkout development are described in
 [docs/local-genet-development.md](docs/local-genet-development.md).
 
@@ -40,6 +40,6 @@ The same assertions run in CI as an example test. See
 
 ## License
 
-Mixed by crate: `crates/cambium` is MPL-2.0 (Serval-derived), `crates/sprigging`
-is dual MIT OR Apache-2.0, `crates/meristem` is Apache-2.0. See
-[`LICENSES.md`](LICENSES.md).
+MPL-2.0 (see the repository `LICENSE`). `meristem` retains the Xilem Authors'
+Apache-2.0 notice as a derivative; see the repository
+[`LICENSES.md`](../../LICENSES.md).

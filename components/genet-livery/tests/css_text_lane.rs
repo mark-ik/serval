@@ -1,3 +1,9 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
 //! css-text lane (2026-08-21) fixtures: the text properties and white-space
 //! rules `genet-livery/src/text.rs` carries to Parley. Each test names the
 //! `css/css-text` family it stands for; the numbers come from the same

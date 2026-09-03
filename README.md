@@ -67,8 +67,13 @@ cargo run -p genet-wpt -- run <subset> # WPT crash-smoke, e.g. css/CSS2/floats
 
 ## License
 
-genet is a derivative of Servo and is licensed under MPL-2.0 (exceptions:
-`meristem` Apache-2.0, `sprigging` MIT OR Apache-2.0).
+genet is a derivative of Servo and is MPL-2.0 throughout: every file Mark
+wrote carries Exhibit A, and Servo's files keep Servo's. Third-party code
+retained under its own terms (the vendored patches, `hyper_serde`,
+`malloc_size_of`, the WPT and Blink corpora) and the one derivative that keeps
+an upstream notice (`meristem`, from Xilem) are listed in
+[LICENSES.md](LICENSES.md). Published crate versions keep the grant they
+shipped with; MPL-2.0 ships at each crate's next functional bump.
 
 ---
 

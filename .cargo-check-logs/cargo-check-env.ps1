@@ -1,3 +1,9 @@
+# Copyright 2026 Mark Alan Boykin
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# SPDX-License-Identifier: MPL-2.0
+
 # Source this in a PowerShell session to set the env that makes
 # `cargo check -p servo-layout` (and `cargo check -p servo`) build
 # under VS 2022. Required because:

@@ -1,3 +1,9 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
 // Regression guard for Nova's RegExp on the regress engine (replacing the Rust
 // `regex` crate, which cannot do lookahead/lookbehind/backreferences). Diagnosed
 // in docs/2026-06-02_nova_regress_regex_engine.md. These assert behaviour through

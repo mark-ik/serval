@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 
 //! First catalog leaves (tier-2 Path-A glyphs from the widget catalog,
 //! `docs/history/2026-07-08_chisel_widget_catalog.md`): [`GraphCanvas`], [`Meter`],

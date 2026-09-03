@@ -1,3 +1,9 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
 //! Misfin (`misfin://`, port 1958): gemini-style mail **send**, via the
 //! [`misfin`](https://crates.io/crates/misfin) crate's client (on the same
 //! ring provider this crate builds rustls with).

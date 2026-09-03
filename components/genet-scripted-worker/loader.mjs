@@ -1,3 +1,9 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
 // Memory64 validation module: `(module (memory i64 1))`. Capability detection is
 // deliberately binary validation, never browser-name or user-agent detection.
 export const MEMORY64_PROBE = new Uint8Array([

@@ -58,7 +58,7 @@ layout, scrolling logic.
 
 ## License
 
-MIT OR Apache-2.0.
+MPL-2.0 (see the repository `LICENSE`).
 
 [parley]: https://crates.io/crates/parley
 [`inker::DocumentBlock`]: https://crates.io/crates/inker

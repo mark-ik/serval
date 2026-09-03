@@ -1,3 +1,9 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
 use genet_livery::{InteractionStates, StyleSet, resolve_styles};
 use genet_static_dom::StaticDocument;
 use layout_dom_api::LayoutDom;

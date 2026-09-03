@@ -14,4 +14,6 @@ and Cambium's semantic patch ledger.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+MPL-2.0 (see the repository `LICENSE`), as a derivative of Xilem: the Xilem
+Authors' Apache-2.0 notice is retained in every derived file, and their
+license text stays in [LICENSE](LICENSE) as the upstream notice.

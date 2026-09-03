@@ -46,5 +46,5 @@ top.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
+MPL-2.0 (see the repository `LICENSE`). Published versions keep the grant
+they shipped with.

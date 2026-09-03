@@ -135,7 +135,7 @@ pub use optional_action::{Action, OptionalAction};
 pub use overlay::{Placement, anchor_point, anchor_point_clamped, overlay_at, overlay_rect};
 pub use overlay_surface::{OverlayDismiss, OverlayRole, OverlaySurface, overlay_surface};
 pub use pod::{GenetElement, GenetElementMut};
-pub use pointer::{OnPointer, PointerEvent, PointerPhase, on_pointer};
+pub use pointer::{OnPointer, PointerButton, PointerEvent, PointerPhase, on_pointer};
 pub use portable::{PortableKeyed, PortableKeyedState};
 pub use propagation::Propagation;
 pub use radio::{RadioGroup, radio_group};

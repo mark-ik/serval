@@ -50,4 +50,4 @@ Those become consumer work after the shared artifact has a stable shape.
 
 ## License
 
-MIT OR Apache-2.0
+MPL-2.0 (see the repository `LICENSE`)

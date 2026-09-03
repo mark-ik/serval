@@ -5,9 +5,9 @@ name = "inker"
 version = "0.1.1"
 edition.workspace = true
 authors = ["Mark AB (markik)"]
-# Not workspace: this crate is ours, not Servo-derived, so it keeps the founding
-# license rather than inheriting genet's MPL-2.0.
-license = "MIT OR Apache-2.0"
+# MPL-2.0 per the 2026-08-22 posture brief; the published 0.1.1 keeps the
+# MIT OR Apache-2.0 grant it shipped with.
+license = "MPL-2.0"
 # Not workspace: genet's workspace repository still points at upstream servo.
 repository = "https://github.com/merely-made/genet"
 description = "Modular engine/renderer controller — selects and orchestrates content engines (genet HTML lanes, nematic smolweb, scrying/graft/weld surface engines)."

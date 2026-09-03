@@ -2,7 +2,7 @@
 name = "import-stylo-db"
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MPL-2.0"
 publish = false
 
 # Maintainer-side harvest tool (H0 of the stylo-harvest plan): reads an

@@ -1,3 +1,9 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
 //! The layout transaction: the public entries, the pass that builds the
 //! block and inline algorithm trees, lays out the atomic subtrees, and
 //! folds the inline groups back into one retained result.

@@ -1,5 +1,9 @@
 // Copyright 2024 the Xilem Authors
-// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 
 //! Test for the behaviour of [`OrphanView<V, State, Action>`] where `V` is a view that suffers from the orphan rules.
 //! This is more of a showcase how to use the `OrphanView` than a real test, as its implementation is trivial.

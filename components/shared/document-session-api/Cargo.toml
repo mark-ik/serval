@@ -1,9 +1,7 @@
 [package]
 name = "document-session-api"
 version = "0.1.0"
-# Not workspace: this half of inker keeps inker's founding license rather than
-# inheriting genet's MPL-2.0, per the boundary plan's provenance invariant.
-license = "MIT OR Apache-2.0"
+license = "MPL-2.0"
 authors = ["Mark AB (markik)"]
 repository = "https://github.com/merely-made/genet"
 edition.workspace = true
