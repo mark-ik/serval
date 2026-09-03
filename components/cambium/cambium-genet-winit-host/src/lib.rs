@@ -291,6 +291,13 @@ where
     /// Last floating geometry. Maximized windows keep this rectangle and only
     /// change its `maximized` bit, so persistence records the restore target.
     pub(crate) restored_geometry: Option<WindowGeometry>,
+    /// The layout scale the app frame's insets were last published at, so the
+    /// property is rewritten when its input moves and not otherwise. Zoom
+    /// became one of those inputs when the insets were ruled CSS pixels
+    /// (the zoom plan's §2 exception), and zoom moves without the window's
+    /// own scale ever changing.
+    #[cfg(target_os = "linux")]
+    pub(crate) published_frame_scale: Option<f64>,
     /// Every window verb performed this run, for tests. The only way a
     /// windowless harness can prove the frame did what the gesture asked.
     pub(crate) performed: Vec<WindowCommand>,
@@ -331,6 +338,8 @@ where
             resize_hint: None,
             cadence: ClickCadence::new(),
             restored_geometry: None,
+            #[cfg(target_os = "linux")]
+            published_frame_scale: None,
             performed: Vec::new(),
         }
     }
@@ -411,6 +420,34 @@ where
             Err(error) => eprintln!("[cambium-winit] could not publish X11 frame extents: {error}"),
         }
     }
+
+    /// Rewrite the app frame's reserved region when the scale it is drawn at
+    /// has moved, and not otherwise.
+    ///
+    /// The insets are CSS pixels, so their input is the layout scale, and zoom
+    /// is half of that. A Ctrl chord, a Ctrl+wheel notch, a `fit_design`
+    /// recompute on resize and a hook writing `set_ui_zoom` all move zoom
+    /// without raising `ScaleFactorChanged`, which used to be the only thing
+    /// that republished — so the property would go on naming a boundary the
+    /// application had stopped drawing to. Every one of those reaches the host
+    /// through an event or a wake, so a call at the end of each covers them
+    /// all, and the comparison keeps it free at the turns that moved nothing.
+    #[cfg(target_os = "linux")]
+    fn sync_app_frame_extents(&mut self) {
+        let scale = self.layout_scale();
+        if self.published_frame_scale == Some(scale) {
+            return;
+        }
+        let Some(window) = self.native_window.clone() else {
+            return;
+        };
+        self.publish_x11_frame_extents(&window);
+        self.published_frame_scale = Some(scale);
+    }
+
+    /// `_GTK_FRAME_EXTENTS` is an X11 property; nothing to keep in step here.
+    #[cfg(not(target_os = "linux"))]
+    fn sync_app_frame_extents(&mut self) {}
 
     /// Run the application's close policy, then do what only a desktop window
     /// can: hide on [`CloseDisposition::Hide`], repaint on
@@ -717,7 +754,10 @@ where
             }
         }
         #[cfg(target_os = "linux")]
-        self.publish_x11_frame_extents(&window);
+        {
+            self.publish_x11_frame_extents(&window);
+            self.published_frame_scale = Some(self.layout_scale());
+        }
         if frame_trace() {
             #[cfg(target_os = "linux")]
             let backend = {
@@ -767,6 +807,9 @@ where
         // against: seed the fit factor before the first frame lays anything
         // out, or that frame is composed at the wrong size and replaced.
         self.refresh_fit_zoom();
+        // The fit factor just moved the layout scale off the device scale the
+        // extents were published at above, and no event will arrive to notice.
+        self.sync_app_frame_extents();
         self.s.surface = Some(Box::new(WinitSurface(surface)));
         self.s.runner = Some(runner);
         // Drive the first frame synchronously while the window is hidden:
@@ -811,6 +854,7 @@ where
                 self.process_wake();
             },
         }
+        self.sync_app_frame_extents();
         self.run_window_commands();
         if self.s.close_requested {
             event_loop.exit();
@@ -833,10 +877,8 @@ where
                 self.note_resize();
             },
             WindowEvent::ScaleFactorChanged { .. } => {
-                #[cfg(target_os = "linux")]
-                if let Some(window) = self.native_window.as_ref() {
-                    self.publish_x11_frame_extents(window);
-                }
+                // The frame extents follow at the end of this event, with every
+                // other cause of a layout-scale change.
                 self.refresh_geometry();
                 self.refresh_fit_zoom();
                 self.note_resize();
@@ -935,6 +977,7 @@ where
         // after the state change that asked for them, and for `Drag`, while
         // the press that requested it is still down. The queue is host data;
         // performing a verb needs the native window, so the drain lives here.
+        self.sync_app_frame_extents();
         self.run_window_commands();
         if self.s.close_requested {
             event_loop.exit();

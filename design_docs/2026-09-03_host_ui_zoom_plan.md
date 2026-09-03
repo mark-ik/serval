@@ -452,3 +452,20 @@ preference as the user's offset on it.
   `app_frame_insets_are_css_pixels_and_carry_zoom`. The republish-cadence
   question the ruling exposes is left open for Mark in the Findings entry
   above.
+- **2026-09-03, the frame-extents staleness closed (Mark: republish where
+  zoom changes).** The property was published at window creation and on
+  `ScaleFactorChanged` only, which sufficed while its input was the device
+  scale; the §2 ruling made zoom an input too, and zoom moves on a Ctrl
+  chord, a Ctrl+wheel notch, a `fit_design` recompute at resize, or a hook
+  writing `set_ui_zoom`, none of which raises that event. Rather than chase
+  four call sites and lose one later, all of them reach the host through an
+  event or a wake, so `sync_app_frame_extents` is called at the end of each
+  and compares the layout scale against the scale it last published at. That
+  keeps one owner for the property and costs an `f64` compare per turn, not
+  per frame. `ScaleFactorChanged` loses its special-case publish, and the
+  resume path gains one call after `refresh_fit_zoom`, which moves the scale
+  off the device scale the creation-time publish used. Type-checked by
+  temporarily un-gating the Linux path on Windows with `x11rb` added to that
+  target: the only errors left are the two pre-existing `winit::platform::
+  wayland` calls the un-gating exposes. 281 host, rootstock and cambium tests
+  green.
