@@ -34,12 +34,30 @@ const ON_POINTER_ID: ViewId = ViewId::new(0x504F_494E);
 /// Which phase of a pointer drag a [`PointerEvent`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerPhase {
-    /// Button pressed on the element; begins capture.
+    /// Button pressed on the element; begins capture for
+    /// [`PointerButton::Primary`].
     Down,
     /// Pointer moved while captured (the button is held).
     Move,
     /// Button released; ends capture.
     Up,
+}
+
+/// Which button a [`PointerEvent`] came from.
+///
+/// **Capture belongs to the primary button.** A `Secondary` `Down` routes to
+/// the same handler a primary press would capture, but starts no drag: there
+/// is no `Move` or `Up` to follow it, and an unrelated primary release must
+/// never deliver an `Up` for a capture that never began. A context menu is a
+/// press, not a gesture, so the one-shot is the whole of it. See
+/// [`GenetAppRunner::dispatch_pointer_down`](crate::GenetAppRunner::dispatch_pointer_down).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointerButton {
+    /// The left button, or the platform's equivalent. Begins capture.
+    #[default]
+    Primary,
+    /// The right button — the context-menu press. One-shot; no capture.
+    Secondary,
 }
 
 /// A native pointer-drag event payload.
@@ -52,6 +70,9 @@ pub enum PointerPhase {
 #[derive(Clone, Debug)]
 pub struct PointerEvent {
     pub phase: PointerPhase,
+    /// Which button produced this event. [`PointerButton::Primary`] unless the
+    /// host marked it otherwise with [`with_button`](PointerEvent::with_button).
+    pub button: PointerButton,
     pub local: (f32, f32),
     pub size: (f32, f32),
     /// Clone-through cancellation state — the native twin of a JS event's
@@ -67,16 +88,27 @@ pub struct PointerEvent {
 }
 
 impl PointerEvent {
-    /// A pointer event with a fresh [`Propagation`] cell. The host builds one per
-    /// winit pointer event from the captured element's laid-out rect.
+    /// A primary-button pointer event with a fresh [`Propagation`] cell. The
+    /// host builds one per winit pointer event from the captured element's
+    /// laid-out rect. Mark a right press with
+    /// [`with_button`](Self::with_button).
     pub fn new(phase: PointerPhase, local: (f32, f32), size: (f32, f32)) -> Self {
         Self {
             phase,
+            button: PointerButton::Primary,
             local,
             size,
             prop: Propagation::new(),
             rebuild_deferred: Rc::new(Cell::new(false)),
         }
+    }
+
+    /// The same event, attributed to `button`. A host builds a right press as
+    /// `PointerEvent::new(PointerPhase::Down, local, size)
+    /// .with_button(PointerButton::Secondary)`.
+    pub fn with_button(mut self, button: PointerButton) -> Self {
+        self.button = button;
+        self
     }
 
     /// Defer the retained view rebuild for this captured pointer pass.
@@ -342,6 +374,101 @@ mod tests {
             "release does not reset the value"
         );
         assert_eq!(runner.pointer_capture(), None, "up releases the capture");
+    }
+
+    struct ButtonState {
+        seen: Vec<(PointerPhase, PointerButton)>,
+    }
+
+    type ButtonView = Box<dyn AnyView<ButtonState, (), GenetCtx, GenetElement>>;
+
+    fn button_view(_state: &ButtonState) -> ButtonView {
+        Box::new(on_pointer(
+            el("div", ()),
+            |state: &mut ButtonState, event: PointerEvent| {
+                state.seen.push((event.phase, event.button));
+            },
+        ))
+    }
+
+    /// The whole of M4's cambium half: a right press reaches the same
+    /// `on_pointer` handler a left press would, tells the handler which button
+    /// it was, and starts no drag — so the release of an unrelated left press
+    /// cannot arrive at a capture that never began.
+    #[test]
+    fn a_secondary_press_routes_to_the_handler_without_capturing() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
+            dom.clone(),
+            button_view,
+            ButtonState { seen: Vec::new() },
+        );
+        let root = runner.root();
+
+        runner.dispatch_pointer_down(
+            root,
+            PointerEvent::new(PointerPhase::Down, (6.0, 7.0), BOX)
+                .with_button(PointerButton::Secondary),
+        );
+        assert_eq!(
+            runner.state().seen,
+            vec![(PointerPhase::Down, PointerButton::Secondary)],
+            "the handler receives the press and is told it was the right button",
+        );
+        assert_eq!(
+            runner.pointer_capture(),
+            None,
+            "a secondary press is one-shot: it begins no drag",
+        );
+
+        // Nothing to route a move or a release to, so neither reaches the
+        // handler — the coherence the one-shot buys.
+        runner.dispatch_pointer_move(drag(PointerPhase::Move, 20.0));
+        runner.dispatch_pointer_up(drag(PointerPhase::Up, 20.0));
+        assert_eq!(
+            runner.state().seen.len(),
+            1,
+            "no capture means no Move and no stray Up",
+        );
+
+        // And the ordinary press still captures, with the default button.
+        runner.dispatch_pointer_down(root, drag(PointerPhase::Down, 12.0));
+        assert_eq!(
+            runner.state().seen.last().copied(),
+            Some((PointerPhase::Down, PointerButton::Primary)),
+            "`PointerEvent::new` is unchanged: it means the primary button",
+        );
+        assert_eq!(runner.pointer_capture(), Some(root));
+    }
+
+    /// A right press during a drag is a bystander: it must not steal the
+    /// capture the left button is holding.
+    #[test]
+    fn a_secondary_press_leaves_an_active_capture_alone() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
+            dom.clone(),
+            button_view,
+            ButtonState { seen: Vec::new() },
+        );
+        let root = runner.root();
+
+        runner.dispatch_pointer_down(root, drag(PointerPhase::Down, 12.0));
+        assert_eq!(runner.pointer_capture(), Some(root));
+
+        runner.dispatch_pointer_down(
+            root,
+            PointerEvent::new(PointerPhase::Down, (6.0, 7.0), BOX)
+                .with_button(PointerButton::Secondary),
+        );
+        assert_eq!(
+            runner.pointer_capture(),
+            Some(root),
+            "the left button still owns the gesture",
+        );
+
+        runner.dispatch_pointer_up(drag(PointerPhase::Up, 20.0));
+        assert_eq!(runner.pointer_capture(), None, "the left release ends it");
     }
 
     struct DeferredState {
