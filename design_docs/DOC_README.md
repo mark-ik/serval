@@ -27,6 +27,15 @@ repatriated here from mere.
    including the `docs/` boundary and the smolweb split.
 3. The area root you are working in, below.
 
+## ortet — the raw host
+
+- [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**plan,
+  2026-09-03; O0 and O1 in progress**: the one headed port that proves the
+  engine runs without Mere, over `genet-winit-host`, `genet-render-host`,
+  `genet-documents`' Livery lane and `document-session-api`, with a cone
+  witness that forbids every Mere crate and a self-driven frame receipt.
+  Takes Pelt's place when Pelt moves to mere under the boundary plan.)
+
 ## fleece — reader extraction
 
 - [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
@@ -49,6 +58,15 @@ repatriated here from mere.
   consumed as `genet-taffy 0.14.0`, published and tagged
   `genet-taffy-v0.14.0` at the Row 18 closure; 0.13.1 was the eight-input
   seam before it.)
+
+## cambium — the desktop host
+
+- [host_ui_zoom_plan](2026-09-03_host_ui_zoom_plan.md) (**plan, 2026-09-03**:
+  one effective layout scale, device scale times zoom, inside
+  cambium-rootstock; `HostOptions::ui_zoom` and `fit_design`, a runtime
+  setter, the browser zoom ladder on Ctrl chords with app veto, persistence
+  left to the settings contract's existing `ui_zoom` axis. Isometry's board
+  keeps integer device multiples behind a default-on toggle. Gates Z0-Z5.)
 
 ## workspace composition
 
