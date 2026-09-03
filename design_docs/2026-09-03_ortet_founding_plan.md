@@ -1,6 +1,8 @@
 # Ortet founding plan
 
-**Status:** plan, 2026-09-03. O0 and O1 in progress the same day.
+**Status:** in progress, 2026-09-03. O0 and O1 landed the same day; O2, O3 and
+O4 open. One carve-out in O0's forbidden set needs a ruling — see Findings,
+`fleece`.
 
 Ortet is the raw genet host: the one headed port that proves the engine runs
 without Mere. The platform boundary plan
@@ -142,6 +144,131 @@ reference, and the boundary plan and naming ledger both say so.
   routing, Pelt profiles and seven product receipts. Ortet is written fresh
   against the two host crates and the session traits, not extracted from it.
 
+- 2026-09-03 (**needs a ruling**): the forbidden set above names `fleece`, but
+  ortet cannot avoid it and no amount of care in ortet will change that.
+  `genet-documents` reaches `fleece::extract_main_text` unconditionally at
+  `components/genet-documents/src/engines/clip.rs:114`, so anything holding a
+  `LiverySessionEngine` holds fleece. This is not an oversight in the manifest:
+  §9.1 of the boundary plan already **reclassed fleece as independent** — "it
+  may stay in genet as a lower library or leave for its own repository, but it
+  does not go to Mere" — with `genet-scripted` and `genet-documents` as its
+  engine-side consumers and a CI-witnessed cone of `layout_dom_api` +
+  `unicode-segmentation`. The two documents disagree, and this plan's list is
+  the later one. Resolved for now by naming fleece separately in
+  `assert_ortet_cone` (`ORTET_RECLASSED`), which prints it on every run and
+  fails if the carve-out ever widens, rather than dropping it from the list
+  silently. Three ways to settle it: strike fleece from this plan's list and
+  cite §9.1; move the clip lane behind a `genet-documents` feature ortet does
+  not enable; or reclass fleece back and split it out of `genet-documents`.
+  The first is the smallest and matches the boundary plan; it is Mark's call.
+
+- 2026-09-03: nothing else in the forbidden set is reachable. `assert_ortet_cone`
+  walks 592 packages from ortet over normal (non-dev, non-build) resolve edges
+  and finds none of `inker`, `workbench`, `cambium*`, `mere-*`, `nematic`,
+  `errand`, `document-canvas`, `pelt*`, `tabard`, `knot-editor-host`. The
+  positive control over `pelt-desktop`'s cone reports eleven of them, `inker`
+  included, so a clean result is not a broken walk.
+
+- 2026-09-03: **an in-page `#fragment` link never reaches the host.**
+  `genet-livery` scrolls to the element itself and returns
+  `ClickOutcome::Scrolled` (`components/genet-livery/src/document/selection.rs:253`),
+  which the session adapter turns into `SessionClick::Handled`. Only a
+  cross-document href becomes `SessionClick::Navigate`. O1's plan text ("a
+  `SessionClick` whose effect navigates spawns a new session") is therefore
+  right about the mechanism but describes only half the fixture's link
+  behaviour; both halves are receipted below.
+
+- 2026-09-03: an address the user typed as a filesystem path has to be
+  normalized to an absolute `file://` URL before it reaches the engine.
+  `genet_host_api::navigation::resolve_href` joins a `#fragment` onto the
+  *document* only for a base with a scheme; against a bare path it joins onto
+  the directory (`docs/a.html` + `#x` -> `docs/#x`). `args::address_from_argument`
+  does the normalization, and its scheme test has a two-character floor so a
+  Windows drive letter (`C:\pages\a.html`) stays a path rather than a `c:` URL.
+
+- 2026-09-03: `NetrenderOptions::for_untrusted_content()` sets only
+  `apply_limit_buckets`; it leaves `tile_cache_size` and `enable_vello` at their
+  defaults, and `render_vello` needs both. The host must spread it:
+  `NetrenderOptions { tile_cache_size: Some(64), enable_vello: true,
+  ..NetrenderOptions::for_untrusted_content() }`.
+
+- 2026-09-03 (observation, not ortet's to fix): in the scrolled receipt the
+  fixture's `float: right` figure overlaps the body text it should displace,
+  and its `figcaption` paints over the following paragraph. The float lands in
+  the right place at the top of the document, so this is a Buckram float/line-box
+  interaction, not a host bug. Recorded here because ortet is now a cheap way to
+  see such things; chasing it belongs to the layout lane.
+
 ## Progress
 
 - 2026-09-03: plan written; O0 and O1 dispatched.
+
+- 2026-09-03: **O0 landed.** `ports/ortet` founded: `Cargo.toml` (workspace
+  version/license/edition/publish, its own description), `README.md`,
+  `src/lib.rs`, `src/args.rs`, `src/fetch.rs`, `src/main.rs`; workspace member
+  entry beside `ports/pelt`; every source carries the house header (the
+  relicense audit's "without Exhibit A" stayed at 6, all in other lanes, while
+  owned sources went 881 -> 885). `support/ci/check_dependency_cones.py` gained
+  `assert_ortet_cone`, wired into `main()` on the resolve-graph metadata the
+  Mere-source witness already fetches, so the script runs `cargo metadata`
+  no more often than before.
+
+  Receipt — `python support/ci/check_dependency_cones.py`:
+
+  ```
+  ortet cone: 592 packages, none forbidden; positive control over pelt-desktop
+  reports ['cambium', 'cambium-genet-winit-host', 'cambium-rootstock',
+  'cambium-winit', 'cambium-winit-a11y', 'document-canvas', 'inker',
+  'mere-document-lanes', 'mere-surface-api', 'pelt-core', 'workbench']
+  ortet cone note: ['fleece'] present - reclassed independent by the boundary
+  plan 9.1, reached through genet-documents' clip lane
+  dependency-cone witnesses passed
+  ```
+
+  Done-conditions: `cargo check -p ortet` green; the witness passes with its
+  positive control; the script is the one CI already runs. All met, with the
+  `fleece` carve-out recorded in Findings.
+
+- 2026-09-03: **O1 landed.** `src/shell.rs` (the winit window, the per-frame
+  shape, pointer / wheel / keyboard / text / IME / focus / resize routing, and
+  navigation as re-spawning the session) and `src/receipt.rs` (compose into an
+  owned texture, read back, write the PNG through `png`, digest through
+  `RgbaFrame::digest`, non-zero exit on a blank frame). Fixture under
+  `ports/ortet/examples/`: `article.html` (script-free, a linked `article.css`,
+  a generated 48x48 `mark.png`, an in-page `#propagation` link and a
+  cross-document link) plus `notes.html`. The swatch is written byte by byte,
+  not borrowed.
+
+  A headed run driven by a person is not something CI or an agent can produce,
+  so the plan's headed done-condition is met instead by `--actions`, a
+  deliberately two-verb driving list (`scroll:<dx>,<dy>`, `click:<x>,<y>`)
+  applied once after the first laid-out frame. It is documented in the README
+  and is not to grow into a scripting language.
+
+  Receipts, all at 960x640 on a 2x display (so a 480x320 logical viewport):
+
+  | run | actions | frame digest | settled at |
+  | --- | --- | --- | --- |
+  | article, run 1 | none | `0x6377ba8a6bf4dbc9` | `article.html` |
+  | article, run 2 | none | `0x6377ba8a6bf4dbc9` | `article.html` |
+  | scrolled | `scroll:0,240` | `0x43a2675a3e2a6712` | `article.html` |
+  | in-page link | `click:100,185` | `0x48442e53798e22f3` | `article.html` |
+  | cross-document link | `click:210,185` | `0xb4499d1e2aea318b` | `notes.html` |
+
+  The two unactioned runs agree to the digest *and* byte-for-byte in the PNG
+  (sha256 `da19d04a3cbd5403e12435a8f677ce31…`), so the receipt is reproducible on
+  one machine. Both driven runs move the digest, and the frames show it: the
+  scrolled frame opens on "What the word carries", the fragment frame on the
+  "Propagation" heading, the cross-document frame on "Field notes". The address
+  moves only for the cross-document run, which is the Findings entry above made
+  visible. Nothing is blank; a blank frame would have exited non-zero.
+
+  Done-conditions: identical digest across two runs on one machine, yes;
+  non-blank, yes; the headed scroll + in-page link + second document, met
+  through `--actions` receipts rather than a person's hands; `cargo test -p
+  ortet` green (10 unit tests over the argument parser and the fetcher's scheme
+  split, including a positive control that the local lane really reads a file,
+  so its "unsupported scheme" misses are not an instrument that answers `None`
+  to everything); `cargo check -p ortet` green with no new warnings;
+  `cargo clippy -p ortet` reports nothing in ortet's own sources (the workspace
+  lints it does report are pre-existing elsewhere). The O0 witness still passes.

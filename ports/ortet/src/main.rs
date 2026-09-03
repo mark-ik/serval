@@ -5,13 +5,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! `ortet` — open one document in one window. See the crate docs in `lib.rs`.
-//!
-//! At O0 the binary is the front end only: it parses the command line, resolves
-//! the address, and reports which fetch lane will serve it. O1 hands the
-//! resolved configuration to the winit shell.
 
 use ortet::args::{self, Invocation};
-use ortet::fetch::lane_for;
+use ortet::fetch::OrtetFetcher;
+use ortet::shell;
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -32,11 +29,26 @@ fn run() -> Result<(), String> {
         Invocation::Run(config) => *config,
     };
 
+    // Both lanes, always: a local page may name a remote stylesheet or image,
+    // and the scheme split — not the address ortet was started with — is what
+    // decides where each request goes.
+    let fetcher = OrtetFetcher::with_network()?;
+
     println!("ortet: address {}", config.address);
-    println!("ortet: lane {:?}", lane_for(&config.address));
+    let outcome = shell::run(config, fetcher)?;
     println!(
-        "ortet: window {}x{}, frames {:?}, artifact {:?}",
-        config.size.0, config.size.1, config.frames, config.artifact
+        "ortet: presented {} frame(s) at {}x{}",
+        outcome.frames, outcome.size.0, outcome.size.1
     );
-    Err("the ortet viewer lands in O1 of the founding plan".to_owned())
+    // The address the run ended on, which differs from the one it started on
+    // exactly when a link was followed. That is the whole of what a navigation
+    // receipt has to show.
+    println!("ortet: settled at {}", outcome.address);
+    if let (Some(artifact), Some(digest)) = (&outcome.artifact, outcome.digest) {
+        println!(
+            "ortet: receipt {} digest 0x{digest:016x}",
+            artifact.display()
+        );
+    }
+    Ok(())
 }

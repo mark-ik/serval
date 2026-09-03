@@ -67,7 +67,17 @@ cargo run -p ortet -- --url ports/ortet/examples/article.html \
 
 The digest is FNV-1a over the frame's RGBA bytes (`RgbaFrame::digest`), so two
 runs of the same address on the same machine agree, and a run whose content
-moved does not.
+moved does not. Every run also prints `settled at <address>`, which is the
+address it *ended* on: it differs from the one it started on exactly when a link
+was followed, so a navigation receipt needs nothing else to be legible.
+
+Note that an in-page `#fragment` link never reaches the host. `genet-livery`
+scrolls to the element itself and reports `ClickOutcome::Scrolled`
+(`components/genet-livery/src/document/selection.rs:253`), which arrives here as
+`SessionClick::Handled`. Only a cross-document href becomes
+`SessionClick::Navigate` and replaces the session. Both are visible in the
+receipts: the fragment run's digest moves while its address does not, and the
+cross-document run's does both.
 
 ## The fixture
 

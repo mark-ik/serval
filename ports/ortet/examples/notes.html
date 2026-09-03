@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ortet — field notes</title>
+<link rel="stylesheet" href="article.css">
+</head>
+<body>
+<header>
+  <h1>Field notes</h1>
+  <p class="standfirst">The second document. Following the link from the article
+  spawns a new session for this address; there is no history to go back
+  through.</p>
+  <nav><a href="article.html">Back to the article</a></nav>
+</header>
+
+<main>
+  <h2>Why a second file</h2>
+  <p>An in-page fragment and a cross-document link are different mechanisms that
+  look identical to a reader. The first is the session scrolling itself; the
+  second is the host throwing the session away and spawning another one for a
+  new address. A fixture with only the first would let a host pass while owning
+  no navigation at all.</p>
+
+  <h2>What arriving here proves</h2>
+  <p>That the click reached the session, that the session named a target rather
+  than fetching one itself, that the host resolved that target against the
+  address it was already on, and that the fetch lane read the new file off
+  disk.</p>
+</main>
+
+<footer>
+  <p>Fixture for <code>ports/ortet</code>. Script-free by construction.</p>
+</footer>
+</body>
+</html>

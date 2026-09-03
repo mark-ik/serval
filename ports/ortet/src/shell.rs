@@ -1,0 +1,550 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
+//! The window and its event loop.
+//!
+//! One `winit` window, one `SurfaceHost`, one `DocumentSession<Scene>`. The
+//! shell owns exactly three things a session cannot: the window, the fetch
+//! seam, and navigation. Following a link is spawning a new session for the
+//! resolved address — there is no history, no registry, and no controller
+//! between the winit event and the session's own input vocabulary.
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use document_session_api::session_engine::{
+    DocumentSession, SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine,
+    SessionIme, SessionInput, SessionKey, SessionModifiers, SessionPointerButton, SessionScrollKey,
+    SessionSpawnRequest,
+};
+use genet_documents::LiverySessionEngine;
+use genet_host_api::navigation::resolve_href;
+use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
+use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Window, WindowId};
+
+use crate::args::{Action, Config};
+use crate::fetch::OrtetFetcher;
+use crate::receipt;
+
+/// What a completed run has to say for itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Outcome {
+    pub address: String,
+    pub frames: u32,
+    pub size: (u32, u32),
+    pub artifact: Option<std::path::PathBuf>,
+    pub digest: Option<u64>,
+}
+
+/// Open the window and run the document until the frame budget or the user
+/// closes it.
+pub fn run(config: Config, fetcher: OrtetFetcher) -> Result<Outcome, String> {
+    let engine = LiverySessionEngine::new(fetcher);
+    // Spawn before the window exists so a bad address fails without flashing a
+    // window at anyone.
+    let session = spawn(&engine, &config.address, config.size)?;
+    let event_loop =
+        EventLoop::new().map_err(|error| format!("could not create the event loop: {error}"))?;
+    let mut app = Ortet::new(config, engine, session);
+    event_loop
+        .run_app(&mut app)
+        .map_err(|error| format!("the ortet event loop failed: {error}"))?;
+    match app.failure {
+        Some(failure) => Err(failure),
+        None => Ok(app.outcome()),
+    }
+}
+
+fn spawn(
+    engine: &LiverySessionEngine<OrtetFetcher>,
+    address: &str,
+    (width, height): (u32, u32),
+) -> Result<Box<dyn DocumentSession<Scene>>, String> {
+    let request = SessionSpawnRequest::new(address).with_viewport(width, height);
+    engine
+        .spawn(&request)
+        .map_err(|error| format!("could not open {address}: {error}"))
+}
+
+struct Ortet {
+    config: Config,
+    engine: LiverySessionEngine<OrtetFetcher>,
+    address: String,
+    session: Box<dyn DocumentSession<Scene>>,
+    window: Option<Arc<Window>>,
+    host: Option<SurfaceHost>,
+    width: u32,
+    height: u32,
+    /// Physical device pixels per logical layout pixel.
+    scale_factor: f32,
+    frames: u32,
+    modifiers: SessionModifiers,
+    /// Last cursor position in logical pixels; winit's button events carry none.
+    cursor: (f32, f32),
+    pointer_captured: bool,
+    /// Driving steps still to apply. They run once, after the first frame has
+    /// established geometry, so a `click` has a laid-out box to hit.
+    pending_actions: Vec<Action>,
+    start: Instant,
+    capture: Option<(std::path::PathBuf, u64)>,
+    failure: Option<String>,
+}
+
+impl Ortet {
+    fn new(
+        config: Config,
+        engine: LiverySessionEngine<OrtetFetcher>,
+        session: Box<dyn DocumentSession<Scene>>,
+    ) -> Self {
+        Self {
+            address: config.address.clone(),
+            pending_actions: config.actions.clone(),
+            width: config.size.0,
+            height: config.size.1,
+            config,
+            engine,
+            session,
+            window: None,
+            host: None,
+            scale_factor: 1.0,
+            frames: 0,
+            modifiers: SessionModifiers::default(),
+            cursor: (0.0, 0.0),
+            pointer_captured: false,
+            start: Instant::now(),
+            capture: None,
+            failure: None,
+        }
+    }
+
+    fn outcome(&self) -> Outcome {
+        Outcome {
+            address: self.address.clone(),
+            frames: self.frames,
+            size: (self.width, self.height),
+            artifact: self.capture.as_ref().map(|(path, _)| path.clone()),
+            digest: self.capture.as_ref().map(|(_, digest)| *digest),
+        }
+    }
+
+    fn logical_size(&self) -> (u32, u32) {
+        let logical = |extent: u32| {
+            if self.scale_factor > 0.0 {
+                ((extent as f32 / self.scale_factor).round() as u32).max(1)
+            } else {
+                extent.max(1)
+            }
+        };
+        (logical(self.width), logical(self.height))
+    }
+
+    fn request_redraw(&self) {
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn retitle(&self) {
+        if let Some(window) = self.window.as_ref() {
+            window.set_title(&format!("ortet — {}", self.address));
+        }
+    }
+
+    /// Follow a link: resolve it against the current address and replace the
+    /// session. Ortet keeps no history, so this is the whole of navigation.
+    fn navigate(&mut self, target: &str) {
+        let resolved = resolve_href(&self.address, target);
+        if resolved == self.address {
+            return;
+        }
+        match spawn(&self.engine, &resolved, self.logical_size()) {
+            Ok(session) => {
+                self.session = session;
+                self.address = resolved;
+                self.retitle();
+                self.request_redraw();
+            },
+            Err(error) => eprintln!("[ortet] {error}"),
+        }
+    }
+
+    fn apply_click(&mut self, click: SessionClick) {
+        match click {
+            SessionClick::Navigate(target) => self.navigate(&target),
+            SessionClick::Submit(action) => {
+                // Collecting and confirming a request body is a product flow,
+                // and product flows are Mere's. Ortet says so instead of
+                // inventing one.
+                eprintln!("[ortet] form submission to {action} is not wired in this host");
+            },
+            SessionClick::Handled | SessionClick::Miss => {},
+        }
+    }
+
+    /// Run the `--actions` list once, against a document that has already been
+    /// laid out at the current viewport.
+    fn drive_pending_actions(&mut self) {
+        let actions = std::mem::take(&mut self.pending_actions);
+        let (width, height) = self.logical_size();
+        for action in actions {
+            match action {
+                Action::Scroll { dx, dy } => {
+                    let centre = (width as f32 * 0.5, height as f32 * 0.5);
+                    self.session.scroll_at(centre.0, centre.1, dx, dy);
+                },
+                Action::Click { x, y } => {
+                    // Press and release, the same pair a mouse produces: the
+                    // Livery lane activates a link on the matching release.
+                    let _ = self.session.pointer_down(x, y);
+                    let click = self.session.pointer_up(x, y);
+                    self.apply_click(click);
+                },
+            }
+        }
+    }
+
+    /// Dispatch one neutral input and apply everything the session asked the
+    /// host for. Returns `(handled, editable)` so the keyboard path can decide
+    /// whether its scroll default still applies.
+    fn apply_input(&mut self, input: SessionInput) -> (bool, bool) {
+        let result = self.session.input(input);
+        if let Some(capture) = result.capture {
+            self.pointer_captured = capture;
+        }
+        if let Some(window) = self.window.as_ref() {
+            if let Some(cursor) = result.cursor {
+                window.set_cursor(match cursor {
+                    SessionCursor::Default => winit::window::CursorIcon::Default,
+                    SessionCursor::Pointer => winit::window::CursorIcon::Pointer,
+                    SessionCursor::Text => winit::window::CursorIcon::Text,
+                });
+            }
+            window.set_ime_allowed(result.editable);
+        }
+        let handled = result.effect.is_handled();
+        match result.effect {
+            SessionEffect::Navigate(target) => self.navigate(&target),
+            SessionEffect::Submit(submission) => eprintln!(
+                "[ortet] form submission to {} is not wired in this host",
+                submission.action
+            ),
+            SessionEffect::Handled | SessionEffect::Cancelled => self.request_redraw(),
+            SessionEffect::Ignored => {},
+        }
+        (handled, result.editable)
+    }
+
+    /// The per-frame shape the host crates document: rasterize the scene into a
+    /// texture, acquire the backbuffer, composite, present.
+    fn render(&mut self, event_loop: &ActiveEventLoop) {
+        let now_ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        self.session.pump(now_ms);
+        if self.host.is_none() {
+            return;
+        }
+        // The scene is produced before the host is borrowed: driving the
+        // pending actions can replace the session, which needs `&mut self`.
+        let (width, height) = self.logical_size();
+        let mut scene = self.session.frame(width, height);
+        if !self.pending_actions.is_empty() {
+            self.drive_pending_actions();
+            // The actions changed retained state (and may have replaced the
+            // session). Present that, not the geometry probe above.
+            scene = self.session.frame(width, height);
+        }
+        let Some(host) = self.host.as_ref() else {
+            return;
+        };
+        let (_scene_texture, view) = host.rasterize_scaled(
+            &scene,
+            self.width.max(1),
+            self.height.max(1),
+            // A document with no root background paints over white, as a
+            // browser's page canvas does.
+            ColorLoad::Clear(wgpu::Color::WHITE),
+            self.scale_factor,
+        );
+
+        let capture_now = self.config.artifact.is_some()
+            && self.capture.is_none()
+            && self
+                .config
+                .frames
+                .is_none_or(|limit| self.frames.saturating_add(1) >= limit);
+        let captured = if capture_now {
+            let path = self
+                .config
+                .artifact
+                .as_deref()
+                .expect("capture is gated on an artifact path");
+            match receipt::capture(host, &view, self.width, self.height, path) {
+                Ok(captured) => Some(captured),
+                Err(error) => {
+                    self.failure = Some(error);
+                    event_loop.exit();
+                    return;
+                },
+            }
+        } else {
+            None
+        };
+
+        let Some(frame) = host.acquire() else { return };
+        let target = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let presented = captured.as_ref().map_or(&view, |captured| &captured.view);
+        host.renderer().compose_external_texture(
+            presented,
+            &target,
+            host.format(),
+            self.width,
+            self.height,
+            ExternalTexturePlacement::new([0.0, 0.0, self.width as f32, self.height as f32]),
+        );
+        host.queue().present(frame);
+        self.frames += 1;
+        if let Some(captured) = captured {
+            self.capture = Some((captured.path, captured.digest));
+        }
+
+        if let Some(limit) = self.config.frames {
+            if self.frames >= limit {
+                event_loop.exit();
+                return;
+            }
+            // A static document settles after its first paint, so a bounded run
+            // owns its own next redraw until the budget is met.
+            self.request_redraw();
+        } else if !self.session.settled() {
+            self.request_redraw();
+        }
+    }
+}
+
+impl ApplicationHandler for Ortet {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let attributes = Window::default_attributes()
+            .with_title(format!("ortet — {}", self.address))
+            .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height));
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                self.failure = Some(format!("could not create the window: {error}"));
+                event_loop.exit();
+                return;
+            },
+        };
+        let size = window.inner_size();
+        self.width = size.width.max(1);
+        self.height = size.height.max(1);
+        self.scale_factor = window.scale_factor() as f32;
+        // A raw browsing host is exactly the case wgpu's limit bucketing exists
+        // for: adapter limits are a fingerprinting surface and the content here
+        // is untrusted by construction.
+        let options = NetrenderOptions {
+            tile_cache_size: Some(64),
+            enable_vello: true,
+            ..NetrenderOptions::for_untrusted_content()
+        };
+        match SurfaceHost::boot(window.clone(), self.width, self.height, options) {
+            Ok(host) => self.host = Some(host),
+            Err(error) => {
+                self.failure = Some(error);
+                event_loop.exit();
+                return;
+            },
+        }
+        window.request_redraw();
+        self.window = Some(window);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        if self.window.as_ref().map(|window| window.id()) != Some(window_id) {
+            return;
+        }
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                self.width = size.width.max(1);
+                self.height = size.height.max(1);
+                if let Some(host) = self.host.as_mut() {
+                    host.resize(self.width, self.height);
+                }
+                self.request_redraw();
+            },
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = scale_factor as f32;
+                if let Some(window) = self.window.as_ref() {
+                    let size = window.inner_size();
+                    self.width = size.width.max(1);
+                    self.height = size.height.max(1);
+                }
+                if let Some(host) = self.host.as_mut() {
+                    host.resize(self.width, self.height);
+                }
+                self.request_redraw();
+            },
+            WindowEvent::MouseWheel { delta, .. } => {
+                // The shared wheel default action: `genet-winit-host` owns the
+                // translation, and the nested scroller under the pointer takes
+                // it before the document viewport does.
+                let (dx, dy) = wheel_delta_from_winit(delta);
+                let scale = if self.scale_factor > 0.0 {
+                    self.scale_factor
+                } else {
+                    1.0
+                };
+                let (dx, dy) = (dx / scale, dy / scale);
+                if self.session.scroll_at(self.cursor.0, self.cursor.1, dx, dy) {
+                    self.request_redraw();
+                }
+            },
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let state = modifiers.state();
+                self.modifiers = SessionModifiers {
+                    shift: state.shift_key(),
+                    control: state.control_key(),
+                    alt: state.alt_key(),
+                    meta: state.super_key(),
+                };
+            },
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = if self.scale_factor > 0.0 {
+                    self.scale_factor
+                } else {
+                    1.0
+                };
+                self.cursor = (position.x as f32 / scale, position.y as f32 / scale);
+                let (x, y) = self.cursor;
+                let _ = self.apply_input(SessionInput::PointerMoved {
+                    x,
+                    y,
+                    modifiers: self.modifiers,
+                });
+            },
+            WindowEvent::MouseInput { state, button, .. } => {
+                let (x, y) = self.cursor;
+                let _ = self.apply_input(SessionInput::PointerButton {
+                    x,
+                    y,
+                    button: pointer_button_from_winit(button),
+                    state: button_state_from_winit(state),
+                    modifiers: self.modifiers,
+                });
+            },
+            WindowEvent::KeyboardInput { event, .. } => {
+                let (handled, editable) = self.apply_input(SessionInput::Key {
+                    key: session_key_from_winit(&event.logical_key),
+                    state: button_state_from_winit(event.state),
+                    modifiers: self.modifiers,
+                    repeat: event.repeat,
+                });
+                if event.state == ElementState::Pressed
+                    && !handled
+                    && !editable
+                    && let Some(key) =
+                        scroll_key_from_winit(&event.logical_key, self.modifiers.shift)
+                    && self.session.scroll_for_key(key)
+                {
+                    self.request_redraw();
+                }
+            },
+            WindowEvent::Ime(ime) => {
+                let _ = self.apply_input(SessionInput::Ime(ime_from_winit(ime)));
+            },
+            WindowEvent::Focused(focused) => {
+                if !focused && self.pointer_captured {
+                    let _ = self.apply_input(SessionInput::Cancel);
+                    self.pointer_captured = false;
+                }
+                let _ = self.apply_input(SessionInput::Focus(focused));
+            },
+            WindowEvent::RedrawRequested => self.render(event_loop),
+            _ => {},
+        }
+    }
+}
+
+fn session_key_from_winit(key: &Key) -> SessionKey {
+    match key {
+        Key::Character(text) => SessionKey::Character(text.to_string()),
+        Key::Named(NamedKey::Enter) => SessionKey::Enter,
+        Key::Named(NamedKey::Tab) => SessionKey::Tab,
+        Key::Named(NamedKey::Backspace) => SessionKey::Backspace,
+        Key::Named(NamedKey::Delete) => SessionKey::Delete,
+        Key::Named(NamedKey::Escape) => SessionKey::Escape,
+        Key::Named(NamedKey::Space) => SessionKey::Space,
+        Key::Named(NamedKey::ArrowLeft) => SessionKey::ArrowLeft,
+        Key::Named(NamedKey::ArrowRight) => SessionKey::ArrowRight,
+        Key::Named(NamedKey::ArrowUp) => SessionKey::ArrowUp,
+        Key::Named(NamedKey::ArrowDown) => SessionKey::ArrowDown,
+        Key::Named(NamedKey::Home) => SessionKey::Home,
+        Key::Named(NamedKey::End) => SessionKey::End,
+        Key::Named(NamedKey::PageUp) => SessionKey::PageUp,
+        Key::Named(NamedKey::PageDown) => SessionKey::PageDown,
+        _ => SessionKey::Unidentified,
+    }
+}
+
+/// The keyboard scroll defaults, for keys the session did not consume.
+fn scroll_key_from_winit(key: &Key, shift: bool) -> Option<SessionScrollKey> {
+    Some(match key {
+        Key::Named(NamedKey::ArrowUp) => SessionScrollKey::LineUp,
+        Key::Named(NamedKey::ArrowDown) => SessionScrollKey::LineDown,
+        Key::Named(NamedKey::PageUp) => SessionScrollKey::PageUp,
+        Key::Named(NamedKey::PageDown) => SessionScrollKey::PageDown,
+        Key::Named(NamedKey::Home) => SessionScrollKey::Home,
+        Key::Named(NamedKey::End) => SessionScrollKey::End,
+        Key::Named(NamedKey::Space) => {
+            if shift {
+                SessionScrollKey::PageUp
+            } else {
+                SessionScrollKey::PageDown
+            }
+        },
+        _ => return None,
+    })
+}
+
+fn pointer_button_from_winit(button: MouseButton) -> SessionPointerButton {
+    match button {
+        MouseButton::Left => SessionPointerButton::Primary,
+        MouseButton::Right => SessionPointerButton::Secondary,
+        MouseButton::Middle | MouseButton::Back | MouseButton::Forward | MouseButton::Other(_) => {
+            SessionPointerButton::Auxiliary
+        },
+    }
+}
+
+fn button_state_from_winit(state: ElementState) -> SessionButtonState {
+    match state {
+        ElementState::Pressed => SessionButtonState::Pressed,
+        ElementState::Released => SessionButtonState::Released,
+    }
+}
+
+fn ime_from_winit(ime: winit::event::Ime) -> SessionIme {
+    match ime {
+        winit::event::Ime::Enabled => SessionIme::Enabled,
+        winit::event::Ime::Preedit(text, selection) => SessionIme::Preedit { text, selection },
+        winit::event::Ime::Commit(text) => SessionIme::Commit(text),
+        winit::event::Ime::Disabled => SessionIme::Disabled,
+    }
+}

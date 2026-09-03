@@ -16,15 +16,19 @@
 //! lane, no smolweb, no profiles, no settings, no persistence. All of those are
 //! product decisions, and product decisions live in Mere.
 //!
-//! O0 founds the crate with the two pieces that need no GPU:
+//! Four small pieces:
 //!
 //! - [`args`] — the command line, and the address normalization the fetch lanes
 //!   and `resolve_href` both rely on.
 //! - [`fetch`] — the scheme split: local schemes to `genet-documents`'
 //!   `LocalFetcher`, http(s) to netfetcher, everything else an honest miss.
+//! - [`shell`] — the winit window, the per-frame shape, and navigation.
+//! - [`receipt`] — one composed frame read back to a PNG with its digest.
 //!
-//! O1 adds the winit shell and the receipt path over them. The library half
-//! exists so both of the above can be unit-tested without a window.
+//! The library half exists so the argument parser and the scheme split can be
+//! unit-tested without a GPU; `main.rs` is a thin wrapper over [`shell::run`].
 
 pub mod args;
 pub mod fetch;
+pub mod receipt;
+pub mod shell;
