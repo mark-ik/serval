@@ -24,7 +24,9 @@ fn caching_cx() -> FetchContext {
         hsts: Box::new(crate::InMemoryHsts::new()),
         preflight: Box::new(crate::InMemoryPreflightCache::new()),
         alt_svc: Box::new(crate::InMemoryAltSvc::new()),
+        transport: crate::transport::default_transport(),
         redirect_limit: FetchContext::DEFAULT_REDIRECT_LIMIT,
+        cache_max_body_bytes: FetchContext::DEFAULT_CACHE_MAX_BODY_BYTES,
     }
 }
 
@@ -150,7 +152,9 @@ async fn records_set_cookie_through_the_jar() {
         hsts: Box::new(crate::InMemoryHsts::new()),
         preflight: Box::new(crate::InMemoryPreflightCache::new()),
         alt_svc: Box::new(crate::InMemoryAltSvc::new()),
+        transport: crate::transport::default_transport(),
         redirect_limit: FetchContext::DEFAULT_REDIRECT_LIMIT,
+        cache_max_body_bytes: FetchContext::DEFAULT_CACHE_MAX_BODY_BYTES,
     };
     let res = fetch(
         Request::get(format!("{}/c", server.url()).parse().unwrap()),
@@ -472,7 +476,9 @@ async fn records_alt_svc_h3_advertisement() {
         hsts: Box::new(crate::InMemoryHsts::new()),
         preflight: Box::new(crate::InMemoryPreflightCache::new()),
         alt_svc: Box::new(spy.clone()),
+        transport: crate::transport::default_transport(),
         redirect_limit: FetchContext::DEFAULT_REDIRECT_LIMIT,
+        cache_max_body_bytes: FetchContext::DEFAULT_CACHE_MAX_BODY_BYTES,
     };
     let _ = fetch(Request::get(server.url().parse().unwrap()), &cx)
         .await
@@ -511,4 +517,130 @@ async fn cors_response_headers_are_filtered() {
         !names.iter().any(|n| n.eq_ignore_ascii_case("x-secret")),
         "non-exposed header filtered out"
     );
+}
+
+// The transport seam (platform boundary plan, P1): every hop, the CORS
+// preflight included, crosses `FetchContext::transport`, and a context with no
+// transport can only fail.
+
+/// A transport that records every hop it is asked for and answers each with
+/// the same canned response.
+#[derive(Clone)]
+struct SpyTransport {
+    seen: Arc<Mutex<Vec<crate::transport::WireRequest>>>,
+    status: u16,
+    headers: Vec<(String, String)>,
+}
+
+impl crate::transport::Transport for SpyTransport {
+    fn send(
+        &self,
+        request: crate::transport::WireRequest,
+    ) -> crate::transport::TransportFuture<'_> {
+        self.seen.lock().unwrap().push(request);
+        let status = self.status;
+        let headers = self.headers.clone();
+        Box::pin(async move {
+            Some(crate::transport::RawResponse::once(
+                status,
+                headers,
+                bytes::Bytes::from_static(b"ok"),
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn every_hop_and_the_preflight_go_through_the_transport_seam() {
+    let spy = SpyTransport {
+        seen: Arc::default(),
+        status: 200,
+        headers: vec![
+            (
+                "access-control-allow-origin".to_owned(),
+                "https://app.example".to_owned(),
+            ),
+            ("access-control-allow-methods".to_owned(), "PUT".to_owned()),
+            (
+                "access-control-allow-headers".to_owned(),
+                "x-custom".to_owned(),
+            ),
+        ],
+    };
+    let cx = FetchContext::permissive().with_transport(Arc::new(spy.clone()));
+    let mut req = Request::get("https://api.example/resource".parse().unwrap())
+        .with_origin(origin_of("https://app.example/"));
+    req.method = crate::request::Method::Put;
+    req.headers.push(("x-custom".to_owned(), "1".to_owned()));
+
+    let res = fetch(req, &cx).await;
+
+    assert_eq!(res.status, 200);
+    assert_eq!(res.response_type, ResponseType::Cors);
+    let seen = spy.seen.lock().unwrap();
+    let hops: Vec<(String, String)> = seen
+        .iter()
+        .map(|r| (r.method.as_str().to_owned(), r.url.to_string()))
+        .collect();
+    assert_eq!(
+        hops,
+        vec![
+            (
+                "OPTIONS".to_owned(),
+                "https://api.example/resource".to_owned()
+            ),
+            ("PUT".to_owned(), "https://api.example/resource".to_owned()),
+        ],
+        "the preflight is a hop on the same seam as the request it guards"
+    );
+    let preflight = &seen[0];
+    let has = |name: &str, value: &str| {
+        preflight
+            .headers
+            .iter()
+            .any(|(k, v)| k == name && v == value)
+    };
+    assert!(has("access-control-request-method", "PUT"));
+    assert!(has("access-control-request-headers", "x-custom"));
+    assert!(has("origin", "https://app.example"));
+    assert!(preflight.body.is_none() && !preflight.prefer_h3);
+}
+
+#[tokio::test]
+async fn a_context_without_a_transport_is_a_network_error() {
+    let cx = FetchContext::permissive().with_transport(Arc::new(crate::transport::NoTransport));
+    let res = fetch(
+        Request::get("http://example.invalid/".parse().unwrap()),
+        &cx,
+    )
+    .await;
+    assert!(res.is_network_error());
+}
+
+#[tokio::test]
+async fn the_cache_body_cap_is_the_contexts_policy() {
+    use crate::cache::HttpCache;
+
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", "/five")
+        .with_status(200)
+        .with_header("cache-control", "max-age=60")
+        .with_body("hello")
+        .create_async()
+        .await;
+    let url: Url = format!("{}/five", server.url()).parse().unwrap();
+    let key = crate::cache::cache_key("GET", &url);
+
+    for (cap, stored) in [(4u64, false), (5, true)] {
+        let cache = Arc::new(InMemoryHttpCache::new());
+        let mut cx = caching_cx().with_cache_max_body_bytes(cap);
+        cx.cache = cache.clone();
+        let _ = fetch(Request::get(url.clone()), &cx).await.bytes().await;
+        assert_eq!(
+            cache.get(&key).is_some(),
+            stored,
+            "a five-byte body against a cap of {cap}"
+        );
+    }
 }

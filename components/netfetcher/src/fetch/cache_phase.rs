@@ -22,11 +22,6 @@ use crate::{FetchContext, Response};
 
 use super::util::header_val;
 
-/// Largest body buffered into the HTTP cache. Beyond this the response is streamed
-/// straight through (never cached): buffering a large media body to store it would
-/// stall the response, and it is not worth a cache slot.
-const CACHE_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
-
 /// Outcome of consulting the HTTP cache before going to the network.
 pub(super) enum CacheProbe {
     /// A usable stored response (a fresh hit, `force-cache`, or `only-if-cached`):
@@ -86,11 +81,11 @@ pub(super) fn probe_cache(
     CacheProbe::Proceed { revalidate }
 }
 
-/// Does `Content-Length` declare a body larger than the cache cap?
-pub(super) fn over_cache_size_cap(headers: &[(String, String)]) -> bool {
+/// Does `Content-Length` declare a body larger than the context's cache cap?
+pub(super) fn over_cache_size_cap(cx: &FetchContext, headers: &[(String, String)]) -> bool {
     header_val(headers, "content-length")
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .is_some_and(|len| len > CACHE_MAX_BODY_BYTES)
+        .is_some_and(|len| len > cx.cache_max_body_bytes)
 }
 
 /// A body stream that tees the decoded chunks it yields into the HTTP cache.

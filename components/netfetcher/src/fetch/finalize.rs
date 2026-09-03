@@ -19,8 +19,9 @@ use crate::sri;
 use crate::{FetchContext, Request, Response};
 use crate::{altsvc, hsts};
 
+use crate::transport::RawResponse;
+
 use super::cache_phase::{CachingBody, over_cache_size_cap, strip_body_encoding_headers};
-use super::transport::RawResponse;
 use super::util::header_val;
 
 /// Record the response-derived state a hop leaves behind: Set-Cookie (only when
@@ -138,7 +139,7 @@ pub(super) async fn finalize_response(
     // only once the body is read to completion. A body whose declared length
     // exceeds the cache cap is streamed without teeing (not worth a cache slot).
     if let Some(key) = cache_key {
-        if cache::is_cacheable(status, &headers) && !over_cache_size_cap(&headers) {
+        if cache::is_cacheable(status, &headers) && !over_cache_size_cap(cx, &headers) {
             let mut stored_headers = headers;
             strip_body_encoding_headers(&mut stored_headers);
             let caching = CachingBody {

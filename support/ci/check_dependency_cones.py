@@ -215,6 +215,37 @@ def self_test_mere_witness() -> None:
         fail(f"mere witness self-test expected exactly the three Mere routes, got {found}")
 
 
+# netfetcher's authority split (platform boundary plan P1): the Fetch semantics
+# Genet owns must link no transport. With default features off the resolved
+# graph may not contain any of these; the transport lanes bring them in only
+# behind `hyper-transport`, `h3` and `websocket`.
+NETFETCHER_TRANSPORT_CRATES = {
+    "hyper", "hyper-util", "hyper-rustls", "rustls", "quinn", "h3", "h3-quinn",
+    "tokio-tungstenite", "webpki-roots", "http", "http-body-util",
+}
+
+
+def assert_netfetcher_semantics_cone() -> None:
+    result = subprocess.run(
+        ["cargo", "tree", "-p", "netfetcher", "--no-default-features", "-e", "normal",
+         "--prefix", "none"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"cargo tree for netfetcher without default features failed:\n{result.stderr}")
+    names = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
+    if "netfetcher" not in names:
+        fail("cargo tree for netfetcher did not list netfetcher itself")
+    reached = sorted(names & NETFETCHER_TRANSPORT_CRATES)
+    if reached:
+        fail(f"netfetcher's semantics-only build reaches transport crates: {reached}")
+
+
 def main() -> None:
     assert_fleece_cone()
     metadata = cargo_metadata()
@@ -222,6 +253,7 @@ def main() -> None:
     assert_ports_depend_inward(metadata)
     self_test_mere_witness()
     assert_no_mere_source(cargo_metadata_resolved())
+    assert_netfetcher_semantics_cone()
     print("dependency-cone witnesses passed")
 
 

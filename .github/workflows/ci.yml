@@ -37,6 +37,8 @@ jobs:
           python3 support/ci/check_post_message_trace_tla.py --tla-tools-jar "$RUNNER_TEMP/tla2tools.jar"
       - name: Workspace check
         run: cargo check --workspace --all-targets
+      - name: Fetch semantics build without a transport
+        run: cargo check -p netfetcher --no-default-features
       - name: Workspace tests
         run: cargo test --workspace --all-targets
 

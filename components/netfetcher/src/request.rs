@@ -112,6 +112,22 @@ pub enum Method {
     Other(String),
 }
 
+impl Method {
+    /// The method token as sent on the wire; a custom token verbatim.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Method::Get => "GET",
+            Method::Head => "HEAD",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Delete => "DELETE",
+            Method::Patch => "PATCH",
+            Method::Options => "OPTIONS",
+            Method::Other(m) => m,
+        }
+    }
+}
+
 /// Fetch request mode (WHATWG Fetch §2.2.5) — gates CORS and response tainting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RequestMode {

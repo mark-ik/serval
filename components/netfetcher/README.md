@@ -117,8 +117,23 @@ Re-exported from `src/lib.rs`:
 - Storage backends: `InMemoryCookieJar`, `HttpCache`, `InMemoryHttpCache`,
   `NoHttpCache`, `StoredResponse`, `HstsStore`, `InMemoryHsts`, `AltSvcStore`,
   `InMemoryAltSvc`, `PreflightCache`, `InMemoryPreflightCache`.
-- Test seam: `accept_invalid_certs`.
-- WebSocket (native-only): `WebSocket`, `WsMessage`, `connect_websocket`.
+- Transport seam: `Transport`, `WireRequest`, `RawResponse`, `TransportFuture`,
+  `NoTransport`, `BodyStream`; with the `hyper-transport` feature (default),
+  `DefaultTransport` and its test knob `accept_invalid_certs`.
+- WebSocket (feature `websocket`, native-only): `WebSocket`, `WsMessage`,
+  `connect_websocket`.
+
+## Features and the authority split
+
+The Fetch semantics Genet owns are unconditional. The wire is behind features,
+all on by default: `hyper-transport` (hyper 1 over rustls, one process-wide
+pool, the transport every `FetchContext::permissive()` starts with), `h3` (the
+HTTP/3 lane the default transport tries first when Alt-Svc advertised it) and
+`websocket`. A host supplies its own `Transport` through
+`FetchContext::with_transport` to own connection pooling, TLS, trust anchors,
+client certificates, proxies and timeouts. `cargo check --no-default-features`
+builds the semantics with no transport at all; CI's dependency-cone witness
+asserts that build reaches no transport crate.
 
 ## Module map
 
@@ -131,7 +146,8 @@ All source lives under `src/` (single-crate library, no workspace members).
 | `request.rs` | The Fetch-spec `Request` type and builder. |
 | `response.rs` | The Fetch-spec `Response` and the streaming `ResponseBody`. |
 | `context.rs` | `FetchContext` and the pluggable policy/storage seams. |
-| `client.rs` | The shared hyper client (connection pool + rustls TLS). |
+| `transport.rs` | The transport seam: `Transport`, `WireRequest`, `RawResponse`, `NoTransport`. |
+| `transport/hyper.rs` | The default transport (feature `hyper-transport`): hyper client, rustls, the h3 lane. |
 | `cors.rs` | Response tainting, CORS simple/preflight, preflight cache. |
 | `cookie_jar.rs` | RFC 6265bis cookie jar. |
 | `cache.rs` | RFC 9111 HTTP cache (freshness + revalidation). |
@@ -164,10 +180,11 @@ servers (the h3 round-trip test stands up an in-process quinn h3 server with an
 
 Key pins from `Cargo.toml`:
 
-- Transport: `hyper` 1 (client, http1, http2), `hyper-util` 0.1 (legacy client /
-  connection pool), `http` 1, `http-body-util` 0.1.
-- TLS: `hyper-rustls` 0.27 (webpki-roots, ring, tls12), `rustls` 0.23 (ring, std,
-  tls12).
+- Transport (feature `hyper-transport`): `hyper` 1 (client, http1, http2),
+  `hyper-util` 0.1 (legacy client / connection pool), `http` 1,
+  `http-body-util` 0.1.
+- TLS (same feature): `hyper-rustls` 0.27 (webpki-roots, ring, tls12), `rustls`
+  0.23 (ring, std, tls12).
 - Crypto for SRI: `ring` 0.17, `base64` 0.22.
 - Async: `tokio` 1 (multi-thread runtime), `futures-util` 0.3, `tokio-util` 0.7.
 - Body decode: `async-compression` 0.4 (gzip, zlib, brotli, zstd).

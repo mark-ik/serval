@@ -21,7 +21,7 @@ use url::Url;
 /// A pinned, boxed stream of decoded body chunks. Errors are `io::Error` so the
 /// transport stream, `tokio_util` readers, and `async-compression` decoders all
 /// compose without bespoke error plumbing.
-pub(crate) type BodyStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
+pub type BodyStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
 
 /// A Fetch response.
 pub struct Response {

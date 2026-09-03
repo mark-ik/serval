@@ -9,7 +9,7 @@
 //!
 //! - [`cache_phase`] — the up-front HTTP-cache probe and the tee-into-cache body.
 //! - [`request_headers`] — per-hop request-header assembly.
-//! - [`transport`] — the h3 / h1-h2 send.
+//! - [`crate::transport`] — the send, through the context's injected seam.
 //! - [`redirect`] — redirect-mode gating and following.
 //! - [`finalize`] — response-state recording and the terminal response.
 //! - [`mixed_content`] / [`preflight`] — HSTS/mixed-content and CORS preflight.
@@ -20,7 +20,6 @@ mod mixed_content;
 mod preflight;
 mod redirect;
 mod request_headers;
-mod transport;
 mod util;
 
 #[cfg(test)]
@@ -31,6 +30,7 @@ use std::time::{Instant, SystemTime};
 use crate::cache;
 use crate::cors;
 use crate::request::{CacheMode, Credentials, Method, RequestMode};
+use crate::transport::WireRequest;
 use crate::{FetchContext, Request, Response};
 
 use cache_phase::{CacheProbe, probe_cache};
@@ -38,7 +38,6 @@ use finalize::{finalize_response, record_response_metadata};
 use mixed_content::resolve_mixed_content;
 use redirect::{RedirectStep, process_redirect};
 use request_headers::assemble_request_headers;
-use transport::send_request;
 
 /// Default `User-Agent` sent when the request carries none.
 pub(super) const USER_AGENT: &str = "Mozilla/5.0 (compatible; serval netfetcher)";
@@ -148,6 +147,7 @@ async fn fetch_inner(request: Request, cx: &FetchContext) -> Response {
                 cors::preflight_key(request.origin.as_ref(), &current_url, &method, &requested);
             if !cx.preflight.check(&key) {
                 match preflight::run_preflight(
+                    cx,
                     &current_url,
                     request.origin.as_ref(),
                     &method,
@@ -195,17 +195,27 @@ async fn fetch_inner(request: Request, cx: &FetchContext) -> Response {
             referrer_policy,
         );
 
-        // Transport: prefer h3 when this https origin advertised it (Alt-Svc).
-        let try_h3 = current_url.scheme() == "https"
+        // Transport: one hop through the context's seam; prefer h3 when this
+        // https origin advertised it (Alt-Svc).
+        let prefer_h3 = current_url.scheme() == "https"
             && current_url
                 .host_str()
                 .and_then(|h| cx.alt_svc.h3_port(h))
                 .is_some();
-        let raw =
-            match send_request(&current_url, &method, &req_headers, body.as_ref(), try_h3).await {
-                Some(raw) => raw,
-                None => return Response::network_error(),
-            };
+        let raw = match cx
+            .transport
+            .send(WireRequest {
+                url: current_url.clone(),
+                method: method.clone(),
+                headers: req_headers,
+                body: body.clone(),
+                prefer_h3,
+            })
+            .await
+        {
+            Some(raw) => raw,
+            None => return Response::network_error(),
+        };
         let status = raw.status;
 
         // Record the response-derived state this hop leaves behind.

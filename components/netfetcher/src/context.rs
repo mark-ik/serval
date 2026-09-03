@@ -24,6 +24,7 @@ use crate::cache::{HttpCache, NoHttpCache};
 use crate::cookie_jar::InMemoryCookieJar;
 use crate::cors::{InMemoryPreflightCache, PreflightCache};
 use crate::hsts::{HstsStore, InMemoryHsts};
+use crate::transport::{Transport, default_transport};
 
 /// Caller-owned bundle of policy + storage the Fetch algorithm consults.
 pub struct FetchContext {
@@ -35,11 +36,19 @@ pub struct FetchContext {
     pub hsts: Box<dyn HstsStore>,
     pub preflight: Box<dyn PreflightCache>,
     pub alt_svc: Box<dyn AltSvcStore>,
+    /// The wire: every hop, the CORS preflight included, goes through this seam.
+    /// The host owns transport choice and trust; see [`crate::transport`].
+    pub transport: Arc<dyn Transport>,
     /// Host-selected maximum number of redirects followed by one request.
     /// Keeping this on the caller-owned context lets every document and
     /// subresource fetch share one explicit boundary instead of each consumer
     /// inheriting a transport-private constant.
     pub redirect_limit: u32,
+    /// Largest body buffered into the HTTP cache. A response whose declared
+    /// length exceeds it is streamed straight through and never cached:
+    /// buffering a large media body to store it would stall the response, and
+    /// it is not worth a cache slot. A host policy, so it lives here.
+    pub cache_max_body_bytes: u64,
 }
 
 impl FetchContext {
@@ -47,9 +56,13 @@ impl FetchContext {
     /// session, but should make an intentional choice before raising it.
     pub const DEFAULT_REDIRECT_LIMIT: u32 = 20;
 
+    /// The default cache body cap, 8 MiB.
+    pub const DEFAULT_CACHE_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+
     /// A dev/default context: in-memory cookie jar, no cache, permissive CSP,
-    /// in-memory HSTS / preflight / Alt-Svc stores. Real deployments supply
-    /// durable, host-backed impls (plan §4).
+    /// in-memory HSTS / preflight / Alt-Svc stores, and the default transport
+    /// (or no transport at all when the crate is built without one). Real
+    /// deployments supply durable, host-backed impls (plan §4).
     pub fn permissive() -> Self {
         Self {
             cookies: Box::new(InMemoryCookieJar::default()),
@@ -58,13 +71,27 @@ impl FetchContext {
             hsts: Box::new(InMemoryHsts::new()),
             preflight: Box::new(InMemoryPreflightCache::new()),
             alt_svc: Box::new(InMemoryAltSvc::new()),
+            transport: default_transport(),
             redirect_limit: Self::DEFAULT_REDIRECT_LIMIT,
+            cache_max_body_bytes: Self::DEFAULT_CACHE_MAX_BODY_BYTES,
         }
     }
 
     /// Set the maximum number of followed redirects for this shared context.
     pub fn with_redirect_limit(mut self, redirect_limit: u32) -> Self {
         self.redirect_limit = redirect_limit;
+        self
+    }
+
+    /// Replace the transport this context sends through.
+    pub fn with_transport(mut self, transport: Arc<dyn Transport>) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// Set the largest body this context will buffer into its HTTP cache.
+    pub fn with_cache_max_body_bytes(mut self, cache_max_body_bytes: u64) -> Self {
+        self.cache_max_body_bytes = cache_max_body_bytes;
         self
     }
 }

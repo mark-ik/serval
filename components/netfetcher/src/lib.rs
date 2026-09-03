@@ -30,10 +30,20 @@
 //! Native-focused; the h3 and WebSocket lanes are native-only (wasm-excluded).
 //! Deferred: h3 for requests with bodies, the active/passive mixed-content split,
 //! and public-suffix-accurate same-site.
+//!
+//! ## The authority split (2026-09-02)
+//!
+//! Genet owns the behaviour web content can observe: everything above the
+//! [`transport`] seam. The host owns the wire: transport choice, trust,
+//! credentials, caching and persistence, which reach this crate only as the
+//! seams on [`FetchContext`]. The default transport (feature `hyper-transport`),
+//! the HTTP/3 lane (`h3`) and WebSocket (`websocket`) are on by default and are
+//! what a raw host or the WPT harness uses; a build with `default-features =
+//! false` carries the Fetch semantics and no transport at all, which is the
+//! proof that the two halves are separable.
 
 mod altsvc;
 mod cache;
-mod client;
 mod context;
 mod cookie_jar;
 mod cors;
@@ -41,20 +51,20 @@ mod data_url;
 mod decode;
 mod fetch;
 // HTTP/3 transport — native-only (QUIC over UDP); excluded from wasm builds.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "h3", not(target_arch = "wasm32")))]
 mod h3_client;
 mod hsts;
 mod referrer;
 mod request;
 mod response;
 mod sri;
+pub mod transport;
 // WebSocket — native-only (tokio + tungstenite); a wasm build binds browser WS.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
 mod websocket;
 
 pub use altsvc::{AltSvcStore, InMemoryAltSvc};
 pub use cache::{HttpCache, InMemoryHttpCache, NoHttpCache, StoredResponse};
-pub use client::accept_invalid_certs;
 pub use context::{
     AllowAllCsp, CookieRecord, CookieStore, CspChecker, FetchContext, SameSiteContext,
 };
@@ -68,6 +78,9 @@ pub use hsts::{HstsStore, InMemoryHsts};
 pub use request::{
     CacheMode, Credentials, Destination, Method, RedirectMode, ReferrerPolicy, Request, RequestMode,
 };
-pub use response::{Response, ResponseBody, ResponseType};
-#[cfg(not(target_arch = "wasm32"))]
+pub use response::{BodyStream, Response, ResponseBody, ResponseType};
+#[cfg(feature = "hyper-transport")]
+pub use transport::hyper::{DefaultTransport, accept_invalid_certs};
+pub use transport::{NoTransport, RawResponse, Transport, TransportFuture, WireRequest};
+#[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
 pub use websocket::{WebSocket, WsMessage, connect as connect_websocket};
