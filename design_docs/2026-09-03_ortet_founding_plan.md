@@ -1,8 +1,8 @@
 # Ortet founding plan
 
 **Status:** in progress, 2026-09-03. O0 and O1 landed the same day; O2, O3 and
-O4 open. One carve-out in O0's forbidden set needs a ruling — see Findings,
-`fleece`.
+O4 open. The `fleece` carve-out is reconciled with the boundary plan's §9.1
+(see Findings); the witness still names fleece on every run.
 
 Ortet is the raw genet host: the one headed port that proves the engine runs
 without Mere. The platform boundary plan
@@ -39,8 +39,11 @@ when the crate has one worth publishing (naming ledger rule).
   lane, no smolweb, no settings, no persistence. Anything of that kind is Mere.
 - **Its dependency cone contains no Mere crate**, and the cone witness says
   so on every CI run: none of `inker`, `workbench`, `cambium*`, `mere-*`,
-  `nematic`, `errand`, `document-canvas`, `fleece`, `pelt*`, `tabard`,
-  `knot-editor-host`.
+  `nematic`, `errand`, `document-canvas`, `pelt*`, `tabard`,
+  `knot-editor-host`. `fleece` is not Mere: the boundary plan's §9.1
+  reclassed it independent, an engine-side lower library, and this list
+  first said otherwise from memory; the witness names it separately so the
+  carve-out is visible and cannot widen.
 - Its receipts are self-driven. `ortet --url <file or http(s)> --frames N
   --artifact out.png` presents N frames, reads the last one back through
   `genet-render-host`, writes the PNG, prints the frame digest and exits
@@ -161,6 +164,9 @@ reference, and the boundary plan and naming ledger both say so.
   cite §9.1; move the clip lane behind a `genet-documents` feature ortet does
   not enable; or reclass fleece back and split it out of `genet-documents`.
   The first is the smallest and matches the boundary plan; it is Mark's call.
+  **Resolved 2026-09-03, the first way:** §9.1 was ruled with the rest of the
+  inventory and is the authority; this plan's list was written from memory and
+  is corrected above. The witness keeps naming fleece on every run.
 
 - 2026-09-03: nothing else in the forbidden set is reachable. `assert_ortet_cone`
   walks 592 packages from ortet over normal (non-dev, non-build) resolve edges
@@ -198,6 +204,21 @@ reference, and the boundary plan and naming ledger both say so.
   the right place at the top of the document, so this is a Buckram float/line-box
   interaction, not a host bug. Recorded here because ortet is now a cheap way to
   see such things; chasing it belongs to the layout lane.
+
+- 2026-09-03 (observation, not ortet's to fix; layout lane): **the fixture's
+  `header` lays out wider than its containing block.** In the article and
+  notes receipts at 480x320 logical the standfirst paragraph inside `header`
+  wraps at roughly 470 logical px and its lines are clipped at the frame
+  edge, and the header's 3px bottom border runs to the frame edge too, while
+  the `body`'s own paragraphs wrap correctly at the 400px content box (body
+  padding 40px each side). A control run with the paragraph `max-width`
+  removed from the stylesheet produced the identical digest
+  (`0x6377ba8a6bf4dbc9`), so the fixture's `max-width` is not the cause. The
+  shell's sizing was checked and is right: the session is framed at the
+  logical size and the scene rasterized with the device scale
+  (`shell.rs` `render`). One thing to check first in the engine: whether the
+  UA sheet blockifies `header` (and `nav`, `figure`, `figcaption`), since an
+  inline `header` would explain both the wide lines and the border.
 
 ## Progress
 
