@@ -15,18 +15,15 @@ use x11rb::wrapper::ConnectionExt as _;
 
 const GTK_FRAME_EXTENTS: &[u8] = b"_GTK_FRAME_EXTENTS";
 
-fn device_extents(insets: AppFrameInsets, scale: f64) -> [u32; 4] {
-    let scaled = |value: u32| {
-        (f64::from(value) * scale)
-            .round()
-            .clamp(0.0, u32::MAX as f64) as u32
-    };
-    [
-        scaled(insets.left),
-        scaled(insets.right),
-        scaled(insets.top),
-        scaled(insets.bottom),
-    ]
+/// The property's own word order: left, right, top, bottom.
+///
+/// The scale is the **layout** scale, zoom included, because the insets are
+/// CSS pixels and the application draws that margin out of its own stylesheet
+/// — see [`AppFrameInsets::scaled`], where the rule and its test live, since
+/// this module compiles on Linux only.
+fn device_extents(insets: AppFrameInsets, layout_scale: f64) -> [u32; 4] {
+    let device = insets.scaled(layout_scale);
+    [device.left, device.right, device.top, device.bottom]
 }
 
 /// Publish the client-drawn transparent margins on an X11 window.
@@ -34,9 +31,14 @@ fn device_extents(insets: AppFrameInsets, scale: f64) -> [u32; 4] {
 /// `None` means this is a Wayland window or the app reserved no transparent
 /// margins. Property presence itself tells Mutter that the client owns outer
 /// frame geometry, so an ordinary host-framed window must leave it absent.
+///
+/// `layout_scale` comes from the caller rather than off the window: the insets
+/// carry zoom (see [`device_extents`]), and the window knows only its device
+/// scale.
 pub(crate) fn publish_gtk_frame_extents(
     window: &Window,
     insets: AppFrameInsets,
+    layout_scale: f64,
 ) -> Result<Option<[u32; 4]>, String> {
     if insets.is_empty() {
         return Ok(None);
@@ -49,7 +51,7 @@ pub(crate) fn publish_gtk_frame_extents(
     };
     let xid = u32::try_from(handle.window)
         .map_err(|_| format!("X11 window id {} does not fit XID", handle.window))?;
-    let extents = device_extents(insets, window.scale_factor());
+    let extents = device_extents(insets, layout_scale);
     let (connection, _) =
         x11rb::connect(None).map_err(|error| format!("could not connect to DISPLAY: {error}"))?;
     let atom = connection
@@ -87,5 +89,16 @@ mod tests {
             ),
             [12, 15, 18, 21]
         );
+    }
+
+    #[test]
+    fn published_extents_carry_zoom_because_the_app_draws_the_frame_in_css_pixels() {
+        // Device scale 2, zoom 1.25: the stylesheet's 8 CSS px of transparent
+        // margin is painted at the layout scale, so it lands on 20 device
+        // pixels. Publishing at the device scale alone claims 16 and names a
+        // boundary four pixels inside the one the application actually paints.
+        let insets = AppFrameInsets::uniform(8);
+        assert_eq!(device_extents(insets, 2.0 * 1.25), [20, 20, 20, 20]);
+        assert_eq!(device_extents(insets, 2.0), [16, 16, 16, 16]);
     }
 }

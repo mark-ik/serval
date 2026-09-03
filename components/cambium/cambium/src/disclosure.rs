@@ -56,32 +56,50 @@ impl Default for DisclosureState {
 }
 
 /// Render a labelled disclosure button and its controlled content.
-pub fn disclosure<Content>(
+///
+/// Explicit inputs in, caller-state handler out (the grid's house style): the
+/// [`DisclosureState`] is an input the caller owns and stores wherever it
+/// likes, and the toggle is reported back through `on_toggle`. The panel's
+/// content is therefore a view over the *application's* state, so a row inside
+/// the panel calls the application's own verbs. Where the application state is
+/// the disclosure state itself, the handler is [`DisclosureState::toggle`].
+pub fn disclosure<State, Action, Content, Toggle>(
     state: &DisclosureState,
     content: Content,
-) -> impl View<DisclosureState, (), GenetCtx, Element = GenetElement> + use<Content>
+    on_toggle: Toggle,
+) -> impl View<State, Action, GenetCtx, Element = GenetElement> + use<State, Action, Content, Toggle>
 where
-    Content: ViewSequence<DisclosureState, (), GenetCtx, GenetElement>,
+    State: 'static,
+    Action: 'static,
+    Content: ViewSequence<State, Action, GenetCtx, GenetElement>,
+    Toggle: Fn(&mut State) + 'static,
 {
-    disclosure_with(state, state.label.clone(), content)
+    disclosure_with(state, state.label.clone(), content, on_toggle)
 }
 
 /// Render a disclosure with application-defined trigger content.
-pub fn disclosure_with<Trigger, Content>(
+pub fn disclosure_with<State, Action, Trigger, Content, Toggle>(
     state: &DisclosureState,
     trigger: Trigger,
     content: Content,
-) -> impl View<DisclosureState, (), GenetCtx, Element = GenetElement> + use<Trigger, Content>
+    on_toggle: Toggle,
+) -> impl View<State, Action, GenetCtx, Element = GenetElement>
++ use<State, Action, Trigger, Content, Toggle>
 where
-    Trigger: ViewSequence<DisclosureState, (), GenetCtx, GenetElement>,
-    Content: ViewSequence<DisclosureState, (), GenetCtx, GenetElement>,
+    State: 'static,
+    Action: 'static,
+    Trigger: ViewSequence<State, Action, GenetCtx, GenetElement>,
+    Content: ViewSequence<State, Action, GenetCtx, GenetElement>,
+    Toggle: Fn(&mut State) + 'static,
 {
     let trigger_id = format!("{}-trigger", state.id);
     let panel_id = format!("{}-panel", state.id);
-    let control = el::<_, DisclosureState, ()>("button", trigger)
+    let control = el::<_, State, Action>("button", trigger)
         .attr("id", trigger_id.clone())
         .attr("class", "disclosure-trigger")
         .attr("type", "button");
+    // `disabled` is read off the state as passed, so the widget still refuses
+    // the toggle while disabled no matter what the caller's handler does.
     let control = disclosure_control(
         control,
         Some(panel_id.clone()),
@@ -89,16 +107,16 @@ where
         state.disabled,
         true,
         false,
-        |state: &mut DisclosureState| state.toggle(),
+        on_toggle,
     );
-    let mut panel = el::<_, DisclosureState, ()>("div", content)
+    let mut panel = el::<_, State, Action>("div", content)
         .attr("id", panel_id)
         .attr("class", "disclosure-panel")
         .attr("aria-labelledby", trigger_id);
     if !state.expanded {
         panel = panel.attr("hidden", "true");
     }
-    el::<_, DisclosureState, ()>("div", (control, panel))
+    el::<_, State, Action>("div", (control, panel))
         .attr("id", state.id.clone())
         .attr("class", "disclosure")
 }
@@ -252,28 +270,42 @@ impl<Id> AccordionItem<Id> {
 }
 
 /// Render an accordion with text panel bodies.
-pub fn accordion<Id>(
+///
+/// Same shape as [`disclosure`]: the [`AccordionState`] is an input and each
+/// header reports its item's identity through `on_toggle`. Where the
+/// application state is the accordion state itself, the handler is
+/// [`AccordionState::toggle`].
+pub fn accordion<State, Action, Id, Toggle>(
     state: &AccordionState<Id>,
     items: &[AccordionItem<Id>],
     config: AccordionConfig,
-) -> impl View<AccordionState<Id>, (), GenetCtx, Element = GenetElement> + use<Id>
+    on_toggle: Toggle,
+) -> impl View<State, Action, GenetCtx, Element = GenetElement> + use<State, Action, Id, Toggle>
 where
+    State: 'static,
+    Action: 'static,
     Id: Clone + Eq + Hash + 'static,
+    Toggle: Fn(&mut State, Id) + Clone + 'static,
 {
-    accordion_with(state, items, config, |item| item.body.clone())
+    accordion_with(state, items, config, |item| item.body.clone(), on_toggle)
 }
 
 /// Render an accordion with application-defined panel content.
-pub fn accordion_with<Id, Content, Render>(
+pub fn accordion_with<State, Action, Id, Content, Render, Toggle>(
     state: &AccordionState<Id>,
     items: &[AccordionItem<Id>],
     config: AccordionConfig,
     render: Render,
-) -> impl View<AccordionState<Id>, (), GenetCtx, Element = GenetElement> + use<Id, Content, Render>
+    on_toggle: Toggle,
+) -> impl View<State, Action, GenetCtx, Element = GenetElement>
++ use<State, Action, Id, Content, Render, Toggle>
 where
+    State: 'static,
+    Action: 'static,
     Id: Clone + Eq + Hash + 'static,
-    Content: ViewSequence<AccordionState<Id>, (), GenetCtx, GenetElement>,
+    Content: ViewSequence<State, Action, GenetCtx, GenetElement>,
     Render: Fn(&AccordionItem<Id>) -> Content,
+    Toggle: Fn(&mut State, Id) + Clone + 'static,
 {
     let heading_level = config.heading_level.clamp(1, 6).to_string();
     let children: Vec<_> = items
@@ -284,11 +316,12 @@ where
             let trigger_id = format!("{}-item-{}-trigger", state.id, sanitize(&item.dom_id));
             let panel_id = format!("{}-item-{}-panel", state.id, sanitize(&item.dom_id));
             let disabled = expanded && state.mode == AccordionMode::Single && !state.collapsible;
-            let control = el::<_, AccordionState<Id>, ()>("button", item.label.clone())
+            let control = el::<_, State, Action>("button", item.label.clone())
                 .attr("id", trigger_id.clone())
                 .attr("class", "accordion-trigger")
                 .attr("type", "button");
             let toggle_id = item.id.clone();
+            let on_toggle = on_toggle.clone();
             let control = disclosure_control(
                 control,
                 Some(panel_id.clone()),
@@ -296,13 +329,13 @@ where
                 disabled,
                 true,
                 false,
-                move |state: &mut AccordionState<Id>| state.toggle(toggle_id.clone()),
+                move |state: &mut State| on_toggle(state, toggle_id.clone()),
             );
-            let heading = el::<_, AccordionState<Id>, ()>("div", control)
+            let heading = el::<_, State, Action>("div", control)
                 .attr("class", "accordion-heading")
                 .attr("role", "heading")
                 .attr("aria-level", heading_level.clone());
-            let mut panel = el::<_, AccordionState<Id>, ()>("div", render(&item))
+            let mut panel = el::<_, State, Action>("div", render(&item))
                 .attr("id", panel_id)
                 .attr("class", "accordion-panel")
                 .attr("aria-labelledby", trigger_id);
@@ -312,13 +345,13 @@ where
             if !expanded {
                 panel = panel.attr("hidden", "true");
             }
-            let section = el::<_, AccordionState<Id>, ()>("section", (heading, panel))
-                .attr("class", "accordion-item");
+            let section =
+                el::<_, State, Action>("section", (heading, panel)).attr("class", "accordion-item");
             (item.id, section)
         })
         .collect();
 
-    el::<_, AccordionState<Id>, ()>("div", Keyed::new(children))
+    el::<_, State, Action>("div", Keyed::new(children))
         .attr("id", state.id.clone())
         .attr("class", "accordion")
         .attr("role", "group")
@@ -781,9 +814,9 @@ mod tests {
     #[test]
     fn disclosure_links_and_toggles_its_panel_by_pointer_and_keyboard() {
         let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
-        let mut runner = GenetAppRunner::new(
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
             dom.clone(),
-            |state: &DisclosureState| disclosure(state, "Panel body"),
+            |state: &DisclosureState| disclosure(state, "Panel body", DisclosureState::toggle),
             DisclosureState::new("details", "Details"),
         );
         let trigger = find_attr(&dom.borrow(), runner.root(), "id", "details-trigger")
@@ -803,6 +836,83 @@ mod tests {
         assert!(!runner.state().expanded);
     }
 
+    struct TurnsApp {
+        turns: DisclosureState,
+        selected: Option<&'static str>,
+        selections: usize,
+    }
+
+    type TurnsAppView = Box<dyn AnyView<TurnsApp, (), GenetCtx, GenetElement>>;
+
+    /// A panel whose rows call an application verb — the shape isometry's
+    /// Turns section needs, and the one the old `View<DisclosureState, ()>`
+    /// signature could not express.
+    fn turns_app_view(app: &TurnsApp) -> TurnsAppView {
+        let rows: Vec<Box<dyn AnyView<TurnsApp, (), GenetCtx, GenetElement>>> = ["ada", "grace"]
+            .into_iter()
+            .map(|id| {
+                Box::new(on_click(
+                    el::<_, TurnsApp, ()>("button", id).attr("id", format!("row-{id}")),
+                    move |app: &mut TurnsApp, _click: PointerClick| {
+                        app.selected = Some(id);
+                        app.selections += 1;
+                    },
+                )) as Box<dyn AnyView<TurnsApp, (), GenetCtx, GenetElement>>
+            })
+            .collect();
+        Box::new(disclosure(&app.turns, rows, |app: &mut TurnsApp| {
+            app.turns.toggle()
+        }))
+    }
+
+    #[test]
+    fn disclosure_content_acts_on_application_state_beside_the_widget_state() {
+        let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
+            dom.clone(),
+            turns_app_view,
+            TurnsApp {
+                turns: DisclosureState::new("turns", "Turns").expanded(true),
+                selected: None,
+                selections: 0,
+            },
+        );
+        let row = find_attr(&dom.borrow(), runner.root(), "id", "row-grace").expect("turn row");
+        runner.dispatch_click(row, PointerClick::at((4.0, 4.0)));
+        assert_eq!(runner.state().selected, Some("grace"));
+        assert_eq!(runner.state().selections, 1);
+        assert!(
+            runner.state().turns.expanded,
+            "a row acting on the application does not disturb the disclosure's own state"
+        );
+
+        // The two states stay independent in the other direction as well: the
+        // widget's ARIA wiring and its keyboard toggle are what they were, and
+        // collapsing leaves the application's selection alone.
+        let trigger =
+            find_attr(&dom.borrow(), runner.root(), "id", "turns-trigger").expect("trigger");
+        let panel = find_attr(&dom.borrow(), runner.root(), "id", "turns-panel").expect("panel");
+        assert_eq!(
+            attr(&dom.borrow(), trigger, "aria-controls"),
+            Some("turns-panel")
+        );
+        assert_eq!(attr(&dom.borrow(), trigger, "aria-expanded"), Some("true"));
+        assert_eq!(
+            attr(&dom.borrow(), panel, "aria-labelledby"),
+            Some("turns-trigger")
+        );
+        runner.set_focus(Some(trigger));
+        runner.dispatch_key(KeyEvent::new(Key::Named(NamedKey::Space)));
+        assert!(!runner.state().turns.expanded);
+        assert_eq!(attr(&dom.borrow(), trigger, "aria-expanded"), Some("false"));
+        assert_eq!(attr(&dom.borrow(), panel, "hidden"), Some("true"));
+        assert_eq!(
+            runner.state().selected,
+            Some("grace"),
+            "collapsing the panel does not reach into the application's state"
+        );
+    }
+
     fn accordion_items() -> Vec<AccordionItem<&'static str>> {
         vec![
             AccordionItem::new("one", "One", "First panel"),
@@ -813,13 +923,14 @@ mod tests {
     #[test]
     fn accordion_composes_heading_buttons_over_the_disclosure_control() {
         let dom: DomHandle = Rc::new(RefCell::new(ScriptedDom::new()));
-        let mut runner = GenetAppRunner::new(
+        let mut runner = GenetAppRunner::<_, _, _, ()>::new(
             dom.clone(),
             |state: &AccordionState<&'static str>| {
                 accordion(
                     state,
                     &accordion_items(),
                     AccordionConfig::default().with_heading_level(2),
+                    AccordionState::toggle,
                 )
             },
             AccordionState::new().single(false).with_expanded(["one"]),

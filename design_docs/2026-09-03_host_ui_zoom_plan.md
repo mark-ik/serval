@@ -36,9 +36,19 @@ Layout runs at `window_physical / layout_scale`; rasterization runs at
 `layout_scale`; every logical coordinate the host exchanges with the
 application (cursor, wheel, leaf boxes, hit-testing, `AppCtx::logical_size`,
 the harness) is in post-zoom layout space. The device scale stays the truth
-for everything that belongs to the window rather than the document: frame
-insets and decorations, the monitor clamp on the initial size, window
+for everything that belongs to the window rather than the document:
+host-drawn decorations, the monitor clamp on the initial size, window
 geometry persistence, the IME candidate area, the physical capture size.
+
+**One stated exception, ruled by Mark on 2026-09-03: an *application-drawn*
+frame's insets are document geometry and carry zoom.**
+`HostOptions::app_frame_insets` is documented in CSS pixels and the
+application draws that margin out of its own stylesheet, so what lands on the
+glass is `inset * layout_scale`; a region reserved at `inset * device_scale`
+would name a boundary the application is not drawing to. Everything that
+belongs to the window itself — the list above, and a *host*-drawn frame —
+stays on the device scale. The rule and its arithmetic live on
+`AppFrameInsets::scaled`; see the Findings entry below.
 
 Every `scale_factor()` call site in cambium-rootstock and
 cambium-genet-winit-host is audited into exactly one of those two buckets.
@@ -130,8 +140,11 @@ setting toggles at runtime, and the existing harness receipts still pass.
 
 - No consumer other than isometry and the reference check in woodshed is
   touched by this plan. Turnstone's own host is not this host.
-- The device bucket never sees zoom. A frame inset that changes with zoom is
-  a bug, not a feature.
+- The device bucket never sees zoom. A *host*-drawn frame's geometry that
+  changes with zoom is a bug, not a feature. (This rule read "a frame inset"
+  until 2026-09-03, when §2's exception was ruled: an app-drawn frame's insets
+  are document geometry and must change with zoom, because the application's
+  own stylesheet is what draws them.)
 - Nothing is persisted by the host.
 - A behavior change at zoom 1.0 in any consumer stops the work.
 
@@ -165,29 +178,78 @@ to the window and must not. Line numbers are post-change.
 | 18 | `winit-host/lib.rs:886` `MouseWheel` `PixelDelta` | **layout** | A flick must travel the same distance under the finger as the pointer does. `LineDelta` is a count of lines and is still unscaled. |
 | 19 | `decorations.rs:280` `ShowSystemMenu` | layout→device | The cursor is layout; winit's `Position::Logical` is the platform's. |
 | 20 | `decorations.rs:305` `geometry()` | device | Window position and size for persistence. Nothing to do with the document. |
-| 21 | `x11_frame.rs:52` `publish_gtk_frame_extents` | device | §2's word, and see the open question below. |
+| 21 | `x11_frame.rs:36` `publish_gtk_frame_extents` | **layout** | §2's one exception, ruled 2026-09-03. `app_frame_insets` are CSS pixels the *application's* stylesheet draws, so the reserved region must be the drawn one: `inset * layout_scale`. The scale comes from the caller now, not off the window. |
 | 22 | `windows_snap.rs:126` `device_rect` | — | Takes the scale as an argument; site 13 decides which. |
 | 23 | `decorations.rs` `WindowCommand::Resize` | device | An application asking for a window size means a window size. |
 | 24 | `input.rs` (whole file) | **layout** | No scale is read anywhere in it. Cursor, hit tests, wheel deltas, caret positions and `local_in` are all already in one space, which is why the audit is short. |
 | 25 | `capture.rs`, `owned_layout.rs`, `spatial.rs`, `wake.rs` | — | No scale read. Physical sizes and layout coordinates respectively. |
 
-Counts: **10 layout**, **11 device**, 4 sites that read no scale or take one as
-an argument. Two sites were *wrong before this work and are repaired by it*
-(13, and the `PixelDelta` half of 18 that the 2026-09-02 fix had already moved
-to the device scale and which now needs the layout scale); three are new
-crossings the audit forced into the open (7, 8, 19).
+Counts, **as amended 2026-09-03** when site 21 moved buckets: **11 layout**,
+**10 device**, 4 sites that read no scale or take one as an argument. (The
+table was first published as 10 / 11.) Two sites were *wrong before this work
+and are repaired by it* (13, and the `PixelDelta` half of 18 that the
+2026-09-02 fix had already moved to the device scale and which now needs the
+layout scale); three are new crossings the audit forced into the open (7, 8,
+19); one was left ambiguous and is settled below (21).
 
-**One ambiguous site: 21, the X11 `_GTK_FRAME_EXTENTS`.** §2 puts frame insets
-in the device bucket and §5 says a frame inset that changes with zoom is a bug.
-But `HostOptions::app_frame_insets` is documented as "logical pixels, matching
-the application's CSS coordinate space", and the application draws that margin
-from its own stylesheet — so what it actually draws is `inset * layout_scale`
-physical pixels, and publishing `inset * device_scale` tells Mutter a boundary
-three pixels inside the real one at zoom 1.25. It is left on the device scale,
-as §2 says, rather than decided here. It is reachable only with an app-drawn
-frame, on X11, at a zoom other than 1, so nothing shipping is affected today.
-**This is Mark's call**: either the insets are device pixels (and the field's
-doc comment is wrong) or they are CSS pixels (and §2 has one exception).
+### 2026-09-03 — site 21 ruled: frame insets are CSS pixels and carry zoom
+
+**Mark's call on the audit's one ambiguous site.** `HostOptions::app_frame_insets`
+are CSS pixels, so `_GTK_FRAME_EXTENTS` is published at the **layout** scale.
+The reason is that the field is documented in CSS pixels and the *application*
+draws that frame from its own stylesheet: what it puts on the glass is
+`inset * layout_scale`, and the region reserved has to be the region drawn. At
+device scale 2 and zoom 1.25, an 8 CSS px margin is 20 device pixels;
+publishing `inset * device_scale` claims 16 and tells Mutter the frame's edge
+is four pixels inside where the application is painting. §2 gains the
+exception, §5's stop rule is narrowed to a *host*-drawn frame, and the table
+row above moves to layout.
+
+**Nothing observable changes today.** The path needs an app-drawn frame, on
+X11, at a zoom other than 1 — three conditions, and no shipping consumer meets
+the third. At zoom 1 `layout_scale()` is bit-for-bit `scale_factor()`, so the
+published numbers are what they were. This is correctness of the record, and
+of the code the first time it is reached, rather than a fix to observed
+behaviour.
+
+**Windows and macOS do not read the field for geometry, and need no change.**
+Checked every reader of `app_frame_insets` in the workspace: `x11_frame.rs`,
+`HostOptions::effective_app_frame_insets` / `app_frame_is_transparent` (a
+boolean — whether the surface needs alpha, which no scale touches), and
+`examples/smoke.rs`. Windows' only frame geometry is the Snap Layout rect
+(site 13, already the layout scale) and the 8-pixel border grab (site 14,
+correctly the device scale); its app-frame path passes `decorations(false)`
+and draws the caption in the page, reserving no inset. macOS never sees the
+field either: `decorations::titlebar_insets` measures the traffic-light rect
+off `NSWindow` in device-logical points, and `publish_titlebar_area` (site 7)
+already divides it by zoom on the way into the sheet. So the exception is
+X11's alone, which is why §2 can state it in one sentence.
+
+**Where the arithmetic lives, and how it is receipted.** `x11_frame` is
+`#[cfg(target_os = "linux")]`, so nothing in it compiles or runs on the
+Windows development machine — its existing inset test never executed here.
+The rule was therefore moved to `AppFrameInsets::scaled(layout_scale)` in
+`cambium-rootstock/src/host.rs`, beside the doc comment that declares the
+insets to be CSS pixels; `x11_frame::device_extents` is now only the
+property's word order. `app_frame_insets_are_css_pixels_and_carry_zoom` runs
+on every platform. The X11 module was additionally type-checked and its two
+tests run on Windows by temporarily un-gating the module and adding `x11rb`
+to the Windows target (both reverted): 18 passed, 0 failed. The atom write
+itself is not testable without an X server; exercising it wants a headed run
+on the Fedora or Mint box with `CAMBIUM_HOST_FRAME_TRACE=1`, an app-frame
+consumer and `CAMBIUM_UI_ZOOM=1.25`, reading the property back with
+`xprop -id <xid> _GTK_FRAME_EXTENTS`.
+
+**Recorded, not decided: when the property is republished.** It is written at
+window creation and on `ScaleFactorChanged`, which was sufficient while the
+value depended only on the device scale. Now it also depends on zoom, and
+neither a keyboard step nor a `fit_design` recompute on resize republishes it,
+so the property can go stale in exactly the situation the ruling is about.
+Three defensible answers — republish beside `refresh_fit_zoom()` in the
+`Resized` and `ScaleFactorChanged` arms (covers the fit, misses Ctrl+plus);
+republish from `redraw()` behind a last-published-value guard (covers
+everything, costs a comparison per frame); or leave it, since the whole path
+is unreachable. **Mark's call**, and out of scope for the ruling itself.
 
 ### 2026-09-03 — the render half needed no `scaled_to`
 
@@ -375,3 +437,18 @@ preference as the user's offset on it.
   only; the compositor path is scale-free and cannot honour a layout scale at
   all, which is a separate gap recorded in netrender's verification record
   §11.37.
+- **2026-09-03, the Z0 audit's one ambiguous site ruled and closed.** Frame
+  insets on an *app-drawn* frame are CSS pixels and carry zoom (Mark). §2
+  gains the exception, §5's stop rule narrows to a host-drawn frame, row 21 of
+  the audit table moves to the layout bucket and the counts become 11 / 10. In
+  code: `AppFrameInsets::scaled(layout_scale)` in `cambium-rootstock` now owns
+  the arithmetic and the rule's doc comment, `x11_frame::device_extents` is
+  reduced to the property's word order, and `publish_gtk_frame_extents` takes
+  the scale from its caller — `self.layout_scale()` — instead of reading
+  `window.scale_factor()` itself. Windows and macOS were checked and need
+  nothing. Nothing observable moves: the path needs an app-drawn frame, on
+  X11, at a zoom other than 1. 23 rootstock and 75 host tests green, including
+  the new platform-independent
+  `app_frame_insets_are_css_pixels_and_carry_zoom`. The republish-cadence
+  question the ruling exposes is left open for Mark in the Findings entry
+  above.

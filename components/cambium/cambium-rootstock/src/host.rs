@@ -76,6 +76,10 @@ pub enum WindowFrame {
 /// supplies an alpha-capable surface and, on X11, publishes the corresponding
 /// device-pixel `_GTK_FRAME_EXTENTS` so the window manager snaps and maximizes
 /// against the visible frame rather than the transparent shadow boundary.
+///
+/// Being CSS pixels, they **carry zoom** — see [`scaled`](Self::scaled). That
+/// is the one stated exception to the rule that window geometry rides the
+/// device scale: an app-drawn frame's insets are document geometry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AppFrameInsets {
     pub left: u32,
@@ -105,6 +109,28 @@ impl AppFrameInsets {
 
     pub const fn is_empty(self) -> bool {
         self.left == 0 && self.right == 0 && self.top == 0 && self.bottom == 0
+    }
+
+    /// The same margins in device pixels, at the **layout** scale.
+    ///
+    /// The application paints its frame out of its own stylesheet, so what
+    /// lands on the glass is `inset * layout_scale`, zoom included. A host
+    /// reserving that region — X11's `_GTK_FRAME_EXTENTS` is the one that does
+    /// — must name the same number, or it tells the window manager the frame
+    /// boundary is somewhere the application is not drawing. Multiplying by
+    /// the device scale alone would be that mistake at any zoom but 1.
+    pub fn scaled(self, layout_scale: f64) -> Self {
+        let scaled = |value: u32| {
+            (f64::from(value) * layout_scale)
+                .round()
+                .clamp(0.0, u32::MAX as f64) as u32
+        };
+        Self {
+            left: scaled(self.left),
+            right: scaled(self.right),
+            top: scaled(self.top),
+            bottom: scaled(self.bottom),
+        }
     }
 }
 
@@ -382,6 +408,37 @@ mod window_frame_tests {
         };
         assert_eq!(app.effective_app_frame_insets(), insets);
         assert!(app.app_frame_is_transparent());
+    }
+
+    #[test]
+    fn app_frame_insets_are_css_pixels_and_carry_zoom() {
+        // Device scale 2, zoom 1.25. The stylesheet's 8 CSS px of transparent
+        // margin is painted at the layout scale, so 20 device pixels of glass
+        // are the frame's outer boundary. Reserving `inset * device_scale`
+        // instead claims 16 and names a boundary four pixels inside the one
+        // the application actually paints.
+        let insets = AppFrameInsets::uniform(8);
+        assert_eq!(insets.scaled(2.0 * 1.25), AppFrameInsets::uniform(20));
+        assert_eq!(insets.scaled(2.0), AppFrameInsets::uniform(16));
+        // Zoom 1 is the identity, which is why nothing shipping moves.
+        assert_eq!(insets.scaled(2.0 * 1.0), insets.scaled(2.0));
+
+        // Per-edge, and rounded rather than truncated.
+        let uneven = AppFrameInsets {
+            left: 8,
+            right: 10,
+            top: 12,
+            bottom: 14,
+        };
+        assert_eq!(
+            uneven.scaled(1.5),
+            AppFrameInsets {
+                left: 12,
+                right: 15,
+                top: 18,
+                bottom: 21,
+            }
+        );
     }
 }
 

@@ -925,22 +925,18 @@ fn catalog(state: &CatalogState) -> CatalogView {
     .attr("class", "catalog-section");
 
     let accordion_items = disclosure_accordion_items();
-    let accordion = lens(
-        move |accordion: &mut AccordionState<&'static str>| {
-            accordion_with(
-                accordion,
-                &accordion_items,
-                AccordionConfig::default().with_heading_level(3),
-                |item| {
-                    let summary = catalog_summary(
-                        format!("catalog-accordion-summary-{}", item.dom_id),
-                        item.label.clone(),
-                    );
-                    summary_body::<AccordionState<&'static str>, ()>(&summary)
-                },
-            )
+    let accordion = accordion_with(
+        &state.accordion,
+        &accordion_items,
+        AccordionConfig::default().with_heading_level(3),
+        |item| {
+            let summary = catalog_summary(
+                format!("catalog-accordion-summary-{}", item.dom_id),
+                item.label.clone(),
+            );
+            summary_body::<CatalogState, ()>(&summary)
         },
-        |state: &mut CatalogState| &mut state.accordion,
+        |state: &mut CatalogState, id: &'static str| state.accordion.toggle(id),
     );
     let tree = lens(
         |tree: &mut TreeState<&'static str>| tree_view(tree, &catalog_tree_items()),
@@ -955,11 +951,10 @@ fn catalog(state: &CatalogState) -> CatalogView {
                 .attr("class", "catalog-label"),
             el(
                 "div",
-                lens(
-                    |disclosure_state: &mut DisclosureState| {
-                        disclosure(disclosure_state, "Controlled detail content")
-                    },
-                    |state: &mut CatalogState| &mut state.disclosure,
+                disclosure(
+                    &state.disclosure,
+                    "Controlled detail content",
+                    |state: &mut CatalogState| state.disclosure.toggle(),
                 ),
             )
             .attr("class", "catalog-row"),

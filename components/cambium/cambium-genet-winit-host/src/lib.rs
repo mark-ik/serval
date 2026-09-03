@@ -396,7 +396,13 @@ where
     #[cfg(target_os = "linux")]
     fn publish_x11_frame_extents(&self, window: &Window) {
         let insets = self.options.effective_app_frame_insets();
-        match x11_frame::publish_gtk_frame_extents(window, insets) {
+        // The insets are CSS pixels and the application paints that margin out
+        // of its own stylesheet, so the region reserved must be the region
+        // drawn: `inset * layout_scale`, zoom included. This is §2's one stated
+        // exception — an app-drawn frame's insets are document geometry, while
+        // the window's own geometry stays on the device scale.
+        let scale = self.layout_scale();
+        match x11_frame::publish_gtk_frame_extents(window, insets, scale) {
             Ok(Some(extents)) if frame_trace() => eprintln!(
                 "[cambium-winit] _GTK_FRAME_EXTENTS left={} right={} top={} bottom={}",
                 extents[0], extents[1], extents[2], extents[3]
