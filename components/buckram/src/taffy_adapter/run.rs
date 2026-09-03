@@ -1710,7 +1710,24 @@ where
         Ok(LayoutOutput::from_outer_size(final_size))
     }
 
+    /// The one entry every level of the layout computation passes through: the
+    /// backend recurses into children by calling back here
+    /// (`compute_child_layout` / `compute_block_child_layout` /
+    /// the flex and grid equivalents all land on `compute_node`), so this is
+    /// where the descent buys stack. See [`crate::box_tree::with_box_tree_stack`]
+    /// for the measurement and the parameters.
     fn compute_node(
+        &mut self,
+        node_id: NodeId,
+        inputs: LayoutInput,
+        block_context: Option<&mut BlockContext<'_>>,
+    ) -> LayoutOutput {
+        crate::box_tree::with_box_tree_stack(move || {
+            self.compute_node_on_this_stack(node_id, inputs, block_context)
+        })
+    }
+
+    fn compute_node_on_this_stack(
         &mut self,
         node_id: NodeId,
         inputs: LayoutInput,

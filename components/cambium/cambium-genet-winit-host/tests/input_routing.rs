@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use cambium::{
-    AnyView, GenetCtx, GenetElement, HoverPhase, PointerEvent, PointerPhase, TextInput, WheelEvent,
-    clickable, el, focusable, on_hover, on_key, on_pointer, on_wheel, text,
+    AnyView, GenetCtx, GenetElement, HoverPhase, PointerButton, PointerEvent, PointerPhase,
+    TextInput, WheelEvent, clickable, el, focusable, on_hover, on_key, on_pointer, on_wheel, text,
 };
 use cambium_genet_winit_host::{FocusedTextSlot, Harness, HostHooks, Init, Modifiers, inert_hooks};
 use genet_probe::Selector;
@@ -29,6 +29,10 @@ struct App {
     /// Every pointer phase the drag element saw, with the coordinates it was
     /// handed. The whole point of the drag receipt.
     drag: Vec<(PointerPhase, (f32, f32), (f32, f32))>,
+    /// Which button each of those presses came from. Kept beside `drag`
+    /// rather than folded into it so the coordinate receipts above stay
+    /// readable.
+    drag_buttons: Vec<PointerButton>,
     wheel: Vec<((f32, f32), (f32, f32))>,
     /// When set, the wheel handler cancels the host's scrolling default.
     wheel_cancels: bool,
@@ -91,6 +95,7 @@ fn root(state: &App) -> Child {
                         .attr("style", place(0, 100, 200, 20)),
                     |s: &mut App, e: PointerEvent| {
                         s.drag.push((e.phase, e.local, e.size));
+                        s.drag_buttons.push(e.button);
                     },
                 ),
                 on_wheel(
@@ -185,6 +190,75 @@ fn a_drag_carries_the_captured_elements_local_coordinates() {
     assert_eq!(h.pointer_capture(), None, "release ends the capture");
 }
 
+/// M4: a right press reaches the view. The `on_pointer` element under the
+/// cursor gets a `Down` marked `Secondary`, with the same element-local
+/// coordinates a left press carries — which is what a token context menu needs
+/// to know where it was opened.
+///
+/// It is not a click, and it is not a drag: the element's click handler does
+/// not run, and nothing is captured.
+#[test]
+fn a_secondary_press_reaches_the_pointer_handler_without_capturing() {
+    let mut h = harness();
+    // The drag element's box is (0, 100, 200, 20). Right-press at its midpoint.
+    h.right_click_at(100.0, 110.0);
+
+    assert_eq!(
+        h.state().drag,
+        vec![(PointerPhase::Down, (100.0, 10.0), (200.0, 20.0))],
+        "the right press routes to the `on_pointer` element in its own space",
+    );
+    assert_eq!(h.state().drag_buttons, vec![PointerButton::Secondary]);
+    assert!(
+        h.state().clicks.is_empty(),
+        "a right press is not a click: `dispatch_click` never ran",
+    );
+    assert_eq!(
+        h.pointer_capture(),
+        None,
+        "the press is one-shot; no drag began",
+    );
+
+    // The release path stays coherent: a left release now finds no capture, so
+    // no `Up` is invented for a gesture that never started.
+    h.release_at(100.0, 110.0);
+    assert_eq!(
+        h.state().drag.len(),
+        1,
+        "a later release delivers no Up for a capture that never began",
+    );
+}
+
+/// A right press away from any `on_pointer` element routes nowhere and
+/// disturbs nothing — the negative half of the claim above.
+#[test]
+fn a_secondary_press_off_the_handler_reaches_no_one() {
+    let mut h = harness();
+    // Alpha's box is (0, 0, 100, 40): clickable, but not an `on_pointer`.
+    h.right_click_at(10.0, 12.0);
+
+    assert!(h.state().drag.is_empty());
+    assert!(
+        h.state().clicks.is_empty(),
+        "the right button activates no control",
+    );
+    assert_eq!(h.pointer_capture(), None);
+}
+
+/// The selector form, the `click_on` of the right button: a test names the
+/// element the way a receipt reads rather than by arithmetic.
+#[test]
+fn right_click_on_resolves_a_selector_through_the_live_layout() {
+    let mut h = harness();
+    assert!(h.right_click_on(&Selector::class("drag")));
+    assert_eq!(h.state().drag_buttons, vec![PointerButton::Secondary]);
+
+    assert!(
+        !h.right_click_on(&Selector::class("nothing-here")),
+        "a miss reports itself rather than silently doing nothing",
+    );
+}
+
 /// Captured motion belongs to the drag target. Crossing another element must
 /// not dispatch hover boundary events or rebuild that unrelated view while the
 /// captured handler is retaining its own high-frequency paint projection.
@@ -231,6 +305,63 @@ fn a_wheel_notch_reaches_the_view_handler_first() {
         h.state().wheel,
         vec![((0.0, 30.0), (40.0, 20.0))],
         "the handler gets the delta and the cursor in its own coordinates",
+    );
+}
+
+/// A trackpad's delta reaches `Host::wheel` in **logical** pixels.
+///
+/// Winit reports `MouseScrollDelta::PixelDelta` in physical device pixels,
+/// while the host's scroll model — and `CursorMoved` beside it — is logical.
+/// Passed through unscaled it made the page run away under the finger on any
+/// display above 1x. At scale 2 a 60px physical flick must arrive as 30.
+#[test]
+fn a_trackpad_pixel_delta_arrives_in_logical_pixels() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::MouseScrollDelta;
+
+    // Winit's sign is the opposite of the host's: -60 physical is the document
+    // advancing by +60 device / +30 logical px.
+    let flick = MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -60.0));
+
+    let mut h = harness();
+    h.move_to(40.0, 170.0);
+    h.wheel_from_winit(flick, 1.0);
+    assert_eq!(
+        h.state().wheel,
+        vec![((0.0, 60.0), (40.0, 20.0))],
+        "at 1x logical and physical agree",
+    );
+
+    let mut h = harness();
+    h.move_to(40.0, 170.0);
+    h.wheel_from_winit(flick, 2.0);
+    assert_eq!(
+        h.state().wheel,
+        vec![((0.0, 30.0), (40.0, 20.0))],
+        "at 2x the same physical flick is half the logical distance",
+    );
+}
+
+/// A mouse wheel's line step is scale-independent: `WHEEL_LINE_PX` is already
+/// a logical figure, so a notch must not shrink on a dense display.
+#[test]
+fn a_wheel_line_delta_is_the_same_distance_at_any_scale() {
+    use winit::event::MouseScrollDelta;
+
+    let notch = MouseScrollDelta::LineDelta(0.0, -1.0);
+
+    let mut one = harness();
+    one.move_to(40.0, 170.0);
+    one.wheel_from_winit(notch, 1.0);
+
+    let mut two = harness();
+    two.move_to(40.0, 170.0);
+    two.wheel_from_winit(notch, 2.0);
+
+    assert_eq!(one.state().wheel, two.state().wheel);
+    assert_eq!(
+        one.state().wheel,
+        vec![((0.0, genet_winit_host::WHEEL_LINE_PX), (40.0, 20.0))],
     );
 }
 

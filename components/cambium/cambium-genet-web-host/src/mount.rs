@@ -115,13 +115,7 @@ where
     s.window = Some(Box::new(window.clone()));
     s.surface = Some(Box::new(surface));
 
-    let host = Rc::new(RefCell::new(Host {
-        options,
-        init: None,
-        hooks,
-        s,
-        wake,
-    }));
+    let host = Rc::new(RefCell::new(Host::new(options, None, hooks, s, wake)));
 
     // The first frame, before any event: a canvas that has never painted shows
     // whatever was behind it.
@@ -209,10 +203,19 @@ where
     Logic: FnMut(&State) -> V + 'static,
     V: RootView<State>,
 {
-    /// Where a pointer event landed, in the canvas's logical coordinates.
-    fn local(canvas: &HtmlCanvasElement, x: i32, y: i32) -> (f32, f32) {
+    /// Where a pointer event landed, in the layout's own coordinates.
+    ///
+    /// The browser reports CSS pixels relative to the viewport; the canvas
+    /// rect makes them canvas-relative, and `zoom` carries them the rest of
+    /// the way into the space the layout was built in. The desktop source
+    /// divides physical pixels by the whole layout scale for the same reason —
+    /// here the device half is already gone, so only the zoom is left.
+    fn local(canvas: &HtmlCanvasElement, x: i32, y: i32, zoom: f32) -> (f32, f32) {
         let rect = canvas.get_bounding_client_rect();
-        ((x as f64 - rect.x()) as f32, (y as f64 - rect.y()) as f32)
+        (
+            ((x as f64 - rect.x()) as f32) / zoom,
+            ((y as f64 - rect.y()) as f32) / zoom,
+        )
     }
 
     macro_rules! listen {
@@ -235,8 +238,8 @@ where
         "pointerdown",
         web_sys::PointerEvent,
         move |e: web_sys::PointerEvent| {
-            let (x, y) = local(&c, e.client_x(), e.client_y());
             let mut host = h.borrow_mut();
+            let (x, y) = local(&c, e.client_x(), e.client_y(), host.ui_zoom());
             host.pointer_moved(x, y);
             host.click();
             w.request_redraw();
@@ -251,8 +254,9 @@ where
         "pointermove",
         web_sys::PointerEvent,
         move |e: web_sys::PointerEvent| {
-            let (x, y) = local(&c, e.client_x(), e.client_y());
-            h.borrow_mut().pointer_moved(x, y);
+            let mut host = h.borrow_mut();
+            let (x, y) = local(&c, e.client_x(), e.client_y(), host.ui_zoom());
+            host.pointer_moved(x, y);
             w.request_redraw();
         }
     );
@@ -265,8 +269,8 @@ where
         "pointerup",
         web_sys::PointerEvent,
         move |e: web_sys::PointerEvent| {
-            let (x, y) = local(&c, e.client_x(), e.client_y());
             let mut host = h.borrow_mut();
+            let (x, y) = local(&c, e.client_x(), e.client_y(), host.ui_zoom());
             host.pointer_moved(x, y);
             host.release();
             w.request_redraw();

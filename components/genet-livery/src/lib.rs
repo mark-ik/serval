@@ -34,6 +34,44 @@ mod table_wrapper;
 mod text;
 mod text_fragment;
 
+/// Stack the two per-DOM-level descents guarantee themselves before recursing
+/// one level further: the style cascade
+/// (`style::resolve_subtree_with_containers`) and the box-tree projection
+/// (`layout::build_block`/`build_inline` `build_box`).
+///
+/// Measured 2026-09-03 on Windows MSVC, debug: one `layout()` of nested
+/// `<div>`s wants ~450 KiB of baseline plus **~127 KiB per DOM nesting level**
+/// (`docs/2026-08-09_cambium_desktop_host_g1_receipt.md`, Findings 2026-09-03),
+/// and `resolve_styles` ahead of it has an appetite of the same order. A Rust
+/// MSVC binary's main thread gets a 1 MiB `SizeOfStackReserve`, so a document
+/// nested about eight elements deep used to abort the process — no panic to
+/// catch, no consumer code involved, release builds fine. Growing on demand
+/// here covers every consumer without link flags or a thread swap.
+///
+/// **Red zone, 256 KiB.** The check happens *before* a level runs, so the zone
+/// must cover that level's own frame plus the frames the growth path itself
+/// pushes. At the measured debug rate that is two levels of headroom. A tighter
+/// zone — 32 KiB, the figure in `stacker`'s own doc example — is sized for
+/// recursions whose frames are hundreds of bytes, not the ~127 KiB ones here,
+/// and a single level could cross the limit between two checks.
+///
+/// **Growth, 2 MiB.** About sixteen further levels at the debug rate, so a deep
+/// document pays a handful of segment allocations rather than one per level,
+/// while a wide-but-shallow tree never allocates one at all. Sized for the
+/// worst case measured (debug); release frames are far smaller.
+///
+/// `#[inline(always)]` because `stacker::maybe_grow`'s fast path is a
+/// stack-pointer compare and must not cost a call frame on a pass that runs for
+/// every element in every document.
+#[inline(always)]
+pub(crate) fn with_recursion_stack<R>(descend: impl FnOnce() -> R) -> R {
+    /// See [`with_recursion_stack`].
+    const RED_ZONE: usize = 256 * 1024;
+    /// See [`with_recursion_stack`].
+    const GROWTH: usize = 2 * 1024 * 1024;
+    stacker::maybe_grow(RED_ZONE, GROWTH, descend)
+}
+
 pub use buckram::{
     AnonymousBoxKind, Baselines, BoxGeneration, BoxId, BoxOrigin, BreakToken, ContainingBlock,
     ContainingBlockEstablishment, CssBox, CssBoxTree, DisplayInside, DisplayOutside, DisplayRole,

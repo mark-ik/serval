@@ -49,8 +49,9 @@ impl Accessibility for A11yHost {
         layout: &cambium_rootstock::OwnedLayout,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
+        layout_scale: f64,
     ) -> Vec<A11yRequest> {
-        self.sync_inner(dom, layout, leaves, focus)
+        self.sync_inner(dom, layout, leaves, focus, layout_scale)
     }
 }
 
@@ -110,6 +111,7 @@ impl A11yHost {
         layout: &cambium_rootstock::OwnedLayout,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
+        layout_scale: f64,
     ) -> Vec<A11yRequest> {
         let Some(window) = self.window.clone() else {
             // No window yet: nothing to install against, and no reader to ask.
@@ -117,7 +119,7 @@ impl A11yHost {
         };
         let (mut tree, action_map) = project_tree(dom, layout, leaves, focus);
         self.action_map = action_map;
-        scale_tree_to_window(&mut tree, dom, window.scale_factor());
+        scale_tree_to_window(&mut tree, dom, layout_scale);
         let node_count = tree.nodes.len();
 
         if !self.installed {
@@ -212,17 +214,21 @@ pub fn project_tree(
     (tree, action_map)
 }
 
-/// Stamp the window's DPI scale on the tree root.
+/// Stamp the host's layout scale on the tree root.
 ///
-/// Layout bounds are logical CSS pixels, and AccessKit expects the final
+/// Layout bounds are layout-space CSS pixels, and AccessKit expects the final
 /// transformed coordinates to be the platform's physical client pixels. The
 /// Windows adapter applies no DPI conversion of its own, so without this a
 /// screen reader or UI Automation client at 125% is told every control sits
 /// at four fifths of its true position.
-pub fn scale_tree_to_window(tree: &mut TreeUpdate, dom: &ScriptedDom, scale_factor: f64) {
+///
+/// `layout_scale` is the device scale **times the UI zoom**, because both
+/// separate the two spaces and a reader has no way to know about either. Pass
+/// [`Host::layout_scale`](cambium_rootstock::Host::layout_scale).
+pub fn scale_tree_to_window(tree: &mut TreeUpdate, dom: &ScriptedDom, layout_scale: f64) {
     let root = A11yNodeId(dom.opaque_id(dom.document()));
     if let Some((_, node)) = tree.nodes.iter_mut().find(|(id, _)| *id == root) {
-        node.set_transform(Affine::scale(scale_factor));
+        node.set_transform(Affine::scale(layout_scale));
     }
 }
 

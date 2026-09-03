@@ -51,7 +51,26 @@ where
     where
         D: LayoutDom<NodeId = Id>,
     {
+        /// The box-tree descent's one entry per DOM level. It keeps a whole
+        /// cloned `ComputedValues` alive in every frame while it walks the
+        /// children, which is most of why a level is expensive; see
+        /// [`crate::with_recursion_stack`].
         fn collect<D>(
+            dom: &D,
+            styles: &StylePlane<D::NodeId>,
+            node: D::NodeId,
+            inherited: Option<&ComputedValues>,
+            output: &mut Vec<BoxTreeInput<D::NodeId>>,
+        ) where
+            D: LayoutDom,
+            D::NodeId: Copy + Eq + Hash,
+        {
+            crate::with_recursion_stack(move || {
+                collect_on_this_stack(dom, styles, node, inherited, output)
+            })
+        }
+
+        fn collect_on_this_stack<D>(
             dom: &D,
             styles: &StylePlane<D::NodeId>,
             node: D::NodeId,

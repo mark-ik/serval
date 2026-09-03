@@ -198,13 +198,37 @@ where
         }
     }
 
-    /// A right press. On a drag surface this raises the platform's own window
-    /// menu, the way right-clicking a real title bar does.
+    /// A right press.
+    ///
+    /// Shaped exactly like [`press_left`](Self::press_left): the DOM sees it
+    /// first — the `on_pointer` element under the cursor gets a `Down` marked
+    /// [`PointerButton::Secondary`](cambium::PointerButton::Secondary), which
+    /// is how a view opens a context menu — and only then does the frame act.
+    /// On a drag surface that means the platform's own window menu, the way
+    /// right-clicking a real title bar does, unless a handler called
+    /// `prevent_default` to keep the press for itself.
+    ///
+    /// The press is one-shot: it begins no capture, so there is no right
+    /// release path to match it. See
+    /// [`Host::secondary_press`](cambium_rootstock::Host::secondary_press).
     pub(crate) fn press_right(&mut self) {
         let (x, y) = self.cursor();
-        if self.app_region_at(x, y).is_drag() {
-            self.perform(WindowCommand::ShowSystemMenu);
+        let region = self.app_region_at(x, y);
+
+        self.secondary_press();
+
+        if !region.is_drag() {
+            return;
         }
+        if self
+            .s
+            .runner
+            .as_ref()
+            .is_some_and(|runner| runner.default_prevented())
+        {
+            return;
+        }
+        self.perform(WindowCommand::ShowSystemMenu);
     }
 
     /// Run one window verb against the real window.
@@ -250,9 +274,12 @@ where
                 let _ = window.drag_window();
             },
             WindowCommand::ShowSystemMenu => {
+                // The cursor is in layout coordinates and winit's `Logical`
+                // position is the platform's, which differ by the zoom.
                 let (x, y) = self.cursor();
+                let zoom = f64::from(self.ui_zoom());
                 window.show_window_menu(winit::dpi::Position::Logical(
-                    winit::dpi::LogicalPosition::new(x as f64, y as f64),
+                    winit::dpi::LogicalPosition::new(x as f64 * zoom, y as f64 * zoom),
                 ));
             },
             WindowCommand::Close => unreachable!("close returned above"),

@@ -503,7 +503,43 @@ where
     tree
 }
 
+/// Stack the box-tree descent guarantees itself before it recurses one more
+/// level of the document.
+///
+/// Measured 2026-09-03 on Windows MSVC, debug: one layout of nested `<div>`s
+/// wants roughly 127 KiB per DOM nesting level across the whole pipeline, and a
+/// Rust MSVC binary's main thread gets a 1 MiB `SizeOfStackReserve`. A document
+/// nested about eight elements deep therefore aborted the process — no panic to
+/// catch, no consumer code involved. See
+/// `genet-livery`'s `with_recursion_stack`, which carries the same numbers for
+/// the cascade and the algorithm-tree projection; the two descents are halves
+/// of one pass and share these figures deliberately.
+///
+/// 256 KiB red zone: the check runs *before* a level does, so the zone must
+/// cover that level's frame plus the frames the growth path itself pushes.
+/// 2 MiB growth: ~16 further levels at the measured debug rate, so a deep
+/// document pays a handful of segment allocations instead of one per level and
+/// a shallow one pays none.
+///
+/// `#[inline(always)]`: `stacker::maybe_grow`'s fast path is a stack-pointer
+/// compare and must not cost a frame on a pass that runs for every box.
+#[inline(always)]
+pub(crate) fn with_box_tree_stack<R>(descend: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(256 * 1024, 2 * 1024 * 1024, descend)
+}
+
 fn normalize_input<Id>(
+    input: BoxTreeInput<Id>,
+    item_child: bool,
+    float_context: FloatContextProvenance,
+) -> Vec<ProtoBox<Id>>
+where
+    Id: Copy,
+{
+    with_box_tree_stack(move || normalize_input_on_this_stack(input, item_child, float_context))
+}
+
+fn normalize_input_on_this_stack<Id>(
     input: BoxTreeInput<Id>,
     item_child: bool,
     float_context: FloatContextProvenance,
@@ -1207,6 +1243,20 @@ impl ContainingBlockState {
 }
 
 fn materialize<Id>(
+    tree: &mut CssBoxTree<Id>,
+    proto: ProtoBox<Id>,
+    parent: Option<BoxId>,
+    containing_blocks: ContainingBlockState,
+) -> BoxId
+where
+    Id: Copy + Eq + Hash,
+{
+    with_box_tree_stack(move || {
+        materialize_on_this_stack(tree, proto, parent, containing_blocks)
+    })
+}
+
+fn materialize_on_this_stack<Id>(
     tree: &mut CssBoxTree<Id>,
     proto: ProtoBox<Id>,
     parent: Option<BoxId>,

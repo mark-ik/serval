@@ -239,12 +239,18 @@ pub trait Accessibility {
     /// `focus` is the focused DOM node's opaque id, used as the tree's focus
     /// only when that node is really in the tree, so a stale id never points
     /// the reader at nothing.
+    ///
+    /// `layout_scale` is [`Host::layout_scale`] — device scale times UI zoom —
+    /// and is what the projected boxes ride into the platform's physical client
+    /// coordinates. It is passed rather than read off a window because the zoom
+    /// half of it is the host's, not the window's.
     fn sync(
         &mut self,
         dom: &ScriptedDom,
         layout: &OwnedLayout,
         leaves: &mut LeafRegistry<u64>,
         focus: Option<u64>,
+        layout_scale: f64,
     ) -> Vec<A11yRequest>;
 }
 
@@ -785,7 +791,8 @@ pub use capture::{Frame, read_frame};
 pub use host::{
     AppCtx, AppFrameInsets, AppHook, CaptureFn, CloseDisposition, CloseRequest, CloseRequestHook,
     FocusedTextHook, FocusedTextSlot, FrameHook, FrameProfile, Hook, Host, HostHooks, HostOptions,
-    HostPointer, HostState, IdlePolicy, Init, KeyInterceptHook, Runner, WindowFrame, env_size,
+    HostPointer, HostState, IdlePolicy, Init, KeyInterceptHook, Runner, WindowFrame, ZOOM_LADDER,
+    env_size, fit_zoom, ladder_step,
 };
 pub use wake::HostWake;
 pub use window_verbs::{AppRegion, WindowCommand, WindowCommands, WindowGeometry};

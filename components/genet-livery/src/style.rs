@@ -1161,8 +1161,46 @@ where
         .unwrap_or(TreeCounts::Deferred)
 }
 
+/// The single entry every nesting level of the cascade descent passes through:
+/// it is the only function in the style pass that recurses on DOM children, so
+/// guarding here buys stack once per level. See [`crate::with_recursion_stack`]
+/// for why the descent needs to buy any.
 #[allow(clippy::too_many_arguments)]
 fn resolve_subtree_with_containers<D, P>(
+    selector_tree: &SelectorTree<'_, D>,
+    style_set: &StyleSet,
+    device: &Device,
+    id: D::NodeId,
+    parent: Option<&ComputedValues>,
+    parent_custom: Option<&CustomProperties>,
+    tree_counts: TreeCounts,
+    plane: &mut StylePlane<D::NodeId>,
+    hints: &P,
+    containers: Option<&HashMap<D::NodeId, Vec<ContainerSnapshot>>>,
+) -> usize
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+    P: PresentationalHintProvider<D::NodeId>,
+{
+    crate::with_recursion_stack(move || {
+        resolve_subtree_on_this_stack(
+            selector_tree,
+            style_set,
+            device,
+            id,
+            parent,
+            parent_custom,
+            tree_counts,
+            plane,
+            hints,
+            containers,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_subtree_on_this_stack<D, P>(
     selector_tree: &SelectorTree<'_, D>,
     style_set: &StyleSet,
     device: &Device,

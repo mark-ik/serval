@@ -158,6 +158,26 @@ pub struct HostOptions {
     ///
     /// [`spatial`]: crate::Direction
     pub spatial_focus: bool,
+    /// The application's own interface zoom, multiplied onto the device scale
+    /// to give the one [`layout_scale`](Host::layout_scale) everything is laid
+    /// out and rasterized at.
+    ///
+    /// `1.0` is "no zoom" and is the default. With
+    /// [`fit_design`](Self::fit_design) also set this becomes a user *offset*
+    /// on the fit factor rather than the whole answer, which is what makes a
+    /// keyboard step meaningful in a window that is already fitting a design.
+    ///
+    /// The host never persists it. An application that wants the preference to
+    /// survive a launch writes it through its own settings contract and hands
+    /// it back here.
+    pub ui_zoom: f32,
+    /// Design size, in logical pixels, the interface should be scaled to fit.
+    ///
+    /// With this set the host recomputes zoom on every resize as
+    /// [`fit_zoom`], so an application asks for "fit 1100x820" once and never
+    /// handles a resize itself. `None` — the default — leaves
+    /// [`ui_zoom`](Self::ui_zoom) alone.
+    pub fit_design: Option<(f32, f32)>,
 }
 
 impl Default for HostOptions {
@@ -177,7 +197,116 @@ impl Default for HostOptions {
                 ..Default::default()
             }),
             spatial_focus: true,
+            ui_zoom: 1.0,
+            fit_design: None,
         }
+    }
+}
+
+/// The browser zoom ladder, the rungs [`Host::zoom_in`] and [`Host::zoom_out`]
+/// step between.
+///
+/// Borrowed rather than invented: every desktop browser offers these thirteen
+/// stops, so Ctrl+plus in a Cambium application moves the interface by the
+/// amount the person pressing it already expects.
+pub const ZOOM_LADDER: [f32; 13] = [
+    0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
+];
+
+/// Outer guards on the effective zoom. A fit factor is arithmetic on a window
+/// size, so it is not bounded by the ladder; these keep a degenerate surface
+/// (a one-pixel window mid-restore) from producing a zoom that divides the
+/// logical size into nonsense.
+const MIN_ZOOM: f32 = 0.1;
+const MAX_ZOOM: f32 = 10.0;
+
+/// The next rung of [`ZOOM_LADDER`] above or below `zoom`, clamped at the ends.
+///
+/// A value off the ladder — an application's own `ui_zoom`, or a fit offset —
+/// steps to the next rung strictly past it rather than snapping first, so one
+/// press always moves and never moves twice.
+pub fn ladder_step(zoom: f32, up: bool) -> f32 {
+    // Wide enough to absorb the f32 error in a ladder value that has been
+    // through a multiply and back, narrow enough that two rungs never merge.
+    const EPS: f32 = 1e-3;
+    let ends = (ZOOM_LADDER[0], ZOOM_LADDER[ZOOM_LADDER.len() - 1]);
+    if up {
+        ZOOM_LADDER
+            .iter()
+            .copied()
+            .find(|rung| *rung > zoom + EPS)
+            .unwrap_or(ends.1)
+    } else {
+        ZOOM_LADDER
+            .iter()
+            .rev()
+            .copied()
+            .find(|rung| *rung < zoom - EPS)
+            .unwrap_or(ends.0)
+    }
+}
+
+/// The zoom at which `design` fits inside `available`, both in logical pixels:
+/// the smaller of the two ratios, so the design fits whole with slack on the
+/// axis that was not binding.
+///
+/// Public because a consumer that wants to know the number the host is about
+/// to use — to place its own content against it, or to decide whether to ask
+/// for a different design — must be able to compute the same one rather than
+/// a near miss.
+pub fn fit_zoom(design: (f32, f32), available: (f32, f32)) -> f32 {
+    let ratio = |available: f32, design: f32| {
+        if design > 0.0 {
+            available / design
+        } else {
+            1.0
+        }
+    };
+    ratio(available.0, design.0)
+        .min(ratio(available.1, design.1))
+        .clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    use super::{ZOOM_LADDER, fit_zoom, ladder_step};
+
+    #[test]
+    fn the_ladder_steps_both_ways_and_clamps_at_its_ends() {
+        assert_eq!(ladder_step(1.0, true), 1.1);
+        assert_eq!(ladder_step(1.0, false), 0.9);
+        assert_eq!(ladder_step(3.0, true), 3.0);
+        assert_eq!(ladder_step(0.5, false), 0.5);
+    }
+
+    #[test]
+    fn a_value_off_the_ladder_steps_to_the_next_rung_past_it() {
+        assert_eq!(ladder_step(1.37, true), 1.5);
+        assert_eq!(ladder_step(1.37, false), 1.25);
+    }
+
+    #[test]
+    fn every_rung_is_reachable_by_stepping_up_from_the_bottom() {
+        let mut zoom = ZOOM_LADDER[0];
+        for rung in ZOOM_LADDER.iter().skip(1) {
+            zoom = ladder_step(zoom, true);
+            assert_eq!(zoom, *rung);
+        }
+    }
+
+    #[test]
+    fn the_fit_is_the_binding_axis() {
+        // 820 tall wanted, 752 offered: height binds, width has slack.
+        let zoom = fit_zoom((1100.0, 820.0), (1100.0, 752.0));
+        assert!((zoom - 752.0 / 820.0).abs() < 1e-6, "{zoom}");
+        // Wider design on the same surface: now width binds.
+        let zoom = fit_zoom((2200.0, 820.0), (1100.0, 752.0));
+        assert!((zoom - 0.5).abs() < 1e-6, "{zoom}");
+    }
+
+    #[test]
+    fn a_degenerate_design_does_not_divide_by_zero() {
+        assert_eq!(fit_zoom((0.0, 0.0), (1100.0, 752.0)), 1.0);
     }
 }
 
@@ -385,7 +514,28 @@ where
     pub window: Option<&'a dyn HostWindow>,
     /// The logical (DPI-independent) size of the surface being laid out — the
     /// coordinate space the layout, the cursor, and [`HostPointer`] all use.
+    ///
+    /// Under a UI zoom this is the *post-zoom* size, `window / zoom`: zoom
+    /// changes how much of the interface fits, so an application that lays out
+    /// against this number needs no zoom arithmetic of its own.
     pub logical_size: (f32, f32),
+    /// The effective interface zoom this context was built at — the device
+    /// scale is *not* in it. An application persists this, or lays a
+    /// zoom-independent overlay out against it.
+    pub ui_zoom: f32,
+    /// Whether [`ui_zoom`](Self::ui_zoom) has moved since the last hook context
+    /// the application was given.
+    ///
+    /// True in exactly one hook per change, the first one built after it — the
+    /// edge, not the level, so an application that persists the preference
+    /// writes once rather than every frame.
+    pub zoom_changed: bool,
+    /// Set to change the interface zoom; the host relayouts under it, exactly
+    /// as [`set_sheet`](Self::set_sheet) relayouts under a new stylesheet.
+    ///
+    /// With [`HostOptions::fit_design`] set this is the user offset on the fit
+    /// factor rather than the whole zoom, matching what the keyboard steps.
+    pub set_ui_zoom: &'a mut Option<f32>,
     /// The custom-paint leaf registry the paint pass renders from.
     pub leaves: &'a mut sprigging::LeafRegistry<u64>,
     /// Set to swap the stylesheet; the host relayouts under the new sheet.
@@ -501,6 +651,20 @@ where
     /// Retained Livery/Buckram session in logical coordinates.
     pub layout: Option<OwnedLayout>,
     pub layout_size: (f32, f32),
+    /// The user's own zoom: [`HostOptions::ui_zoom`] as the runtime setter and
+    /// the keyboard ladder have since moved it. Multiplied by
+    /// [`fit_factor`](Self::fit_factor) to give the effective zoom.
+    pub(crate) user_zoom: f32,
+    /// The zoom `fit_design` currently asks for, recomputed on every resize.
+    /// `1.0` when no design was named, so the multiply is unconditional.
+    pub(crate) fit_factor: f32,
+    /// The effective zoom the application was last told about, so a change is
+    /// reported to a hook once rather than every frame.
+    pub(crate) zoom_seen: f32,
+    /// The surface in device-logical pixels when there is no window: how a
+    /// windowless host ([`Harness`](crate::Harness)) states what `fit_design`
+    /// is measured against. `None` asks the window instead.
+    pub(crate) surface_size: Option<(f32, f32)>,
     pub(crate) last_layout_update_us: u64,
     pub(crate) last_layout_tick_us: u64,
     pub(crate) last_layout_apply_us: u64,
@@ -560,6 +724,9 @@ where
     pub scrollbar_fade: ScrollbarFade<ScrollTarget>,
     pub close_requested: bool,
     pub pending_sheet: Option<String>,
+    /// A zoom an application hook asked for, applied once its borrows end —
+    /// the same deferral `pending_sheet` gets, and for the same reason.
+    pub pending_ui_zoom: Option<f32>,
     pub pending_capture: Option<CaptureFn>,
     /// Pointer events an application hook asked the host to deliver to itself,
     /// drained through the real input path once the hook returns.
@@ -586,6 +753,10 @@ where
             runner: None,
             layout: None,
             layout_size: (0.0, 0.0),
+            user_zoom: 1.0,
+            fit_factor: 1.0,
+            zoom_seen: 1.0,
+            surface_size: None,
             last_layout_update_us: 0,
             last_layout_tick_us: 0,
             last_layout_apply_us: 0,
@@ -615,6 +786,7 @@ where
             scrollbar_fade: ScrollbarFade::new(),
             close_requested: false,
             pending_sheet: None,
+            pending_ui_zoom: None,
             pending_capture: None,
             pending_pointer: Vec::new(),
             last_frame_profile: None,
@@ -656,35 +828,197 @@ where
     Logic: FnMut(&State) -> V + 'static,
     V: RootView<State>,
 {
+    /// Assemble a host and seed the runtime zoom from its options.
+    ///
+    /// The seeding is why this exists rather than a struct literal:
+    /// [`HostOptions::ui_zoom`] is an input and [`HostState::user_zoom`] is
+    /// where it lives afterwards, and a second event source that built the
+    /// struct by hand would silently launch at 1.0.
+    pub fn new(
+        options: HostOptions,
+        init: Option<InitFn<State, Logic>>,
+        hooks: HostHooks<State, Logic, V>,
+        s: HostState<State, Logic, V>,
+        wake: HostWake,
+    ) -> Self {
+        let mut host = Self {
+            options,
+            init,
+            hooks,
+            s,
+            wake,
+        };
+        host.s.user_zoom = host.options.ui_zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        host.s.zoom_seen = host.ui_zoom();
+        host
+    }
+
     /// The application's handle on the window-verb queue. Core data: pushing a
     /// verb is portable, honouring one is the event source's problem.
     pub fn commands(&self) -> WindowCommands {
         self.s.commands.clone()
     }
 
+    /// The **device** scale: physical pixels per device-logical pixel, and
+    /// nothing else. This is the window's truth — frame insets, the monitor
+    /// clamp, geometry persistence, the platform's own logical coordinates —
+    /// and it never carries zoom. Everything the *document* is measured in
+    /// goes through [`layout_scale`](Self::layout_scale) instead.
     pub fn scale_factor(&self) -> f64 {
         self.s.window.as_ref().map_or(1.0, |w| w.scale_factor())
     }
 
-    /// The logical size being laid out: the window's, or — windowless, under
-    /// [`Harness`] — the size the retained layout was last built at.
-    pub fn logical_size(&self) -> (f32, f32) {
+    /// The effective interface zoom: the fit factor, if a design was named,
+    /// times the user's own zoom.
+    ///
+    /// One rule covers both knobs. Without `fit_design` the fit factor is
+    /// `1.0`, so this is the user's zoom exactly and the keyboard ladder walks
+    /// real rungs. With one, the user's zoom is an offset multiplied onto the
+    /// fit, so a step still means "a rung more than whatever fits".
+    pub fn ui_zoom(&self) -> f32 {
+        (self.s.fit_factor * self.s.user_zoom).clamp(MIN_ZOOM, MAX_ZOOM)
+    }
+
+    /// The user's own zoom, before the fit factor: what `Ctrl+0` resets and
+    /// what [`set_ui_zoom`](Self::set_ui_zoom) writes.
+    pub fn user_zoom(&self) -> f32 {
+        self.s.user_zoom
+    }
+
+    /// The one scale the frame is composed at: device scale times zoom.
+    ///
+    /// Layout runs at `window_physical / layout_scale`, rasterization runs at
+    /// `layout_scale`, and every logical coordinate the host exchanges with
+    /// the application is in that post-zoom space.
+    pub fn layout_scale(&self) -> f64 {
+        self.scale_factor() * f64::from(self.ui_zoom())
+    }
+
+    /// The surface in **device-logical** pixels — the pre-zoom size, and what
+    /// [`HostOptions::fit_design`] is measured against.
+    ///
+    /// Windowless, this is whatever the event source last stated (the
+    /// [`Harness`](crate::Harness) states it as it lays out), falling back to
+    /// the size the retained layout was built at.
+    pub fn available_size(&self) -> (f32, f32) {
         match self.s.window.as_ref() {
             Some(window) => {
                 let size = window.inner_size();
                 let scale = window.scale_factor() as f32;
                 (size.0.max(1) as f32 / scale, size.1.max(1) as f32 / scale)
             },
+            None => self.s.surface_size.unwrap_or(self.s.layout_size),
+        }
+    }
+
+    /// The logical size being laid out: the window's over the layout scale,
+    /// or — windowless, under [`Harness`] — the size the retained layout was
+    /// last built at.
+    pub fn logical_size(&self) -> (f32, f32) {
+        match self.s.window.as_ref() {
+            Some(window) => {
+                let size = window.inner_size();
+                let scale = self.layout_scale() as f32;
+                (size.0.max(1) as f32 / scale, size.1.max(1) as f32 / scale)
+            },
             None => self.s.layout_size,
+        }
+    }
+
+    /// A point the platform reported in **physical** window pixels, in the
+    /// layout's own coordinates.
+    ///
+    /// The one conversion every pointer path crosses, so an event source does
+    /// not divide by hand — and so the harness can drive the same arithmetic
+    /// the winit `CursorMoved` arm runs.
+    pub fn layout_point(&self, x: f64, y: f64) -> (f32, f32) {
+        let scale = self.layout_scale();
+        ((x / scale) as f32, (y / scale) as f32)
+    }
+
+    /// State the surface size a windowless host stands in for, in
+    /// device-logical pixels.
+    ///
+    /// Ignored while there is a window, which knows better. This is how the
+    /// [`Harness`](crate::Harness) gives `fit_design` something to measure
+    /// against without inventing a fake window.
+    pub fn set_surface_size(&mut self, width: f32, height: f32) {
+        self.s.surface_size = Some((width, height));
+    }
+
+    /// Set the user's zoom and relayout under it.
+    ///
+    /// Returns whether the effective zoom actually moved. With `fit_design`
+    /// set this is the offset on the fit factor, not the whole zoom; see
+    /// [`ui_zoom`](Self::ui_zoom).
+    pub fn set_ui_zoom(&mut self, zoom: f32) -> bool {
+        let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        if zoom == self.s.user_zoom {
+            return false;
+        }
+        self.s.user_zoom = zoom;
+        self.note_zoom_change();
+        true
+    }
+
+    /// Step the user's zoom one rung of [`ZOOM_LADDER`], up or down.
+    pub fn step_ui_zoom(&mut self, up: bool) -> bool {
+        self.set_ui_zoom(ladder_step(self.s.user_zoom, up))
+    }
+
+    /// Ctrl+0: clear the user's zoom. With `fit_design` set that leaves the
+    /// fit factor in place rather than forcing the interface to 1.0, because
+    /// "reset" there means "back to what fits", not "back to unscaled".
+    pub fn reset_ui_zoom(&mut self) -> bool {
+        self.set_ui_zoom(1.0)
+    }
+
+    /// Recompute the fit factor against the surface as it is now. Returns
+    /// whether the effective zoom moved. A no-op without `fit_design`.
+    pub fn refresh_fit_zoom(&mut self) -> bool {
+        let Some(design) = self.options.fit_design else {
+            return false;
+        };
+        let factor = fit_zoom(design, self.available_size());
+        if factor == self.s.fit_factor {
+            return false;
+        }
+        self.s.fit_factor = factor;
+        self.note_zoom_change();
+        true
+    }
+
+    /// A zoom change: the next frame lays out at the new logical size and
+    /// rasterizes at the new layout scale.
+    ///
+    /// Zeroing `layout_size` rather than dropping the layout is deliberate.
+    /// The rebuild branch carries both scroll planes across from the previous
+    /// layout, and dropping it would snap a scrolled interface back to the top
+    /// every time somebody pressed Ctrl+plus.
+    fn note_zoom_change(&mut self) {
+        self.s.layout_size = (0.0, 0.0);
+        if let Some(window) = self.s.window.as_ref() {
+            window.request_redraw();
         }
     }
 
     /// Run one application hook with the standard context, then apply any
     /// host-owned requests it made (sheet swap → relayout, queued pointer
     /// events → the real input path).
+    /// The zoom to report, and whether it moved since the application last
+    /// saw one. Consuming: the edge belongs to the first hook built after the
+    /// change, not to every hook that follows it.
+    pub(crate) fn take_zoom_edge(&mut self) -> (f32, bool) {
+        let zoom = self.ui_zoom();
+        let changed = zoom != self.s.zoom_seen;
+        self.s.zoom_seen = zoom;
+        (zoom, changed)
+    }
+
     pub fn with_ctx(&mut self, which: Hook) {
         {
             let logical_size = self.logical_size();
+            let (ui_zoom, zoom_changed) = self.take_zoom_edge();
             let geometry = self.s.geometry;
             let frame_profile = self.s.last_frame_profile;
             let commands = self.s.commands.clone();
@@ -696,8 +1030,11 @@ where
                 runner,
                 window,
                 logical_size,
+                ui_zoom,
+                zoom_changed,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
+                set_ui_zoom: &mut self.s.pending_ui_zoom,
                 close: &mut self.s.close_requested,
                 wake: &self.wake,
                 capture: &mut self.s.pending_capture,
@@ -723,6 +1060,9 @@ where
             // Force a full relayout under the new sheet.
             self.s.layout = None;
             self.s.layout_size = (0.0, 0.0);
+        }
+        if let Some(zoom) = self.s.pending_ui_zoom.take() {
+            self.set_ui_zoom(zoom);
         }
         self.drain_pointer();
     }
@@ -753,6 +1093,7 @@ where
     pub fn decide_close(&mut self, request: CloseRequest) -> Option<CloseDisposition> {
         let disposition = {
             let logical_size = self.logical_size();
+            let (ui_zoom, zoom_changed) = self.take_zoom_edge();
             let geometry = self.s.geometry;
             let frame_profile = self.s.last_frame_profile;
             let commands = self.s.commands.clone();
@@ -765,8 +1106,11 @@ where
                 runner,
                 window,
                 logical_size,
+                ui_zoom,
+                zoom_changed,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
+                set_ui_zoom: &mut self.s.pending_ui_zoom,
                 close: &mut self.s.close_requested,
                 wake: &self.wake,
                 capture: &mut self.s.pending_capture,

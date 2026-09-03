@@ -1508,6 +1508,81 @@ mod positioned_paint_tests {
 
         assert!(push < overlay && overlay < pop);
     }
+
+    /// A pane of absolutely positioned children under one `overflow: hidden`
+    /// ancestor opens a fixed number of clip scopes, not one per child.
+    ///
+    /// The regression: every flattened stacking item re-pushed its whole
+    /// ancestor clip stack, so a 24x24 isometric board emitted ~700 clip
+    /// scopes for a single `overflow: hidden` pane. A clip scope is a
+    /// compositing layer downstream and the frame came back empty. The
+    /// sibling panel painted before the pane must stay outside them.
+    #[test]
+    fn one_overflow_scope_wraps_a_run_of_flattened_items() {
+        fn pane_of(tiles: usize) -> LiveryPaintList {
+            let mut html = String::from("<div id=app><div id=side></div><div id=pane>");
+            for index in 0..tiles {
+                html.push_str(&format!("<div class=tile style=\"z-index: {index}\"></div>"));
+            }
+            html.push_str("</div></div>");
+            render(
+                &html,
+                "html, body, div { margin: 0; padding: 0; }                  #app { display: flex; width: 320px; height: 240px; }                  #side { width: 80px; height: 100%; background: #00f; }                  #pane { position: relative; flex: 1; overflow: hidden; background: #0f0; }                  .tile { position: absolute; left: 4px; top: 4px; width: 8px; height: 8px;                          background: #f00; }",
+            )
+        }
+        fn clips(list: &LiveryPaintList) -> (usize, usize) {
+            list.commands()
+                .iter()
+                .fold((0, 0), |(push, pop), command| match command {
+                    PaintCmd::PushClip(_) => (push + 1, pop),
+                    PaintCmd::PopClip => (push, pop + 1),
+                    _ => (push, pop),
+                })
+        }
+
+        let few = pane_of(4);
+        let many = pane_of(64);
+        assert_eq!(clips(&few).0, clips(&few).1, "the clip stack stays balanced");
+        assert_eq!(clips(&many).0, clips(&many).1, "the clip stack stays balanced");
+        assert_eq!(
+            clips(&many).0,
+            clips(&few).0,
+            "clip scopes count runs of flattened items, not the items in them"
+        );
+
+        // The run's scope is the pane's padding box, and it holds every tile.
+        let push = many
+            .commands()
+            .iter()
+            .rposition(|command| matches!(command, PaintCmd::PushClip(_)))
+            .expect("the flattened run opens a scope");
+        let pop = many.commands()[push..]
+            .iter()
+            .position(|command| matches!(command, PaintCmd::PopClip))
+            .map(|index| push + index)
+            .expect("the flattened run closes its scope");
+        let PaintCmd::PushClip(ClipSpec {
+            kind: ClipKind::Rect(rect),
+        }) = &many.commands()[push]
+        else {
+            panic!("an `overflow: hidden` pane clips to a rectangle");
+        };
+        assert_eq!(
+            (rect.min.x, rect.min.y, rect.max.x, rect.max.y),
+            (80.0, 0.0, 320.0, 240.0),
+            "the clip is the pane's padding box in viewport coordinates"
+        );
+        let red = ColorF::new(1.0, 0.0, 0.0, 1.0);
+        let tiles = many.commands()[push..pop]
+            .iter()
+            .filter(|command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == red))
+            .count();
+        assert_eq!(tiles, 64, "every tile paints inside the one scope");
+        assert!(
+            first_rect(&many, ColorF::new(0.0, 0.0, 1.0, 1.0)) < push,
+            "the sibling panel paints before the run opens its clip"
+        );
+    }
 }
 
 /// A blank `<td>` is not inferred from its rectangle. Text, replacement
@@ -1656,18 +1731,16 @@ fn emit_children_in_stacking_order<D>(
     {
         deferred.flush(styles, fragments, list);
     }
-    for item in items.iter().filter(|item| item.level < 0) {
-        emit_stacking_item(
-            dom,
-            styles,
-            fragments,
-            item,
-            text,
-            list,
-            scroll_offsets,
-            canvas_background_source,
-        );
-    }
+    emit_stacking_items(
+        dom,
+        styles,
+        fragments,
+        items.iter().filter(|item| item.level < 0),
+        text,
+        list,
+        scroll_offsets,
+        canvas_background_source,
+    );
 
     emit_normal_children(
         dom,
@@ -1689,18 +1762,16 @@ fn emit_children_in_stacking_order<D>(
         deferred_collapsed,
     );
 
-    for item in items.iter().filter(|item| item.level >= 0) {
-        emit_stacking_item(
-            dom,
-            styles,
-            fragments,
-            item,
-            text,
-            list,
-            scroll_offsets,
-            canvas_background_source,
-        );
-    }
+    emit_stacking_items(
+        dom,
+        styles,
+        fragments,
+        items.iter().filter(|item| item.level >= 0),
+        text,
+        list,
+        scroll_offsets,
+        canvas_background_source,
+    );
 }
 
 fn collect_stacking_items<D>(
@@ -1766,37 +1837,77 @@ fn collect_stacking_items<D>(
     }
 }
 
+/// Emit one z-order phase of flattened stacking items, holding each run of
+/// items that flattened out of the same ancestors inside a single clip scope.
+///
+/// A clip scope is a compositing group in every renderer this list reaches, so
+/// re-pushing an identical stack per item is not free bookkeeping: a board of a
+/// few hundred `position: absolute` children under one `overflow: hidden`
+/// ancestor emitted one clip layer each, and a compositor whose per-frame
+/// allocation is sized against the layer count drew nothing at all. Coalescing
+/// is sound because nothing paints between two adjacent items of a phase, and
+/// a clip is an intersection: one scope around the run means what a scope
+/// around each member meant.
 #[allow(clippy::too_many_arguments)]
-fn emit_stacking_item<D>(
+fn emit_stacking_items<'items, D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     fragments: &LiveryLayout<D::NodeId>,
-    item: &StackingItem<D::NodeId>,
+    items: impl Iterator<Item = &'items StackingItem<D::NodeId>>,
     text: &mut PaintText<'_, D::NodeId>,
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
     canvas_background_source: Option<D::NodeId>,
 ) where
     D: LayoutDom,
-    D::NodeId: Copy + Eq + Hash,
+    D::NodeId: Copy + Eq + Hash + 'items,
 {
-    for clip in &item.ancestor_clips {
-        list.commands.push(PaintCmd::PushClip(clip.clone()));
+    let mut open: Option<&'items [ClipSpec]> = None;
+    for item in items {
+        let reuse = open.is_some_and(|current| clip_stacks_match(current, &item.ancestor_clips));
+        if !reuse {
+            if let Some(current) = open {
+                for _ in current {
+                    list.commands.push(PaintCmd::PopClip);
+                }
+            }
+            for clip in &item.ancestor_clips {
+                list.commands.push(PaintCmd::PushClip(clip.clone()));
+            }
+            open = Some(&item.ancestor_clips);
+        }
+        emit_node(
+            dom,
+            styles,
+            fragments,
+            item.id,
+            None,
+            text,
+            list,
+            scroll_offsets,
+            canvas_background_source,
+        );
     }
-    emit_node(
-        dom,
-        styles,
-        fragments,
-        item.id,
-        None,
-        text,
-        list,
-        scroll_offsets,
-        canvas_background_source,
-    );
-    for _ in &item.ancestor_clips {
-        list.commands.push(PaintCmd::PopClip);
+    if let Some(current) = open {
+        for _ in current {
+            list.commands.push(PaintCmd::PopClip);
+        }
     }
+}
+
+/// Whether two flattened items carry the same ancestor clip stack, and may
+/// therefore share one scope. Deliberately conservative: only rectangular
+/// clips compare, so a rounded or path clip simply opens its own scope rather
+/// than risking a wrong match on geometry this does not compare.
+fn clip_stacks_match(left: &[ClipSpec], right: &[ClipSpec]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| match (&left.kind, &right.kind) {
+                (ClipKind::Rect(left), ClipKind::Rect(right)) => left == right,
+                _ => false,
+            })
 }
 
 #[allow(clippy::too_many_arguments)]

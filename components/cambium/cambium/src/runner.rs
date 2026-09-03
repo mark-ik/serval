@@ -35,7 +35,7 @@ use meristem::{DynMessage, MessageCtx, MessageResult, View, ViewId};
 
 use crate::{
     DomHandle, FocusEvent, FocusPhase, GenetCtx, GenetElement, GenetElementMut, HoverEvent, Key,
-    KeyEvent, NamedKey, PointerClick, PointerEvent, WheelEvent,
+    KeyEvent, NamedKey, PointerButton, PointerClick, PointerEvent, WheelEvent,
 };
 
 /// The per-tree half of a runner: one `ScriptedDom` target, its [`GenetCtx`]
@@ -644,7 +644,8 @@ where
         actions
     }
 
-    /// Begin a pointer drag: the press hit `target`. See
+    /// A button went down on `target`. Primary begins a drag capture;
+    /// secondary routes one `Down` and captures nothing. See
     /// [`GenetAppRunner::dispatch_pointer_down`].
     pub(crate) fn dispatch_pointer_down(
         &mut self,
@@ -672,7 +673,13 @@ where
             }
             found
         };
-        self.pointer_capture = captured;
+        // Capture belongs to the primary button. A secondary press routes to
+        // the same element but starts no gesture, so an existing drag is left
+        // alone and no later release can deliver an `Up` for a capture that
+        // never began. See [`PointerButton`](crate::PointerButton).
+        if event.button == PointerButton::Primary {
+            self.pointer_capture = captured;
+        }
         match captured {
             Some(node) => self.route_pointer(logic, state, node, event),
             None => Vec::new(),
@@ -1076,13 +1083,18 @@ where
             .dispatch_key(&mut self.logic, &mut self.state, event)
     }
 
-    /// Begin a pointer drag: the press hit `target`. Capture is set to the
-    /// nearest ancestor of `target` (including itself) carrying an
-    /// [`on_pointer`](crate::on_pointer) handler, and a `Down`
-    /// [`PointerEvent`] is routed to it. Subsequent
-    /// [`dispatch_pointer_move`](Self::dispatch_pointer_move) /
-    /// [`dispatch_pointer_up`](Self::dispatch_pointer_up) go to that captured
-    /// element until release. Returns the actions that bubbled to the root.
+    /// A button went down on `target`. A `Down` [`PointerEvent`] is routed to
+    /// the nearest ancestor of `target` (including itself) carrying an
+    /// [`on_pointer`](crate::on_pointer) handler. Returns the actions that
+    /// bubbled to the root.
+    ///
+    /// For [`PointerButton::Primary`] that element also becomes the capture:
+    /// subsequent [`dispatch_pointer_move`](Self::dispatch_pointer_move) /
+    /// [`dispatch_pointer_up`](Self::dispatch_pointer_up) go to it until
+    /// release. For [`PointerButton::Secondary`] the press is one-shot — the
+    /// capture, whatever it was, is untouched, so a right press during a drag
+    /// does not steal it and a right press outside one leaves nothing for a
+    /// later release to find.
     ///
     /// `event.local` / `event.size` are the press point + element box in the
     /// captured element's coordinate space; the host computes them from the

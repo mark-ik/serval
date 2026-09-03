@@ -23,6 +23,13 @@ hit point in the target's space, then asks `pointer_target` which ancestor
 so a drag keeps working after the cursor leaves the element — which is what
 capture means, and what a slider needs.
 
+**2026-09-02.** The secondary button reaches views too: `press_right`
+dispatches a `Down` marked `PointerButton::Secondary` to the same `on_pointer`
+element a left press would capture, then raises the frame's system menu only on
+a drag region and only if no handler prevented it. The press is **one-shot** —
+it begins no capture, so no later release can deliver an `Up` for a gesture that
+never started; `Harness::right_click_at` / `right_click_on` drive it.
+
 The coordinates come from a new engine query:
 
 - `genet_layout::genet_lane::painted_origin` — the single-target form of
@@ -306,3 +313,99 @@ New: `Harness`, `inert_hooks`, `KeyPress`, `HostPointer`, `IdlePolicy`,
 `cambium_winit_a11y::{A11yAction, A11yRequest, project_tree}`,
 `IncrementalLayout::painted_rect`, `genet_lane::painted_origin`,
 `GenetAppRunner::focusables`.
+
+New 2026-09-02: `cambium::PointerButton`, `PointerEvent::button` /
+`PointerEvent::with_button`, `cambium_rootstock::Host::secondary_press`,
+`Harness::{right_click_at, right_click_on}`. `PointerEvent::new` is unchanged
+and still means `Primary`.
+
+## Findings 2026-09-03 — the first isometric consumer's two blank frames
+
+Isometry's move onto this host (`isometry/design_docs/2026-09-02_genet_host_migration_plan.md`)
+produced two fully transparent frames. Both root causes sit under the host, and
+neither is isometry's.
+
+- **`overflow: hidden` over many absolutely positioned children blanked the
+  whole window.** `emit_stacking_item` re-pushed a flattened item's *entire*
+  ancestor clip stack around that item alone, so a 24x24 board of
+  `position: absolute` tiles inside one `.pane { position: relative; flex: 1;
+  overflow: hidden }` emitted **692 `PushClip`/`PopClip` pairs per frame** where
+  one suffices. The list was balanced and its rects were right — measured at
+  runtime, `Rect((228,0)-(1100,752))` every time — but each pair becomes a
+  `SceneLayer` in netrender and a compositing layer in vello, and the frame came
+  back empty with alpha 0 across all 2200x1504 pixels, side panel included.
+  `emit_stacking_items` (genet-livery `paint.rs`) now holds one clip scope open
+  across a run of adjacent items whose ancestor stacks match; the same frame now
+  emits **9** pairs and paints. Coalescing is sound because nothing paints
+  between two adjacent items of a z-order phase and a clip is an intersection.
+  Woodshed and turnstone never hit this: they put `overflow` on flex children
+  with ordinary flow content, never on a container of hundreds of positioned
+  children. Regression test:
+  `paint::positioned_paint_tests::one_overflow_scope_wraps_a_run_of_flattened_items`,
+  which asserts the scope count is independent of the item count.
+
+- **The overmap self-test overflowed the main thread's stack in `relayout`, not
+  in leaf paint.** Bracketing the frame phases at runtime put the crash inside
+  `OwnedLayout::rebuild`; the leaf paint and `emit_scene` never ran. Replaying
+  the exact serialized DOM through `genet_livery::layout` and bisecting
+  `RUST_MIN_STACK` measures the appetite: **~450 KiB baseline plus ~127 KiB per
+  DOM nesting level** in a debug build. Plain nested `<div>`s reproduce it — no
+  leaf, no graph canvas, no isometry code — and a Rust MSVC binary's main thread
+  gets **1 MiB** (`SizeOfStackReserve`, read from the PE header). So any consumer
+  whose DOM nests about eight elements deep overflows in a debug build; isometry's
+  overmap panel is the first genet surface that does. A release build clears
+  depth 15 comfortably. Proven by patching the binary's stack reserve to 8 MiB
+  with no source change: the self-test then runs to its capture. **Not repaired
+  here** — the repair picks a policy for every consumer (a `stacker`-style
+  on-demand stack grow inside the layout recursion; running the host off the
+  process main thread, which winit permits on Windows and X11 but not macOS; or
+  a documented `/STACK:` requirement for consumers) and that choice is Mark's.
+
+- **2026-09-03, repaired: the layout pass now grows its own stack.** Mark chose
+  the `stacker` option above, so no consumer needs a link flag or a thread swap.
+  The pass turns out to be **five** per-DOM-level descents, not one, and each was
+  measured overflowing on its own once the one before it stopped: the cascade
+  (`style::resolve_subtree_with_containers`), the box-tree collection
+  (`genet_livery::box_tree`'s `collect`), its normalization and materialization
+  in buckram (`normalize_input`, `materialize`), the algorithm-tree projection
+  (`layout::build_block`/`build_inline` `build_box`), and the layout computation
+  itself — which is guarded at buckram's `taffy_adapter::run::compute_node`, the
+  callback every backend recursion re-enters, since `genet-taffy` is a published
+  crate we do not own. Seven guard sites in all, each at the single entry every
+  level passes through, with a **256 KiB red zone and 2 MiB of growth**: the zone
+  is two levels of headroom at the measured debug rate, because the check runs
+  before a level does and must also cover the growth path's own frames; the
+  growth is ~16 levels, so a deep document pays a handful of segment allocations
+  and a shallow one pays none. Ceiling on a deliberately 256 KiB thread, debug,
+  measured by bisection: **192 levels pass, 224 do not** (it lands back in
+  `genet-taffy`'s own recursion), against **8** before. Regression test
+  `genet-livery/tests/deep_nesting.rs` lays out 64 and 8 nested `<div>`s on a
+  256 KiB thread; with the guards stubbed out both die with
+  `STATUS_STACK_OVERFLOW`, which is the shape of the defect rather than a failed
+  assertion. `stacker` builds for `wasm32-unknown-unknown` — the CI wasm witness
+  (`cargo check -p livery -p buckram`) and `genet-livery` both check and build
+  clean on that target with it in the graph.
+
+- **2026-09-03, defect: `MouseWheel` `PixelDelta` reached `Host::wheel`
+  unscaled.** `cambium-genet-winit-host`'s `window_event` divides `CursorMoved`
+  by `scale_factor()` but handed winit's wheel delta straight to
+  `genet_winit_host::wheel_delta_from_winit`, whose `PixelDelta` arm is *physical*
+  device pixels, while `Host::wheel` documents logical ones. A trackpad therefore
+  scrolled `scale_factor` times as far as the same gesture moved the pointer —
+  on a 2x display the page ran away under the finger. `LineDelta` was never
+  affected: `WHEEL_LINE_PX` is a logical figure and a line is a line at any
+  density. Repaired with a new
+  `genet_winit_host::wheel_delta_from_winit_logical(delta, scale_factor)` that
+  scales only the pixel arm; `wheel_delta_from_winit` and its device-px contract
+  are untouched, so no other winit host's feel moved. Woodshed and turnstone
+  inherit the corrected feel through this host; that was decided.
+  `Harness::wheel_from_winit(delta, scale_factor)` feeds a raw winit delta
+  through the production helper (a windowless host reports `scale_factor() ==
+  1.0`, so the factor is passed rather than read), and
+  `input_routing::a_trackpad_pixel_delta_arrives_in_logical_pixels` asserts a
+  60px physical flick arrives as 30 at scale 2.
+
+- **Not a defect:** isometry's board tiles carry inline `z-index` up to 2945
+  while its `.overmap` panel is `z-index: 503`, so 646 tiles legitimately sort
+  above the panel. The paint order is CSS-correct; the panel's z-index is
+  isometry's to raise.

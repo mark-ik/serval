@@ -88,6 +88,9 @@ impl Accessibility for DomAccessibility {
         _layout: &OwnedLayout,
         _leaves: &mut LeafRegistry<u64>,
         _focus: Option<u64>,
+        // No tree is published, so nothing here needs the layout scale the
+        // desktop adapter rides its projected boxes into physical pixels on.
+        _layout_scale: f64,
     ) -> Vec<A11yRequest> {
         self.announce();
         // No tree is published, so no reader can have acted on one. Returning

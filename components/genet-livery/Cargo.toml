@@ -21,6 +21,8 @@ paint_list_api.workspace = true
 parley.workspace = true
 selectors = "0.39"
 serde.workspace = true
+# Grows the layout recursion's stack on demand; see `layout::build_block::build_box`.
+stacker.workspace = true
 taffy = { package = "genet-taffy", version = "0.14.0", default-features = false, features = ["std", "block_layout", "float_layout", "flexbox", "grid", "calc"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

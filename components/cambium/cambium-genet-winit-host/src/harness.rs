@@ -40,6 +40,11 @@ where
     V: RootView<State>,
 {
     host: WinitHost<State, Logic, V>,
+    /// The surface size the harness stands in for a window with, in
+    /// device-logical pixels — what `layout_at` was last given. Kept here
+    /// rather than read back off `layout_size`, which is the *post-zoom*
+    /// size and so cannot say what the window was.
+    window: (f32, f32),
 }
 
 /// Hooks that do nothing — the starting point for a test that only cares about
@@ -180,29 +185,88 @@ where
         s.runner = Some(Runner::new(dom, logic, state));
         let wake = HostWake::new(s.wake_pending.clone(), std::sync::Arc::new(|| {}));
         Self {
-            host: WinitHost::new(Host {
-                options,
-                init: None,
-                hooks,
-                s,
-                wake,
-            }),
+            host: WinitHost::new(Host::new(options, None, hooks, s, wake)),
+            window: (0.0, 0.0),
         }
     }
 
-    /// Lay out at a logical size. Call after any state change that should be
-    /// visible to hit testing — the winit host does this once per frame, so a
-    /// test does it once per step.
+    /// Lay out for a surface this big, in device-logical pixels — the window,
+    /// not the document. Call after any state change that should be visible to
+    /// hit testing; the winit host does this once per frame, so a test does it
+    /// once per step.
+    ///
+    /// At zoom 1 this is the size laid out at, which is what it has always
+    /// meant. Under a zoom the layout runs at `size / zoom`, exactly as a real
+    /// window's does, so a test states the window it is standing in for and the
+    /// host does the same arithmetic it does headed.
     pub fn layout_at(&mut self, width: f32, height: f32) {
-        self.host.relayout(width, height);
+        self.window = (width, height);
+        self.host.set_surface_size(width, height);
+        self.host.refresh_fit_zoom();
+        let zoom = self.host.ui_zoom();
+        self.host.relayout(width / zoom, height / zoom);
     }
 
-    /// Re-lay out at the size already in use.
+    /// Re-lay out for the surface already in use.
     pub fn relayout(&mut self) {
-        let (w, h) = self.host.s.layout_size;
+        let (w, h) = self.window;
         if w > 0.0 && h > 0.0 {
-            self.host.relayout(w, h);
+            self.layout_at(w, h);
         }
+    }
+
+    /// The effective interface zoom: the fit factor times the user's own.
+    pub fn ui_zoom(&self) -> f32 {
+        self.host.ui_zoom()
+    }
+
+    /// The one scale a frame would be composed at. Windowless, the device
+    /// scale is 1.0, so this is the zoom.
+    pub fn layout_scale(&self) -> f64 {
+        self.host.layout_scale()
+    }
+
+    /// The post-zoom logical size the layout is running at — what an
+    /// application reads as [`AppCtx::logical_size`](crate::AppCtx).
+    pub fn logical_size(&self) -> (f32, f32) {
+        self.host.s.layout_size
+    }
+
+    /// Set the user's zoom and re-lay out, as the runtime setter does.
+    pub fn set_ui_zoom(&mut self, zoom: f32) {
+        self.host.set_ui_zoom(zoom);
+        self.relayout();
+    }
+
+    /// Step the user's zoom one rung of the ladder, as `Ctrl+plus` does.
+    pub fn step_ui_zoom(&mut self, up: bool) {
+        self.host.step_ui_zoom(up);
+        self.relayout();
+    }
+
+    /// A point the platform would report in physical window pixels, in the
+    /// layout's own coordinates — the conversion the winit `CursorMoved` arm
+    /// runs, driven here rather than copied.
+    pub fn layout_point(&self, x: f64, y: f64) -> (f32, f32) {
+        self.host.layout_point(x, y)
+    }
+
+    /// Move the cursor to a point in **window** coordinates, through the same
+    /// conversion the event source performs.
+    pub fn move_to_window(&mut self, x: f64, y: f64) {
+        let (x, y) = self.host.layout_point(x, y);
+        self.move_to(x, y);
+    }
+
+    /// Click at a point in **window** coordinates.
+    ///
+    /// [`click_at`](Self::click_at) states a point the layout already
+    /// understands, so it cannot show what zoom does to one. This can: at zoom
+    /// 1.5 a control drawn at window x=150 is hit by clicking 150, and the
+    /// host divides.
+    pub fn click_at_window(&mut self, x: f64, y: f64) {
+        let (x, y) = self.host.layout_point(x, y);
+        self.click_at(x, y);
     }
 
     /// The application state the runner owns.
@@ -323,11 +387,34 @@ where
         self.host.run_window_commands();
     }
 
-    /// Press the right button at a point — the system-menu gesture.
+    /// Press the right button at a point, through the host's real routing: a
+    /// `Secondary` `Down` into the view layer, then the window frame's
+    /// system-menu default.
     pub fn right_press_at(&mut self, x: f32, y: f32) {
         self.host.s.cursor = (x, y);
         self.host.press_right();
         self.host.run_window_commands();
+    }
+
+    /// Right-click at a point: the press, then a relayout, so an assertion
+    /// reads the tree the menu the press opened actually produced.
+    ///
+    /// There is no release half. A secondary press begins no capture, and the
+    /// winit host routes no right release, so the press *is* the gesture.
+    pub fn right_click_at(&mut self, x: f32, y: f32) {
+        self.right_press_at(x, y);
+        self.relayout();
+    }
+
+    /// Resolve a selector and right-click it. `false` when nothing matched, so
+    /// a test fails on the miss rather than on its consequence. The
+    /// [`click_on`](Self::click_on) of the secondary button.
+    pub fn right_click_on(&mut self, selector: &Selector) -> bool {
+        let Some((x, y)) = self.resolve(selector) else {
+            return false;
+        };
+        self.right_click_at(x, y);
+        true
     }
 
     /// What the window frame makes of a point: whether pressing there drags
@@ -378,6 +465,24 @@ where
     /// deltas now, so a test states the delta it means and no sign flip is
     /// needed: winit's opposite convention is normalized by its event source.)
     pub fn wheel(&mut self, dx: f32, dy: f32) {
+        self.host.wheel(dx, dy);
+        self.relayout();
+    }
+
+    /// Scroll the wheel with a *raw winit* delta at a chosen scale factor,
+    /// through the same conversion `WindowEvent::MouseWheel` runs.
+    ///
+    /// [`wheel`](Self::wheel) states a delta the host already understands, so
+    /// it cannot show what the event source does to one. This can: a windowless
+    /// host reports `scale_factor() == 1.0`, so the factor is passed in rather
+    /// than read, and the conversion under test is the production helper, not a
+    /// copy of it.
+    pub fn wheel_from_winit(
+        &mut self,
+        delta: winit::event::MouseScrollDelta,
+        scale_factor: f64,
+    ) {
+        let (dx, dy) = genet_winit_host::wheel_delta_from_winit_logical(delta, scale_factor);
         self.host.wheel(dx, dy);
         self.relayout();
     }
@@ -488,6 +593,22 @@ where
         self.host
             .apply_a11y_requests(&[A11yRequest { action, node }]);
         self.relayout();
+    }
+
+    /// The AccessKit tree as the accessibility host would publish it: projected
+    /// from this frame's layout, then stamped with the host's layout scale.
+    ///
+    /// [`a11y_tree`](Self::a11y_tree) is the pure projection, in layout
+    /// coordinates. This is what a screen reader is actually told, and the root
+    /// transform is the only thing that carries zoom into its coordinates.
+    pub fn scaled_a11y_tree(&mut self) -> accesskit::TreeUpdate {
+        let layout_scale = self.host.layout_scale();
+        let (mut tree, _) = self.a11y_tree();
+        let dom = self.runner().dom();
+        let dom_ref = dom.borrow();
+        cambium_winit_a11y::scale_tree_to_window(&mut tree, &dom_ref, layout_scale);
+        drop(dom_ref);
+        tree
     }
 
     /// Fire the exact wake callback the host hands the AccessKit adapter — the

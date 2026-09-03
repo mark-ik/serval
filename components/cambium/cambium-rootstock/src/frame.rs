@@ -56,6 +56,7 @@ where
     fn frame_hook(&mut self) -> bool {
         let animating = {
             let logical_size = self.logical_size();
+            let (ui_zoom, zoom_changed) = self.take_zoom_edge();
             let geometry = self.s.geometry;
             let frame_profile = self.s.last_frame_profile;
             let commands = self.s.commands.clone();
@@ -67,8 +68,11 @@ where
                 runner,
                 window,
                 logical_size,
+                ui_zoom,
+                zoom_changed,
                 leaves: &mut self.s.leaves,
                 set_sheet: &mut self.s.pending_sheet,
+                set_ui_zoom: &mut self.s.pending_ui_zoom,
                 close: &mut self.s.close_requested,
                 wake: &self.wake,
                 capture: &mut self.s.pending_capture,
@@ -83,6 +87,9 @@ where
             self.s.sheet = sheet;
             self.s.layout = None;
             self.s.layout_size = (0.0, 0.0);
+        }
+        if let Some(zoom) = self.s.pending_ui_zoom.take() {
+            self.set_ui_zoom(zoom);
         }
         animating
     }
@@ -103,11 +110,25 @@ where
     /// the full relayout path — the incremental one applies DOM mutations, and
     /// this is not one.
     fn publish_titlebar_area(&mut self, lw: f32) -> bool {
+        // The platform reports what it reserved in *device*-logical pixels —
+        // macOS's traffic lights are a fixed size on screen, not a fixed
+        // number of CSS pixels — and the sheet declares CSS ones. Under zoom
+        // those are different units, so the strip is divided into layout space
+        // before it is published; otherwise the page's content would clear a
+        // gap of the wrong height at every zoom but 1.
+        let zoom = self.ui_zoom();
         let insets = self
             .s
             .window
             .as_ref()
-            .map_or(crate::TitlebarInsets::NONE, |w| w.titlebar_insets());
+            .map_or(crate::TitlebarInsets::NONE, |w| {
+                let insets = w.titlebar_insets();
+                crate::TitlebarInsets {
+                    left: insets.left / zoom,
+                    right: insets.right / zoom,
+                    height: insets.height / zoom,
+                }
+            });
         if self.s.titlebar_published == Some((insets, lw)) {
             return false;
         }
@@ -294,11 +315,18 @@ where
         let Some(rect) = layout.caret_rect_for_position(&*dom_ref, node, caret, 2.0) else {
             return;
         };
+        // The seam takes the *platform's* logical coordinates (winit multiplies
+        // them by the device scale, a browser by nothing), and the caret rect
+        // is in layout coordinates. Those differ by exactly the zoom, so the
+        // rect is carried back across it here — a candidate window that opened
+        // at four fifths of the caret's position would be a zoom bug the user
+        // sees before any other.
+        let zoom = f64::from(self.ui_zoom());
         window.set_ime_cursor_area(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width.max(2.0) as f64,
-            rect.height.max(1.0) as f64,
+            rect.x as f64 * zoom,
+            rect.y as f64 * zoom,
+            (rect.width.max(2.0) as f64) * zoom,
+            (rect.height.max(1.0) as f64) * zoom,
         );
     }
 
@@ -385,10 +413,15 @@ where
         let phase = crate::Instant::now();
         let animating = self.frame_hook();
         profile.frame_hook_us = elapsed_us(phase.elapsed());
+        // One scale for the whole frame: device times zoom. Layout runs at
+        // `physical / layout_scale` and the rasterizer composes that scene
+        // under the same factor, so a zoomed frame is laid out at its new size
+        // and drawn from outlines at full device resolution — not a smaller
+        // frame resampled upward.
+        let layout_scale = self.layout_scale() as f32;
         let target_size = self.s.window.as_ref().map(|window| {
             let size = window.inner_size();
-            let scale = window.scale_factor() as f32;
-            (size.0.max(1), size.1.max(1), scale)
+            (size.0.max(1), size.1.max(1), layout_scale)
         });
         let (Some((pw, ph, scale)), true) = (target_size, self.s.surface.is_some()) else {
             // No window, or suspended with the surface taken away: there is
@@ -564,6 +597,11 @@ where
     /// cursor here" and only moves focus. Collapsing them would fire every
     /// control a reader navigates across.
     pub fn sync_a11y(&mut self) {
+        // A screen reader is told physical client pixels, and the tree it is
+        // told them about is laid out in layout pixels: the transform between
+        // them is the layout scale, zoom included. A reader that read the
+        // device scale alone would point at a control's unzoomed position.
+        let layout_scale = self.layout_scale();
         let requests = {
             let dom = match self.s.runner.as_ref() {
                 Some(runner) => runner.dom(),
@@ -574,7 +612,13 @@ where
                 return;
             };
             // The window is the adapter's own now, so the seam does not carry it.
-            a11y.sync(&dom_ref, layout, &mut self.s.leaves, self.s.last_focus)
+            a11y.sync(
+                &dom_ref,
+                layout,
+                &mut self.s.leaves,
+                self.s.last_focus,
+                layout_scale,
+            )
         };
         self.apply_a11y_requests(&requests);
     }

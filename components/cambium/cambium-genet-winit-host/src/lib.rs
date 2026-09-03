@@ -54,7 +54,7 @@ pub use cambium_rootstock::{
     CloseRequestHook, Direction, FocusedTextHook, FocusedTextSlot, Frame, FrameHook, FrameProfile,
     Host, HostHooks, HostOptions, HostPointer, HostWake, HostWindow, IdlePolicy, Init, Key,
     KeyInterceptHook, KeyPress, Modifiers, NamedKey, Runner, Surface, WindowCommand,
-    WindowCommands, WindowFrame, WindowGeometry, read_frame,
+    WindowCommands, WindowFrame, WindowGeometry, ZOOM_LADDER, fit_zoom, ladder_step, read_frame,
 };
 pub use harness::{Harness, inert_hooks};
 
@@ -79,6 +79,22 @@ fn frame_trace() -> bool {
 /// trace because a performance run emits one line per presented frame.
 fn perf_trace() -> bool {
     std::env::var_os("CAMBIUM_HOST_PERF_TRACE").is_some_and(|value| value != "0")
+}
+
+/// `CAMBIUM_UI_ZOOM=1.25` overrides [`HostOptions::ui_zoom`] at launch.
+///
+/// A **receipt aid**, not a policy default: a headed capture at a chosen zoom
+/// otherwise needs a source change in the consumer, and a consumer whose source
+/// changed is not the consumer whose behaviour is being recorded. Read once,
+/// where the host is assembled, and applied before the window exists. Nothing
+/// reads it again, so a running application's zoom stays whatever the
+/// application and the person using it made it.
+fn env_ui_zoom() -> Option<f32> {
+    std::env::var("CAMBIUM_UI_ZOOM")
+        .ok()?
+        .parse::<f32>()
+        .ok()
+        .filter(|zoom| *zoom > 0.0)
 }
 
 fn usable_restored_geometry(
@@ -356,10 +372,11 @@ where
                 &self.options.maximize_control_label,
             )
         })();
-        let scale = self
-            .native_window
-            .as_ref()
-            .map_or(1.0, |window| window.scale_factor());
+        // The control rect came out of the retained layout, so it is in layout
+        // pixels; Win32 wants physical ones. That conversion is the layout
+        // scale, zoom included — the device scale alone would put the Snap
+        // Layout hit rectangle somewhere the maximize button is not.
+        let scale = self.layout_scale();
         let Some(bridge) = self.snap_layout.as_ref() else {
             return;
         };
@@ -422,6 +439,10 @@ where
 {
     let event_loop = EventLoop::<HostEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
+    let mut options = options;
+    if let Some(zoom) = env_ui_zoom() {
+        options.ui_zoom = zoom;
+    }
     let s = HostState::new();
     let pending = s.wake_pending.clone();
     let proxy = event_loop.create_proxy();
@@ -431,13 +452,13 @@ where
             let _ = proxy.send_event(HostEvent::Wake);
         }),
     );
-    let mut host = WinitHost::new(Host {
+    let mut host = WinitHost::new(Host::new(
         options,
-        init: Some(Box::new(init)),
+        Some(Box::new(init)),
         hooks,
         s,
         wake,
-    });
+    ));
     event_loop.run_app(&mut host)
 }
 /// Which resize edge a point near the window border maps to, in logical
@@ -493,10 +514,16 @@ where
             return None;
         }
         let size = window.inner_size();
+        // The border grab is the *window's* affordance, so its 8px margin is
+        // 8 device pixels at every zoom. The cursor arrives in layout space,
+        // so it is carried back across the zoom rather than the window's size
+        // being dragged into layout space — which would have made the grab
+        // margin grow and shrink with the interface.
         let s = window.scale_factor() as f32;
+        let zoom = self.ui_zoom();
         resize_edge(
-            self.s.cursor.0,
-            self.s.cursor.1,
+            self.s.cursor.0 * zoom,
+            self.s.cursor.1 * zoom,
             size.width as f32 / s,
             size.height as f32 / s,
         )
@@ -730,6 +757,10 @@ where
         self.s.window = Some(Box::new(WinitWindow(window)));
         self.restored_geometry = restored;
         self.refresh_geometry();
+        // The window exists, so `fit_design` finally has a surface to measure
+        // against: seed the fit factor before the first frame lays anything
+        // out, or that frame is composed at the wrong size and replaced.
+        self.refresh_fit_zoom();
         self.s.surface = Some(Box::new(WinitSurface(surface)));
         self.s.runner = Some(runner);
         // Drive the first frame synchronously while the window is hidden:
@@ -792,6 +823,7 @@ where
                     surface.resize(size.width.max(1), size.height.max(1));
                 }
                 self.refresh_geometry();
+                self.refresh_fit_zoom();
                 self.note_resize();
             },
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -800,14 +832,15 @@ where
                     self.publish_x11_frame_extents(window);
                 }
                 self.refresh_geometry();
+                self.refresh_fit_zoom();
                 self.note_resize();
             },
             WindowEvent::ModifiersChanged(mods) => {
                 self.s.modifiers = modifiers_from_winit_state(mods.state());
             },
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.scale_factor();
-                self.pointer_moved((position.x / scale) as f32, (position.y / scale) as f32);
+                let (x, y) = self.layout_point(position.x, position.y);
+                self.pointer_moved(x, y);
                 // The resize-edge cursor is decoration, and reads only the
                 // pointer position, so it follows rather than interleaves.
                 self.update_resize_cursor();
@@ -843,7 +876,14 @@ where
                 ..
             } => self.release(),
             WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = genet_winit_host::wheel_delta_from_winit(delta);
+                // `Host::wheel` takes layout pixels, the same frame
+                // `CursorMoved` above is divided into. Winit reports a
+                // trackpad's `PixelDelta` in physical pixels, so it is scaled
+                // here by the layout scale — a flick must travel the same
+                // distance under the finger as the pointer does, at any zoom.
+                // A wheel's `LineDelta` is a count of lines and is not scaled.
+                let (dx, dy) =
+                    genet_winit_host::wheel_delta_from_winit_logical(delta, self.layout_scale());
                 self.wheel(dx, dy);
             },
             WindowEvent::Ime(ime) => self.ime(cambium_winit::composition_from_winit(&ime)),

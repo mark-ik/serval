@@ -169,10 +169,40 @@ pub const WHEEL_LINE_PX: f32 = 48.0;
 /// advances the document toward its end (a larger offset). The shared wheel default
 /// action (scope doc rule 5): every winit host maps the wheel through this one
 /// helper, not several hand-rolled copies.
+///
+/// A host whose scroll model is in **logical** pixels wants
+/// [`wheel_delta_from_winit_logical`] instead: winit's `PixelDelta` is physical,
+/// so on a 2x display this one returns twice the distance such a host means.
 pub fn wheel_delta_from_winit(delta: MouseScrollDelta) -> (f32, f32) {
     match delta {
         MouseScrollDelta::LineDelta(x, y) => (-x * WHEEL_LINE_PX, -y * WHEEL_LINE_PX),
         MouseScrollDelta::PixelDelta(p) => (-(p.x as f32), -(p.y as f32)),
+    }
+}
+
+/// [`wheel_delta_from_winit`] for a host whose scroll model is in **logical**
+/// pixels, such as `cambium_rootstock::Host::wheel`.
+///
+/// Winit reports a trackpad's `PixelDelta` in *physical* device pixels — the
+/// same frame `CursorMoved` uses, which every such host already divides by the
+/// scale factor. Left unscaled it made a trackpad scroll `scale_factor` times
+/// as far as the pointer moved, so on a 2x display the page ran away under the
+/// finger. It is divided here.
+///
+/// `LineDelta` is untouched: [`WHEEL_LINE_PX`] is already a logical figure —
+/// a line is a line whatever the display's density — so scaling it would make
+/// a mouse wheel travel *half* as far on a 2x display, trading one wrong feel
+/// for another.
+///
+/// A `scale_factor` that is not positive (a platform that never reported one)
+/// is read as 1.0 rather than producing an infinity.
+pub fn wheel_delta_from_winit_logical(delta: MouseScrollDelta, scale_factor: f64) -> (f32, f32) {
+    match delta {
+        MouseScrollDelta::LineDelta(..) => wheel_delta_from_winit(delta),
+        MouseScrollDelta::PixelDelta(p) => {
+            let scale = if scale_factor > 0.0 { scale_factor } else { 1.0 };
+            ((-(p.x / scale)) as f32, (-(p.y / scale)) as f32)
+        },
     }
 }
 
@@ -206,5 +236,45 @@ mod tests {
             3.0, -10.0,
         )));
         assert_eq!(got, (-3.0, 10.0));
+    }
+
+    /// The logical variant halves a physical pixel delta at scale 2, so a
+    /// trackpad moves the document exactly as far as it moves the pointer.
+    #[test]
+    fn wheel_pixel_delta_scales_to_logical_pixels() {
+        let physical =
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, -10.0));
+        assert_eq!(
+            wheel_delta_from_winit_logical(physical, 1.0),
+            wheel_delta_from_winit(physical),
+            "scale 1 must agree with the device-px mapping"
+        );
+        assert_eq!(
+            wheel_delta_from_winit_logical(physical, 2.0),
+            (-1.5, 5.0),
+            "scale 2 halves the distance"
+        );
+        // A platform that never reported a scale factor must not produce an
+        // infinite scroll.
+        assert_eq!(
+            wheel_delta_from_winit_logical(physical, 0.0),
+            (-3.0, 10.0),
+            "a non-positive scale factor reads as 1.0"
+        );
+    }
+
+    /// A line step is already logical, so the scale factor must not touch it:
+    /// halving it would make a mouse wheel crawl on a 2x display.
+    #[test]
+    fn wheel_line_delta_is_scale_independent() {
+        let lines = MouseScrollDelta::LineDelta(0.0, -1.0);
+        assert_eq!(
+            wheel_delta_from_winit_logical(lines, 2.0),
+            wheel_delta_from_winit(lines)
+        );
+        assert_eq!(
+            wheel_delta_from_winit_logical(lines, 2.0),
+            (0.0, WHEEL_LINE_PX)
+        );
     }
 }

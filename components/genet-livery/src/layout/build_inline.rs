@@ -33,7 +33,24 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    /// The single entry every nesting level of the inline descent passes
+    /// through, so it is where the descent buys stack. `build_box` ->
+    /// `build_children` -> `build_flow_children` -> `build_box` is the cycle;
+    /// the other two are unreachable except through this one, so guarding here
+    /// covers the whole loop with one check per level.
     pub(in crate::layout) fn build_box(
+        &mut self,
+        box_id: BoxId,
+        inherited: Option<&ComputedValues>,
+        parent_font_size: f32,
+        containing_size: (Option<f32>, Option<f32>),
+    ) -> Result<Option<AlgorithmNodeId>, LayoutError> {
+        crate::with_recursion_stack(move || {
+            self.build_box_on_this_stack(box_id, inherited, parent_font_size, containing_size)
+        })
+    }
+
+    fn build_box_on_this_stack(
         &mut self,
         box_id: BoxId,
         inherited: Option<&ComputedValues>,

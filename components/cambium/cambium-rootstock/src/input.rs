@@ -10,8 +10,8 @@
 //! [`default_prevented`](cambium::GenetAppRunner::default_prevented).
 
 use cambium::{
-    CaretPosition, CaretSelection, PointerClick, PointerEvent, PointerPhase, TextCommand,
-    WheelEvent,
+    CaretPosition, CaretSelection, PointerButton, PointerClick, PointerEvent, PointerPhase,
+    TextCommand, WheelEvent,
 };
 use cambium_winit::wheel_axes;
 use genet_render::{VisualAffinity, VisualCaret, VisualSelection};
@@ -192,6 +192,51 @@ where
         //    the caret moved out from under it).
         if !prevented {
             self.place_caret_at_cursor();
+        }
+        self.after_dispatch();
+    }
+
+    /// A secondary (right) press in the content area: the same `on_pointer`
+    /// element a primary press would capture receives a `Down` marked
+    /// [`PointerButton::Secondary`].
+    ///
+    /// Three deliberate differences from [`click`](Self::click):
+    ///
+    /// - **No `dispatch_click`.** A right press is not a click; a button that
+    ///   activates on the left must not activate on the right.
+    /// - **No capture.** The press is one-shot: the runner leaves
+    ///   `pointer_capture` alone (see
+    ///   [`PointerButton`](cambium::PointerButton)), so a right press during a
+    ///   drag does not steal the gesture, and a later left release cannot
+    ///   deliver an `Up` for a capture that never began. A context menu opens
+    ///   on the press and lives in the view's own state afterwards; it needs no
+    ///   move or release.
+    /// - **No click-to-caret.** The host default belongs to the primary
+    ///   button.
+    ///
+    /// The dispatch happens for any hit node, even one with no `on_pointer`
+    /// ancestor, so `default_prevented` reports *this* press rather than a
+    /// stale value from an earlier one — which is what the window frame's
+    /// system-menu default is gated on.
+    pub fn secondary_press(&mut self) {
+        let Some(node) = self.hit_at_cursor() else {
+            return;
+        };
+        // Measure against the element that would capture, exactly as `click`
+        // does, so `local`/`size` are the handler's own box rather than the
+        // deeper node the cursor happened to hit.
+        let target = self
+            .s
+            .runner
+            .as_ref()
+            .and_then(|runner| runner.pointer_target(node));
+        let (local, size) = self.local_in(target.unwrap_or(node));
+        if let Some(runner) = self.s.runner.as_mut() {
+            runner.dispatch_pointer_down(
+                node,
+                PointerEvent::new(PointerPhase::Down, local, size)
+                    .with_button(PointerButton::Secondary),
+            );
         }
         self.after_dispatch();
     }
@@ -407,6 +452,12 @@ where
                 return;
             }
         }
+        if self.zoom_chord(press) {
+            if trace {
+                eprintln!("[cambium-host]   zoom chord: ui_zoom now {}", self.ui_zoom());
+            }
+            return;
+        }
         let Some(kev) = press.to_runner_key() else {
             // No runner key and no injected text: a dead key, or an
             // unidentified one the platform reported no text for.
@@ -442,6 +493,46 @@ where
         self.hover();
     }
 
+    /// The host's own zoom chords: Ctrl+plus, Ctrl+minus, Ctrl+0. Returns
+    /// whether the press was one and was consumed.
+    ///
+    /// Deliberately *after* the application's `key_intercept` and *before*
+    /// `dispatch_key`. After, because an application that binds Ctrl+0 to
+    /// something of its own must be able to keep it — consuming the chord in
+    /// the intercept vetoes the default, which is the same veto Escape and
+    /// every other global shortcut already has. Before, because a zoom step is
+    /// chrome: it belongs to the window, not to whichever control happens to
+    /// hold focus, and routing it into the tree first would let a text field
+    /// swallow it as typed text.
+    ///
+    /// Shift is ignored rather than rejected: on a US layout `Ctrl+Shift+=` is
+    /// how the plus sign is actually typed, and a person pressing it means
+    /// "bigger". Alt and Super are rejected, because those are somebody else's
+    /// chords.
+    fn zoom_chord(&mut self, press: &KeyPress) -> bool {
+        if !press.modifiers.ctrl || press.modifiers.alt || press.modifiers.meta {
+            return false;
+        }
+        let Key::Character(character) = &press.key else {
+            return false;
+        };
+        let stepped = match character.as_str() {
+            "+" | "=" => self.step_ui_zoom(true),
+            "-" | "_" => self.step_ui_zoom(false),
+            // Ctrl+0 is "back to normal". With `fit_design` set, normal is
+            // what fits, so this clears the user's offset rather than forcing
+            // the interface to 1.0.
+            "0" => self.reset_ui_zoom(),
+            _ => return false,
+        };
+        // Consumed either way: a step that clamped at the end of the ladder is
+        // still the host's key, and letting it fall through to the tree would
+        // type a `+` into a text field at maximum zoom.
+        let _ = stepped;
+        self.after_dispatch();
+        true
+    }
+
     /// A platform IME lifecycle event, already in Cambium's neutral
     /// composition vocabulary. The event source converts; a browser reports
     /// the same four states through `compositionstart`/`update`/`end`.
@@ -461,6 +552,9 @@ where
     /// A wheel notch, in logical pixels. The event source normalizes lines
     /// versus pixels; both winit and the DOM report both kinds.
     pub fn wheel(&mut self, dx: f32, dy: f32) {
+        // The notch as it arrived, before the Shift axis swap: Ctrl+wheel
+        // zooms on the vertical gesture whatever Shift is doing.
+        let raw_dy = dy;
         // Desktop convention (shared cambium-winit policy): Shift + vertical
         // wheel scrolls horizontally.
         let (dx, dy) = wheel_axes(dx, dy, self.s.modifiers.shift);
@@ -489,6 +583,16 @@ where
         //    a handler consumed the notch, so a canvas that pans on the wheel
         //    does not also scroll the page behind it.
         if prevented {
+            return;
+        }
+        // 2a. Ctrl+wheel steps the zoom instead of scrolling — a host default
+        //     like the scrolling one, and gated the same way, so a canvas that
+        //     runs its own Ctrl+wheel zoom keeps it by preventing the default.
+        //     Wheeling *up* (toward the start of the document) enlarges, which
+        //     is every browser's direction.
+        if self.s.modifiers.ctrl && raw_dy != 0.0 {
+            self.step_ui_zoom(raw_dy < 0.0);
+            self.after_dispatch();
             return;
         }
         let (x, y) = self.s.cursor;
