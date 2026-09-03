@@ -98,14 +98,14 @@ def assert_ports_depend_inward(metadata: dict) -> None:
     components = (ROOT / "components").resolve()
     ports = (ROOT / "ports").resolve()
     host_api = []
-    pelt_packages = {}
+    ortet_packages = {}
 
     for package in metadata["packages"]:
         manifest = pathlib.Path(package["manifest_path"]).resolve()
         if package["name"] == "genet-host-api":
             host_api.append(manifest)
-        if package["name"] in {"pelt", "pelt-desktop"}:
-            pelt_packages[package["name"]] = manifest
+        if package["name"] == "ortet":
+            ortet_packages[package["name"]] = manifest
         if not is_beneath(manifest, components):
             continue
         for dependency in package["dependencies"]:
@@ -124,15 +124,15 @@ def assert_ports_depend_inward(metadata: dict) -> None:
             "expected components/genet-host-api/Cargo.toml"
         )
 
-    expected_pelt = {
-        "pelt": (ports / "pelt" / "Cargo.toml").resolve(),
-        "pelt-desktop": (ports / "pelt" / "desktop" / "Cargo.toml").resolve(),
-    }
-    if pelt_packages != expected_pelt:
+    # Pelt left for mere on 2026-09-03 (platform boundary plan, consumers-first
+    # order); ortet is genet's headed host and takes the same assertion
+    # (design_docs/2026-09-03_ortet_founding_plan.md, O4).
+    expected_ortet = {"ortet": (ports / "ortet" / "Cargo.toml").resolve()}
+    if ortet_packages != expected_ortet:
         rendered = {
-            name: str(path.relative_to(ROOT)) for name, path in pelt_packages.items()
+            name: str(path.relative_to(ROOT)) for name, path in ortet_packages.items()
         }
-        fail(f"Pelt package manifests are {rendered}, expected {expected_pelt}")
+        fail(f"Ortet package manifests are {rendered}, expected {expected_ortet}")
 
 
 # Genet resolves without Mere (platform boundary plan, mere
@@ -286,6 +286,10 @@ def assert_host_api_cone(metadata: dict) -> None:
 # Ortet's cone (2026-09-03 ortet founding plan, O0). Ortet is the one headed
 # host that proves the engine runs without Mere, so its resolved cone must
 # contain no crate the platform boundary plan moves to Mere, and no other port.
+# `tabard`, `knot-editor-host` and the `pelt` prefix name crates that left genet
+# on 2026-09-03. They stay in the list: it is a set of names the cone may not
+# reach, not a set of workspace members, so keeping them fails loudly if any of
+# them ever arrives back from mere as a git or registry source.
 ORTET_FORBIDDEN = {
     "inker", "workbench", "nematic", "errand", "document-canvas",
     "tabard", "knot-editor-host",
@@ -353,20 +357,31 @@ def assert_ortet_cone(metadata: dict) -> None:
             f"Mere: {breached}"
         )
 
-    # Positive control, in the same function and over the same walk: the check
-    # must be able to SEE what it forbids. pelt-desktop's cone contains inker,
-    # so a walk that reports nothing there is a broken instrument, not a clean
-    # cone.
-    control = resolved_cone(metadata, "pelt-desktop")
-    control_hits = sorted(name for name in control if is_ortet_forbidden(name))
-    if "inker" not in control_hits:
-        fail(
-            "cone witness positive control failed: the same check over "
-            f"pelt-desktop did not report inker (reported {control_hits})"
-        )
+    # Positive controls, in the same function and over the same walk: the check
+    # must be able to SEE what it forbids. The control was pelt-desktop until
+    # Pelt left for mere on 2026-09-03. A walk that reports nothing on a cone
+    # that is known to contain forbidden crates is a broken instrument, not a
+    # clean cone.
+    # Two controls, because pelt-desktop's cone used to exercise both halves of
+    # `is_ortet_forbidden` at once: an exact name (`inker`) and a prefix
+    # (`cambium`, `mere-`). No single remaining member reaches both, so the
+    # controls are split rather than weakened.
+    controls = (("document-canvas", "inker"), ("cambium-genet-winit-host", "cambium"))
+    reported = {}
+    for control_package, must_report in controls:
+        control = resolved_cone(metadata, control_package)
+        control_hits = sorted(name for name in control if is_ortet_forbidden(name))
+        if must_report not in control_hits:
+            fail(
+                "cone witness positive control failed: the same check over "
+                f"{control_package} did not report {must_report} "
+                f"(reported {control_hits})"
+            )
+        reported[control_package] = control_hits
+    rendered = "; ".join(f"{name} reports {hits}" for name, hits in reported.items())
     print(
         f"ortet cone: {len(cone)} packages, none forbidden; "
-        f"positive control over pelt-desktop reports {control_hits}"
+        f"positive controls: {rendered}"
     )
 
     reclassed = sorted(name for name in cone if name in ORTET_RECLASSED)

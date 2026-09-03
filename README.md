@@ -42,23 +42,24 @@ docs are authoritative.
 ## Use
 
 Builds with cargo on the pinned toolchain (`rust-toolchain.toml`) on a stock
-Windows setup. The default member is `ports/pelt`, the reference browser and
-validation viewer.
+Windows setup. The default member is `ports/ortet`, the raw engine host: one
+window, one document, no chrome, and no Mere crate in its dependency cone.
+Pelt, the reference browser, moved to mere on 2026-09-03 under the platform
+boundary plan.
 
 ```sh
 cargo build
 
-# Script-free HTML through Livery/Buckram (file://, bare paths, data:, http(s))
-cargo run -p pelt -- <url-or-file>
+# Script-free HTML through Livery/Buckram (file://, bare paths, http(s))
+cargo run -p ortet -- --url <url-or-file>
 
-# Scripted profile: run a page's inline <script> and render the mutated DOM
-cargo run -p pelt --features scripted -- --engine scripted <file>
-
-# Protocol-native document lane
-cargo run -p pelt --features smolweb -- gemini://example.org/
+# A self-driven receipt: present three frames, capture the last, print its digest
+cargo run -p ortet -- --url ports/ortet/examples/article.html \
+    --frames 3 --artifact ortet_article.png
 ```
 
-`pelt --help` lists the diagnostic engine override and presentation smoke runners.
+`ortet --help` lists the window size, frame count, artifact and `--actions`
+options; `ports/ortet/README.md` documents them.
 
 ```sh
 cargo test --workspace                 # unit/lib tests

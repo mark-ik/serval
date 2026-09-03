@@ -40,7 +40,8 @@ frames, scroll, click, settle), implementing `document-session-api`.
 
 The reader and smolweb lanes (`ReaderSessionEngine`, `SmolwebDocument`,
 `SmolwebSessionEngine`) and the remote fetch integration moved to
-`components/mere-document-lanes` on 2026-09-02 under the platform boundary
+the `mere-document-lanes` crate on 2026-09-02, which itself left genet for mere
+on 2026-09-03, under the platform boundary
 plan (mere `design_docs/mere_docs/implementation_strategy/`
 `2026-09-02_platform_boundary_and_repository_topology_plan.md`, P1): they are
 application session and routing, not engine behaviour, and they leave for

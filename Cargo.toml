@@ -22,10 +22,11 @@ members = [
     # The engine-management layer, adopted from mere 2026-07-10
     # (docs/2026-07-09_inker_genet_adoption_plan.md): inker (contracts +
     # document/surface registries) with its surface adapters + document-canvas
-    # + knot-editor-host nested, and nematic promoted to a top-level component.
+    # nested, and nematic promoted to a top-level component. knot-editor-host
+    # left for mere on 2026-09-03 under the platform boundary plan's
+    # consumers-first order.
     "components/inker",
     "components/inker/document-canvas",
-    "components/inker/knot-editor-host",
     "components/inker/engines/scrying-engine",
     "components/inker/engines/graft-engine",
     "components/inker/engines/weld-engine",
@@ -45,7 +46,6 @@ members = [
     "components/genet-documents",
     "components/genet-host-api",
     "components/mere-surface-api",
-    "components/mere-document-lanes",
     "components/workbench",
     "components/genet-render-host",
     "components/genet-winit-host",
@@ -87,18 +87,19 @@ members = [
     # consumers, and it must stay genet-side to keep mere's dependency direction
     # one-way.
     "components/netfetcher",
-    "ports/pelt/core",
-    "ports/pelt/desktop",
-    "ports/pelt",
+    # Pelt (pelt, pelt-core, pelt-desktop) and Tabard left for mere on
+    # 2026-09-03, with mere-document-lanes and knot-editor-host, under the
+    # platform boundary plan's consumers-first order (mere
+    # design_docs/mere_docs/implementation_strategy/
+    # 2026-09-02_platform_boundary_and_repository_topology_plan.md). Ortet is
+    # genet's headed host from here on.
     # The raw engine host: one window, one document, no Mere crate in its cone
     # (design_docs/2026-09-03_ortet_founding_plan.md).
     "ports/ortet",
     "ports/genet-wpt",
-    # The theme-authoring port; reservation, no implementation.
-    "ports/tabard",
     "tests/unit/*",
 ]
-default-members = ["ports/pelt"]
+default-members = ["ports/ortet"]
 # The SpiderMonkey-backed scripting stack (components/script,
 # script_bindings, and the heavy Servo subsystems: layout, net, canvas,
 # constellation, devtools, metrics, storage, timers, webdriver_server,
@@ -275,17 +276,13 @@ genet-documents = { version = "=0.1.0", path = "components/genet-documents", def
 genet-document-resources = { version = "=0.2.0", path = "components/genet-document-resources" }
 nematic = { version = "=0.1.1", path = "components/nematic" }
 document-canvas = { version = "=0.1.0", path = "components/inker/document-canvas" }
-knot-editor-host = { version = "=0.1.0", path = "components/inker/knot-editor-host" }
 scrying-engine = { version = "=0.2.0", path = "components/inker/engines/scrying-engine" }
 graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engine" }
 weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
 genet-host-api = { version = "=0.2.0", path = "components/genet-host-api" }
 mere-surface-api = { version = "=0.1.0", path = "components/mere-surface-api" }
-mere-document-lanes = { version = "=0.1.0", path = "components/mere-document-lanes" }
 workbench = { version = "=0.1.0", path = "components/workbench" }
 genet-render-host = { path = "components/genet-render-host" }
-pelt-core = { version = "=0.2.0", path = "ports/pelt/core" }
-pelt-desktop = { version = "=0.2.0", path = "ports/pelt/desktop", default-features = false }
 netrender = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
 netrender_device = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
 # (No xilem git deps remain. The Masonry-era `xilem` / `masonry` /
@@ -514,9 +511,11 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
-# Pelt consumes the published Cambium stack, whose registry packages depend on
-# these published Genet seams. Redirect them to the workspace copies so the
+# The workspace's Cambium members carry published registry packages that depend
+# on these published Genet seams. Redirect them to the workspace copies so the
 # host and toolkit share one set of DOM and observable types during Genet work.
+# (Pelt was the original reason; it left for mere on 2026-09-03 and the Cambium
+# members it consumed are still here.)
 engine-observables-api = { path = "components/shared/engine-observables-api" }
 genet-paint-types = { path = "components/shared/paint-types" }
 genet-scripted-dom = { path = "components/genet-scripted-dom" }

@@ -1,7 +1,8 @@
 # Ortet founding plan
 
-**Status:** in progress, 2026-09-03. O0 and O1 landed the same day; O2, O3 and
-O4 open. The `fleece` carve-out is reconciled with the boundary plan's §9.1
+**Status:** in progress, 2026-09-03. O0 and O1 landed the same day; O4 landed
+the same day too, except for the crates.io claim, which stays pending. O2 and
+O3 open. The `fleece` carve-out is reconciled with the boundary plan's §9.1
 (see Findings); the witness still names fleece on every run.
 
 Ortet is the raw genet host: the one headed port that proves the engine runs
@@ -132,6 +133,14 @@ is worth one by then.
 
 **Done when:** genet's root `cargo build` builds ortet, the witness has no Pelt
 reference, and the boundary plan and naming ledger both say so.
+
+The witness's positive control was the one thing Pelt's departure took with it.
+`pelt-desktop`'s cone exercised both halves of `is_ortet_forbidden` at once — an
+exact name (`inker`) and a prefix (`cambium`, `mere-`) — and no single remaining
+member reaches both. Neither `cambium` nor `cambium-genet-winit-host` reaches
+`inker` at all, checked before choosing. So the control splits in two rather
+than weakening: `document-canvas` must report `inker`, `cambium-genet-winit-host`
+must report `cambium`.
 
 ## Findings
 
@@ -293,3 +302,48 @@ reference, and the boundary plan and naming ledger both say so.
   to everything); `cargo check -p ortet` green with no new warnings;
   `cargo clippy -p ortet` reports nothing in ortet's own sources (the workspace
   lints it does report are pre-existing elsewhere). The O0 witness still passes.
+
+- 2026-09-03: **O4 landed, except the publish claim.** Pelt left genet the same
+  day (`ports/pelt`, `ports/tabard`, `components/inker/knot-editor-host` and
+  `components/mere-document-lanes`, 129 tracked files), so ortet takes the
+  places Pelt held:
+
+  - `default-members = ["ports/ortet"]` in the root manifest, and the six
+    workspace entries the four crates held (three members plus
+    `knot-editor-host`, `mere-document-lanes`, `pelt-core` and `pelt-desktop`
+    in `[workspace.dependencies]`) are gone with them.
+  - `assert_ports_depend_inward` asserts ortet's single manifest at
+    `ports/ortet/Cargo.toml` where it asserted Pelt's two. The rest of that
+    function — no `components/` crate may name a `ports/` path, and
+    `genet-host-api` has exactly one manifest — is unchanged.
+  - The cone witness's positive control split in two, for the reason recorded
+    under O4 above. Checked before choosing: `cargo tree -p cambium` and
+    `cargo tree -p cambium-genet-winit-host` both reach `inker` zero times, so
+    neither candidate the move suggested could carry the `inker` half alone.
+
+  Receipt — `python support/ci/check_dependency_cones.py`:
+
+  ```
+  ortet cone: 592 packages, none forbidden; positive controls: document-canvas
+  reports ['inker']; cambium-genet-winit-host reports ['cambium',
+  'cambium-rootstock', 'cambium-winit', 'cambium-winit-a11y',
+  'mere-surface-api', 'workbench']
+  ortet cone note: ['fleece'] present - reclassed independent by the boundary
+  plan 9.1, reached through genet-documents' clip lane
+  dependency-cone witnesses passed
+  ```
+
+  The cone is still 592 packages, unchanged by Pelt's departure, which is the
+  point: ortet never reached any of it.
+
+  Other receipts: root `cargo build` (default member, so this is the ortet
+  binary) finished green; `cargo check --workspace` green with 0 errors and 24
+  warnings across eight crates, every one pre-existing and none in ortet;
+  `cargo check -p ortet` green; `cargo test -p ortet` 10 passed;
+  `cargo check -p netfetcher --no-default-features` green. The relicense audit
+  went 887 -> 843 owned sources, exactly the 44 sources in the four removed
+  directories, with "without Exhibit A" unmoved at 6 (all in other lanes).
+
+  Still pending: the crates.io claim. Ortet's dependencies are `publish =
+  false` host crates, so there is nothing publishable yet; the naming ledger
+  entry waits on that, not on this commit.
