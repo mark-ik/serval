@@ -45,6 +45,7 @@ members = [
     "components/genet-documents",
     "components/genet-host-api",
     "components/mere-surface-api",
+    "components/mere-document-lanes",
     "components/workbench",
     "components/genet-render-host",
     "components/genet-winit-host",
@@ -277,6 +278,7 @@ graft-engine = { version = "=0.2.0", path = "components/inker/engines/graft-engi
 weld-engine = { version = "=0.2.0", path = "components/inker/engines/weld-engine" }
 genet-host-api = { version = "=0.2.0", path = "components/genet-host-api" }
 mere-surface-api = { version = "=0.1.0", path = "components/mere-surface-api" }
+mere-document-lanes = { version = "=0.1.0", path = "components/mere-document-lanes" }
 workbench = { version = "=0.1.0", path = "components/workbench" }
 genet-render-host = { path = "components/genet-render-host" }
 pelt-core = { version = "=0.2.0", path = "ports/pelt/core" }

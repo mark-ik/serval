@@ -511,7 +511,7 @@ fn promote_inline_image_links(document: &mut EngineDocument, policy: SmolwebInli
         let Some((href, alt)) = image_link(block) else {
             continue;
         };
-        let resolved = crate::resolve_href(&base_address, &href);
+        let resolved = genet_host_api::resolve_href(&base_address, &href);
         if !looks_like_image_url(&resolved) {
             continue;
         }

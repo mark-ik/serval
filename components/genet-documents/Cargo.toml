@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository = "https://github.com/merely-made/genet"
-description = "Genet's retained document sessions — the static, scripted, and smolweb content lanes as inker session engines (2026-07-10 session-engines plan). Formerly pelt's convenience lanes; pelt is now one consumer among hosts."
+description = "Genet's retained document sessions — the Livery and scripted HTML lanes as session engines (2026-07-10 session-engines plan), with the local-scheme resource fetcher. The reader and smolweb lanes are mere-document-lanes."
 readme = "README.md"
 
 [lib]
@@ -16,15 +16,6 @@ default = []
 livery = [
     "dep:genet-livery", "dep:genet-scripted-dom", "dep:paint_list_render",
     "dep:genet-render", "dep:unicode-segmentation", "dep:url",
-]
-# Remote http(s) loading for LocalFetcher via the netfetcher engine.
-netfetch = ["dep:netfetcher", "dep:tokio", "dep:bytes", "dep:url"]
-# Reader-mode HTML extraction lowered into the existing portable document canvas.
-reader = ["dep:document-canvas", "dep:image", "dep:url"]
-# The smolweb engine-native lane: errand transport, Nematic EngineDocument
-# lowering, and document-canvas layout/paint.
-smolweb = [
-    "reader", "dep:errand", "dep:nematic", "dep:tokio",
 ]
 # The scripted lane: a live LiveryScriptedDocument on Boa.
 scripted = [
@@ -39,8 +30,6 @@ scripted-nova = ["scripted", "dep:script-engine-nova"]
 [dependencies]
 # The engine contracts this component implements (SessionEngine<Scene>).
 document-session-api = { workspace = true }
-# The controller, for the reader and smolweb lanes that move with it.
-inker = { workspace = true }
 # The product-neutral host fetch seam.
 genet-host-api = { workspace = true }
 genet-document-resources = { workspace = true }
@@ -59,22 +48,10 @@ genet-scripted = { path = "../genet-scripted", optional = true, default-features
 script-engine-api = { path = "../script-engine-api", optional = true }
 script-engine-boa = { path = "../script-engine-boa", optional = true }
 script-engine-nova = { path = "../script-engine-nova", optional = true }
-nematic = { workspace = true, optional = true }
-document-canvas = { workspace = true, features = ["netrender"], optional = true }
-errand = { workspace = true, optional = true }
-# Same git source pelt uses; not a root workspace entry (sibling repo).
-netfetcher = { path = "../netfetcher", optional = true }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"], optional = true }
-bytes = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Offline mock HTTP server for the netfetch integration test (moved with
-# net_fetch.rs from pelt); runs without a live network.
-mockito = "1"
-wgpu = { workspace = true }
 # Livery resource tests encode small PNG fixtures even when the smolweb
 # feature (which owns the optional production dependency) is disabled.
 image = { workspace = true }

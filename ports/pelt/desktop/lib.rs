@@ -53,11 +53,11 @@ pub(crate) mod href {
 #[cfg(feature = "smolweb")]
 mod smolweb_glue;
 #[cfg(feature = "smolweb")]
-pub use genet_documents::SmolwebDocument;
+pub use mere_document_lanes::SmolwebDocument;
 // Re-exported so a host that builds a `SmolwebDocument` can name its compatibility
 // theme and, for the App theme, supply a palette.
 #[cfg(feature = "smolweb")]
-pub use genet_documents::{SmolwebPalette, SmolwebTheme};
+pub use mere_document_lanes::{SmolwebPalette, SmolwebTheme};
 #[cfg(feature = "smolweb")]
 pub use smolweb_glue::{run_smolweb_receipt, run_smolweb_viewer};
 

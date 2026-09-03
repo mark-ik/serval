@@ -30,11 +30,13 @@ impl ResourceFetcher for CountingResourceFetcher {
 #[cfg(feature = "reader")]
 fn reader_test_registries(
     fetcher: CountingResourceFetcher,
-    theme: genet_documents::SmolwebTheme,
+    theme: mere_document_lanes::SmolwebTheme,
 ) -> PeltRegistries<Scene> {
     let mut sessions = SessionRegistry::new();
     sessions.register(Box::new(genet_documents::LiverySessionEngine::new(fetcher)));
-    sessions.register(Box::new(genet_documents::ReaderSessionEngine::new(theme)));
+    sessions.register(Box::new(mere_document_lanes::ReaderSessionEngine::new(
+        theme,
+    )));
     let mut policy = inker::routing::EngineRoutePolicy::default();
     for rule in &mut policy.rules {
         if rule.engine_id == inker::routing::ENGINE_GENET_WEB {
@@ -57,7 +59,7 @@ fn reader_test_registries(
 #[cfg(feature = "reader")]
 fn assert_reader_workspace_receipt(
     receipt: WorkspaceReceipt,
-    theme: genet_documents::SmolwebTheme,
+    theme: mere_document_lanes::SmolwebTheme,
     expected_assertion: &str,
 ) -> Scene {
     assert!(matches!(
@@ -389,7 +391,7 @@ fn tabard_preview_stylesheet_is_scoped_to_pelt_chrome() {
 #[test]
 fn tabard_reader_preview_maps_portable_roles_to_reader_host_colors() {
     let palette = tabard_preview_theme().palette();
-    let genet_documents::SmolwebTheme::App(reader) = tabard_reader_preview_theme() else {
+    let mere_document_lanes::SmolwebTheme::App(reader) = tabard_reader_preview_theme() else {
         panic!("Tabard Reader preview must use Reader's host palette seam");
     };
     assert_eq!(reader.bg, tinct::color_to_hex(palette.bg));
@@ -433,7 +435,7 @@ fn named_workspace_receipts_reject_the_older_receipt_drivers() {
 fn reader_workspace_reuses_the_held_livery_response_without_refetching() {
     assert_reader_workspace_receipt(
         WorkspaceReceipt::Reader,
-        genet_documents::SmolwebTheme::default(),
+        mere_document_lanes::SmolwebTheme::default(),
         READER_WORKSPACE_ASSERTION,
     );
 }
@@ -1679,7 +1681,7 @@ fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
     let tree = tree_from_urls(&urls);
     let workspace = PeltWorkspace::try_routed(
         tree,
-        reader_test_registries(fetcher, genet_documents::SmolwebTheme::default()),
+        reader_test_registries(fetcher, mere_document_lanes::SmolwebTheme::default()),
         |tile| {
             let ContentSource::Document(DocumentRef(address)) = &tile.content else {
                 unreachable!("Reader accessibility tree contains only documents");
@@ -1838,7 +1840,7 @@ fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
         assert!(
             controller
                 .session_as_any_ref()
-                .is::<genet_documents::ReaderDocumentSession>(),
+                .is::<mere_document_lanes::ReaderDocumentSession>(),
             "virtual Focus does not replace Reader tile {}",
             tile.0
         );
@@ -1894,7 +1896,7 @@ fn reader_child_accessibility_is_namespaced_virtual_and_stale_safe() {
     assert!(
         sibling
             .session_as_any_ref()
-            .is::<genet_documents::ReaderDocumentSession>()
+            .is::<mere_document_lanes::ReaderDocumentSession>()
     );
     assert_eq!(
         reader_a11y_node_for_tile(

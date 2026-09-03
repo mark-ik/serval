@@ -7,9 +7,10 @@
 //! `ViewerContent` / `BrowsableContent`, plus the standalone viewer entry.
 //! Pelt impls its own local traits for the foreign type.
 
-use genet_documents::{LocalFetcher, SmolwebDocument, SmolwebSessionEngine, SmolwebTheme};
+use genet_documents::LocalFetcher;
 use genet_host_api::ResourceFetcher;
 use inker::{SessionRegistry, SessionScrollKey, SessionSpawnRequest, SurfaceEngineRegistry};
+use mere_document_lanes::{RemoteFetcher, SmolwebDocument, SmolwebSessionEngine, SmolwebTheme};
 use netrender::Scene;
 use pelt_core::{PeltController, PeltControllerConfig};
 
@@ -108,7 +109,11 @@ impl crate::static_viewer::windowed::ViewerContent for SmolwebDocument {
 pub fn run_smolweb_viewer(
     config: crate::StaticViewerConfig,
 ) -> Result<crate::StaticViewerOutcome, String> {
-    let doc = SmolwebDocument::load(&LocalFetcher, &config.url, SmolwebTheme::default())?;
+    let doc = SmolwebDocument::load(
+        &LocalFetcher.with_fallback(RemoteFetcher::shared()),
+        &config.url,
+        SmolwebTheme::default(),
+    )?;
     crate::static_viewer::run_headed_with(config, doc)
 }
 

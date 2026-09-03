@@ -4,16 +4,16 @@
 
 //! The lanes as inker session engines: `SessionEngine<Scene>` /
 //! `DocumentSession<Scene>` impls wrapping [`LoadedDocument`], the scripted
-//! document, and [`SmolwebDocument`](crate::SmolwebDocument).
+//! document.
 //!
 //! Construction seams (fetchers, themes, cookie jars) live on the engine at
 //! registration time; the spawn request stays plain data (session-engines
 //! plan, review-resolved 2026-07-10).
 
-#[cfg(any(feature = "scripted", feature = "smolweb"))]
+#[cfg(feature = "scripted")]
 use document_session_api::{DocumentCapabilities, DocumentCapabilityStatus};
 
-#[cfg(any(feature = "scripted", feature = "smolweb"))]
+#[cfg(feature = "scripted")]
 fn retained_document_capabilities(find_reason: impl Into<String>) -> DocumentCapabilities {
     DocumentCapabilities {
         find_in_page: DocumentCapabilityStatus::unsupported(find_reason),
@@ -35,8 +35,6 @@ mod clip;
 mod livery;
 #[cfg(feature = "scripted")]
 mod scripted;
-#[cfg(feature = "smolweb")]
-mod smolweb;
 #[cfg(test)]
 mod tests;
 
@@ -53,5 +51,3 @@ pub(crate) use livery::EditableKind;
 pub use livery::{LiveryDocumentSession, LiverySessionEngine};
 #[cfg(feature = "scripted")]
 pub use scripted::{ScriptedDocumentSession, ScriptedSessionEngine};
-#[cfg(feature = "smolweb")]
-pub use smolweb::{SmolwebDocumentSession, SmolwebSessionEngine};

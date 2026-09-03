@@ -24,7 +24,7 @@ present = [
 ]
 # Registry-routed owned static engine plus the engine-neutral present shell.
 livery = [
-    "present", "dep:genet-documents", "genet-documents/livery", "dep:inker",
+    "present", "dep:genet-documents", "genet-documents/livery", "dep:mere-document-lanes", "dep:inker",
     "dep:cambium", "dep:cambium-genet-winit-host", "dep:genet-livery", "dep:genet-scripted-dom",
     "dep:genet-render", "dep:accesskit", "dep:layout-dom-api", "dep:paint_list_render", "dep:url",
     "dep:windows", "dep:dpi", "dep:scrying-engine",
@@ -37,7 +37,7 @@ tabard-preview = ["livery", "dep:tabard", "dep:tinct"]
 tabard-reader-preview = ["livery", "reader", "dep:tabard", "dep:tinct"]
 # Shared fleece reader lane over the portable document canvas.
 reader = [
-    "present", "dep:genet-documents", "genet-documents/reader", "dep:inker",
+    "present", "dep:genet-documents", "dep:mere-document-lanes", "dep:inker",
 ]
 # The scripted profile (V4): a live `ScriptedDom` document whose inline `<script>`
 # runs through `script-runtime-api` on a JS engine, mutating the DOM, rendered each
@@ -65,7 +65,7 @@ scripted-nova = ["scripted", "dep:script-engine-nova"]
 # exercises real pages; `--no-default-features` remains the light contracts build.
 # The host owns networking here (pelt is the reference shell), matching meerkat
 # driving netfetcher in the product; genet's engine components stay byte-consuming.
-netfetch = ["dep:genet-documents", "genet-documents/netfetch"]
+netfetch = ["dep:mere-document-lanes", "mere-document-lanes/netfetch"]
 # Smolweb document loading (the `smolweb` feature): the `LocalFetcher` gains a
 # gemini/gopher/nex/finger/spartan/guppy branch backed by the errand transport (the
 # sibling smolweb engine), bridged onto the sync `ResourceFetcher` through the same
@@ -74,7 +74,7 @@ netfetch = ["dep:genet-documents", "genet-documents/netfetch"]
 # The host owns networking (pelt is the reference shell), matching meerkat driving
 # errand in the product; genet's engine components stay byte-consuming. errand pulls
 # its own tokio net/time/io-util features, which unify with the `rt` runtime here.
-smolweb = ["livery", "genet-documents/smolweb"]
+smolweb = ["livery", "dep:mere-document-lanes", "mere-document-lanes/smolweb"]
 netrender = ["dep:netrender", "dep:webgl_wgpu", "dep:wgpu"]
 # Headed presentation through genet's `WindowsDxgiBackend`. Drives
 # the netrender renderer through the C4 DCOMP composition swapchain
@@ -123,6 +123,7 @@ image = { workspace = true, optional = true }
 paint = { workspace = true, optional = true }
 genet-host-api = { workspace = true }
 mere-surface-api = { workspace = true }
+mere-document-lanes = { workspace = true, optional = true }
 workbench = { workspace = true }
 genet-documents = { workspace = true, optional = true, default-features = false }
 genet-livery = { path = "../../../components/genet-livery", optional = true }

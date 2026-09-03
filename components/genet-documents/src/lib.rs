@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Genet's retained document sessions: Livery HTML, scripted HTML, and smolweb
-//! content lanes, as inker **session engines** (2026-07-10 session-engines
-//! plan).
+//! Genet's retained document sessions: Livery HTML and scripted HTML as
+//! session engines (2026-07-10 session-engines plan). The reader and smolweb
+//! lanes and the remote fetch integration are `mere-document-lanes` since the
+//! platform boundary plan's P1 split this crate by authority.
 //!
 //! These types began as pelt's convenience lanes; the formalization promotes
 //! them to an engine-grade component. Each lane is a retained layout session
@@ -20,22 +21,6 @@ mod fetch;
 // and hosts' chrome (moved with the lanes from pelt).
 pub mod href;
 
-#[cfg(any(feature = "netfetch", feature = "smolweb"))]
-pub(crate) mod net_fetch;
-
-#[cfg(any(feature = "reader", feature = "smolweb"))]
-pub mod smolweb;
-#[cfg(any(feature = "reader", feature = "smolweb"))]
-pub use smolweb::{SmolwebDocument, SmolwebInlineMediaPolicy, SmolwebPalette, SmolwebTheme};
-
-#[cfg(feature = "reader")]
-pub mod reader;
-#[cfg(feature = "reader")]
-pub use reader::{
-    ReaderAccessibilityLink, ReaderAccessibilitySnapshot, ReaderDocumentSession,
-    ReaderSessionEngine, lower_article,
-};
-
 #[cfg(feature = "scripted")]
 pub use genet_scripted::{
     LiveryScriptedDocument, LiveryScriptedDocument as ScriptedDocument,
@@ -48,8 +33,6 @@ pub mod engines;
 pub use engines::{LiveryDocumentSession, LiverySessionEngine};
 #[cfg(feature = "scripted")]
 pub use engines::{ScriptedDocumentSession, ScriptedSessionEngine};
-#[cfg(feature = "smolweb")]
-pub use engines::{SmolwebDocumentSession, SmolwebSessionEngine};
-pub use fetch::{ConfiguredLocalFetcher, LocalFetcher, ResourceFetchPolicy};
+pub use fetch::{LocalFetcher, LocalFetcherWith, ResourceFetchPolicy};
 pub use genet_host_api::ResourceFetcher;
 pub use href::resolve_href;

@@ -1,8 +1,8 @@
 # genet-documents
 
-Genet's retained document sessions: Livery HTML, scripted HTML, and smolweb
-content lanes as inker **session engines** (the third engine kind — spawn a
-session, take paint frames, scroll, click, settle).
+Genet's retained document sessions: Livery HTML and scripted HTML as
+**session engines** (the third engine kind — spawn a session, take paint
+frames, scroll, click, settle), implementing `document-session-api`.
 
 > **Home:** [`merely-made/genet`](https://github.com/merely-made/genet), at
 > `components/genet-documents`. Born 2026-07-10 in the session-engines
@@ -33,10 +33,18 @@ session, take paint frames, scroll, click, settle).
   feature): the same Livery/Buckram document path with a live DOM whose JS
   runs on Boa (or Nova on the nova rung), plus the tick + quiescence seam
   (`pump` / `settled`).
-- `SmolwebDocument` / `SmolwebSessionEngine` (`smolweb` feature): capsules
-  rendered through the engine-native document path: Nematic lowers protocol
-  content to `EngineDocument`, then document-canvas lays it out and lowers its
-  PaintList to a scene.
+- `LocalFetcher`: the local-scheme resource fetcher (`data:`, `file://`, bare
+  paths). Remote schemes are a host's to supply through
+  `LocalFetcher::with_fallback`; `mere-document-lanes` provides `RemoteFetcher`
+  over netfetcher and errand.
+
+The reader and smolweb lanes (`ReaderSessionEngine`, `SmolwebDocument`,
+`SmolwebSessionEngine`) and the remote fetch integration moved to
+`components/mere-document-lanes` on 2026-09-02 under the platform boundary
+plan (mere `design_docs/mere_docs/implementation_strategy/`
+`2026-09-02_platform_boundary_and_repository_topology_plan.md`, P1): they are
+application session and routing, not engine behaviour, and they leave for
+Mere with that crate.
 
 Construction seams (fetchers, cookie jars, themes) live on the engine at
 registration; the spawn request stays plain data. The session wrappers are

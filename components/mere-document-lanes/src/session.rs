@@ -5,13 +5,30 @@ use std::any::Any;
 
 use genet_host_api::ResourceFetcher;
 use inker::DocumentCapabilities;
+use inker::DocumentCapabilityStatus;
 use inker::session_engine::{
     DocumentSession, SessionClick, SessionEngine, SessionError, SessionLink, SessionScrollKey,
     SessionSpawnRequest,
 };
 use netrender::Scene;
 
-use super::*;
+use crate::{SmolwebDocument, SmolwebInlineMediaPolicy, SmolwebTheme};
+
+#[cfg(feature = "smolweb")]
+fn retained_document_capabilities(find_reason: impl Into<String>) -> DocumentCapabilities {
+    DocumentCapabilities {
+        find_in_page: DocumentCapabilityStatus::unsupported(find_reason),
+        page_zoom: DocumentCapabilityStatus::unsupported(
+            "smolweb sessions do not expose page zoom",
+        ),
+        page_capture: DocumentCapabilityStatus::unsupported(
+            "retained sessions do not capture rendered pages",
+        ),
+        navigation: DocumentCapabilityStatus::Partial {
+            detail: "the host owns document lineage, policy, and refetch".into(),
+        },
+    }
+}
 
 /// Session engine for the smolweb native lane. One instance per format id
 /// (`nematic.gemtext` / `nematic.gopher` / `nematic.feed` today) so routing
@@ -21,23 +38,23 @@ use super::*;
 pub struct SmolwebSessionEngine<Fetch> {
     engine_id: String,
     fetcher: Fetch,
-    theme: crate::SmolwebTheme,
-    inline_media: crate::SmolwebInlineMediaPolicy,
+    theme: SmolwebTheme,
+    inline_media: SmolwebInlineMediaPolicy,
 }
 
 #[cfg(feature = "smolweb")]
 impl<Fetch> SmolwebSessionEngine<Fetch> {
-    pub fn new(engine_id: impl Into<String>, fetcher: Fetch, theme: crate::SmolwebTheme) -> Self {
+    pub fn new(engine_id: impl Into<String>, fetcher: Fetch, theme: SmolwebTheme) -> Self {
         Self {
             engine_id: engine_id.into(),
             fetcher,
             theme,
-            inline_media: crate::SmolwebInlineMediaPolicy::default(),
+            inline_media: SmolwebInlineMediaPolicy::default(),
         }
     }
 
     /// Apply a host-owned inline-media policy to documents this engine spawns.
-    pub fn with_inline_media(mut self, policy: crate::SmolwebInlineMediaPolicy) -> Self {
+    pub fn with_inline_media(mut self, policy: SmolwebInlineMediaPolicy) -> Self {
         self.inline_media = policy;
         self
     }
@@ -54,13 +71,13 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for SmolwebSessi
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let doc = match &request.body {
-            Some(body) => crate::SmolwebDocument::parse_with_inline_media(
+            Some(body) => SmolwebDocument::parse_with_inline_media(
                 &request.address,
                 body,
                 self.theme.clone(),
                 self.inline_media,
             ),
-            None => crate::SmolwebDocument::load_with_inline_media(
+            None => SmolwebDocument::load_with_inline_media(
                 &self.fetcher,
                 &request.address,
                 self.theme.clone(),
@@ -80,7 +97,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for SmolwebSessi
 /// wraps it; the engine above is the fixed-theme path.
 #[cfg(feature = "smolweb")]
 pub struct SmolwebDocumentSession {
-    doc: crate::SmolwebDocument,
+    doc: SmolwebDocument,
     /// Last framed size: the lane's click/content-height APIs take the
     /// viewport, which the trait carries implicitly through `frame`.
     viewport: (u32, u32),
@@ -88,13 +105,13 @@ pub struct SmolwebDocumentSession {
 
 #[cfg(feature = "smolweb")]
 impl SmolwebDocumentSession {
-    pub fn new(doc: crate::SmolwebDocument, viewport: (u32, u32)) -> Self {
+    pub fn new(doc: SmolwebDocument, viewport: (u32, u32)) -> Self {
         Self { doc, viewport }
     }
 
     /// The concrete document, for observation downcasts and host-side
     /// banding/link-table inspection.
-    pub fn document_mut(&mut self) -> &mut crate::SmolwebDocument {
+    pub fn document_mut(&mut self) -> &mut SmolwebDocument {
         &mut self.doc
     }
 
@@ -171,5 +188,56 @@ impl DocumentSession<Scene> for SmolwebDocumentSession {
     }
     fn as_any(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+#[cfg(all(test, feature = "smolweb"))]
+mod tests {
+    use genet_host_api::ResourceFetcher;
+    use inker::session_engine::{DocumentSession, SessionEngine, SessionSpawnRequest};
+
+    use super::SmolwebSessionEngine;
+
+    /// Byte source for spawn-with-body tests; never fetches.
+    #[derive(Clone)]
+    struct NoFetch;
+    impl ResourceFetcher for NoFetch {
+        fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    #[test]
+    fn smolweb_session_body_route_requests_and_accepts_inline_images() {
+        let image = image::RgbaImage::from_pixel(2, 1, image::Rgba([0, 128, 255, 255]));
+        let mut image_bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut image_bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode PNG fixture");
+        let engine = SmolwebSessionEngine::new(
+            inker::routing::ENGINE_NEMATIC_GEMTEXT,
+            NoFetch,
+            crate::SmolwebTheme::Plain,
+        )
+        .with_inline_media(crate::SmolwebInlineMediaPolicy::images());
+        let request = SessionSpawnRequest::new("gemini://x.test/docs/index.gmi")
+            .with_body("=> picture.png Picture\n")
+            .with_viewport(320, 240);
+        let mut session = engine.spawn(&request).expect("smolweb session spawns");
+
+        assert_eq!(session.subresources(), ["gemini://x.test/docs/picture.png"]);
+        assert!(session.provide_subresource("gemini://x.test/docs/picture.png", &image_bytes));
+        let scene = session.frame(320, 240);
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|operation| matches!(operation, netrender::SceneOp::Image(_)))
+        );
+        assert!(session.subresources().is_empty());
+        assert_eq!(session.links()[0].url, "gemini://x.test/docs/picture.png");
     }
 }

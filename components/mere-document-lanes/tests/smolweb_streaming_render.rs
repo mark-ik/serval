@@ -3,7 +3,7 @@
 
 #![cfg(feature = "smolweb")]
 
-use genet_documents::{SmolwebDocument, SmolwebTheme};
+use mere_document_lanes::{SmolwebDocument, SmolwebTheme};
 use netrender::{ColorLoad, NetrenderOptions, boot, create_netrender_instance};
 
 const WIDTH: u32 = 614;

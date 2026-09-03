@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! The remote half of [`LocalFetcher`](crate::LocalFetcher): http(s)
+//! The remote half of a host's resource fetcher, [`RemoteFetcher`]: http(s)
 //! document loading over the netfetcher engine (the `netfetch` feature), and smolweb
 //! (gemini/gopher/nex/finger/spartan/guppy) over the errand transport (the `smolweb`
-//! feature).
+//! feature). A host composes it under `genet_documents::LocalFetcher::with_fallback`.
 //!
 //! pelt is genet's reference *host*, so -- like meerkat in the product -- it owns
 //! networking and drives the sibling engines ([`netfetcher`] for the web, errand for
@@ -15,18 +15,18 @@
 //! a one-shot at open time, not a per-frame cost. The same wiring genet-wpt's
 //! `fetch()` uses.
 
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::OnceLock;
+#[cfg(feature = "netfetch")]
+use std::sync::{Arc, Condvar, Mutex};
 
 #[cfg(feature = "netfetch")]
 use bytes::BytesMut;
+#[cfg(any(feature = "netfetch", feature = "smolweb"))]
 use tokio::runtime::Runtime;
 
-#[cfg(feature = "netfetch")]
-use genet_host_api::ResourceResponse;
+use genet_host_api::{ResourceFetchPolicy, ResourceFetcher, ResourceResponse};
 
-#[cfg(feature = "netfetch")]
-use crate::ResourceFetchPolicy;
-
+#[cfg(any(feature = "netfetch", feature = "smolweb"))]
 /// The shared tokio runtime the blocking bridge drives. Built once on first use: a
 /// multithread runtime lets the host policy admit several independent document
 /// sessions without creating a private runtime per resource. `enable_all`
@@ -138,24 +138,71 @@ impl Drop for HttpFetchPermit<'_> {
     }
 }
 
-/// The source-compatible unit `LocalFetcher` uses this one process-local
-/// client, so document loads and all shared-resource resolver passes reuse
-/// the same cache, redirect cap, and concurrency budget.
-#[cfg(feature = "netfetch")]
-pub(crate) fn default_http_resource_host() -> &'static HttpResourceHost {
-    static HOST: OnceLock<HttpResourceHost> = OnceLock::new();
-    HOST.get_or_init(|| HttpResourceHost::new(ResourceFetchPolicy::default()))
+/// The remote half of a host's resource fetcher: http(s) over netfetcher
+/// (feature `netfetch`) and the smolweb schemes over errand (feature
+/// `smolweb`). Every other scheme is `None`; a host composes it under
+/// `genet_documents::LocalFetcher::with_fallback`. Clones share one HTTP
+/// cache, redirect cap and concurrency budget.
+#[derive(Clone)]
+pub struct RemoteFetcher {
+    #[cfg(feature = "netfetch")]
+    http: Arc<HttpResourceHost>,
+}
+
+impl RemoteFetcher {
+    /// A fetcher with its own HTTP cache, redirect cap and concurrency budget.
+    pub fn new(policy: ResourceFetchPolicy) -> Self {
+        #[cfg(not(feature = "netfetch"))]
+        let _ = policy;
+        Self {
+            #[cfg(feature = "netfetch")]
+            http: Arc::new(HttpResourceHost::new(policy)),
+        }
+    }
+
+    /// One process-shared fetcher under the default policy, so document loads
+    /// and every shared-resource resolver pass reuse the same cache, redirect
+    /// cap and concurrency budget.
+    pub fn shared() -> Self {
+        static SHARED: OnceLock<RemoteFetcher> = OnceLock::new();
+        SHARED
+            .get_or_init(|| Self::new(ResourceFetchPolicy::default()))
+            .clone()
+    }
+}
+
+impl ResourceFetcher for RemoteFetcher {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.fetch_response(url).map(|response| response.bytes)
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        #[cfg(feature = "netfetch")]
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return self.http.fetch_response(url);
+        }
+        #[cfg(feature = "smolweb")]
+        if url
+            .split_once("://")
+            .and_then(|(scheme, _)| errand::Scheme::parse(scheme))
+            .is_some()
+        {
+            return smolweb_get_bytes(url).map(|bytes| ResourceResponse::new(url, bytes));
+        }
+        let _ = url;
+        None
+    }
 }
 
 /// Blocking smolweb GET of `url` over the errand transport, returning the response
 /// body on a success status, or `None` on a non-success status (input / redirect /
 /// failure / cert-required) or a transport error. The smolweb branch of
-/// [`LocalFetcher::fetch`](crate::LocalFetcher); mirrors `http_get_bytes`,
+/// [`RemoteFetcher`]; mirrors `http_get_bytes`,
 /// bridging errand's async `fetch` onto the sync `ResourceFetcher` through the shared
 /// runtime. The caller surfaces the `None` as a clean load error rather than painting
 /// a protocol error line as a document, matching the http path's non-2xx handling.
 #[cfg(feature = "smolweb")]
-pub(crate) fn smolweb_get_bytes(url: &str) -> Option<Vec<u8>> {
+fn smolweb_get_bytes(url: &str) -> Option<Vec<u8>> {
     install_tofu();
     runtime().block_on(async move {
         match errand::fetch(url).await {
@@ -182,12 +229,12 @@ fn install_tofu() {
 
 #[cfg(all(test, feature = "netfetch"))]
 mod tests {
-    use genet_host_api::ResourceFetcher;
+    use genet_host_api::{ResourceFetchPolicy, ResourceFetcher};
 
-    use crate::{LocalFetcher, ResourceFetchPolicy};
+    use crate::RemoteFetcher;
 
     /// http(s) loading flows through the netfetcher engine end to end: an offline
-    /// mock server serves a body, and `LocalFetcher` (with the `netfetch` branch)
+    /// mock server serves a body, and `RemoteFetcher` (with the `netfetch` branch)
     /// fetches its bytes -- the same path `pelt --engine static https://…` takes,
     /// proven without a live network.
     #[test]
@@ -201,7 +248,7 @@ mod tests {
             .create();
 
         let url = format!("{}/page.html", server.url());
-        let bytes = LocalFetcher
+        let bytes = RemoteFetcher::shared()
             .fetch(&url)
             .expect("the http(s) document fetches over netfetcher");
         assert_eq!(
@@ -224,7 +271,7 @@ mod tests {
 
         let url = format!("{}/missing", server.url());
         assert!(
-            LocalFetcher.fetch(&url).is_none(),
+            RemoteFetcher::shared().fetch(&url).is_none(),
             "a 404 is a failed load, not a document"
         );
         mock.assert();
@@ -248,7 +295,7 @@ mod tests {
             .with_status(304)
             .expect(1)
             .create();
-        let fetcher = LocalFetcher::with_resource_policy(ResourceFetchPolicy::default());
+        let fetcher = RemoteFetcher::new(ResourceFetchPolicy::default());
         let url = format!("{}/revision.css", server.url());
         let first = fetcher.fetch_response(&url).expect("initial response");
         let second = fetcher.fetch_response(&url).expect("revalidated response");
@@ -272,7 +319,7 @@ mod tests {
             .with_body("four")
             .expect(1)
             .create();
-        let fetcher = LocalFetcher::with_resource_policy(ResourceFetchPolicy {
+        let fetcher = RemoteFetcher::new(ResourceFetchPolicy {
             max_redirects: 0,
             max_response_bytes: 3,
             ..ResourceFetchPolicy::default()
@@ -296,7 +343,7 @@ mod tests {
 mod smolweb_tests {
     use genet_host_api::ResourceFetcher;
 
-    use crate::LocalFetcher;
+    use crate::RemoteFetcher;
 
     /// A smolweb scheme is recognized and routed to the errand transport, and a host
     /// that cannot resolve fails to a clean `None` (a failed load, not a panic or an
@@ -306,7 +353,9 @@ mod smolweb_tests {
     #[test]
     fn smolweb_scheme_routes_and_unresolvable_host_is_none() {
         assert!(
-            LocalFetcher.fetch("gemini://capsule.invalid/").is_none(),
+            RemoteFetcher::shared()
+                .fetch("gemini://capsule.invalid/")
+                .is_none(),
             "an unresolvable gemini host is a failed load, not a document"
         );
     }
@@ -316,7 +365,7 @@ mod smolweb_tests {
     #[test]
     fn unknown_scheme_is_not_routed_to_errand() {
         assert!(
-            LocalFetcher.fetch("wat://nope/").is_none(),
+            RemoteFetcher::shared().fetch("wat://nope/").is_none(),
             "a non-smolweb scheme is not an errand fetch nor a readable path"
         );
     }

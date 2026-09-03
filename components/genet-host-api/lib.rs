@@ -154,6 +154,29 @@ impl ResourceResponse {
     }
 }
 
+/// The host-owned policy shared by one remote document-resource client: the
+/// caps a host puts on redirects, concurrency, body size and time. A host
+/// contract even though its enforcement is transport work, so it lives here
+/// beside the fetch seam rather than with any one transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceFetchPolicy {
+    pub max_redirects: u32,
+    pub max_concurrent_fetches: usize,
+    pub max_response_bytes: usize,
+    pub timeout: std::time::Duration,
+}
+
+impl Default for ResourceFetchPolicy {
+    fn default() -> Self {
+        Self {
+            max_redirects: 20,
+            max_concurrent_fetches: 6,
+            max_response_bytes: 8 * 1024 * 1024,
+            timeout: std::time::Duration::from_secs(15),
+        }
+    }
+}
+
 /// Host-shell resource-fetch contract: turn a URL into bytes for whichever engine
 /// is hosted underneath. Networking is a *platform-integration* concern the shell
 /// owns — kept off the engine, which only consumes host-owned response records.

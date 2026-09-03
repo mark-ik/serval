@@ -2,13 +2,8 @@ use super::*;
 
 use std::any::Any;
 
-#[cfg(feature = "livery")]
-use genet_document_resources::{ResourceKind, ResourceLimits, StylesheetOwner};
-use genet_host_api::ResourceFetcher;
-#[cfg(feature = "livery")]
-use genet_host_api::ResourceResponse;
-use inker::session_engine::SessionRegistry;
-use inker::session_engine::{
+use document_session_api::session_engine::SessionRegistry;
+use document_session_api::session_engine::{
     DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentFindDirection,
     DocumentFindMatch, DocumentFindQuery, DocumentFindReveal, DocumentFindState, DocumentSession,
     DocumentZoomState, SessionButtonState, SessionClick, SessionCursor, SessionEffect,
@@ -17,10 +12,15 @@ use inker::session_engine::{
     SessionTextTarget,
 };
 #[cfg(feature = "livery")]
-use inker::{
+use document_session_api::{
     DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest, DocumentA11yNodeId,
 };
-use inker::{DocumentCapabilities, DocumentCapabilityStatus};
+use document_session_api::{DocumentCapabilities, DocumentCapabilityStatus};
+#[cfg(feature = "livery")]
+use genet_document_resources::{ResourceKind, ResourceLimits, StylesheetOwner};
+use genet_host_api::ResourceFetcher;
+#[cfg(feature = "livery")]
+use genet_host_api::ResourceResponse;
 #[cfg(feature = "livery")]
 use layout_dom_api::LayoutDom;
 use layout_dom_api::{LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
@@ -70,41 +70,6 @@ fn livery_node_with_id(
     let dom = session.document().dom();
     find(dom, dom.document(), wanted_id)
         .unwrap_or_else(|| panic!("expected retained node #{wanted_id}"))
-}
-
-#[cfg(feature = "smolweb")]
-#[test]
-fn smolweb_session_body_route_requests_and_accepts_inline_images() {
-    let image = image::RgbaImage::from_pixel(2, 1, image::Rgba([0, 128, 255, 255]));
-    let mut image_bytes = Vec::new();
-    image
-        .write_to(
-            &mut std::io::Cursor::new(&mut image_bytes),
-            image::ImageFormat::Png,
-        )
-        .expect("encode PNG fixture");
-    let engine = SmolwebSessionEngine::new(
-        inker::routing::ENGINE_NEMATIC_GEMTEXT,
-        NoFetch,
-        crate::SmolwebTheme::Plain,
-    )
-    .with_inline_media(crate::SmolwebInlineMediaPolicy::images());
-    let request = SessionSpawnRequest::new("gemini://x.test/docs/index.gmi")
-        .with_body("=> picture.png Picture\n")
-        .with_viewport(320, 240);
-    let mut session = engine.spawn(&request).expect("smolweb session spawns");
-
-    assert_eq!(session.subresources(), ["gemini://x.test/docs/picture.png"]);
-    assert!(session.provide_subresource("gemini://x.test/docs/picture.png", &image_bytes));
-    let scene = session.frame(320, 240);
-    assert!(
-        scene
-            .ops
-            .iter()
-            .any(|operation| matches!(operation, netrender::SceneOp::Image(_)))
-    );
-    assert!(session.subresources().is_empty());
-    assert_eq!(session.links()[0].url, "gemini://x.test/docs/picture.png");
 }
 
 #[cfg(feature = "livery")]
@@ -361,7 +326,7 @@ fn scripted_session_returns_only_uncancelled_external_navigation() {
         session.pointer_down(blocked.0, blocked.1),
         SessionClick::Handled
     );
-    let cancelled = session.input(inker::SessionInput::Cancel);
+    let cancelled = session.input(document_session_api::SessionInput::Cancel);
     assert_eq!(cancelled.effect, SessionEffect::Cancelled);
     assert_eq!(
         session.pointer_up(blocked.0, blocked.1),
@@ -373,7 +338,7 @@ fn scripted_session_returns_only_uncancelled_external_navigation() {
         session.pointer_down(changed.0, changed.1),
         SessionClick::Handled
     );
-    let blurred = session.input(inker::SessionInput::Focus(false));
+    let blurred = session.input(document_session_api::SessionInput::Focus(false));
     assert_eq!(blurred.effect, SessionEffect::Handled);
     assert_eq!(
         session.pointer_up(changed.0, changed.1),
@@ -401,7 +366,7 @@ fn scripted_session_returns_only_uncancelled_external_navigation() {
 fn livery_session_routes_retained_structural_and_text_paint() {
     let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
     registry.register(Box::new(LiverySessionEngine::new(NoFetch)));
-    assert!(registry.contains(inker::routing::ENGINE_GENET_LIVERY));
+    assert!(registry.contains(document_session_api::engine_ids::ENGINE_GENET_LIVERY));
 
     let request = SessionSpawnRequest::new("https://example.test/")
         .with_body(
@@ -409,7 +374,10 @@ fn livery_session_routes_retained_structural_and_text_paint() {
         )
         .with_viewport(320, 240);
     let mut session = registry
-        .spawn(inker::routing::ENGINE_GENET_LIVERY, &request)
+        .spawn(
+            document_session_api::engine_ids::ENGINE_GENET_LIVERY,
+            &request,
+        )
         .expect("registered Livery lane spawns from body");
 
     let first = session.frame(320, 240);
@@ -722,10 +690,10 @@ fn livery_session_reports_structure_through_the_trait() {
 
     let _scene = session.frame(640, 480);
     let link = session.links().into_iter().next().expect("retained link");
-    let pointer = |state| inker::SessionInput::PointerButton {
+    let pointer = |state| document_session_api::SessionInput::PointerButton {
         x: link.rect[0] + 2.0,
         y: link.rect[1] + 2.0,
-        button: inker::SessionPointerButton::Primary,
+        button: document_session_api::SessionPointerButton::Primary,
         state,
         modifiers: SessionModifiers::default(),
     };
@@ -1553,10 +1521,10 @@ fn livery_session_edits_and_submits_a_retained_get_form() {
         .text_target("cedar")
         .expect("the textarea value has a retained text target");
     let point = (target.anchor[0] + 2.0, target.anchor[1]);
-    let pointer = |state| inker::SessionInput::PointerButton {
+    let pointer = |state| document_session_api::SessionInput::PointerButton {
         x: point.0,
         y: point.1,
-        button: inker::SessionPointerButton::Primary,
+        button: document_session_api::SessionPointerButton::Primary,
         state,
         modifiers: SessionModifiers::default(),
     };
@@ -1570,7 +1538,9 @@ fn livery_session_edits_and_submits_a_retained_get_form() {
     assert!(released.editable);
     assert_eq!(released.cursor, Some(SessionCursor::Text));
 
-    let edited = session.input(inker::SessionInput::Text(" and ash".to_owned()));
+    let edited = session.input(document_session_api::SessionInput::Text(
+        " and ash".to_owned(),
+    ));
     assert_eq!(edited.effect, SessionEffect::Handled);
     let edited_scene = session.frame(400, 240);
     let edited_glyphs = edited_scene
@@ -1594,7 +1564,7 @@ fn livery_session_edits_and_submits_a_retained_get_form() {
             .any(|entry| entry.role == "textbox" && entry.name == "cedar and ash")
     );
 
-    let tabbed = session.input(inker::SessionInput::Key {
+    let tabbed = session.input(document_session_api::SessionInput::Key {
         key: SessionKey::Tab,
         state: SessionButtonState::Pressed,
         modifiers: SessionModifiers::default(),
@@ -1602,7 +1572,7 @@ fn livery_session_edits_and_submits_a_retained_get_form() {
     });
     assert_eq!(tabbed.effect, SessionEffect::Handled);
     assert!(!tabbed.editable, "Tab moves focus to the submit button");
-    let submitted = session.input(inker::SessionInput::Key {
+    let submitted = session.input(document_session_api::SessionInput::Key {
         key: SessionKey::Enter,
         state: SessionButtonState::Pressed,
         modifiers: SessionModifiers::default(),

@@ -80,7 +80,9 @@ fn scripted_controller<E: ScriptEngine + 'static>(
 ) -> Result<ControllerViewerContent, String> {
     let (width, height) = config.size.unwrap_or((800, 600));
     let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
-    let fetcher = LocalFetcher::with_resource_policy(ResourceFetchPolicy::default());
+    let fetcher = LocalFetcher.with_fallback(mere_document_lanes::RemoteFetcher::new(
+        ResourceFetchPolicy::default(),
+    ));
     registry.register(Box::new(
         genet_documents::ScriptedSessionEngine::<E, _>::new(engine_id, fetcher),
     ));

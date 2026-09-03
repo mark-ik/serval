@@ -561,8 +561,8 @@ pub fn run_livery_workspace_viewer(
     );
     #[cfg(target_os = "windows")]
     let scrying_host = (!omit_scrying).then(ScryingReceiptHost::new);
-    let fetcher = genet_documents::LocalFetcher::with_resource_policy(
-        genet_documents::ResourceFetchPolicy::default(),
+    let fetcher = genet_documents::LocalFetcher.with_fallback(
+        mere_document_lanes::RemoteFetcher::new(genet_documents::ResourceFetchPolicy::default()),
     );
     let engine_options = WorkspaceEngineOptions::for_receipt(config.workspace_receipt);
     #[cfg(target_os = "windows")]
@@ -654,7 +654,7 @@ impl pelt_core::PeltClock for WorkspaceClock {
 #[derive(Default)]
 struct WorkspaceEngineOptions {
     #[cfg(feature = "reader")]
-    reader_theme: Option<genet_documents::SmolwebTheme>,
+    reader_theme: Option<mere_document_lanes::SmolwebTheme>,
 }
 
 impl WorkspaceEngineOptions {
@@ -705,9 +705,9 @@ fn workspace_registries(
     #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
 ) -> PeltRegistries<Scene> {
     workspace_registries_with_fetcher(
-        genet_documents::LocalFetcher::with_resource_policy(
+        genet_documents::LocalFetcher.with_fallback(mere_document_lanes::RemoteFetcher::new(
             genet_documents::ResourceFetchPolicy::default(),
-        ),
+        )),
         WorkspaceEngineOptions::default(),
         #[cfg(target_os = "windows")]
         scrying_host,
@@ -715,7 +715,7 @@ fn workspace_registries(
 }
 
 fn workspace_registries_with_fetcher(
-    fetcher: genet_documents::ConfiguredLocalFetcher,
+    fetcher: genet_documents::LocalFetcherWith<mere_document_lanes::RemoteFetcher>,
     engine_options: WorkspaceEngineOptions,
     #[cfg(target_os = "windows")] scrying_host: Option<ScryingReceiptHost>,
 ) -> PeltRegistries<Scene> {
@@ -725,8 +725,8 @@ fn workspace_registries_with_fetcher(
     )));
     #[cfg(feature = "reader")]
     sessions.register(Box::new(match engine_options.reader_theme {
-        Some(theme) => genet_documents::ReaderSessionEngine::new(theme),
-        None => genet_documents::ReaderSessionEngine::default(),
+        Some(theme) => mere_document_lanes::ReaderSessionEngine::new(theme),
+        None => mere_document_lanes::ReaderSessionEngine::default(),
     }));
     #[cfg(not(feature = "reader"))]
     let _ = engine_options;
@@ -754,10 +754,10 @@ fn workspace_registries_with_fetcher(
         inker::routing::ENGINE_NEMATIC_NEX,
         inker::routing::ENGINE_NEMATIC_FINGER,
     ] {
-        sessions.register(Box::new(genet_documents::SmolwebSessionEngine::new(
+        sessions.register(Box::new(mere_document_lanes::SmolwebSessionEngine::new(
             engine_id,
             fetcher.clone(),
-            genet_documents::SmolwebTheme::System,
+            mere_document_lanes::SmolwebTheme::System,
         )));
     }
 
@@ -943,9 +943,9 @@ fn tabard_preview_theme() -> tabard::Theme {
 }
 
 #[cfg(feature = "tabard-reader-preview")]
-fn tabard_reader_preview_theme() -> genet_documents::SmolwebTheme {
+fn tabard_reader_preview_theme() -> mere_document_lanes::SmolwebTheme {
     let palette = tabard_preview_theme().palette();
-    genet_documents::SmolwebTheme::App(genet_documents::SmolwebPalette {
+    mere_document_lanes::SmolwebTheme::App(mere_document_lanes::SmolwebPalette {
         bg: tinct::color_to_hex(palette.bg),
         fg: tinct::color_to_hex(palette.text),
         link: tinct::color_to_hex(palette.primary),

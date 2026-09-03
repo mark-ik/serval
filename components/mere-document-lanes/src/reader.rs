@@ -19,7 +19,9 @@ use inker::{
 };
 use netrender::Scene;
 
-use crate::{SmolwebDocument, SmolwebTheme, resolve_href};
+use genet_host_api::resolve_href;
+
+use crate::smolweb::{SmolwebDocument, SmolwebTheme};
 
 /// Renderer-neutral Reader semantics recovered from the current retained
 /// document-canvas packet. It is absent until Reader has presented one frame.

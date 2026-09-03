@@ -262,12 +262,18 @@ def assert_host_api_cone(metadata: dict) -> None:
         deps = {d["name"] for d in package["dependencies"] if d["name"] in members}
         if deps - allowed:
             fail(f"{name} depends on workspace crates {sorted(deps - allowed)}; allowed {sorted(allowed)}")
-    # An engine crate reaches inker's contracts through the contract crate, never
-    # through the controller, which the plan moves to Mere.
-    for name in ("genet-render",):
+    # Engine crates the plan keeps never depend on crates it moves. genet-render
+    # reaches inker's contracts through the contract crate; genet-documents,
+    # split by authority, keeps only the Livery and Scripted lanes and links no
+    # controller, content lane or transport.
+    forbidden = {
+        "genet-render": {"inker"},
+        "genet-documents": {"inker", "nematic", "errand", "document-canvas", "netfetcher"},
+    }
+    for name, banned in forbidden.items():
         deps = {d["name"] for d in by_name[name]["dependencies"]}
-        if "inker" in deps:
-            fail(f"{name} depends on inker; engine crates take document-session-api")
+        if deps & banned:
+            fail(f"{name} depends on {sorted(deps & banned)}, which the boundary plan moves to Mere")
 
 
 def main() -> None:

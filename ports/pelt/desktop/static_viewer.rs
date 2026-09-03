@@ -930,7 +930,9 @@ mod livery_route_tests {
             _,
         >::new(
             inker::routing::ENGINE_GENET_SCRIPTED,
-            LocalFetcher::with_resource_policy(ResourceFetchPolicy::default()),
+            LocalFetcher.with_fallback(mere_document_lanes::RemoteFetcher::new(
+                ResourceFetchPolicy::default(),
+            )),
         )));
         let now = std::rc::Rc::new(std::cell::Cell::new(0.0));
         let controller = PeltController::new(
@@ -1088,7 +1090,11 @@ impl genet_host_api::ResourceFetcher for ReceiptResourceFetcher {
                     .with_content_type("text/html")
             });
         }
-        genet_host_api::ResourceFetcher::fetch_response(&genet_documents::LocalFetcher, url)
+        genet_host_api::ResourceFetcher::fetch_response(
+            &genet_documents::LocalFetcher
+                .with_fallback(mere_document_lanes::RemoteFetcher::shared()),
+            url,
+        )
     }
 }
 
@@ -1198,8 +1204,9 @@ pub fn run_livery_viewer(_config: StaticViewerConfig) -> Result<StaticViewerOutc
 /// Run held HTML through the shared fleece reader lane.
 #[cfg(feature = "reader")]
 pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutcome, String> {
-    use genet_documents::{ReaderSessionEngine, ResourceFetcher, SmolwebTheme};
+    use genet_documents::ResourceFetcher;
     use inker::{SessionRegistry, SessionSpawnRequest, SurfaceEngineRegistry};
+    use mere_document_lanes::{ReaderSessionEngine, SmolwebTheme};
     use netrender::Scene;
     use pelt_core::{PeltController, PeltControllerConfig};
 
@@ -1213,8 +1220,11 @@ pub fn run_reader_viewer(config: StaticViewerConfig) -> Result<StaticViewerOutco
             product_receipt: None,
         });
     }
-    let source = ResourceFetcher::fetch(&genet_documents::LocalFetcher, &config.url)
-        .ok_or_else(|| format!("could not load held reader source {}", config.url))?;
+    let source = ResourceFetcher::fetch(
+        &genet_documents::LocalFetcher.with_fallback(mere_document_lanes::RemoteFetcher::shared()),
+        &config.url,
+    )
+    .ok_or_else(|| format!("could not load held reader source {}", config.url))?;
     let source = String::from_utf8_lossy(&source).into_owned();
     let (width, height) = config.size.unwrap_or((800, 600));
     let mut registry: SessionRegistry<Scene> = SessionRegistry::new();
