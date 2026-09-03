@@ -2,7 +2,7 @@
 //! selection ranges, the structural content report, and the semantic
 //! clip projections the Livery and scripted sessions both serve.
 
-use inker::session_engine::DocumentClip;
+use document_session_api::session_engine::DocumentClip;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 
 #[derive(Clone, Copy)]
@@ -18,7 +18,7 @@ pub(crate) struct ClipSelection<Id> {
     pub(crate) text: String,
 }
 
-pub(crate) fn content_report<D: LayoutDom>(dom: &D) -> inker::ContentReport {
+pub(crate) fn content_report<D: LayoutDom>(dom: &D) -> document_session_api::ContentReport {
     fn direct_text<D: LayoutDom>(dom: &D, node: D::NodeId) -> String {
         let mut name = String::new();
         for child in dom.dom_children(node) {
@@ -55,7 +55,7 @@ pub(crate) fn content_report<D: LayoutDom>(dom: &D) -> inker::ContentReport {
         dom: &D,
         node: D::NodeId,
         depth: usize,
-        report: &mut inker::ContentReport,
+        report: &mut document_session_api::ContentReport,
     ) {
         let mut child_depth = depth;
         if let Some(tag) = dom.element_name(node).map(|name| name.local.to_string()) {
@@ -63,7 +63,7 @@ pub(crate) fn content_report<D: LayoutDom>(dom: &D) -> inker::ContentReport {
                 tag.as_str(),
                 "head" | "style" | "script" | "title" | "meta" | "link" | "base" | "html"
             ) {
-                report.outline.push(inker::OutlineEntry {
+                report.outline.push(document_session_api::OutlineEntry {
                     depth,
                     role: role_of(&tag),
                     name: direct_text(dom, node),
@@ -98,7 +98,7 @@ pub(crate) fn content_report<D: LayoutDom>(dom: &D) -> inker::ContentReport {
         }
     }
 
-    let mut report = inker::ContentReport::default();
+    let mut report = document_session_api::ContentReport::default();
     walk(dom, dom.document(), 0, &mut report);
     report
 }

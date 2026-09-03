@@ -253,13 +253,21 @@ def assert_netfetcher_semantics_cone() -> None:
 def assert_host_api_cone(metadata: dict) -> None:
     members = {package["name"] for package in metadata["packages"]}
     by_name = {package["name"]: package for package in metadata["packages"]}
-    for name, allowed in (("genet-host-api", set()), ("mere-surface-api", {"workbench"})):
+    for name, allowed in (("genet-host-api", set()), ("mere-surface-api", {"workbench"}),
+                          # inker's engine-facing contract half (P1): a leaf.
+                          ("document-session-api", set())):
         package = by_name.get(name)
         if package is None:
             fail(f"{name} is not a workspace member")
         deps = {d["name"] for d in package["dependencies"] if d["name"] in members}
         if deps - allowed:
             fail(f"{name} depends on workspace crates {sorted(deps - allowed)}; allowed {sorted(allowed)}")
+    # An engine crate reaches inker's contracts through the contract crate, never
+    # through the controller, which the plan moves to Mere.
+    for name in ("genet-render",):
+        deps = {d["name"] for d in by_name[name]["dependencies"]}
+        if "inker" in deps:
+            fail(f"{name} depends on inker; engine crates take document-session-api")
 
 
 def main() -> None:

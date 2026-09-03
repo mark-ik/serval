@@ -21,7 +21,7 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 // `DocumentSession::inspect` can name them without a render dep); re-exported
 // here so this crate's consumers keep their paths. The LayoutDom -> report
 // builder below is this crate's.
-pub use inker::{ContentReport, OutlineEntry};
+pub use document_session_api::{ContentReport, OutlineEntry};
 
 /// Produce a [`ContentReport`] for `dom`: a structural read of the addressed content.
 pub fn content_report<D: LayoutDom>(dom: &D) -> ContentReport {

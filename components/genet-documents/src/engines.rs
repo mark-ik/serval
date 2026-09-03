@@ -11,7 +11,7 @@
 //! plan, review-resolved 2026-07-10).
 
 #[cfg(any(feature = "scripted", feature = "smolweb"))]
-use inker::{DocumentCapabilities, DocumentCapabilityStatus};
+use document_session_api::{DocumentCapabilities, DocumentCapabilityStatus};
 
 #[cfg(any(feature = "scripted", feature = "smolweb"))]
 fn retained_document_capabilities(find_reason: impl Into<String>) -> DocumentCapabilities {

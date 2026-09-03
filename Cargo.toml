@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "components/media/examples",
     "components/shared/engine-observables-api",
+    "components/shared/document-session-api",
     "components/shared/paint-types",
     "components/xpath",
     "components/webgl-wgpu",
@@ -265,6 +266,7 @@ finger-protocol = { version = "=0.1.1", default-features = false, features = [
     "client",
 ] }
 inker = { version = "=0.1.1", path = "components/inker" }
+document-session-api = { version = "=0.1.0", path = "components/shared/document-session-api" }
 genet-documents = { version = "=0.1.0", path = "components/genet-documents", default-features = false }
 genet-document-resources = { version = "=0.2.0", path = "components/genet-document-resources" }
 nematic = { version = "=0.1.1", path = "components/nematic" }

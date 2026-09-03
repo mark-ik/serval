@@ -194,3 +194,13 @@ Planned expansions left:
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT) at your option.
+
+## The contract half (2026-09-02)
+
+The traits and vocabulary an engine implements to be hosted (`a11y`,
+`capabilities`, `page_capture`, `session_engine`, and the engine-id namespace
+with the genet rung ladder) live in `document-session-api` under
+`components/shared`, split out under the platform boundary plan so Genet's
+engines depend on a crate Genet owns. `inker` re-exports every one of them, so
+`inker::` paths still resolve; the controller, routing policy, document model,
+surface engines, sniffing and statements stay here.

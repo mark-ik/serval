@@ -4,13 +4,7 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 
-use genet_document_resources::{
-    ResolvedDocumentResources, ResolvedStylesheet, ResourceDelta, ResourceKind, ResourceLimits,
-    StylesheetOwner,
-};
-use genet_host_api::ResourceFetcher;
-use genet_host_api::ResourceResponse;
-use inker::session_engine::{
+use document_session_api::session_engine::{
     DocumentClip, DocumentClipArtifact, DocumentClipArtifactRole, DocumentFindDirection,
     DocumentFindMatch, DocumentFindQuery, DocumentFindReveal, DocumentFindState, DocumentSession,
     DocumentZoomState, SessionButtonState, SessionClick, SessionCursor, SessionEffect,
@@ -18,10 +12,16 @@ use inker::session_engine::{
     SessionIme, SessionKey, SessionLink, SessionModifiers, SessionScrollKey, SessionSpawnRequest,
     SessionTextTarget,
 };
-use inker::{
+use document_session_api::{
     DocumentA11yAction, DocumentA11yActionRequest, DocumentA11yClickTarget, DocumentA11yNodeId,
     DocumentA11yProjection, DocumentCapabilities, DocumentCapabilityStatus,
 };
+use genet_document_resources::{
+    ResolvedDocumentResources, ResolvedStylesheet, ResourceDelta, ResourceKind, ResourceLimits,
+    StylesheetOwner,
+};
+use genet_host_api::ResourceFetcher;
+use genet_host_api::ResourceResponse;
 use layout_dom_api::{LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName};
 use netrender::Scene;
 use unicode_segmentation::UnicodeSegmentation;
@@ -70,7 +70,7 @@ impl<Fetch> LiverySessionEngine<Fetch> {
 #[cfg(feature = "livery")]
 impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessionEngine<Fetch> {
     fn engine_id(&self) -> &str {
-        inker::routing::ENGINE_GENET_LIVERY
+        document_session_api::engine_ids::ENGINE_GENET_LIVERY
     }
 
     fn spawn(
@@ -1627,7 +1627,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
     /// DOM — the same read the static lane serves, so a viewer-pinned livery
     /// session inspects (and a11y-projects) instead of answering "none for
     /// this lane".
-    fn inspect(&self) -> Option<inker::ContentReport> {
+    fn inspect(&self) -> Option<document_session_api::ContentReport> {
         Some(content_report(self.doc.dom()))
     }
 
@@ -1649,7 +1649,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
         let (x, y) = self.doc.accessible_pointer_target(dom_node)?;
         Some(DocumentA11yClickTarget {
             revision: projection.revision(),
-            point: inker::DocumentA11yPoint {
+            point: document_session_api::DocumentA11yPoint {
                 x: x * self.zoom(),
                 y: y * self.zoom(),
             },
@@ -1687,7 +1687,8 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                         .is_some_and(|editor| editor.node == dom_node)
             },
             DocumentA11yAction::SetValue => {
-                let Some(inker::DocumentA11yActionData::Value(value)) = request.data.as_ref()
+                let Some(document_session_api::DocumentA11yActionData::Value(value)) =
+                    request.data.as_ref()
                 else {
                     return false;
                 };

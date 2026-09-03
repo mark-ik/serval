@@ -4,9 +4,9 @@
 //! Session-engine traits and registry — the third engine kind
 //! (2026-07-10 session-engines plan).
 //!
-//! Document engines ([`crate::Engine`]) are request/response: bytes in,
-//! serializable [`crate::EngineDocument`] blocks out — the stored/authored
-//! lane. Surface engines ([`crate::SurfaceEngine`]) stream GPU textures from
+//! Document engines (`Engine`) are request/response: bytes in,
+//! serializable `EngineDocument` blocks out — the stored/authored
+//! lane. Surface engines (`SurfaceEngine`) stream GPU textures from
 //! external producers. Session engines sit between: **retained document
 //! sessions** that lay content out once and then produce paint frames on
 //! demand, with scroll, activation, and (for scripted lanes) a tick +
@@ -55,7 +55,7 @@ impl std::error::Error for SessionError {}
 // ── Spawn request ──────────────────────────────────────────────────────────
 
 /// Plain-data request to open a document session. The body is already
-/// fetched when the host has it (mirroring [`crate::EngineInput`]); a session
+/// fetched when the host has it (mirroring `EngineInput`); a session
 /// engine whose lane fetches for itself (subresources, redirects) uses the
 /// seams it was constructed with.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,7 +540,7 @@ pub enum SessionScrollKey {
 /// theme) so the spawn request stays plain data.
 pub trait SessionEngine<F>: Send + Sync {
     /// Stable engine identifier. Must match the `engine_id` of the
-    /// [`crate::routing::EngineRouteDecision`] that selected this engine.
+    /// `EngineRouteDecision` that selected this engine.
     fn engine_id(&self) -> &str;
 
     fn spawn(
@@ -933,7 +933,7 @@ impl<F> SessionRegistry<F> {
     }
 
     /// Register an engine under its own id. Last registration wins, matching
-    /// [`crate::EngineRegistry`] semantics.
+    /// `EngineRegistry` semantics.
     pub fn register(&mut self, engine: Box<dyn SessionEngine<F>>) {
         self.engines.insert(engine.engine_id().to_string(), engine);
     }

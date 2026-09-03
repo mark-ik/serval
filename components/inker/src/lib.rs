@@ -12,6 +12,9 @@
 //! Inker pairs each engine to its content and applies the engine's "ink" to
 //! the [`platen`](https://crates.io/crates/platen) press. Routing URI schemes
 //! to engines, lifecycle management, and engine-output piping all live here.
+//! The contracts an engine implements to be hosted (session traits, the
+//! accessibility projection, capabilities, page capture, the engine-id
+//! namespace) are `document-session-api`, re-exported here.
 //! (*Verso* names the engine-flip / compatibility-view seam — see
 //! `design_docs/verso_docs/` — not a pipeline stage below platen.)
 //!
@@ -23,12 +26,10 @@
 
 #![doc(html_root_url = "https://docs.rs/inker/0.0.1")]
 
-/// Accessibility capability contract (R0 invariant — every surface declares
-/// what it can expose to the a11y tree; degradation is declared, never silent).
-pub mod a11y;
-
-/// Shared retained/hosted document-control capability vocabulary.
-pub mod capabilities;
+// The engine-facing contract half lives in `document-session-api` (platform
+// boundary plan, P1) and is re-exported here module for module, so every
+// `inker::` path a consumer wrote still resolves.
+pub use document_session_api::{a11y, capabilities, page_capture, session_engine};
 
 /// Host-neutral engine routing contracts.
 pub mod routing;
@@ -38,14 +39,6 @@ pub mod document;
 
 /// Engine trait and registry.
 pub mod engine;
-
-/// Shared page-capture request/result vocabulary.
-pub mod page_capture;
-
-/// Session-engine traits and registry — the third engine kind: retained
-/// document sessions producing paint frames (the genet HTML lanes, smolweb
-/// native). Frame-type generic; this crate stays paint-free.
-pub mod session_engine;
 
 /// Surface-engine traits and registry — parallel dispatch path for
 /// long-lived, frame-streaming engines (e.g. `scrying.web`).

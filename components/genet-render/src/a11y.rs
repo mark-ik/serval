@@ -8,12 +8,12 @@ use accesskit::{
     Action, HasPopup, Live, Node as AccessNode, NodeId as AccessNodeId, Orientation, Rect, Role,
     Toggled, Tree, TreeId, TreeUpdate,
 };
-use genet_livery::LiveryLayout;
-use inker::{
+use document_session_api::{
     A11yCapability, DocumentA11yAction, DocumentA11yBounds, DocumentA11yHasPopup, DocumentA11yLive,
     DocumentA11yNode, DocumentA11yNodeId, DocumentA11yOrientation, DocumentA11yProjection,
     DocumentA11yRole, DocumentA11yState, DocumentA11ySupport, DocumentA11yToggled,
 };
+use genet_livery::LiveryLayout;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 
 use crate::render::ScrollOffsets;
@@ -856,8 +856,8 @@ where
 #[cfg(test)]
 mod tests {
     use accesskit::{Action, HasPopup, Live, Node as AccessNode, Orientation, Role, Toggled};
+    use document_session_api::{DocumentA11yRole, DocumentA11yToggled};
     use genet_scripted_dom::ScriptedDom;
-    use inker::{DocumentA11yRole, DocumentA11yToggled};
     use layout_dom_api::{LayoutDom, LayoutDomMut, NodeKind};
 
     use super::{accesskit_tree, accesskit_tree_with_scroll, document_a11y_projection};
@@ -884,7 +884,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no node projected with role {role:?}"))
     }
 
-    fn projection_for(html: &str) -> inker::DocumentA11yProjection {
+    fn projection_for(html: &str) -> document_session_api::DocumentA11yProjection {
         let mut dom = ScriptedDom::new();
         let root = dom.document();
         dom.set_inner_html(root, html);

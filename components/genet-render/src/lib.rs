@@ -18,6 +18,10 @@ pub use a11y::{
     accesskit_tree, accesskit_tree_with_scroll, document_a11y_projection,
     document_a11y_projection_with_scroll,
 };
+/// The retained text system a host hands to the `_with_text_system` entries,
+/// re-exported so a consumer that ships its own font need not depend on
+/// genet-livery directly.
+pub use genet_livery::TextSystem;
 pub use inspect::{ContentReport, OutlineEntry, content_report};
 pub use render::{
     ExternalTextureDraw, LaidOutDocument, RenderedFrame, TextCursor, caret_byte_at,
@@ -29,10 +33,6 @@ pub use render::{
     scene_from_session_dom_with_scrollbars, soft_wrap_caret_byte,
     translated_frame_from_session_dom,
 };
-/// The retained text system a host hands to the `_with_text_system` entries,
-/// re-exported so a consumer that ships its own font need not depend on
-/// genet-livery directly.
-pub use genet_livery::TextSystem;
 pub use render::{
     ScrollOffsets, VisualAffinity, VisualCaret, VisualMovement, VisualSelection, translate_frame,
 };

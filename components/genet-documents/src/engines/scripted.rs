@@ -3,8 +3,8 @@
 
 use std::any::Any;
 
-use inker::DocumentCapabilities;
-use inker::session_engine::{
+use document_session_api::DocumentCapabilities;
+use document_session_api::session_engine::{
     DocumentClip, DocumentSession, SessionClick, SessionEngine, SessionError, SessionLink,
     SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };
@@ -203,7 +203,7 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
     fn set_hidden(&mut self, hidden: bool) {
         self.doc.set_hidden(hidden);
     }
-    fn inspect(&self) -> Option<inker::ContentReport> {
+    fn inspect(&self) -> Option<document_session_api::ContentReport> {
         Some(self.doc.with_dom(content_report))
     }
     fn clip(&self) -> Option<DocumentClip> {

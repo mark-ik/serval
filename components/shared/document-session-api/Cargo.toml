@@ -1,0 +1,21 @@
+[package]
+name = "document-session-api"
+version = "0.1.0"
+# Not workspace: this half of inker keeps inker's founding license rather than
+# inheriting genet's MPL-2.0, per the boundary plan's provenance invariant.
+license = "MIT OR Apache-2.0"
+authors = ["Mark AB (markik)"]
+repository = "https://github.com/merely-made/genet"
+edition.workspace = true
+rust-version.workspace = true
+description = "Engine-facing document contracts: retained session traits, the accessibility projection, document capabilities, page capture, and the engine-id namespace. The half of inker an engine implements."
+keywords = ["genet", "engine", "session", "accessibility", "contract"]
+categories = ["web-programming", "api-bindings"]
+publish = true
+
+[lib]
+name = "document_session_api"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }

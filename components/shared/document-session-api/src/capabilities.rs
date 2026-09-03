@@ -3,7 +3,7 @@
 
 //! Shared document-control capability vocabulary.
 //!
-//! Retained [`crate::DocumentSession`]s and hosted [`crate::WebSurface`]s
+//! Retained [`crate::DocumentSession`]s and hosted `WebSurface`s
 //! expose the same document-facing controls. Backend-specific surface features
 //! stay in `surface_engine`; this module deliberately names only the controls a
 //! browser can present uniformly for either kind of document.

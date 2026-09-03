@@ -15,8 +15,8 @@
 //! ## The three invariants
 //!
 //! 1. **Capability-declaration** — every engine/surface declares its
-//!    [`A11yCapability`] in *one* place ([`crate::Engine::a11y_capability`] /
-//!    [`crate::SurfaceEngine::a11y_capability`]). The host never guesses a
+//!    [`A11yCapability`] in *one* place (`a11y_capability` /
+//!    `a11y_capability`). The host never guesses a
 //!    surface's accessibility from its kind; it reads the declaration.
 //! 2. **Non-silent-degradation** — a surface that cannot expose its content
 //!    *must* declare a lower capability ([`A11yCapability::Partial`] /
@@ -367,7 +367,7 @@ pub enum A11yCapability {
     /// No semantic content the host can expose — a raw GPU surface or an opaque
     /// system WebView. The host surfaces this honestly (a labelled region with
     /// "contents not inspectable"), never as if it were [`Self::Full`]. Default
-    /// for [`crate::SurfaceEngine`] (frame-streaming surfaces are opaque until
+    /// for `SurfaceEngine` (frame-streaming surfaces are opaque until
     /// they bridge their content).
     Opaque,
     /// Some structure available — e.g. a bridged WebView exposing a DOM
@@ -375,7 +375,7 @@ pub enum A11yCapability {
     /// partially-modelled document.
     Partial,
     /// A complete semantic tree (headings, links, roles, text). Default for
-    /// document [`crate::Engine`]s: their [`crate::EngineDocument`] blocks *are*
+    /// document `Engine`s: their `EngineDocument` blocks *are*
     /// the semantic content, so they are accessible by construction.
     Full,
 }

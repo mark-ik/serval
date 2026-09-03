@@ -304,16 +304,18 @@ pub fn scene_from_scripted_dom_with_text_system(
     scroll_offsets: &ScrollOffsets<NodeId>,
     text: &mut TextSystem,
 ) -> Result<netrender::Scene, LayoutError> {
-    Ok(translate_frame(&paint_list_from_scripted_dom_with_text_system(
-        dom,
-        stylesheets,
-        width,
-        height,
-        cursor,
-        scroll_offsets,
-        text,
-    )?)
-    .scene)
+    Ok(
+        translate_frame(&paint_list_from_scripted_dom_with_text_system(
+            dom,
+            stylesheets,
+            width,
+            height,
+            cursor,
+            scroll_offsets,
+            text,
+        )?)
+        .scene,
+    )
 }
 
 /// [`paint_list_from_scripted_dom`] through a caller-owned text system; see
