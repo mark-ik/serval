@@ -90,6 +90,9 @@ members = [
     "ports/pelt/core",
     "ports/pelt/desktop",
     "ports/pelt",
+    # The raw engine host: one window, one document, no Mere crate in its cone
+    # (design_docs/2026-09-03_ortet_founding_plan.md).
+    "ports/ortet",
     "ports/genet-wpt",
     # The theme-authoring port; reservation, no implementation.
     "ports/tabard",

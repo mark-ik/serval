@@ -1,0 +1,45 @@
+[package]
+name = "ortet"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "The raw Genet host: one window, one document, no chrome — the reference individual of the engine."
+
+[lib]
+name = "ortet"
+path = "src/lib.rs"
+bench = false
+
+[[bin]]
+name = "ortet"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+# The session contracts ortet drives: SessionEngine, DocumentSession, the
+# neutral input vocabulary.
+document-session-api = { workspace = true }
+# ResourceFetcher / ResourceResponse and host-owned href resolution.
+genet-host-api = { workspace = true }
+# The Livery lane as a session engine, plus the local-scheme fetcher. Ortet
+# needs the engine half only; no reader lane, no smolweb, no controller.
+genet-documents = { workspace = true, features = ["livery"] }
+# Window, wheel translation, and (through it) the target-neutral present core.
+genet-winit-host = { path = "../../components/genet-winit-host" }
+netrender = { workspace = true }
+# http(s) for the fallback fetch lane, over netfetcher's default transport on a
+# background tokio runtime this host owns. Local addresses never reach it.
+netfetcher = { path = "../../components/netfetcher" }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+url = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+# The receipt artifact. `png` alone: ortet writes RGBA8 and reads nothing.
+png = "0.18"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }

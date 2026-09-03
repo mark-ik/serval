@@ -283,6 +283,100 @@ def assert_host_api_cone(metadata: dict) -> None:
             fail(f"{name} depends on {sorted(deps & banned)}, which the boundary plan moves to Mere")
 
 
+# Ortet's cone (2026-09-03 ortet founding plan, O0). Ortet is the one headed
+# host that proves the engine runs without Mere, so its resolved cone must
+# contain no crate the platform boundary plan moves to Mere, and no other port.
+ORTET_FORBIDDEN = {
+    "inker", "workbench", "nematic", "errand", "document-canvas",
+    "tabard", "knot-editor-host",
+}
+ORTET_FORBIDDEN_PREFIXES = ("cambium", "mere-", "pelt")
+# `fleece` is named by the founding plan's forbidden list, but section 9.1 of
+# the boundary plan reclasses it *independent* -- "it may stay in genet as a
+# lower library or leave for its own repository, but it does not go to Mere" --
+# and
+# `genet-documents` reaches it unconditionally at `src/engines/clip.rs:114`
+# (`fleece::extract_main_text`). Ortet cannot have the Livery session engine
+# without it. It is carved out here rather than dropped silently, so the
+# exception is visible on every CI run and fails loudly if it ever widens.
+ORTET_RECLASSED = {"fleece"}
+
+
+def is_ortet_forbidden(name: str) -> bool:
+    return name in ORTET_FORBIDDEN or name.startswith(ORTET_FORBIDDEN_PREFIXES)
+
+
+def resolved_cone(metadata: dict, package: str) -> set[str]:
+    """Package names reachable from `package` over normal (non-dev, non-build)
+    dependency edges in cargo's resolve graph."""
+    resolve = metadata.get("resolve")
+    if resolve is None:
+        fail("cargo metadata carried no resolve graph")
+    ids = {node["id"]: node for node in resolve["nodes"]}
+    name_of = {p["id"]: p["name"] for p in metadata["packages"]}
+    roots = [pid for pid, name in name_of.items() if name == package]
+    if len(roots) != 1:
+        fail(f"expected exactly one {package} package, found {len(roots)}")
+
+    seen: set[str] = set()
+    queue = [roots[0]]
+    while queue:
+        current = queue.pop()
+        node = ids.get(current)
+        if node is None:
+            continue
+        for dependency in node["deps"]:
+            kinds = dependency.get("dep_kinds") or [{"kind": None}]
+            # A `kind` of None is a normal dependency; "dev" and "build" are not
+            # part of what the binary links.
+            if not any(entry.get("kind") is None for entry in kinds):
+                continue
+            name = name_of.get(dependency["pkg"])
+            if name is None or name in seen:
+                continue
+            seen.add(name)
+            queue.append(dependency["pkg"])
+    return seen
+
+
+def assert_ortet_cone(metadata: dict) -> None:
+    cone = resolved_cone(metadata, "ortet")
+    if "genet-documents" not in cone or "netrender" not in cone:
+        fail(
+            "ortet's resolved cone is missing the engine crates it is built on "
+            f"(saw {len(cone)} packages); the cone walk is not reading ortet"
+        )
+    breached = sorted(name for name in cone if is_ortet_forbidden(name))
+    if breached:
+        fail(
+            "ortet's cone reaches crates the platform boundary plan moves to "
+            f"Mere: {breached}"
+        )
+
+    # Positive control, in the same function and over the same walk: the check
+    # must be able to SEE what it forbids. pelt-desktop's cone contains inker,
+    # so a walk that reports nothing there is a broken instrument, not a clean
+    # cone.
+    control = resolved_cone(metadata, "pelt-desktop")
+    control_hits = sorted(name for name in control if is_ortet_forbidden(name))
+    if "inker" not in control_hits:
+        fail(
+            "cone witness positive control failed: the same check over "
+            f"pelt-desktop did not report inker (reported {control_hits})"
+        )
+    print(
+        f"ortet cone: {len(cone)} packages, none forbidden; "
+        f"positive control over pelt-desktop reports {control_hits}"
+    )
+
+    reclassed = sorted(name for name in cone if name in ORTET_RECLASSED)
+    if reclassed:
+        print(
+            f"ortet cone note: {reclassed} present - reclassed independent by "
+            "the boundary plan 9.1, reached through genet-documents' clip lane"
+        )
+
+
 def main() -> None:
     assert_fleece_cone()
     metadata = cargo_metadata()
@@ -290,7 +384,9 @@ def main() -> None:
     assert_ports_depend_inward(metadata)
     assert_host_api_cone(metadata)
     self_test_mere_witness()
-    assert_no_mere_source(cargo_metadata_resolved())
+    resolved = cargo_metadata_resolved()
+    assert_no_mere_source(resolved)
+    assert_ortet_cone(resolved)
     assert_netfetcher_semantics_cone()
     print("dependency-cone witnesses passed")
 
