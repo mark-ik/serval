@@ -227,16 +227,8 @@ parley = { version = "0.10.0", default-features = true }
 # The engine-management family (inker, nematic, document-canvas, the three
 # engine adapters, errand, illume, tinct, verso-tile) left for mere on
 # 2026-09-03 under the platform boundary plan, with the doc areas that
-# describe it. The smolweb protocol crates below were errand's wire layer and
-# have no consumer in genet now; they are left declared rather than deleted,
-# because pruning workspace dependencies outside the moving set is a
-# resolution decision of its own.
-# The three spec crates moved to the smolweb workspace on 2026-07-23 (the repo
-# consolidation plan in mere's design docs): their names belong to the protocols'
-# communities, not to the engine that speaks them.
-# gopher + finger followed the same way on 2026-08-03 (the smolweb home
-# decision in mere's design docs): the spec is theirs, the client integration
-# is ours.
+# describe it. Its smolweb protocol crates (nex, spartan, guppy, gopher, gemini,
+# scroll, finger) were errand's wire layer and left this table with it.
 document-session-api = { version = "=0.1.0", path = "components/shared/document-session-api" }
 genet-documents = { version = "=0.1.0", path = "components/genet-documents", default-features = false }
 genet-document-resources = { version = "=0.2.0", path = "components/genet-document-resources" }

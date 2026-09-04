@@ -299,6 +299,8 @@ def assert_host_api_cone(metadata: dict) -> None:
 ORTET_FORBIDDEN = {
     "inker", "workbench", "nematic", "errand", "document-canvas",
     "tabard", "knot-editor-host",
+    # the rest of the engine-management layer, moved by P3 on 2026-09-03
+    "scrying-engine", "graft-engine", "weld-engine", "illume", "tinct", "verso-tile",
 }
 ORTET_FORBIDDEN_PREFIXES = ("cambium", "mere-", "pelt")
 # `fleece` is named by the founding plan's forbidden list, but section 9.1 of
