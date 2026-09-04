@@ -14,6 +14,7 @@ use std::any::Any;
 use std::ops::Range;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ipc_channel::ipc::IpcSender;
 use servo_media::{Backend, BackendInit, MediaInstanceError, SupportsMediaType};
@@ -24,7 +25,9 @@ use servo_media_audio::render_thread::AudioRenderThreadMsg;
 use servo_media_audio::sink::{AudioSink, AudioSinkError};
 use servo_media_audio::{AudioBackend, AudioStreamReader};
 use servo_media_player::context::PlayerGLContext;
-use servo_media_player::{Player, PlayerError, PlayerEvent, StreamType, audio, video};
+use servo_media_player::{
+    PlaybackSnapshot, PlaybackState, Player, PlayerError, PlayerEvent, StreamType, audio, video,
+};
 use servo_media_streams::capture::MediaTrackConstraintSet;
 use servo_media_streams::device_monitor::{MediaDeviceInfo, MediaDeviceMonitor};
 use servo_media_streams::registry::{MediaStreamId, register_stream, unregister_stream};
@@ -200,6 +203,16 @@ impl Player for DummyPlayer {
 
     fn playback_rate(&self) -> f64 {
         1.0
+    }
+
+    fn snapshot(&self) -> Result<PlaybackSnapshot, PlayerError> {
+        Ok(PlaybackSnapshot {
+            state: PlaybackState::Paused,
+            position: Duration::ZERO,
+            duration: None,
+            rate: 1.0,
+            sequence: 0,
+        })
     }
 
     fn push_data(&self, _: Vec<u8>) -> Result<(), PlayerError> {

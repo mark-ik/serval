@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use servo_media_traits::MediaInstance;
 use streams::registry::MediaStreamId;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PlaybackState {
     Stopped,
     Buffering,
@@ -41,11 +41,26 @@ pub enum PlayerError {
     NonSeekableStream,
     /// Tried to seek out of range.
     SeekOutOfRange,
+    /// The backend cannot provide an authoritative position yet.
+    PositionUnavailable,
     /// Setting an audio or video stream failed.
     /// Possibly because the type of source is not PlayerSource::Stream.
     SetStreamFailed,
     // Setting an audio or video track failed.
     SetTrackFailed,
+}
+
+/// An authoritative synchronous view of the active playback clock.
+///
+/// UI timer events are useful for display, but consumers that persist timed
+/// targets should use this snapshot at the moment of the action.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaybackSnapshot {
+    pub state: PlaybackState,
+    pub position: Duration,
+    pub duration: Option<Duration>,
+    pub rate: f64,
+    pub sequence: u64,
 }
 
 pub type SeekLockMsg = (bool, IpcSender<()>);
@@ -111,6 +126,9 @@ pub trait Player: Send + MediaInstance {
     fn set_input_size(&self, size: u64) -> Result<(), PlayerError>;
     fn set_playback_rate(&self, playback_rate: f64) -> Result<(), PlayerError>;
     fn playback_rate(&self) -> f64;
+    fn snapshot(&self) -> Result<PlaybackSnapshot, PlayerError> {
+        Err(PlayerError::PositionUnavailable)
+    }
     fn push_data(&self, data: Vec<u8>) -> Result<(), PlayerError>;
     fn end_of_stream(&self) -> Result<(), PlayerError>;
     /// Get the list of time ranges in seconds that have been buffered.

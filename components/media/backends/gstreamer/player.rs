@@ -18,12 +18,13 @@ use gstreamer_play;
 use gstreamer_play::prelude::*;
 use ipc_channel::ipc::{IpcReceiver, IpcSender, channel};
 use servo_media::MediaInstanceError;
-use servo_media_player::audio::AudioRenderer;
+use servo_media_player::audio::{AudioRenderer, DecodedAudioChunk};
 use servo_media_player::context::PlayerGLContext;
 use servo_media_player::metadata::Metadata;
 use servo_media_player::video::VideoFrameRenderer;
 use servo_media_player::{
-    PlaybackState, Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg, StreamType,
+    PlaybackSnapshot, PlaybackState, Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg,
+    StreamType,
 };
 use servo_media_streams::registry::{MediaStreamId, get_stream};
 use servo_media_traits::{BackendMsg, ClientContextId, MediaInstance};
@@ -109,13 +110,6 @@ fn metadata_from_media_info(media_info: &gstreamer_play::PlayMediaInfo) -> Resul
     })
 }
 
-pub struct GStreamerAudioChunk(gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>);
-impl AsRef<[f32]> for GStreamerAudioChunk {
-    fn as_ref(&self) -> &[f32] {
-        self.0.as_ref().as_slice_of::<f32>().unwrap_or_default()
-    }
-}
-
 #[derive(PartialEq)]
 enum PlayerSource {
     Seekable(ServoSrc),
@@ -138,6 +132,7 @@ struct PlayerInner {
     last_metadata: Option<Metadata>,
     cat: gstreamer::DebugCategory,
     enough_data: Arc<AtomicBool>,
+    snapshot_sequence: u64,
 }
 
 impl PlayerInner {
@@ -192,6 +187,32 @@ impl PlayerInner {
 
     pub fn playback_rate(&self) -> f64 {
         self.playback_rate.get()
+    }
+
+    pub fn snapshot(&mut self) -> Result<PlaybackSnapshot, PlayerError> {
+        let position = self
+            .player
+            .position()
+            .map(|position| time::Duration::from_nanos(position.nseconds()))
+            .ok_or(PlayerError::PositionUnavailable)?;
+        let state = match self.play_state {
+            gstreamer_play::PlayState::Stopped => PlaybackState::Stopped,
+            gstreamer_play::PlayState::Buffering => PlaybackState::Buffering,
+            gstreamer_play::PlayState::Paused => PlaybackState::Paused,
+            gstreamer_play::PlayState::Playing => PlaybackState::Playing,
+            _ => PlaybackState::Stopped,
+        };
+        self.snapshot_sequence = self.snapshot_sequence.wrapping_add(1);
+        Ok(PlaybackSnapshot {
+            state,
+            position,
+            duration: self
+                .last_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.duration),
+            rate: self.playback_rate.get(),
+            sequence: self.snapshot_sequence,
+        })
     }
 
     pub fn play(&mut self) -> Result<(), PlayerError> {
@@ -567,26 +588,39 @@ impl GStreamerPlayer {
                             .caps()
                             .and_then(|caps| gstreamer_audio::AudioInfo::from_caps(caps).ok())
                             .ok_or(gstreamer::FlowError::Error)?;
-                        let positions =
-                            audio_info.positions().ok_or(gstreamer::FlowError::Error)?;
+                        let positions: Arc<[u32]> = audio_info
+                            .positions()
+                            .ok_or(gstreamer::FlowError::Error)?
+                            .iter()
+                            .map(|position| position.to_mask() as u32)
+                            .collect::<Vec<_>>()
+                            .into();
+                        let presentation_time = buffer
+                            .pts()
+                            .map(|pts| time::Duration::from_nanos(pts.nseconds()));
+                        let map = buffer
+                            .into_mapped_buffer_readable()
+                            .map_err(|_| gstreamer::FlowError::Error)?;
+                        let samples: Arc<[f32]> = map
+                            .as_ref()
+                            .as_slice_of::<f32>()
+                            .map_err(|_| gstreamer::FlowError::Error)?
+                            .into();
 
                         let Some(audio_renderer) = weak_audio_renderer.upgrade() else {
                             return Err(gstreamer::FlowError::Flushing);
                         };
 
-                        for position in positions.iter() {
-                            let buffer = buffer.clone();
-                            let map = match buffer.into_mapped_buffer_readable() {
-                                Ok(map) => map,
-                                _ => {
-                                    return Err(gstreamer::FlowError::Error);
-                                },
-                            };
-                            let chunk = Box::new(GStreamerAudioChunk(map));
-                            let channel = position.to_mask() as u32;
-
-                            audio_renderer.lock().unwrap().render(chunk, channel);
-                        }
+                        audio_renderer
+                            .lock()
+                            .unwrap()
+                            .render_chunk(DecodedAudioChunk::new(
+                                samples,
+                                audio_info.rate(),
+                                audio_info.channels(),
+                                positions,
+                                presentation_time,
+                            ));
                         Ok(gstreamer::FlowSuccess::Ok)
                     })
                     .build(),
@@ -641,6 +675,7 @@ impl GStreamerPlayer {
             last_metadata: None,
             cat: gstreamer::DebugCategory::get("servoplayer").unwrap(),
             enough_data: Arc::new(AtomicBool::new(false)),
+            snapshot_sequence: 0,
         })));
 
         let inner = self.inner.borrow();
@@ -987,6 +1022,13 @@ impl Player for GStreamerPlayer {
     inner_player_proxy!(set_stream, stream, &MediaStreamId, only_stream, bool);
     inner_player_proxy!(set_audio_track, stream_index, i32, enabled, bool);
     inner_player_proxy!(set_video_track, stream_index, i32, enabled, bool);
+
+    fn snapshot(&self) -> Result<PlaybackSnapshot, PlayerError> {
+        self.setup()?;
+        let inner = self.inner.borrow();
+        let mut inner = inner.as_ref().unwrap().lock().unwrap();
+        inner.snapshot()
+    }
 
     fn render_use_gl(&self) -> bool {
         self.render.lock().unwrap().is_gl()
