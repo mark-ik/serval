@@ -11,6 +11,7 @@ extern crate servo_media_traits;
 
 pub mod audio;
 pub mod context;
+pub mod controller;
 pub mod metadata;
 pub mod video;
 
@@ -39,6 +40,11 @@ pub enum PlayerError {
     EOSFailed,
     /// The media stream is not seekable.
     NonSeekableStream,
+    /// The backend or source does not support changing playback rate.
+    UnsupportedPlaybackRate,
+    /// The requested playback rate is non-finite, non-positive, or outside the
+    /// supported range.
+    InvalidPlaybackRate,
     /// Tried to seek out of range.
     SeekOutOfRange,
     /// The backend cannot provide an authoritative position yet.
