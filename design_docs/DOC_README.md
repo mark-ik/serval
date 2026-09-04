@@ -51,6 +51,16 @@ repatriated here from mere.
 
 ## layout and styling
 
+- [common_script_font_fallback_plan](2026-09-04_common_script_font_fallback_plan.md)
+  (**scope, 2026-09-04**: on Windows and macOS the stack never successfully
+  consults font fallback for any Common-script codepoint — arrows, geometric
+  shapes, box drawing, dingbats, punctuation above Latin-1 — because fontique
+  keys fallback on a per-script *sample string* and has no sample for Common,
+  so `fallback()` returns `None` by construction. Verified link by link in
+  parley and fontique source. T0 a failing instrument, T1 a stack-side repair,
+  T2 the codepoint-aware upstream fix both platform APIs already support,
+  T3 whether Linux shares it.)
+
 - [livery_flex_shorthand_plan](2026-08-25_livery_flex_shorthand_plan.md)
   (**complete flex-shorthand slice; Row 18 remains in progress**: Livery now
   expands `flex` and `flex-flow` into the longhand style fields already lowered
