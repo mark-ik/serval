@@ -31,8 +31,8 @@ repatriated here from mere.
 
 ## ortet — the raw host
 
-- [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**plan,
-  2026-09-03; O0 and O1 in progress**: the one headed port that proves the
+- [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**O0, O1 and O4
+  landed 2026-09-03; O2 accessibility and O3 web target open**: the one headed port that proves the
   engine runs without Mere, over `genet-winit-host`, `genet-render-host`,
   `genet-documents`' Livery lane and `document-session-api`, with a cone
   witness that forbids every Mere crate and a self-driven frame receipt.
