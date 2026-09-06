@@ -27,6 +27,19 @@
 
 use netrender::{ColorLoad, NetrenderOptions, Renderer, Scene};
 
+#[derive(Default)]
+struct CaptureMasterCompositor {
+    master: Option<wgpu::Texture>,
+}
+
+impl netrender::Compositor for CaptureMasterCompositor {
+    fn declare_surface(&mut self, _key: netrender::SurfaceKey, _world_bounds: [f32; 4]) {}
+    fn destroy_surface(&mut self, _key: netrender::SurfaceKey) {}
+    fn present_frame(&mut self, frame: netrender::PresentedFrame<'_>) {
+        self.master = Some(frame.master.clone());
+    }
+}
+
 /// One tightly packed RGBA8 frame read back from the shared render device.
 ///
 /// The host decides whether to encode, digest, or compare the bytes. Keeping the
@@ -405,6 +418,57 @@ impl RenderCore {
             .render_vello_scaled(scene, &view, clear, scale);
         self.log_raster_spans(w, h);
         (tex, view)
+    }
+
+    /// Rasterize a logical-coordinate scene with same-device producer textures
+    /// inserted at their emitted scene-operation boundaries.
+    ///
+    /// This preserves the existing NetRender external-texture contract. Its
+    /// current bounded shape does not reconstruct ancestor transforms, clips or
+    /// opacity groups, and translucent scene tails may be blended twice. Hosts
+    /// should only claim full stacking correctness for plain canvases followed
+    /// by opaque, ungrouped scene operations until that renderer contract grows.
+    pub fn rasterize_scaled_with_external_textures(
+        &self,
+        scene: &Scene,
+        w: u32,
+        h: u32,
+        clear: ColorLoad,
+        _scale: f32,
+        external_textures: &[netrender::ExternalTextureComposite<'_>],
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let mut compositor = CaptureMasterCompositor::default();
+        let base_color = match clear {
+            ColorLoad::Clear(color) => netrender::peniko::Color::new([
+                color.r as f32,
+                color.g as f32,
+                color.b as f32,
+                color.a as f32,
+            ]),
+            ColorLoad::Load => netrender::peniko::Color::new([0.0, 0.0, 0.0, 0.0]),
+        };
+        self.renderer.render_with_compositor_and_external_textures(
+            scene,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &mut compositor,
+            base_color,
+            external_textures,
+        );
+        let master = compositor
+            .master
+            .expect("NetRender ordered rasterization must present a master texture");
+        let source = master.create_view(&wgpu::TextureViewDescriptor::default());
+        let (texture, view) = self.scene_target(w, h);
+        self.renderer.compose_external_texture(
+            &source,
+            &view,
+            wgpu::TextureFormat::Rgba8Unorm,
+            w,
+            h,
+            netrender::ExternalTexturePlacement::new([0.0, 0.0, w as f32, h as f32]),
+        );
+        self.log_raster_spans(w, h);
+        (texture, view)
     }
 
     fn scene_target(&self, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
