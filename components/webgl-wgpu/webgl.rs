@@ -456,8 +456,9 @@ impl WebGlContext {
             return Ok(());
         }
         self.canvas.resize(width, height)?;
-        self.viewport = [0, 0, width, height];
-        self.scissor_box = [0, 0, width, height];
+        // WebGL 1.0 "The WebGL Viewport": resizing the canvas must not
+        // automatically change viewport state. Scissor state is likewise GL
+        // state rather than drawing-buffer storage.
         Ok(())
     }
 
@@ -597,7 +598,8 @@ impl WebGlContext {
         });
         buffer
             .slice(..)
-            .get_mapped_range_mut().expect("map range")
+            .get_mapped_range_mut()
+            .expect("map range")
             .copy_from_slice(&raw);
         buffer.unmap();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

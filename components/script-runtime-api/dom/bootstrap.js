@@ -716,6 +716,13 @@
     var newValue = String(value);
     __setAttribute(this.__ref, name, newValue);
     if (name === 'style') inlineStyleStates.delete(this);
+    if (this.__webglContext && (name === 'width' || name === 'height')) {
+      var width = parseInt(this.getAttribute('width'), 10);
+      var height = parseInt(this.getAttribute('height'), 10);
+      if (!(width >= 0)) width = 300;
+      if (!(height >= 0)) height = 150;
+      this.__webglContext._resizeDrawingBuffer(width, height);
+    }
     customElementAttributeChanged(this, name, oldValue, newValue);
   };
   Element.prototype.getAttribute = function(name) { return __getAttribute(this.__ref, String(name)); };
@@ -757,6 +764,13 @@
     var oldValue = __getAttribute(this.__ref, name);
     __removeAttribute(this.__ref, name);
     if (name === 'style') inlineStyleStates.delete(this);
+    if (this.__webglContext && (name === 'width' || name === 'height')) {
+      var width = parseInt(this.getAttribute('width'), 10);
+      var height = parseInt(this.getAttribute('height'), 10);
+      if (!(width >= 0)) width = 300;
+      if (!(height >= 0)) height = 150;
+      this.__webglContext._resizeDrawingBuffer(width, height);
+    }
     customElementAttributeChanged(this, name, oldValue, null);
   };
   Element.prototype.toggleAttribute = function(name, force) {
@@ -2054,8 +2068,8 @@
       if (this.__webglContext) return this.__webglContext;
       var Ctor = globalThis.WebGLRenderingContext;
       if (typeof Ctor !== 'function') return null;
-      var w = parseInt(this.getAttribute('width'), 10); if (!(w > 0)) w = 300;
-      var h = parseInt(this.getAttribute('height'), 10); if (!(h > 0)) h = 150;
+      var w = parseInt(this.getAttribute('width'), 10); if (!(w >= 0)) w = 300;
+      var h = parseInt(this.getAttribute('height'), 10); if (!(h >= 0)) h = 150;
       this.__webglContext = new Ctor(w, h);
       // WebGL helpers use the standard back-reference for drawing-buffer
       // dimensions and context classification. Keep it on the context rather

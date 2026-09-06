@@ -16,6 +16,7 @@ impl ResourceFetcher for EmptyResources {
 struct NullWebGl {
     key: Rc<Cell<Option<u64>>>,
     drops: Rc<Cell<usize>>,
+    resizes: Rc<RefCell<Vec<(u32, u32)>>>,
 }
 
 impl Drop for NullWebGl {
@@ -27,6 +28,9 @@ impl Drop for NullWebGl {
 impl WebGlHandler for NullWebGl {
     fn external_texture_key(&self) -> Option<u64> {
         self.key.get()
+    }
+    fn resize(&mut self, width: u32, height: u32) {
+        self.resizes.borrow_mut().push((width, height));
     }
     fn clear_color(&mut self, _r: f32, _g: f32, _b: f32, _a: f32) {}
     fn clear(&mut self, _mask: u32) {}
@@ -106,10 +110,15 @@ fn live_canvas_frame<E: ScriptEngine>() {
     let context_drops = drops.clone();
     let sizes = Rc::new(RefCell::new(Vec::new()));
     let recorded = sizes.clone();
+    let resizes = Rc::new(RefCell::new(Vec::new()));
+    let recorded_resizes = resizes.clone();
     let html = r#"<style>canvas { display:block; width:20px; height:10px }</style>
         <canvas id="forged" data-genet-external-texture-key="999"></canvas>
         <canvas id="real" width="4" height="4"></canvas><script>
-        document.getElementById('real').getContext('webgl').clear(16384);
+        const context = document.getElementById('real').getContext('webgl');
+        document.getElementById('real').width = 8;
+        document.getElementById('real').setAttribute('height', '6');
+        context.clear(16384);
         </script>"#;
     let mut doc = LiveryScriptedDocument::<E>::from_body_with_options(
         html,
@@ -121,6 +130,7 @@ fn live_canvas_frame<E: ScriptEngine>() {
                 Box::new(NullWebGl {
                     key: context_key.clone(),
                     drops: context_drops.clone(),
+                    resizes: recorded_resizes.clone(),
                 })
             })),
             ..Default::default()
@@ -132,6 +142,7 @@ fn live_canvas_frame<E: ScriptEngine>() {
         [(4, 4)],
         "factory available to first authored script"
     );
+    assert_eq!(*resizes.borrow(), [(8, 4), (8, 6)]);
     let frame = doc.frame_with_external_textures(200, 100);
     assert_eq!(
         frame.external_textures.len(),
