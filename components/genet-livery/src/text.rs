@@ -2735,7 +2735,7 @@ where
                     return;
                 };
                 let start = self.text.len();
-                append_inline_text(self.text, marker, style);
+                append_inline_text(self.text, &marker, style);
                 if self.text.len() != start {
                     self.spans.push(SourceSpan {
                         source: Some(box_id),

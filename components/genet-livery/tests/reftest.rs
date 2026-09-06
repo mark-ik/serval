@@ -178,6 +178,27 @@ fn inside_decimal_markers_match_html_ordinals_and_nested_block_order() {
 }
 
 #[test]
+fn retained_inside_decimal_markers_match_nested_literal_and_cached_frame() {
+    let (candidate, candidate_cached) = render_retained(
+        r#"<html><body><ol start=" -4legacy"><li>negative four</li><li value="-2legacy">negative two</li><li>negative one<ol><li>inner one</li><li value="4">inner four</li><li>inner five</li></ol></li><li class="hidden" value="500">hidden</li><li>zero</li></ol></body></html>"#,
+        "* { margin: 0; padding: 0; } ol { list-style-position: inside; } .hidden { display: none; }",
+    );
+    let (reference, _) = render_retained(
+        "<html><body><div>-4. negative four</div><div>-2. negative two</div><div>-1. negative one<div>1. inner one</div><div>4. inner four</div><div>5. inner five</div></div><div>0. zero</div></body></html>",
+        "* { margin: 0; padding: 0; }",
+    );
+
+    assert_eq!(
+        painted_glyph_signature(&candidate),
+        painted_glyph_signature(&reference)
+    );
+    assert_eq!(
+        command_signature(&candidate_cached),
+        command_signature(&candidate)
+    );
+}
+
+#[test]
 fn reversed_ordered_lists_do_not_receive_ascending_decimal_markers() {
     let candidate = render(
         "<html><body><ol reversed><li>last</li><li>first</li></ol></body></html>",
