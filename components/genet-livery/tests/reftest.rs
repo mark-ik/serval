@@ -199,6 +199,33 @@ fn retained_inside_decimal_markers_match_nested_literal_and_cached_frame() {
 }
 
 #[test]
+fn marker_only_nested_decimal_item_matches_literal_in_stateless_and_retained_frames() {
+    let candidate_html = "<html><body><ol><li><ol><li>text</li></ol></li></ol></body></html>";
+    let reference_html = "<html><body><div>1. <div>1. text</div></div></body></html>";
+    let css = "ol, li { margin: 0; padding: 0; border: 0; } \
+               li, div { color: blue; border: 4px solid silver; \
+                         padding: 8px 8px 8px 48px; list-style-position: inside; }";
+
+    let candidate = render(candidate_html, css);
+    let reference = render(reference_html, css);
+    assert_eq!(
+        painted_glyph_signature(&candidate),
+        painted_glyph_signature(&reference)
+    );
+
+    let (candidate, candidate_cached) = render_retained(candidate_html, css);
+    let (reference, _) = render_retained(reference_html, css);
+    assert_eq!(
+        painted_glyph_signature(&candidate),
+        painted_glyph_signature(&reference)
+    );
+    assert_eq!(
+        command_signature(&candidate_cached),
+        command_signature(&candidate)
+    );
+}
+
+#[test]
 fn reversed_ordered_lists_do_not_receive_ascending_decimal_markers() {
     let candidate = render(
         "<html><body><ol reversed><li>last</li><li>first</li></ol></body></html>",
