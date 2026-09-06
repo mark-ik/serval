@@ -89,9 +89,11 @@
   P._resizeDrawingBuffer = function(width, height) {
     var w = Math.max(1, width >>> 0);
     var h = Math.max(1, height >>> 0);
-    __webgl_resize_context(String(this._ctx), String(w), String(h));
-    this.drawingBufferWidth = w;
-    this.drawingBufferHeight = h;
+    var actual = String(__webgl_resize_context(String(this._ctx), String(w), String(h))).split(',');
+    if (actual.length === 2) {
+      this.drawingBufferWidth = parseInt(actual[0], 10) >>> 0;
+      this.drawingBufferHeight = parseInt(actual[1], 10) >>> 0;
+    }
   };
 
   // State / framebuffer.

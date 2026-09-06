@@ -40,8 +40,13 @@ impl<E: ScriptEngine> NativeFn<E> for ResizeContext {
         let ctx = parse_ctx::<E>(cx)?;
         let width = parse_u32::<E>(cx, 1)?;
         let height = parse_u32::<E>(cx, 2)?;
-        with_webgl_ctx::<E, _, _>(cx, ctx, (), |handler| handler.resize(width, height));
-        Ok(cx.undefined())
+        let size =
+            with_webgl_ctx::<E, _, _>(cx, ctx, None, |handler| handler.resize(width, height));
+        cx.make_string(
+            &size
+                .map(|(width, height)| format!("{width},{height}"))
+                .unwrap_or_default(),
+        )
     }
 }
 

@@ -29,8 +29,9 @@ impl WebGlHandler for NullWebGl {
     fn external_texture_key(&self) -> Option<u64> {
         self.key.get()
     }
-    fn resize(&mut self, width: u32, height: u32) {
+    fn resize(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
         self.resizes.borrow_mut().push((width, height));
+        Some((width, height))
     }
     fn clear_color(&mut self, _r: f32, _g: f32, _b: f32, _a: f32) {}
     fn clear(&mut self, _mask: u32) {}

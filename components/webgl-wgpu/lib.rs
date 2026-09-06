@@ -217,6 +217,7 @@ impl WebGlCanvas {
 pub enum WebGlCanvasError {
     MissingWgpuCapability,
     EmptySize,
+    SizeExceedsDeviceLimit { requested: (u32, u32), limit: u32 },
 }
 
 fn create_canvas_texture(
@@ -227,6 +228,13 @@ fn create_canvas_texture(
     let (width, height) = descriptor.size;
     if width == 0 || height == 0 {
         return Err(WebGlCanvasError::EmptySize);
+    }
+    let limit = device.limits().max_texture_dimension_2d;
+    if width > limit || height > limit {
+        return Err(WebGlCanvasError::SizeExceedsDeviceLimit {
+            requested: (width, height),
+            limit,
+        });
     }
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -432,5 +440,23 @@ mod tests {
         let result =
             WebGlCanvas::from_wgpu_handles(device, queue, WebGlCanvasDescriptor::new(0, 1));
         assert!(matches!(result, Err(WebGlCanvasError::EmptySize)));
+    }
+
+    #[test]
+    fn webgl_canvas_rejects_dimensions_above_the_device_limit_before_allocation() {
+        let (device, queue) = make_device();
+        let limit = device.limits().max_texture_dimension_2d;
+        let result = WebGlCanvas::from_wgpu_handles(
+            device,
+            queue,
+            WebGlCanvasDescriptor::new(limit.saturating_add(1), 1),
+        );
+        assert!(matches!(
+            result,
+            Err(WebGlCanvasError::SizeExceedsDeviceLimit {
+                requested: (_, 1),
+                limit: actual,
+            }) if actual == limit
+        ));
     }
 }

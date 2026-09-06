@@ -48,7 +48,9 @@ pub trait WebGlHandler {
     /// Resize this context's default drawing buffer without replacing the
     /// context identity. Hosts that expose a compositor texture must update
     /// that texture under the context's existing key.
-    fn resize(&mut self, _width: u32, _height: u32) {}
+    fn resize(&mut self, _width: u32, _height: u32) -> Option<(u32, u32)> {
+        None
+    }
 
     fn clear_color(&mut self, r: f32, g: f32, b: f32, a: f32);
     fn clear(&mut self, mask: u32);

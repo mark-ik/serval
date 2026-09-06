@@ -148,11 +148,10 @@ impl WebGlHandler for WgpuWebGl {
         Some(TEST_EXTERNAL_TEXTURE_KEY)
     }
 
-    fn resize(&mut self, width: u32, height: u32) {
-        self.context
-            .borrow_mut()
-            .resize(width.max(1), height.max(1))
-            .expect("test drawing buffer resizes");
+    fn resize(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+        let size = (width.max(1), height.max(1));
+        self.context.borrow_mut().resize(size.0, size.1).ok()?;
+        Some(size)
     }
 
     fn clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
@@ -625,14 +624,14 @@ fn canvas_dimensions_resize_the_same_webgl_context_and_clear_its_buffer() {
         var restored = [gl.drawingBufferWidth, gl.drawingBufferHeight];
         c.setAttribute('width', '-1');
         var invalid = gl.drawingBufferWidth;
-        c.width = -7;
-        var negative = [c.width, gl.drawingBufferWidth];
+        c.width = 4294967295;
+        var rejected = gl.drawingBufferWidth;
         var bag = {
           same: gl === identity && gl === c.getContext('webgl'),
           cleared: redundant[0] === 0 && redundant[1] === 0 &&
                    redundant[2] === 0 && redundant[3] === 0,
           resized: resized.join('x'), restored: restored.join('x'),
-          invalid: invalid, negative: negative.join('x'),
+          invalid: invalid, rejected: rejected,
           css: c.style.width + 'x' + c.style.height
         };
         "#,
@@ -643,7 +642,7 @@ fn canvas_dimensions_resize_the_same_webgl_context_and_clear_its_buffer() {
     assert_eq!(read(&mut rt, "bag.resized"), "4x6");
     assert_eq!(read(&mut rt, "bag.restored"), "300x6");
     assert_eq!(read(&mut rt, "String(bag.invalid)"), "300");
-    assert_eq!(read(&mut rt, "bag.negative"), "0x1");
+    assert_eq!(read(&mut rt, "String(bag.rejected)"), "1");
     assert_eq!(read(&mut rt, "bag.css"), "40pxx20px");
 }
 
