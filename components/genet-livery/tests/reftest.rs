@@ -50,6 +50,24 @@ fn painted_glyph_count(list: &genet_livery::LiveryPaintList) -> usize {
         .sum()
 }
 
+fn painted_glyph_signature(list: &genet_livery::LiveryPaintList) -> Vec<String> {
+    list.commands()
+        .iter()
+        .filter_map(|command| match command {
+            PaintCmd::DrawText(run) => Some(run),
+            _ => None,
+        })
+        .flat_map(|run| {
+            run.glyphs.iter().map(move |glyph| {
+                format!(
+                    "font:{:?};size:{:?};color:{:?};glyph:{};point:{:?}",
+                    run.font_instance, run.font_size, run.color, glyph.index, glyph.point
+                )
+            })
+        })
+        .collect()
+}
+
 #[test]
 fn equivalent_inline_and_stylesheet_cases_share_a_native_paint_receipt() {
     let actual = render(
@@ -78,10 +96,10 @@ fn inside_disc_markers_generate_before_each_list_item() {
         "ul { margin: 0; padding-left: 0; list-style-position: inside; } li { list-style-type: none; }",
     );
 
-    // Both literal bullets are in the same inline runs as their items.
+    // Each generated literal is a bullet plus its following space.
     assert_eq!(
         painted_glyph_count(&with_markers),
-        painted_glyph_count(&without_markers) + 2
+        painted_glyph_count(&without_markers) + 4
     );
 }
 
@@ -96,5 +114,11 @@ fn inside_disc_markers_match_literal_bullet_text_in_item_order() {
         "* { margin: 0; padding: 0; }",
     );
 
-    assert_eq!(command_signature(&candidate), command_signature(&reference));
+    // Generated and authored text can be split into different DrawText runs.
+    // Compare the ordered glyph stream, retaining font, color, and absolute
+    // placement rather than accepting matching character counts alone.
+    assert_eq!(
+        painted_glyph_signature(&candidate),
+        painted_glyph_signature(&reference)
+    );
 }
