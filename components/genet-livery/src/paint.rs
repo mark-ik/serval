@@ -678,6 +678,20 @@ where
                 }));
                 clips_descendants += 1;
             }
+            if style.display == Display::ListItem {
+                // A generated marker is shaped against its Buckram pseudo
+                // box, then attributed to the owning list-item DOM node.
+                // Normal text drains at its text node, but a marker has no
+                // DOM text node of its own. Drain the owner's prepared group
+                // before painting child content so an inside marker retains
+                // the pseudo's inline-before-item order.
+                text.frame.drain(
+                    id,
+                    scope.inline_owner,
+                    scope.stacking_roots,
+                    &mut list.commands,
+                );
+            }
             Some(style)
         },
         NodeKind::Text => {
