@@ -32,9 +32,10 @@ repatriated here from mere.
 ## Scripted host capabilities
 
 - [scripted_host_capabilities_plan](2026-09-06_scripted_host_capabilities_plan.md)
-  (**in progress 2026-09-06**): per-document deferred Fetch and WebGL services
-  installed before authored scripts, ordinary-host receipts, and a bounded
-  Row 17 generated-text slice. K6 continues separately.
+  (**first native slice validated; program in progress 2026-09-06**): per-document
+  Fetch and WebGL services installed before authored scripts, 38 focused native
+  tests, a headed Pelt receipt, and retained inside-disc markers. WPT comparison,
+  wider WebGL composition and strict lint closure remain open. K6 continues separately.
 
 ## ortet — the raw host
 

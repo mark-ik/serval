@@ -1,8 +1,10 @@
 # Scripted host capabilities and first conformance slices
 
-**Status (2026-09-06): in progress.** The first wave connects ordinary scripted
-pages to host services while completing one independent generated-content
-slice. Implementation starts at `44b650590359f96e3f9b8c4240d539a077d172ea`
+**Status (2026-09-06): first native host slice validated; program in progress.**
+Ordinary scripted pages now receive per-document Fetch and WebGL services.
+Inside-disc markers have independent stateless and retained native receipts.
+WPT comparison, wider generated content, and the remaining WebGL cases stay
+open. Implementation starts at `44b650590359f96e3f9b8c4240d539a077d172ea`
 in detached worktrees. Existing shared-checkout work and the K6 continuation
 remain separate.
 
@@ -111,3 +113,67 @@ dirty files, then refresh the parent plans and canonical work map.
   Luna WebGL host tracing and integration. Root owns document/session options,
   retirement hooks and consolidated validation. No conformance gain is claimed
   by this planning entry.
+
+## First native receipt, 2026-09-06
+
+Source: Genet `1b8054d258dd4a942f9d94cb0aa9e77a551b3dcc` and Mere
+`ac254fc41c9b499907e655b41133b38c82eb27fa`, on isolated
+`codex/scripted-host-capabilities-20260906` branches. Boa and Vano needed no
+engine changes. Piccolo's Lua surface was not exercised by this JavaScript
+wave.
+
+| Gate | Result |
+|---|---|
+| Boa/Vano page Fetch, including failure, abort and replacement isolation | 6 passed |
+| Boa/Vano WebGL factory, CSS bounds, trusted keys and immediate retirement | 2 passed |
+| Session construction, fresh capabilities and redirected final origin | 3 passed |
+| Canvas paint, replaced sizing, aspect-ratio regressions and marker comparisons | 11 passed |
+| Integrated Mere resource/Fetch adapter, including opaque local origin and shared limits | 11 passed |
+| Pelt scripted routing, real HTTP constructor path and real GPU composition | 5 passed |
+
+The 38 unique native tests pass on Windows x86_64 with Rust 1.97.1. The
+Pelt GPU receipt asserts literal red canvas pixels, an opaque blue later
+sibling, white surrounding pixels, and registry retirement after document
+drop. Its Fetch receipt uses a local HTTP server through the ordinary deferred
+viewer constructor. Separately, the bounded headed P5 scripted receipt creates
+a window, presents one 960 x 640 frame, and verifies parser/timer mutations,
+prevented navigation, navigation to the next page, and Back replay. The PNG
+was inspected; receipt digest is `9fdce1c66a85e37a`.
+
+Frozen binaries, logs, locks, source map and PNG live under
+`testing/genet/host-receipts/2026-09-06-scripted-host/` in the workspace testing
+root. `manifest.json` has SHA-256
+`30552b2e26a23937b85e9b034e15cab6b0381df4f822635ec8573783dcf96c4d`.
+Genet lock SHA-256 is
+`38e08a2781b1ca4579f5e1e06deb2efd7e570f57f68bea8902394009c27bc8a3`;
+Mere candidate lock SHA-256 is
+`77314cabaaca49672d9248fe2d48685b1c90ee1b87c9fcf6ec4a4cadeece0d1c`.
+All cargo runs used `--locked --offline -j1` and debug information disabled.
+Mere's receipt uses the recorded explicit source map into the isolated Genet
+checkout. It is a candidate integration receipt, not a config-free build from
+the final published pins. The headed process used hidden startup while still
+creating and presenting through the native window/surface path.
+
+The tests forced repairs to explicit canvas sizing, stateless marker shaping
+and owner emission, deferred viewer startup errors/title, opaque origins for
+bare local paths, explicit runtime capability retirement, and the final GPU
+target's render-attachment usage. They also corrected two fixture assumptions:
+Text Directive removal retains an empty `#`, and semantic clipping is not a
+reliable assertion for a tiny paragraph. Session tests now assert laid-out
+fetched text directly.
+
+Formatting and diff checks pass. Strict Clippy is **not green**: the broad
+Genet run stops on existing paint-types `derivable_impls`; the dependency-free
+scope stops on the existing eight-argument replaced sizing helper; Mere stops
+on existing Meristem `type_complexity`. Their definitions are present at the
+accepted bases. The frozen logs retain these failures; no lint suppression or
+unrelated cleanup was added.
+
+No frozen WPT run was produced, so this receipt claims **zero WPT gains**.
+Outside markers, counters and authored generated content remain open. The
+WebGL presentation proof admits untransformed, unclipped canvases with opaque,
+ungrouped later scene operations. Ancestor grouping/clipping/transforms,
+translucent tail composition, HiDPI raster quality, canvas drawing-buffer
+resize, context loss and the wider Khronos API corpus still need their own
+receipts. Fetch remains a bounded full-buffer host bridge; this does not close
+streaming or the full Fetch corpus.
