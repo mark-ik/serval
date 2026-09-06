@@ -488,6 +488,9 @@ impl RenderCore {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING
+                // Ordered external-texture composition writes this target through
+                // a render pass after the logical master has been produced.
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
