@@ -84,3 +84,17 @@ fn inside_disc_markers_generate_before_each_list_item() {
         painted_glyph_count(&without_markers) + 2
     );
 }
+
+#[test]
+fn inside_disc_markers_match_literal_bullet_text_in_item_order() {
+    let candidate = render(
+        "<html><body><ul><li>first</li><li>second</li></ul></body></html>",
+        "* { margin: 0; padding: 0; } ul { list-style-position: inside; }",
+    );
+    let reference = render(
+        "<html><body><div>• first</div><div>• second</div></body></html>",
+        "* { margin: 0; padding: 0; }",
+    );
+
+    assert_eq!(command_signature(&candidate), command_signature(&reference));
+}
