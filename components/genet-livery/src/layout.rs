@@ -2216,14 +2216,19 @@ where
     // presentational-hint origin. Layout owns only natural-size resolution.
     let width = definite_size(computed.width, font_size);
     let height = definite_size(computed.height, font_size);
-    if computed.aspect_ratio.uses_natural_ratio()
-        && natural_ratio.is_some()
-        && !(width.is_some() && height.is_some())
-    {
-        // Taffy's aspect-ratio input participates in sizing even when both
-        // axes are definite. CSS's natural ratio does not, so only expose it
-        // while at least one axis still needs intrinsic resolution.
-        style.aspect_ratio = natural_ratio;
+    if computed.aspect_ratio.uses_natural_ratio() {
+        if width.is_some() && height.is_some() {
+            // `to_taffy_style` initially maps an HTML dimension hint's
+            // `auto <ratio>` to its preferred ratio. A natural ratio must not
+            // transfer between two definite CSS dimensions, so clear that
+            // pre-populated value before handing the style to Taffy.
+            style.aspect_ratio = None;
+        } else if natural_ratio.is_some() {
+            // Taffy's aspect-ratio input participates in sizing even when both
+            // axes are definite. CSS's natural ratio does not, so only expose it
+            // while at least one axis still needs intrinsic resolution.
+            style.aspect_ratio = natural_ratio;
+        }
     }
 
     // CSS 2.1 10.3.4: a block-level replaced element in normal flow resolves
