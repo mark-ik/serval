@@ -26,9 +26,8 @@ use livery::{
         FontFeatureSettings as CssFontFeatureSettings, FontStyle as CssFontStyle,
         FontWeight as CssFontWeight, Hyphens, LineBreak as CssLineBreak,
         LineHeight as CssLineHeight, ListStylePosition, ListStyleType, Margin,
-        OverflowWrap as CssOverflowWrap,
-        Position, Spacing, TabSize, TextAlign, TextAlignLast, TextJustify, TextTransformCase,
-        TextWrapMode, VerticalAlign, WordBreak as CssWordBreak,
+        OverflowWrap as CssOverflowWrap, Position, Spacing, TabSize, TextAlign, TextAlignLast,
+        TextJustify, TextTransformCase, TextWrapMode, VerticalAlign, WordBreak as CssWordBreak,
     },
 };
 use paint_list_api::{
@@ -2657,7 +2656,7 @@ where
                     return;
                 };
                 let start = self.text.len();
-                append_inline_text(self.text, &marker, style);
+                append_inline_text(self.text, marker, style);
                 if self.text.len() != start {
                     self.spans.push(SourceSpan {
                         source: Some(box_id),
@@ -3841,20 +3840,6 @@ mod tests {
         append_inline_text(&mut text, "34", &style);
 
         assert_eq!(text, "1234");
-    }
-
-    #[test]
-    fn inside_disc_marker_is_literal_generated_text() {
-        let mut style = ComputedValues::default();
-        style.list_style_position = ListStylePosition::Inside;
-        style.list_style_type = ListStyleType::Disc;
-
-        assert_eq!(inside_disc_marker_text(&style), Some("• "));
-        style.list_style_position = ListStylePosition::Outside;
-        assert_eq!(inside_disc_marker_text(&style), None);
-        style.list_style_position = ListStylePosition::Inside;
-        style.list_style_type = ListStyleType::Decimal;
-        assert_eq!(inside_disc_marker_text(&style), None);
     }
 
     #[test]

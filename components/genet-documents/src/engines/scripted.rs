@@ -108,11 +108,11 @@ where
                         ))
                     })?;
                 let mut address = response.final_url;
-                if !address.contains('#') {
-                    if let Some((_, fragment)) = request.address.split_once('#') {
-                        address.push('#');
-                        address.push_str(fragment);
-                    }
+                if !address.contains('#')
+                    && let Some((_, fragment)) = request.address.split_once('#')
+                {
+                    address.push('#');
+                    address.push_str(fragment);
                 }
                 (
                     std::borrow::Cow::Owned(String::from_utf8_lossy(&response.bytes).into_owned()),

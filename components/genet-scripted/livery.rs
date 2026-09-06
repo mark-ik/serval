@@ -54,19 +54,17 @@ fn trusted_canvas_textures(host: &HostState) -> HashMap<NodeId, u64> {
     while let Some(node) = nodes.pop() {
         if host.dom.element_name(node).is_some_and(|name| {
             name.ns.as_ref() == "http://www.w3.org/1999/xhtml" && name.local.as_ref() == "canvas"
-        }) {
-            if let Some(key) = host
-                .dom
-                .attribute(
-                    node,
-                    &Namespace::default(),
-                    &LocalName::from("data-genet-external-texture-key"),
-                )
-                .and_then(|value| value.parse::<u64>().ok())
-                .filter(|key| allowed.contains(key))
-            {
-                textures.insert(node, key);
-            }
+        }) && let Some(key) = host
+            .dom
+            .attribute(
+                node,
+                &Namespace::default(),
+                &LocalName::from("data-genet-external-texture-key"),
+            )
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|key| allowed.contains(key))
+        {
+            textures.insert(node, key);
         }
         nodes.extend(host.dom.dom_children(node));
     }
