@@ -51,7 +51,7 @@ pub use dom::{
     MediaQueryHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
     StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
-pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
+pub use fetch::{FetchEvent, FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;
 pub use platform::StorageProvider;
 pub use webgl::{WebGlFactory, WebGlHandler};
@@ -185,6 +185,19 @@ pub struct Runtime<E: ScriptEngine> {
     host: SharedHost,
     scheduler_trace: Vec<SchedulerTraceEvent>,
     next_trace_seq: u64,
+}
+
+impl<E: ScriptEngine> Drop for Runtime<E> {
+    fn drop(&mut self) {
+        // A handler is scoped to one document/runtime. Stop its workers before
+        // the engine and host state disappear; late queue deliveries then have
+        // nowhere to accumulate and cannot leak into a later document whose
+        // request ids restart from one.
+        let handler = self.host.borrow().fetch.clone();
+        if let Some(handler) = handler {
+            handler.cancel_all();
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -744,6 +757,43 @@ impl<E: ScriptEngine> Runtime<E> {
     /// (overriding `start`) settles later via [`settle_fetch`](Self::settle_fetch).
     pub fn set_fetch_handler(&mut self, handler: Box<dyn FetchHandler>) {
         self.host.borrow_mut().fetch = Some(std::rc::Rc::from(handler));
+    }
+
+    /// Apply at most `max_events` completions from the installed deferred fetch
+    /// handler. Returns the number of events applied.
+    pub fn poll_fetches(&mut self, max_events: usize) -> usize {
+        let handler = self.host.borrow().fetch.clone();
+        let Some(handler) = handler else {
+            return 0;
+        };
+        let events = handler.poll(max_events);
+        let count = events.len();
+        for event in events {
+            match event {
+                FetchEvent::Complete { id, outcome } => self.settle_fetch(id, outcome),
+                FetchEvent::Failed { id, message } => self.fail_fetch(id, &message),
+            }
+        }
+        count
+    }
+
+    /// Whether the installed handler still owns deferred network work.
+    pub fn has_pending_fetches(&self) -> bool {
+        self.host
+            .borrow()
+            .fetch
+            .as_ref()
+            .is_some_and(|handler| handler.has_pending())
+    }
+
+    /// Cancel all host work and reject every promise still pending in this
+    /// runtime. Hosts use this before replacing a live document on navigation.
+    pub fn cancel_fetches(&mut self, message: &str) {
+        let handler = self.host.borrow().fetch.clone();
+        if let Some(handler) = handler {
+            handler.cancel_all();
+        }
+        self.fail_all_pending(message);
     }
 
     /// Install the host's computed-style seam for `getComputedStyle` (e.g. a

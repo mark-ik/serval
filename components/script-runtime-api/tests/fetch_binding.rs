@@ -10,7 +10,7 @@
 
 use script_engine_api::ScriptEngine;
 use script_engine_boa::BoaEngine;
-use script_runtime_api::{FetchHandler, FetchOutcome, FetchRequest, Runtime};
+use script_runtime_api::{FetchEvent, FetchHandler, FetchOutcome, FetchRequest, Runtime};
 
 /// Echoes the request back: 200, a couple of headers describing the request, and
 /// a body naming the method + url. Records the seen request for assertions.
@@ -65,6 +65,107 @@ impl FetchHandler for DeferredRecorder {
     fn cancel(&self, id: u64) {
         self.cancelled.borrow_mut().push(id);
     }
+}
+
+struct PolledRecorder {
+    events: std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<FetchEvent>>>,
+    pending: std::rc::Rc<std::cell::Cell<usize>>,
+    cancelled_all: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl FetchHandler for PolledRecorder {
+    fn start(&self, _id: u64, _req: FetchRequest) -> Option<FetchOutcome> {
+        self.pending.set(self.pending.get() + 1);
+        None
+    }
+
+    fn poll(&self, max_events: usize) -> Vec<FetchEvent> {
+        let mut queue = self.events.borrow_mut();
+        let mut drained = Vec::new();
+        for _ in 0..max_events {
+            let Some(event) = queue.pop_front() else {
+                break;
+            };
+            self.pending.set(self.pending.get().saturating_sub(1));
+            drained.push(event);
+        }
+        drained
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.get() != 0
+    }
+
+    fn cancel_all(&self) {
+        self.cancelled_all.set(self.cancelled_all.get() + 1);
+        self.pending.set(0);
+        self.events.borrow_mut().clear();
+    }
+}
+
+#[test]
+fn runtime_polls_deferred_completions_with_a_budget() {
+    let events = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new()));
+    let pending = std::rc::Rc::new(std::cell::Cell::new(0));
+    let cancelled_all = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut rt = Runtime::<BoaEngine>::new().unwrap();
+    rt.set_fetch_handler(Box::new(PolledRecorder {
+        events: events.clone(),
+        pending: pending.clone(),
+        cancelled_all,
+    }));
+    rt.eval(
+        r#"var P={}; fetch("http://x/ok").then(function(r){P.ok=r.status;});
+           fetch("http://x/fail").catch(function(e){P.fail=e.name;});"#,
+    )
+    .unwrap();
+    assert!(rt.has_pending_fetches());
+    events.borrow_mut().extend([
+        FetchEvent::Complete {
+            id: 1,
+            outcome: ok_meta("http://x/ok"),
+        },
+        FetchEvent::Failed {
+            id: 2,
+            message: "offline".into(),
+        },
+    ]);
+
+    assert_eq!(rt.poll_fetches(1), 1);
+    assert_eq!(read(&mut rt, "String(P.ok)"), "200");
+    assert_eq!(read(&mut rt, "String(P.fail)"), "undefined");
+    assert!(rt.has_pending_fetches());
+    assert_eq!(rt.poll_fetches(1), 1);
+    assert_eq!(read(&mut rt, "P.fail"), "TypeError");
+    assert!(!rt.has_pending_fetches());
+}
+
+#[test]
+fn runtime_cancels_deferred_work_explicitly_and_on_drop() {
+    let events = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new()));
+    let pending = std::rc::Rc::new(std::cell::Cell::new(0));
+    let cancelled_all = std::rc::Rc::new(std::cell::Cell::new(0));
+    {
+        let mut rt = Runtime::<BoaEngine>::new().unwrap();
+        rt.set_fetch_handler(Box::new(PolledRecorder {
+            events: events.clone(),
+            pending: pending.clone(),
+            cancelled_all: cancelled_all.clone(),
+        }));
+        rt.eval(r#"var C={}; fetch("http://x/slow").catch(function(e){C.fail=e.name;});"#)
+            .unwrap();
+        rt.cancel_fetches("navigation");
+        assert_eq!(read(&mut rt, "C.fail"), "TypeError");
+        assert_eq!(cancelled_all.get(), 1);
+
+        rt.eval(r#"fetch("http://x/later");"#).unwrap();
+    }
+    assert_eq!(
+        cancelled_all.get(),
+        2,
+        "drop cancels the replacement request"
+    );
+    assert_eq!(pending.get(), 0);
 }
 
 #[test]

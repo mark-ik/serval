@@ -68,6 +68,18 @@ pub struct FetchOutcome {
     pub body: Vec<u8>,
 }
 
+/// A deferred fetch completion produced by a host-owned delivery queue.
+///
+/// The runtime polls these events from its document drive loop. This keeps
+/// network work off the script engine's thread without allowing a worker to
+/// re-enter the engine, which is deliberately `!Send`.
+pub enum FetchEvent {
+    /// Resolve the pending promise with a completed response.
+    Complete { id: u64, outcome: FetchOutcome },
+    /// Reject the pending promise with a Fetch network error.
+    Failed { id: u64, message: String },
+}
+
 impl FetchOutcome {
     pub fn network_error() -> Self {
         Self {
@@ -115,6 +127,25 @@ pub trait FetchHandler {
     /// the body lazily: one chunk per request, so a body the script never reads is
     /// never fetched. The default is a no-op (inline hosts deliver the whole body).
     fn request_chunk(&self, _id: u64) {}
+
+    /// Drain at most `max_events` deferred completions from the host queue.
+    ///
+    /// Synchronous handlers have no queue. Deferred handlers should make this
+    /// non-blocking; the document drive loop calls it on the script thread.
+    fn poll(&self, _max_events: usize) -> Vec<FetchEvent> {
+        Vec::new()
+    }
+
+    /// Whether this handler still owns network work whose completion may need
+    /// another document pump.
+    fn has_pending(&self) -> bool {
+        false
+    }
+
+    /// Cancel every request owned by this per-document handler.
+    ///
+    /// Called when a document navigates away or its runtime is dropped.
+    fn cancel_all(&self) {}
 }
 
 /// Clone the installed handler out from under the `HostState` borrow, so the
