@@ -52,17 +52,19 @@ fn session_factory_installs_fresh_capabilities_before_authored_scripts() {
         })
     });
     let html = "<p id='result'>waiting</p><script>fetch('/data').then(function(r) {return r.text();}).then(function(t) {document.getElementById('result').textContent=t;});</script>";
-    let first = engine
+    let mut first = engine
         .spawn(&SessionSpawnRequest::new("https://example.test/one#:~:text=secret").with_body(html))
         .unwrap();
-    assert_eq!(first.clip().unwrap().text.trim(), "page 1");
-    let second = engine
+    first.frame(320, 240);
+    assert!(first.text_target("page 1").is_some());
+    let mut second = engine
         .spawn(&SessionSpawnRequest::new("https://example.test/two").with_body(html))
         .unwrap();
-    assert_eq!(second.clip().unwrap().text.trim(), "page 2");
+    second.frame(320, 240);
+    assert!(second.text_target("page 2").is_some());
     assert_eq!(
         *addresses.lock().unwrap(),
-        ["https://example.test/one", "https://example.test/two"]
+        ["https://example.test/one#", "https://example.test/two"]
     );
 }
 
@@ -112,11 +114,16 @@ fn redirected_document_binds_capabilities_to_final_origin() {
             ..Default::default()
         })
     });
-    let session = engine
+    let mut session = engine
         .spawn(&SessionSpawnRequest::new(
             "https://initial.test/start#:~:text=secret",
         ))
         .unwrap();
-    assert_eq!(*addresses.lock().unwrap(), ["https://destination.test/app"]);
-    assert_eq!(session.clip().unwrap().text.trim(), "redirected page");
+    // Removing a Text Directive preserves the explicitly empty fragment.
+    assert_eq!(
+        *addresses.lock().unwrap(),
+        ["https://destination.test/app#"]
+    );
+    session.frame(320, 240);
+    assert!(session.text_target("redirected page").is_some());
 }
