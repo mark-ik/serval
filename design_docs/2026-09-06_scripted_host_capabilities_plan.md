@@ -177,3 +177,60 @@ translucent tail composition, HiDPI raster quality, canvas drawing-buffer
 resize, context loss and the wider Khronos API corpus still need their own
 receipts. Fetch remains a bounded full-buffer host bridge; this does not close
 streaming or the full Fetch corpus.
+
+## Second wave: inside decimal markers and live canvas resize
+
+Validated source is `b4af4f9d473f6dc1645dbd119ce27847c188c36a`, with
+the marker-only native gate run at its ancestor
+`163ac89e50f04c06ca4a88c34a90feb460658441`. Eight marker comparisons,
+eight WebGL binding tests, two GPU backend tests and both Boa/Vano host tests
+pass. Boa, Vano and Piccolo repositories required no changes for this slice.
+
+Inside decimal markers now follow direct HTML `ol > li` ordinals, including
+`start`, `value`, hidden-item exclusion and independent nested lists. The
+marker-only inline run before a nested block contributes line height in
+stateless layout and reconstructs paint at its own content origin. The
+ordinal native fixtures fix line height at 19px; the separate nested
+marker-only fixture exercises normal line height with border and padding.
+General normal-line-height rounding remains open.
+
+The release WPT baseline is `d424a689518a53e38d4c6f89c5c792bebb439248`.
+Both runners use the same frozen lock, manifest, 708 input-file hashes,
+Livery renderer, device scale 1 and exact expectation policy. The existing
+GPU pixel tolerance and authored WPT fuzz are unchanged.
+
+| WPT scope | Before pass/fail/skip | After pass/fail/skip |
+|---|---|---|
+| `css/CSS2/lists` | 61 / 94 / 131 | 62 / 93 / 131 |
+| `css/css-lists` | 70 / 70 / 78 | 70 / 70 / 78 |
+
+All 504 result-map members are identical. The sole status change is
+`css/CSS2/lists/list-style-position-023.xht`, fail to pass; there are zero
+pass-to-fail changes and zero errors. Its candidate test and reference PNGs
+are byte-identical (SHA-256
+`732ef33e44fcc82272dd695fa7503593f175299de871ecb5c9f568dbb12ae093`)
+and were visually inspected. The frozen runners, logs, maps, input hashes,
+comparison and PNGs are under the workspace testing root at
+`testing/genet/wpt-ledger/2026-09-06_inside-decimal-markers/`.
+This is one measured WPT gain; Row 17 remains in progress.
+
+Canvas width/height reflection and ordinary attribute set/remove now resize
+the existing host context, including redundant assignments. The host reports
+actual dimensions back to JavaScript. Resizing clears the replacement buffer
+and preserves the authored viewport and scissor state. The GPU backend rejects
+dimensions above its device limit before texture allocation. Pelt replaces
+the registered texture under the existing key and supplies a caller-selected
+live-resize bound (default 4096 pixels per axis).
+
+The live-resize receipt does not cover initial context size negotiation,
+namespace-aware attribute mutations, the existing large unsigned IDL
+reflection quirk, context loss or the wider Khronos corpus. The earlier
+composition limits still apply. Reversed/outside markers, general CSS
+counters, generated `content`, marker images and other inline pseudo-element
+anchoring remain open.
+
+Formatting and diff checks pass. Strict Clippy remains blocked: the existing
+eight-argument replaced sizing helper in Livery, and seven existing WebGL
+warnings in `state.rs`, `draw.rs`, `pipeline.rs` and `programs.rs`. Those WebGL
+files are unchanged from the baseline. The logs preserve these failures;
+this receipt does not claim lint closure.
