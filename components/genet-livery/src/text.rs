@@ -609,6 +609,36 @@ impl TextSystem {
         else {
             return;
         };
+        if parent_style.display == Display::ListItem {
+            // A list marker exists only in Buckram's generated box tree. The
+            // DOM-only collector below cannot see it, which meant stateless
+            // layout rebuilt a list item's text without its inside marker at
+            // paint time. This formatting context is already proven inline,
+            // so the box roots form one admitted inline run.
+            let roots = fragments.boxes()[parent_box].children();
+            if let Some(layout) = self.format_inline_group(
+                dom,
+                styles,
+                fragments.boxes(),
+                fragments,
+                InlineRequest {
+                    roots,
+                    parent_style,
+                    width: parent_fragment.width,
+                    intrinsic_kind: None,
+                    line_constraints: None,
+                },
+            ) {
+                layout.place(
+                    frame,
+                    styles,
+                    |box_id| fragments.boxes().origin_node(box_id),
+                    (parent_fragment.x, parent_fragment.y),
+                    parent_fragment.width,
+                );
+            }
+            return;
+        }
         let mut inline_parent_style = parent_style.clone();
         if matches!(parent_style.position, Position::Absolute | Position::Fixed) {
             inline_parent_style.vertical_align = VerticalAlign::Baseline;
