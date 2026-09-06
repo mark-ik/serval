@@ -234,3 +234,63 @@ eight-argument replaced sizing helper in Livery, and seven existing WebGL
 warnings in `state.rs`, `draw.rs`, `pipeline.rs` and `programs.rs`. Those WebGL
 files are unchanged from the baseline. The logs preserve these failures;
 this receipt does not claim lint closure.
+
+The isolated `script-runtime-api` strict Clippy command exits successfully;
+it still reports an existing invalid disallowed-type configuration warning.
+The frozen WPT artifact manifest has SHA-256
+`f3da58407d796434fa7c15c89c67ec98bb11ac00854469d3df534e449b72c712`.
+
+### Next measured slices
+
+The read-only follow-up audit identifies these separate candidate gates:
+
+1. RTL inside decimal placement: `css/CSS2/lists/list-style-position-024.xht`,
+   with an independent nested RTL marker-only geometry fixture and 023 kept
+   passing.
+2. Quoted inside string markers: `css/css-lists/list-style-type-string-001a.html`,
+   preserving the string through parsing and computed style before shaping
+   its literal glyphs. Bidi, multicolumn and float variants remain separate.
+3. Outside disc marker placement: `css/css-lists/list-marker-alignment.html`,
+   aligning a separate marker fragment with the first baseline of a block
+   child in both stateless and retained layout.
+
+These are proposals, not implementation receipts. Some outside/reversed
+tests currently match because neither image paints its marker. Therefore the
+reported maps are raw runner statuses, not proof that every passing list test
+demonstrates implemented behavior. The 023 gain was separately inspected and
+does paint the expected nested decimal markers. Table/row/cell list-item
+tests and general counter/generated-content tests require other owners or
+broader slices.
+
+### Published host integration receipt
+
+Mere source `ec35fd6ceb02469fcc47292635ea687316bc12fb` consumes the tested
+Genet source and Knot `e2294ed94faa9f5d046e11ba9e6b0861b6621cbd`. Full
+metadata with `pelt-desktop/scripted` enabled resolves 41 Genet packages at
+the same pin and one registry wgpu 30.0.1. No local source override or
+candidate source map is used. All 43 Mere Genet selectors agree, including
+excluded web examples. The narrow Knot update preserves its application
+code and registry versions; its standalone application remains a separate
+gate because its unchanged Mere pin still introduces older Genet packages.
+
+All five Pelt scripted tests pass, bringing this wave to 25 passing native
+tests across Genet and Mere. The GPU fixture reports a host-bounded 32 x 6
+buffer for an oversized live width, restores 8 x 6, checks a cleared buffer
+after redundant width assignment, retains 32 x 32 CSS bounds, verifies red,
+blue and white composition pixels, and checks registry retirement. The
+published build first exposed a test-only call to a nonexistent `title()`
+method; the final fixture asserts the same literal result through the public
+script-evaluation API. The initial failed log is retained alongside the
+passing log.
+
+`cargo check -p knot-editor --lib --locked --offline -j1` passes from Mere's
+workspace against the published graph. This validates the embedded library,
+not the standalone app. Mere strict Clippy reports 16 existing errors in
+`workspace_viewer.rs`, `workspace_viewer/accessibility.rs` and
+`scripted_viewer.rs`; those files are unchanged from the first-wave Mere
+base. The modified graphics file passes formatting and diff checks.
+
+Frozen host logs, locks, full metadata, commands and source identities live
+under `testing/genet/host-receipts/2026-09-06-scripted-host-wave2/` in the
+workspace testing root. Its manifest also pins the separate WPT artifact
+manifest. The original first-wave receipt remains unchanged.
