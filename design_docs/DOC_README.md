@@ -40,6 +40,11 @@ repatriated here from mere.
 
 ## fleece — reader extraction
 
+- [fleece_preservation_contract_plan](2026-09-05_fleece_preservation_contract_plan.md)
+  (**active 2026-09-05**: preserves Fleece extraction identity, wire values, and
+  arbitrary passage anchors for hashing, peer transfer, reopen, and annotations;
+  adds named Web Annotation, structured-data, HTML, provenance, validation, and
+  accessibility conformance gates with caller-owned capture and custody.)
 - [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
   (**complete 2026-08-26**: the
   `genet-extract` shim is retired; retained static/scripted hosts activate
