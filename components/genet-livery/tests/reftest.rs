@@ -4,7 +4,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // SPDX-License-Identifier: MPL-2.0
 
-use genet_livery::{Device, InteractionStates, StyleSet, emit_paint_list, layout, resolve_styles};
+use genet_livery::{
+    Device, InteractionStates, LiveryDocument, StyleSet, emit_paint_list, layout, resolve_styles,
+};
 use genet_static_dom::StaticDocument;
 use paint_list_api::{PaintCmd, PaintList};
 
@@ -24,6 +26,20 @@ fn render(html: &str, css: &str) -> genet_livery::LiveryPaintList {
         paint_list_api::DeviceIntSize::new(320, 240),
         1,
     )
+}
+
+fn render_retained(
+    html: &str,
+    css: &str,
+) -> (genet_livery::LiveryPaintList, genet_livery::LiveryPaintList) {
+    let mut document = LiveryDocument::new(
+        StaticDocument::parse(html),
+        StyleSet::cambium(&[css]),
+        Device::screen(320.0, 240.0),
+    );
+    let first = document.frame(320, 240).unwrap();
+    let cached = document.frame(320, 240).unwrap();
+    (first, cached)
 }
 
 fn command_signature(list: &genet_livery::LiveryPaintList) -> Vec<String> {
@@ -120,5 +136,26 @@ fn inside_disc_markers_match_literal_bullet_text_in_item_order() {
     assert_eq!(
         painted_glyph_signature(&candidate),
         painted_glyph_signature(&reference)
+    );
+}
+
+#[test]
+fn retained_inside_disc_markers_match_literal_and_cached_frame() {
+    let (candidate, candidate_cached) = render_retained(
+        "<html><body><ul><li>first</li><li>second</li></ul></body></html>",
+        "* { margin: 0; padding: 0; } ul { list-style-position: inside; }",
+    );
+    let (reference, _) = render_retained(
+        "<html><body><div>• first</div><div>• second</div></body></html>",
+        "* { margin: 0; padding: 0; }",
+    );
+
+    assert_eq!(
+        painted_glyph_signature(&candidate),
+        painted_glyph_signature(&reference)
+    );
+    assert_eq!(
+        command_signature(&candidate_cached),
+        command_signature(&candidate)
     );
 }
