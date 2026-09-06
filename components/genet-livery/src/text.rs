@@ -613,23 +613,56 @@ impl TextSystem {
             let Some(inline_box) = inline_box else {
                 return;
             };
-            let parent_fragment = if inline_box == parent_box {
-                frame
-                    .inline_fragments(parent)
-                    .and_then(|fragments| fragments.first())
-                    .or_else(|| fragments.get(parent).map(|fragment| &**fragment))
-                    .copied()
-            } else {
-                fragments
-                    .fragments()
-                    .fragment_ids_for_box(inline_box)
-                    .last()
-                    .and_then(|fragment| fragments.fragments().get(*fragment))
-                    .map(|fragment| fragment.physical_rect())
-            };
-            let Some(parent_fragment) = parent_fragment else {
+            let marker_box = Self::marker_box(fragments.boxes(), inline_box, parent);
+            let content_box = Self::inline_content_box(fragments.boxes(), inline_box);
+            let anchor_fragment = content_box
+                .and_then(|content_box| {
+                    fragments
+                        .fragments()
+                        .fragment_ids_for_box(content_box)
+                        .last()
+                        .and_then(|fragment| fragments.fragments().get(*fragment))
+                        .map(|fragment| fragment.physical_rect())
+                })
+                .or_else(|| {
+                    marker_box.and_then(|marker_box| {
+                        fragments
+                            .fragments()
+                            .fragment_ids_for_box(marker_box)
+                            .last()
+                            .and_then(|fragment| fragments.fragments().get(*fragment))
+                            .map(|fragment| fragment.physical_rect())
+                    })
+                })
+                .or_else(|| {
+                    (inline_box == parent_box)
+                        .then(|| {
+                            frame
+                                .inline_fragments(parent)
+                                .and_then(|fragments| fragments.first())
+                                .or_else(|| fragments.get(parent).map(|fragment| &**fragment))
+                                .copied()
+                        })
+                        .flatten()
+                })
+                .or_else(|| {
+                    fragments
+                        .fragments()
+                        .fragment_ids_for_box(inline_box)
+                        .last()
+                        .and_then(|fragment| fragments.fragments().get(*fragment))
+                        .map(|fragment| fragment.physical_rect())
+                });
+            let Some(anchor_fragment) = anchor_fragment else {
                 return;
             };
+            let width = fragments
+                .fragments()
+                .fragment_ids_for_box(parent_box)
+                .last()
+                .and_then(|fragment| fragments.fragments().get(*fragment))
+                .map(|fragment| crate::content_box_size(parent_style, fragment).0)
+                .unwrap_or(anchor_fragment.width);
             // A list marker exists only in Buckram's generated box tree. The
             // DOM-only collector below cannot see it, which meant stateless
             // layout rebuilt a list item's text without its inside marker at
@@ -644,7 +677,7 @@ impl TextSystem {
                 InlineRequest {
                     roots,
                     parent_style,
-                    width: parent_fragment.width,
+                    width,
                     intrinsic_kind: None,
                     line_constraints: None,
                 },
@@ -653,8 +686,8 @@ impl TextSystem {
                     frame,
                     styles,
                     |box_id| fragments.boxes().origin_node(box_id),
-                    (parent_fragment.x, parent_fragment.y),
-                    parent_fragment.width,
+                    (anchor_fragment.x, anchor_fragment.y),
+                    width,
                 );
             }
             return;
@@ -717,6 +750,37 @@ impl TextSystem {
                         } if marker_owner == owner
                     )
                 })
+        })
+    }
+
+    fn marker_box<Id>(boxes: &CssBoxTree<Id>, inline_box: BoxId, owner: Id) -> Option<BoxId>
+    where
+        Id: Copy + Eq + Hash,
+    {
+        boxes[inline_box].children().iter().copied().find(|child| {
+            matches!(
+                boxes[*child].origin,
+                BoxOrigin::Pseudo {
+                    owner: marker_owner,
+                    pseudo: buckram::PseudoElement::Marker,
+                } if marker_owner == owner
+            )
+        })
+    }
+
+    fn inline_content_box<Id>(boxes: &CssBoxTree<Id>, inline_box: BoxId) -> Option<BoxId>
+    where
+        Id: Copy + Eq + Hash,
+    {
+        boxes[inline_box].children().iter().copied().find(|child| {
+            boxes[*child].display.outside == Some(DisplayOutside::Inline)
+                && !matches!(
+                    boxes[*child].origin,
+                    BoxOrigin::Pseudo {
+                        pseudo: buckram::PseudoElement::Marker,
+                        ..
+                    }
+                )
         })
     }
 
@@ -2915,7 +2979,7 @@ where
 /// Inside marker text for the admitted literal-marker slice. Decimal values
 /// follow direct HTML `ol` / `li` ordinals, rather than the general CSS
 /// counter model. Outside markers use a different formatting path.
-fn inside_marker_text<D>(
+pub(crate) fn inside_marker_text<D>(
     dom: &D,
     styles: &StylePlane<D::NodeId>,
     owner: D::NodeId,
