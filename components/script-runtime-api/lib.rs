@@ -189,14 +189,23 @@ pub struct Runtime<E: ScriptEngine> {
 
 impl<E: ScriptEngine> Drop for Runtime<E> {
     fn drop(&mut self) {
-        // A handler is scoped to one document/runtime. Stop its workers before
-        // the engine and host state disappear; late queue deliveries then have
-        // nowhere to accumulate and cannot leak into a later document whose
-        // request ids restart from one.
-        let handler = self.host.borrow().fetch.clone();
-        if let Some(handler) = handler {
+        // Capabilities are scoped to this runtime even when a public SharedHost
+        // clone keeps HostState alive. Take them under one short borrow, then
+        // cancel/drop outside it so handler destructors may re-enter host-owned
+        // state without colliding with this RefCell borrow.
+        let (fetch, webgl_contexts, webgl_factory) = {
+            let mut host = self.host.borrow_mut();
+            (
+                host.fetch.take(),
+                std::mem::take(&mut host.webgl_contexts),
+                host.webgl_factory.take(),
+            )
+        };
+        if let Some(handler) = fetch {
             handler.cancel_all();
         }
+        drop(webgl_contexts);
+        drop(webgl_factory);
     }
 }
 

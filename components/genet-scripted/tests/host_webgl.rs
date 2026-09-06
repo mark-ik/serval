@@ -13,11 +13,20 @@ impl ResourceFetcher for EmptyResources {
         None
     }
 }
-struct NullWebGl(Rc<Cell<Option<u64>>>);
+struct NullWebGl {
+    key: Rc<Cell<Option<u64>>>,
+    drops: Rc<Cell<usize>>,
+}
+
+impl Drop for NullWebGl {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
 
 impl WebGlHandler for NullWebGl {
     fn external_texture_key(&self) -> Option<u64> {
-        self.0.get()
+        self.key.get()
     }
     fn clear_color(&mut self, _r: f32, _g: f32, _b: f32, _a: f32) {}
     fn clear(&mut self, _mask: u32) {}
@@ -93,6 +102,8 @@ impl WebGlHandler for NullWebGl {
 fn live_canvas_frame<E: ScriptEngine>() {
     let key = Rc::new(Cell::new(Some(17)));
     let context_key = key.clone();
+    let drops = Rc::new(Cell::new(0));
+    let context_drops = drops.clone();
     let sizes = Rc::new(RefCell::new(Vec::new()));
     let recorded = sizes.clone();
     let html = r#"<style>canvas { display:block; width:20px; height:10px }</style>
@@ -107,7 +118,10 @@ fn live_canvas_frame<E: ScriptEngine>() {
         ScriptedDocumentOptions {
             webgl: Some(Box::new(move |w, h| {
                 recorded.borrow_mut().push((w, h));
-                Box::new(NullWebGl(context_key.clone()))
+                Box::new(NullWebGl {
+                    key: context_key.clone(),
+                    drops: context_drops.clone(),
+                })
             })),
             ..Default::default()
         },
@@ -134,6 +148,12 @@ fn live_canvas_frame<E: ScriptEngine>() {
     assert!(
         frame.external_textures.is_empty(),
         "retired context invalidates cached texture draws"
+    );
+    drop(doc);
+    assert_eq!(
+        drops.get(),
+        1,
+        "document drop retires its runtime-owned WebGL context immediately"
     );
 }
 #[test]
