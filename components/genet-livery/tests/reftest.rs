@@ -40,6 +40,16 @@ fn command_signature(list: &genet_livery::LiveryPaintList) -> Vec<String> {
         .collect()
 }
 
+fn painted_glyph_count(list: &genet_livery::LiveryPaintList) -> usize {
+    list.commands()
+        .iter()
+        .filter_map(|command| match command {
+            PaintCmd::DrawText(run) => Some(run.glyphs.len()),
+            _ => None,
+        })
+        .sum()
+}
+
 #[test]
 fn equivalent_inline_and_stylesheet_cases_share_a_native_paint_receipt() {
     let actual = render(
@@ -54,4 +64,23 @@ fn equivalent_inline_and_stylesheet_cases_share_a_native_paint_receipt() {
     );
 
     assert_eq!(command_signature(&actual), command_signature(&reference));
+}
+
+#[test]
+fn inside_disc_markers_generate_before_each_list_item() {
+    let html = "<html><body><ul><li>first</li><li>second</li></ul></body></html>";
+    let with_markers = render(
+        html,
+        "ul { margin: 0; padding-left: 0; list-style-position: inside; }",
+    );
+    let without_markers = render(
+        html,
+        "ul { margin: 0; padding-left: 0; list-style-position: inside; } li { list-style-type: none; }",
+    );
+
+    // Both literal bullets are in the same inline runs as their items.
+    assert_eq!(
+        painted_glyph_count(&with_markers),
+        painted_glyph_count(&without_markers) + 2
+    );
 }

@@ -60,6 +60,13 @@ keyword_value! {
 }
 
 keyword_value! {
+    pub enum ListStylePosition {
+        Outside => "outside",
+        Inside => "inside",
+    }
+}
+
+keyword_value! {
     pub enum Overflow {
         Visible => "visible",
         Hidden => "hidden",
