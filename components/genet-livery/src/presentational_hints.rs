@@ -1396,7 +1396,7 @@ where
 
 /// HTML's integer parser consumes a signed decimal prefix after leading ASCII
 /// whitespace. Trailing legacy text does not invalidate that prefix.
-fn parse_integer(input: &str) -> Option<i64> {
+pub(crate) fn parse_integer(input: &str) -> Option<i64> {
     let bytes = input.as_bytes();
     let mut position = 0;
     while bytes

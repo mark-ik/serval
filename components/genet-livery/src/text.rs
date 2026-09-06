@@ -18,7 +18,7 @@ use buckram::{
     BoxId, BoxOrigin, CssBoxTree, DisplayInside, DisplayOutside, FloatLineConstraints,
     FormattingContextKind, InternalTableRole, IntrinsicSizeKind, IntrinsicSizes,
 };
-use layout_dom_api::{LayoutDom, NodeKind};
+use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
     ComputedValues,
     values::{
@@ -598,24 +598,44 @@ impl TextSystem {
         let Some(parent_box) = fragments.boxes().principal_box(parent) else {
             return;
         };
-        if fragments.boxes()[parent_box].formatting_context != Some(FormattingContextKind::Inline) {
-            return;
-        }
-        let Some(parent_fragment) = frame
-            .inline_fragments(parent)
-            .and_then(|fragments| fragments.first())
-            .or_else(|| fragments.get(parent).map(|fragment| &**fragment))
-            .copied()
-        else {
-            return;
-        };
         if parent_style.display == Display::ListItem {
+            // A list item's marker can be the only inline run before a block
+            // child (for example the nested `ol` in CSS2 list-position-023).
+            // Buckram puts that run in an anonymous inline context, so the
+            // principal list-item box itself is block-formatted.
+            let inline_box = if fragments.boxes()[parent_box].formatting_context
+                == Some(FormattingContextKind::Inline)
+            {
+                Some(parent_box)
+            } else {
+                Self::marker_inline_child(fragments.boxes(), parent_box, parent)
+            };
+            let Some(inline_box) = inline_box else {
+                return;
+            };
+            let parent_fragment = if inline_box == parent_box {
+                frame
+                    .inline_fragments(parent)
+                    .and_then(|fragments| fragments.first())
+                    .or_else(|| fragments.get(parent).map(|fragment| &**fragment))
+                    .copied()
+            } else {
+                fragments
+                    .fragments()
+                    .fragment_ids_for_box(inline_box)
+                    .last()
+                    .and_then(|fragment| fragments.fragments().get(*fragment))
+                    .map(|fragment| fragment.physical_rect())
+            };
+            let Some(parent_fragment) = parent_fragment else {
+                return;
+            };
             // A list marker exists only in Buckram's generated box tree. The
             // DOM-only collector below cannot see it, which meant stateless
             // layout rebuilt a list item's text without its inside marker at
             // paint time. This formatting context is already proven inline,
             // so the box roots form one admitted inline run.
-            let roots = fragments.boxes()[parent_box].children();
+            let roots = fragments.boxes()[inline_box].children();
             if let Some(layout) = self.format_inline_group(
                 dom,
                 styles,
@@ -639,6 +659,17 @@ impl TextSystem {
             }
             return;
         }
+        if fragments.boxes()[parent_box].formatting_context != Some(FormattingContextKind::Inline) {
+            return;
+        }
+        let Some(parent_fragment) = frame
+            .inline_fragments(parent)
+            .and_then(|fragments| fragments.first())
+            .or_else(|| fragments.get(parent).map(|fragment| &**fragment))
+            .copied()
+        else {
+            return;
+        };
         let mut inline_parent_style = parent_style.clone();
         if matches!(parent_style.position, Position::Absolute | Position::Fixed) {
             inline_parent_style.vertical_align = VerticalAlign::Baseline;
@@ -669,6 +700,24 @@ impl TextSystem {
             (&parent_fragment, &inline_parent_style),
             parent,
         );
+    }
+
+    fn marker_inline_child<Id>(boxes: &CssBoxTree<Id>, parent: BoxId, owner: Id) -> Option<BoxId>
+    where
+        Id: Copy + Eq + Hash,
+    {
+        boxes[parent].children().iter().copied().find(|child| {
+            boxes[*child].formatting_context == Some(FormattingContextKind::Inline)
+                && boxes[*child].children().iter().any(|grandchild| {
+                    matches!(
+                        boxes[*grandchild].origin,
+                        BoxOrigin::Pseudo {
+                            owner: marker_owner,
+                            pseudo: buckram::PseudoElement::Marker,
+                        } if marker_owner == owner
+                    )
+                })
+        })
     }
 
     pub(crate) fn emit_single<Id>(
@@ -2682,7 +2731,7 @@ where
                 let Some(style) = self.styles.get(owner) else {
                     return;
                 };
-                let Some(marker) = inside_disc_marker_text(style) else {
+                let Some(marker) = inside_marker_text(self.dom, self.styles, owner, style) else {
                     return;
                 };
                 let start = self.text.len();
@@ -2863,13 +2912,89 @@ where
     }
 }
 
-/// The admitted marker slice is a literal disc in inline flow. Decimal markers
-/// require the full `list-item` counter scope, and outside placement requires
-/// an out-of-flow marker formatting path.
-fn inside_disc_marker_text(style: &ComputedValues) -> Option<&'static str> {
-    (style.list_style_position == ListStylePosition::Inside
-        && style.list_style_type == ListStyleType::Disc)
-        .then_some("• ")
+/// Inside marker text for the admitted literal-marker slice. Decimal values
+/// follow direct HTML `ol` / `li` ordinals, rather than the general CSS
+/// counter model. Outside markers use a different formatting path.
+fn inside_marker_text<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    owner: D::NodeId,
+    style: &ComputedValues,
+) -> Option<String>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if style.list_style_position != ListStylePosition::Inside {
+        return None;
+    }
+    match style.list_style_type {
+        ListStyleType::None => None,
+        ListStyleType::Disc => Some("• ".to_owned()),
+        ListStyleType::Decimal => decimal_inside_marker_text(dom, styles, owner),
+    }
+}
+
+fn decimal_inside_marker_text<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    item: D::NodeId,
+) -> Option<String>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !is_html_element(dom, item, "li") {
+        return None;
+    }
+    let list = dom.parent(item)?;
+    if !is_html_element(dom, list, "ol") || html_attribute(dom, list, "reversed").is_some() {
+        return None;
+    }
+
+    let mut ordinal = html_integer_attribute(dom, list, "start").unwrap_or(1);
+    for sibling in dom.dom_children(list) {
+        if !is_html_element(dom, sibling, "li")
+            || styles
+                .get(sibling)
+                .is_none_or(|style| style.display != Display::ListItem)
+        {
+            continue;
+        }
+        if let Some(value) = html_integer_attribute(dom, sibling, "value") {
+            ordinal = value;
+        }
+        if sibling == item {
+            return Some(format!("{ordinal}. "));
+        }
+        ordinal = ordinal.checked_add(1)?;
+    }
+    None
+}
+
+fn is_html_element<D>(dom: &D, id: D::NodeId, local: &str) -> bool
+where
+    D: LayoutDom,
+{
+    dom.kind(id) == NodeKind::Element
+        && dom.element_name(id).is_some_and(|name| {
+            name.ns.as_ref() == "http://www.w3.org/1999/xhtml"
+                && name.local.as_ref().eq_ignore_ascii_case(local)
+        })
+}
+
+fn html_attribute<'a, D>(dom: &'a D, id: D::NodeId, local: &str) -> Option<&'a str>
+where
+    D: LayoutDom,
+{
+    dom.attribute(id, &Namespace::from(""), &LocalName::from(local))
+}
+
+fn html_integer_attribute<D>(dom: &D, id: D::NodeId, local: &str) -> Option<i64>
+where
+    D: LayoutDom,
+{
+    html_attribute(dom, id, local).and_then(crate::presentational_hints::parse_integer)
 }
 
 struct InlineCollector<'a, D, F>
