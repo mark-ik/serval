@@ -35,12 +35,12 @@ pub use property::{
     FontFeatureSetting, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
     Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset,
     LineBreak, LineHeight, ListStylePosition, ListStyleType, Margin, Opacity, Order, Overflow,
-    OverflowWrap, Padding,
-    PointerEvents, Position, Radius, RepeatStyle, Rotate, Scale, ShapeOutside, Size, Spacing,
-    TabSize, TableBorderSpacing, TableLayout, TextAlign, TextAlignLast, TextDecorationColor,
-    TextDecorationLine, TextIndent, TextJustify, TextTransform, TextTransformCase, TextWrapMode,
-    TimingFunction, Transform, TransformFunction, TransitionProperty, VerticalAlign, Visibility,
-    WhiteSpaceCollapse, WordBreak, WritingMode, ZIndex,
+    OverflowWrap, Padding, PointerEvents, Position, Radius, RepeatStyle, Rotate, Scale,
+    ShapeOutside, Size, Spacing, TabSize, TableBorderSpacing, TableLayout, TextAlign,
+    TextAlignLast, TextDecorationColor, TextDecorationLine, TextIndent, TextJustify, TextTransform,
+    TextTransformCase, TextWrapMode, TimingFunction, Transform, TransformFunction,
+    TransitionProperty, VerticalAlign, Visibility, WhiteSpaceCollapse, WordBreak, WritingMode,
+    ZIndex,
 };
 pub use transform_matrix::Matrix2D;
 
