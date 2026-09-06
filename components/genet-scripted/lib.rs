@@ -25,12 +25,14 @@ use script_engine_api::ScriptEngine;
 
 mod capture;
 mod document;
+mod host;
 #[cfg(feature = "livery")]
 mod livery;
 
 #[cfg(feature = "livery")]
 pub use document::LiveryScriptedDocument;
 pub use document::{ScriptedDocument, ScriptedEngine, ScrollKey};
+pub use host::ScriptedDocumentOptions;
 #[cfg(feature = "livery")]
 pub use livery::{LiveryCssom, ScriptedClick};
 

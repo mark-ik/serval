@@ -29,6 +29,13 @@ repatriated here from mere.
    the last three moved to mere with their code on 2026-09-03, and active
    plans sit flat in `design_docs/`.
 
+## Scripted host capabilities
+
+- [scripted_host_capabilities_plan](2026-09-06_scripted_host_capabilities_plan.md)
+  (**in progress 2026-09-06**): per-document deferred Fetch and WebGL services
+  installed before authored scripts, ordinary-host receipts, and a bounded
+  Row 17 generated-text slice. K6 continues separately.
+
 ## ortet — the raw host
 
 - [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**O0, O1 and O4

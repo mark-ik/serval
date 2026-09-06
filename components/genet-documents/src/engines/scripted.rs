@@ -18,6 +18,10 @@ use netrender::Scene;
 
 use super::*;
 
+#[cfg(feature = "scripted")]
+type ScriptedOptionsFactory =
+    dyn Fn(&str) -> Result<genet_scripted::ScriptedDocumentOptions, String> + Send + Sync;
+
 /// Map the host-neutral scroll-key vocabulary onto the owned scripted lane.
 #[cfg(feature = "scripted")]
 pub(crate) fn scripted_scroll_key(key: SessionScrollKey) -> genet_scripted::ScrollKey {
@@ -41,6 +45,7 @@ pub(crate) fn scripted_scroll_key(key: SessionScrollKey) -> genet_scripted::Scro
 pub struct ScriptedSessionEngine<E, Fetch> {
     engine_id: String,
     fetcher: Fetch,
+    options_factory: Option<Box<ScriptedOptionsFactory>>,
     _engine: std::marker::PhantomData<fn() -> E>,
 }
 
@@ -50,8 +55,23 @@ impl<E, Fetch> ScriptedSessionEngine<E, Fetch> {
         Self {
             engine_id: engine_id.into(),
             fetcher,
+            options_factory: None,
             _engine: std::marker::PhantomData,
         }
+    }
+
+    /// Create document-local capabilities before the first authored script.
+    /// The factory receives the script-visible navigation URL and is called
+    /// again for every replacement document.
+    pub fn with_options_factory(
+        mut self,
+        factory: impl Fn(&str) -> Result<genet_scripted::ScriptedDocumentOptions, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.options_factory = Some(Box::new(factory));
+        self
     }
 }
 
@@ -69,24 +89,57 @@ where
         &self,
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
-        let navigation = genet_livery::NavigationFragment::parse(&request.address);
-        let doc = match &request.body {
-            Some(body) => genet_scripted::LiveryScriptedDocument::<E>::from_body(
-                body,
-                self.fetcher.clone(),
-                &request.address,
+        // Resolve the top-level response before constructing document-local
+        // capabilities. A redirect changes the origin that page fetches carry.
+        let (body, address) = match &request.body {
+            Some(body) => (
+                std::borrow::Cow::Borrowed(body.as_str()),
+                request.address.clone(),
             ),
-            None => genet_scripted::LiveryScriptedDocument::<E>::load(
-                self.fetcher.clone(),
-                &request.address,
-            ),
-        }
+            None => {
+                let requested = genet_livery::NavigationFragment::parse(&request.address);
+                let response = self
+                    .fetcher
+                    .fetch_response(&requested.resource_url)
+                    .ok_or_else(|| {
+                        SessionError::SpawnFailed(format!(
+                            "could not load {}",
+                            requested.resource_url
+                        ))
+                    })?;
+                let mut address = response.final_url;
+                if !address.contains('#') {
+                    if let Some((_, fragment)) = request.address.split_once('#') {
+                        address.push('#');
+                        address.push_str(fragment);
+                    }
+                }
+                (
+                    std::borrow::Cow::Owned(String::from_utf8_lossy(&response.bytes).into_owned()),
+                    address,
+                )
+            },
+        };
+        let navigation = genet_livery::NavigationFragment::parse(&address);
+        let options = match &self.options_factory {
+            Some(factory) => {
+                factory(&navigation.script_visible_url).map_err(SessionError::SpawnFailed)?
+            },
+            None => genet_scripted::ScriptedDocumentOptions::default(),
+        };
+        let doc = genet_scripted::LiveryScriptedDocument::<E>::from_body_with_options(
+            &body,
+            self.fetcher.clone(),
+            &address,
+            options,
+        )
         .map_err(SessionError::SpawnFailed)?;
         let mut session = ScriptedDocumentSession {
             doc,
             address: navigation.script_visible_url,
             pressed_target: None,
             pointer_active: false,
+            external_textures: Vec::new(),
         };
         if request.hidden {
             session.doc.set_hidden(true);
@@ -104,6 +157,7 @@ pub struct ScriptedDocumentSession<E: script_engine_api::ScriptEngine> {
     address: String,
     pressed_target: Option<genet_scripted_dom::NodeId>,
     pointer_active: bool,
+    external_textures: Vec<document_session_api::SessionExternalTextureDraw>,
 }
 
 #[cfg(feature = "scripted")]
@@ -121,6 +175,7 @@ impl<E: script_engine_api::ScriptEngine + 'static> ScriptedDocumentSession<E> {
             address: address.into(),
             pressed_target: None,
             pointer_active: false,
+            external_textures: Vec::new(),
         }
     }
 }
@@ -134,7 +189,12 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
     }
 
     fn frame(&mut self, width: u32, height: u32) -> Scene {
-        self.doc.frame(width, height)
+        let frame = self.doc.frame_with_external_textures(width, height);
+        self.external_textures = frame.external_textures;
+        frame.scene
+    }
+    fn external_texture_draws(&self) -> &[document_session_api::SessionExternalTextureDraw] {
+        &self.external_textures
     }
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
         self.doc.scroll_by(dx, dy)

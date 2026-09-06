@@ -52,6 +52,7 @@ url = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true, optional = true }
 
 [dev-dependencies]
+script-runtime-api = { path = "../script-runtime-api" }
 # Livery resource tests encode small PNG fixtures even when the smolweb
 # feature (which owns the optional production dependency) is disabled.
 image = { workspace = true }

@@ -88,13 +88,7 @@ pub struct TextCursor {
 }
 
 /// Host-neutral metadata for a producer texture emitted by a paint list.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExternalTextureDraw {
-    pub texture_key: u64,
-    pub dest_rect: [f32; 4],
-    pub opacity: f32,
-    pub scene_op_boundary: usize,
-}
+pub use document_session_api::SessionExternalTextureDraw as ExternalTextureDraw;
 
 /// A rendered document frame and its same-device producer-texture draws.
 #[derive(Clone, Debug)]

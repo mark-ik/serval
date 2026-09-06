@@ -516,6 +516,7 @@ fn emit_node<D>(
         list,
         scroll_offsets,
         canvas_background_source,
+        external_textures,
         deferred_collapsed.as_mut(),
     );
     if let Some(deferred) = deferred_collapsed.as_mut() {
@@ -646,7 +647,15 @@ where
                     emit_border(list, style, fragment);
                 }
             }
-            emit_canvas_external_texture(dom, fragments, id, style, scope.external_textures, list);
+            emit_canvas_external_texture(
+                dom,
+                styles,
+                fragments,
+                id,
+                style,
+                scope.external_textures,
+                list,
+            );
             // The overflow clip stays on the outer box: CSS Tables 3 section
             // 3.6.1 puts `overflow` on the table wrapper box, so a clipping
             // table clips at the box that contains its captions.
@@ -709,6 +718,7 @@ where
 
 fn emit_canvas_external_texture<D>(
     dom: &D,
+    styles: &StylePlane<D::NodeId>,
     fragments: &LiveryLayout<D::NodeId>,
     id: D::NodeId,
     style: &ComputedValues,
@@ -744,9 +754,34 @@ fn emit_canvas_external_texture<D>(
     else {
         return;
     };
+    let em = used_font_size(style);
+    let inline_basis = dom
+        .parent(id)
+        .and_then(|parent| {
+            Some(crate::content_box_size(styles.get(parent)?, fragments.get(parent)?).0)
+        })
+        .unwrap_or(list.viewport.width as f32);
+    let padding_left = length_percentage_px(style.padding_left.0, em, inline_basis);
+    let padding_top = length_percentage_px(style.padding_top.0, em, inline_basis);
+    let padding_right = length_percentage_px(style.padding_right.0, em, inline_basis);
+    let padding_bottom = length_percentage_px(style.padding_bottom.0, em, inline_basis);
+    let border_left = border_width_px(style.border_left_style, style.border_left_width, em);
+    let border_top = border_width_px(style.border_top_style, style.border_top_width, em);
+    let border_right = border_width_px(style.border_right_style, style.border_right_width, em);
+    let border_bottom = border_width_px(style.border_bottom_style, style.border_bottom_width, em);
+    let content = LayoutRect::from_origin_and_size(
+        LayoutPoint::new(
+            fragment.x + border_left + padding_left,
+            fragment.y + border_top + padding_top,
+        ),
+        LayoutSize::new(
+            (fragment.width - border_left - padding_left - padding_right - border_right).max(0.0),
+            (fragment.height - border_top - padding_top - padding_bottom - border_bottom).max(0.0),
+        ),
+    );
     list.commands
         .push(PaintCmd::DrawExternalTexture(ExternalTextureItem {
-            placement: CommonPlacement::new(bounds(fragment)),
+            placement: CommonPlacement::new(content),
             texture_key,
             opacity: style.opacity.value(),
             content_generation: None,
@@ -1807,6 +1842,7 @@ fn emit_children_in_stacking_order<D>(
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
     canvas_background_source: Option<D::NodeId>,
+    external_textures: &HashMap<D::NodeId, u64>,
     mut deferred_collapsed: Option<&mut DeferredCollapsedBorders<'_>>,
 ) where
     D: LayoutDom,

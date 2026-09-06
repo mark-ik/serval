@@ -27,7 +27,7 @@ default = ["livery"]
 # "scripted-nova")]` test gate never actually covered).
 scripted-nova = ["dep:script-engine-nova"]
 # Owned CSSOM, layout, and paint bridge for scripted/fullweb hosts.
-livery = ["dep:genet-livery", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
+livery = ["dep:genet-livery", "dep:genet-render", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
 
 [lints.rust]
 # `document.rs` and `capture.rs` still contain bounded pre-L7 donor blocks while
@@ -41,6 +41,7 @@ genet-document-resources = { workspace = true }
 genet-host-api = { workspace = true }
 layout-dom-api = { path = "../shared/layout-dom", features = ["capture"] }
 genet-livery = { path = "../genet-livery", optional = true }
+genet-render = { path = "../genet-render", optional = true }
 paint_list_api = { workspace = true, optional = true }
 paint_list_render = { workspace = true, optional = true }
 genet-static-dom = { path = "../genet-static-dom" }

@@ -71,7 +71,7 @@ use script_runtime_api::{CookieProvider, Runtime, WebGlFactory};
 use crate::ResourceFetcher;
 use crate::capture::DomCaptureRecorder;
 #[cfg(feature = "livery")]
-use crate::{LiveryCssom, ScriptedClick};
+use crate::{LiveryCssom, ScriptedClick, ScriptedDocumentOptions};
 
 /// Host-neutral keyboard scrolling for either scripted layout engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1065,6 +1065,18 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     where
         Fetch: ResourceFetcher + 'static,
     {
+        Self::load_with_options(fetcher, url, ScriptedDocumentOptions::default())
+    }
+
+    /// Load with fresh host capabilities installed before authored scripts run.
+    pub fn load_with_options<Fetch>(
+        fetcher: Fetch,
+        url: &str,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + 'static,
+    {
         let navigation = NavigationFragment::parse(url);
         let fetcher = SharedResourceFetcher(Rc::new(fetcher));
         let bytes = fetcher
@@ -1074,6 +1086,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             &String::from_utf8_lossy(&bytes),
             fetcher,
             &navigation.script_visible_url,
+            options,
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
             || navigation.element_fragment.is_some())
@@ -1088,11 +1101,25 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     where
         Fetch: ResourceFetcher + 'static,
     {
+        Self::from_body_with_options(html, fetcher, base_url, ScriptedDocumentOptions::default())
+    }
+
+    /// Build from supplied bytes with document-local host capabilities.
+    pub fn from_body_with_options<Fetch>(
+        html: &str,
+        fetcher: Fetch,
+        base_url: &str,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + 'static,
+    {
         let navigation = NavigationFragment::parse(base_url);
         let mut document = Self::build(
             html,
             SharedResourceFetcher(Rc::new(fetcher)),
             &navigation.script_visible_url,
+            options,
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
             || navigation.element_fragment.is_some())
@@ -1107,14 +1134,21 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             html,
             SharedResourceFetcher(Rc::new(EmptyResourceFetcher)),
             "about:blank",
+            ScriptedDocumentOptions::default(),
         )
     }
 
-    fn build(html: &str, fetcher: SharedResourceFetcher, base_url: &str) -> Result<Self, String> {
+    fn build(
+        html: &str,
+        fetcher: SharedResourceFetcher,
+        base_url: &str,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String> {
         let doc = StaticDocument::parse(html);
         let mut rt =
             Runtime::<E>::new().map_err(|error| format!("script runtime init: {error:?}"))?;
         let _ = rt.set_base_url(base_url);
+        options.install(&mut rt);
         rt.load_dom(&doc);
         let cssom = LiveryCssom::install_live(
             &mut rt,
@@ -1216,6 +1250,15 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     /// Render the exact live runtime DOM through Livery and lower the resulting
     /// paint list into the existing host-neutral scene.
     pub fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
+        self.frame_with_external_textures(width, height).scene
+    }
+
+    /// Render with ordered producer-texture draws for same-device composition.
+    pub fn frame_with_external_textures(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> genet_render::RenderedFrame {
         let (requested_scroll, into_view) = {
             let mut host = self.rt.host().borrow_mut();
             (host.viewport_scroll, host.scroll_into_view.take())
@@ -1229,7 +1272,10 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             Ok(list) => list,
             Err(error) => {
                 eprintln!("[pelt-livery-scripted] layout error: {error}");
-                return netrender::Scene::new(width, height);
+                return genet_render::RenderedFrame {
+                    scene: netrender::Scene::new(width, height),
+                    external_textures: Vec::new(),
+                };
             },
         };
         if let Some(navigation) = self.pending_fragment.take() {
@@ -1245,12 +1291,15 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
                 Ok(list) => list,
                 Err(error) => {
                     eprintln!("[pelt-livery-scripted] layout error: {error}");
-                    return netrender::Scene::new(width, height);
+                    return genet_render::RenderedFrame {
+                        scene: netrender::Scene::new(width, height),
+                        external_textures: Vec::new(),
+                    };
                 },
             };
         }
         self.rt.host().borrow_mut().viewport_scroll = self.cssom.scroll();
-        paint_list_render::translate_paint_list(&list)
+        genet_render::translate_frame(&list)
     }
 
     pub fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
@@ -1357,6 +1406,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             }
             self.last_hidden_pump_ms = now_ms;
         }
+        self.rt.poll_fetches(64);
         self.rt.run_timers(64, now_ms);
         self.rt.run_microtasks();
         self.flush_dom_capture();
@@ -1364,7 +1414,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     }
 
     pub fn has_pending_work(&mut self) -> bool {
-        !self.frozen && self.rt.next_timer_delay().is_some()
+        !self.frozen && (self.rt.has_pending_fetches() || self.rt.next_timer_delay().is_some())
     }
 
     pub fn set_hidden(&mut self, hidden: bool) {

@@ -434,9 +434,12 @@ impl RenderCore {
         w: u32,
         h: u32,
         clear: ColorLoad,
-        _scale: f32,
+        scale: f32,
         external_textures: &[netrender::ExternalTextureComposite<'_>],
     ) -> (wgpu::Texture, wgpu::TextureView) {
+        if external_textures.is_empty() {
+            return self.rasterize_scaled(scene, w, h, clear, scale);
+        }
         let mut compositor = CaptureMasterCompositor::default();
         let base_color = match clear {
             ColorLoad::Clear(color) => netrender::peniko::Color::new([

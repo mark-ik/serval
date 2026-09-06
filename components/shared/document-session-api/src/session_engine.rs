@@ -536,6 +536,18 @@ pub enum SessionScrollKey {
     End,
 }
 
+/// A same-device producer texture placed within the latest session frame.
+/// Keys identify textures registered by this session's host, never arbitrary
+/// resources named by document text. Rectangles use viewport CSS pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionExternalTextureDraw {
+    pub texture_key: u64,
+    pub dest_rect: [f32; 4],
+    pub opacity: f32,
+    /// Insert immediately before this operation index in the returned frame.
+    pub scene_op_boundary: usize,
+}
+
 // ── Traits ─────────────────────────────────────────────────────────────────
 
 /// Spawns retained document sessions for the engine id it claims. Registered
@@ -577,6 +589,12 @@ pub trait DocumentSession<F>: Any {
     /// Lay out (if needed) and paint at the given viewport. Resize is
     /// implicit: a size change re-lays-out, same as the lanes today.
     fn frame(&mut self, width: u32, height: u32) -> F;
+
+    /// Producer draws associated with the most recent [`Self::frame`]. Hosts
+    /// consume these with that frame before requesting a replacement frame.
+    fn external_texture_draws(&self) -> &[SessionExternalTextureDraw] {
+        &[]
+    }
 
     /// Scroll the viewport; `true` if the offset changed.
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool;
